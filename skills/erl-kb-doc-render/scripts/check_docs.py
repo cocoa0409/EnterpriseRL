@@ -15,24 +15,29 @@ WHAT IT CHECKS (the mechanically decidable subset of SKILL.md's values):
               product-wide reference split: a target_tool referenced by one policy is merged into
               that hub; shared or non-target tools have a standalone tool doc. Content names the
               tool verbatim plus unlock wording; user-owned tools' docs must say the customer themselves.
-  sop         every workflow has EXACTLY ONE doc (meta.workflow) whose content names the step
-              tools IN STEPS ORDER — the step sequence must match as a subsequence of the prose,
-              so a tool reused at several steps is named once per step.
+  workflow    every workflow has EXACTLY ONE doc (meta.workflow). It is never a runbook: it must
+              not name any of its step tools (tool names live only in their invocation docs)
+              and must not number its steps — the order is carried by the reasons, not stated.
   scatter     every extended policy has EXACTLY ONE hub (meta.role=hub, carries empty), but the hub
               MUST NOT expose a factor list, factor count, fragment navigation, or completion cue.
               Independent factor/meta_rule docs privately claim source compute bindings through
               meta.covers; every binding (including result) has exactly one home. There is no
               arbitrary fragment-count floor: only real source semantics may create fragments.
               Carries caps (factor<=2, facet<=6) block fake scattering.
-  prereq      every `prerequisite.condition` of every extended policy / workflow is carried by
-              the docs of the problem it BLOCKS (the `from` side) and by no other problem's docs:
-              a prerequisite is discoverable law, so dropping it makes the whole task design
-              unreachable, while restating it on the depended-on side creates a second home.
-              Two further rules are enforced: no doc may carry the prerequisite conditions of
-              2+ distinct problems (that is a dependency table — the chain must be walked one
-              hop at a time, not read off a list), and the `resolved_by` tool of an edge must
-              not appear in the blocked problem's docs (a cross-problem operational pointer
-              welds two independent problems into one procedure the source never declares).
+  prereq      a prerequisite is carried by ENTAILMENT (a principle in the blocked problem's docs,
+              completed by the depended-on problem's own rules and the facts), never stated. So
+              no doc may contain an edge's `condition` or `policy_source` verbatim, nor restate
+              one closely in a sentence that also carries a gating/ordering cue; and the
+              `resolved_by` tool of an edge must not appear in the blocked problem's docs (a
+              cross-problem operational pointer welds two problems into one procedure). Whether
+              each hop is really entailed at the source's strength is a MANUAL gate.
+  explicit    the controlled scaffolding of a stated dependency or procedure fails anywhere:
+              entry conditions, not-yet-hold clauses, precedence labels ending in "first",
+              step-before-step, wrong/correct-reading contrasts, named mistakes. Titles may not
+              take the question form or the internal-procedure form (task-mirroring titles).
+  wording     paraphrase, never copy: no run of SHINGLE words copied from the charter text, and
+              no run of SHINGLE words recurring in TEMPLATE_DOCS+ docs (templated phrasing).
+              Quoted/backticked spans (exact identifiers, fixed phrases) are excluded.
   full span   EVERYTHING in the charter is carried somewhere (splitting must never drop): every BASE
               policy has >=1 doc (meta.policy_id); every extended policy has its hub+fragments;
               every task tool its invocation doc; every workflow its SOP doc; every
@@ -123,6 +128,77 @@ FRAGMENT_NAV_PATTERNS = (
     (re.compile(r"(?:the\s+)?(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)"
                 r"\s+factor|factor\s+(?:no\.?\s*)?\d+", re.I), "factor ordinal"),
 )
+
+# IMPLICIT CARRIAGE: what the solver must work out — a dependency between problems, the order of
+# a procedure, a remedy — is carried by entailment and never stated. These are the unmistakable
+# surface forms of a stated dependency or procedure; a match fails whatever the semantics. The
+# subtler statements no pattern can catch remain the manual gate's job.
+EXPLICIT_FORMS = (
+    (re.compile(r"\bentry\s+conditions?\b", re.I), "entry condition"),
+    (re.compile(r"\bwhere\s+(?:that|this|it|they)\s+(?:does|do)\s+not\s+(?:yet\s+)?hold", re.I),
+     "not-yet-hold gating clause"),
+    (re.compile(r"\*\*[^*\n]{0,60}\bfirst\b[.:!]?\s*\*\*", re.I), "precedence label ending in 'first'"),
+    (re.compile(r"\bsteps?\s*\d+\s+(?:before|after|precedes?|follows?)\s+steps?\s*\d+", re.I),
+     "step-before-step ordering"),
+    (re.compile(r"\bbefore\s+(?:running|starting|beginning|carrying\s+out)\s+(?:this|the)\s+"
+                r"(?:procedure|process|workflow)", re.I), "procedure entry condition"),
+    (re.compile(r"\b(?:wrong|incorrect|mistaken)\s+(?:reading|interpretation)s?\b"
+                r"|\bcorrect\s+(?:basis|reading|interpretation)\b|\bmis-?readings?\b"
+                r"|\bcommon\s+(?:mistake|error|misunderstanding|misconception)s?\b", re.I),
+     "wrong-reading contrast / named mistake"),
+)
+# A restatement of a prerequisite that also carries one of these cues reads as an instruction.
+ORDER_CUE = re.compile(r"\b(?:before|first|prior\s+to|only\s+after|only\s+once|until|not\s+yet"
+                       r"|in\s+advance|ahead\s+of|precede[sd]?|preceding)\b", re.I)
+NEAR_RESTATE = 0.8        # share of a prerequisite's content words found in one sentence
+# Task-mirroring title forms: a question restating a request, or an internal procedure label.
+TITLE_FORMS = (
+    (re.compile(r"\?\s*$|^\s*how\s+(?:do|does|can|should|to|is|are)\b", re.I), "question form"),
+    (re.compile(r"^\s*internal\s*[:\-–—]|\bhandling\s+procedure\b", re.I),
+     "internal-procedure form"),
+)
+STEP_NUMBERING = re.compile(r"\bsteps?\s*(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b"
+                            r"|\b(?:first|second|third|fourth|fifth|final|last)\s+step\b", re.I)
+# PARAPHRASE: a run of SHINGLE words copied from the charter, or recurring in TEMPLATE_DOCS docs,
+# is copied/templated wording. Quoted/backticked spans are exact identifiers and fixed phrases
+# (tool names, enum values, verbatim argument phrases) and are excluded.
+SHINGLE = 10
+TEMPLATE_DOCS = 3
+WORD = re.compile(r"[a-z0-9]+")
+QUOTED = re.compile(r"`[^`]*`|\"[^\"\n]*\"|“[^”\n]*”")
+STOP = set("a an the of to and or is are be by for in on at as that this with from its it their any "
+           "every each which who has have been was were not no than then when where once so into "
+           "under over per such these those shall will would may must can could should".split())
+
+
+def _words(text):
+    return WORD.findall(QUOTED.sub(" ", str(text or "")).lower())
+
+
+def _shingles(words, n=SHINGLE):
+    return {" ".join(words[i:i + n]) for i in range(len(words) - n + 1)}
+
+
+def _content_words(text):
+    return {w for w in WORD.findall(str(text or "").lower()) if len(w) > 2 and w not in STOP}
+
+
+def _sentences(text):
+    return [s for s in re.split(r"(?<=[.!?])\s+|\n+", str(text or "")) if s.strip()]
+
+
+def _charter_texts(node, out):
+    """Every natural-language string of the charter long enough to hold a copied run."""
+    if isinstance(node, str):
+        if len(WORD.findall(node.lower())) >= SHINGLE:
+            out.append(node)
+    elif isinstance(node, dict):
+        for v in node.values():
+            _charter_texts(v, out)
+    elif isinstance(node, list):
+        for v in node:
+            _charter_texts(v, out)
+    return out
 
 
 def load_yaml(p):
@@ -341,6 +417,43 @@ def main():
                          "in the merged corpus an unnamed late-fee/penalty/discount doc is ambiguous across "
                          "products; state the product's official name in the prose (value 3)")
 
+    # ---- implicit carriage: stated-dependency scaffolding, task-mirroring titles --------
+    for fn, d in docs:
+        title = str(d.get("title", ""))
+        text = title + "\n" + str(d.get("content", ""))
+        for rx, label in EXPLICIT_FORMS:
+            hit = rx.search(text)
+            if hit:
+                fails.append(f"{fn}: pre-solved form ({label}) via {hit.group(0)!r} — what the solver must "
+                             "work out is carried by definitions and principles, never stated as an instruction")
+        for rx, label in TITLE_FORMS:
+            if rx.search(title):
+                fails.append(f"{fn}: title in {label} ({title[:80]!r}) — a title names the product and a "
+                             "general subject, never a request or a procedure for a particular situation")
+                break
+
+    # ---- paraphrase: nothing copied from the charter, no templated wording ------------
+    charter_sh = set()
+    for s in _charter_texts(charter, []):
+        charter_sh |= _shingles(_words(s))
+    doc_sh = {fn: _shingles(_words(str(d.get("title", "")) + "\n" + str(d.get("content", ""))))
+              for fn, d in docs}
+    sh_homes = {}
+    for fn, sh in doc_sh.items():
+        for s in sh:
+            sh_homes.setdefault(s, set()).add(fn)
+    templated = {s for s, homes in sh_homes.items() if len(homes) >= TEMPLATE_DOCS}
+    for fn, _d in docs:
+        copied = doc_sh[fn] & charter_sh
+        if copied:
+            fails.append(f"{fn}: {len(copied)} run(s) of {SHINGLE} words copied from the charter, e.g. "
+                         f"{sorted(copied)[0]!r} — paraphrase in the document's own words (exact identifiers "
+                         "and fixed phrases go in backticks)")
+        shared = doc_sh[fn] & templated
+        if shared:
+            fails.append(f"{fn}: templated wording — {len(shared)} run(s) of {SHINGLE} words recur in "
+                         f">={TEMPLATE_DOCS} docs, e.g. {sorted(shared)[0]!r} — word each document afresh")
+
     # ---- tools -----------------------------------------------------------------------
     inv = {}
     for fn, d in docs:
@@ -385,7 +498,7 @@ def main():
         if t not in task_tools:
             fails.append(f"meta.tool '{t}' is not a task tool of this product")
 
-    # ---- sop -------------------------------------------------------------------------
+    # ---- workflow: one implicit document per workflow, never a runbook ------------------
     sops = {}
     for fn, d in docs:
         w = (d.get("meta") or {}).get("workflow")
@@ -394,31 +507,22 @@ def main():
     for wid, wf in wfs.items():
         entries = sops.get(wid, [])
         if len(entries) != 1:
-            fails.append(f"workflow {wid}: {len(entries)} SOP docs (need exactly 1)")
+            fails.append(f"workflow {wid}: {len(entries)} workflow docs (need exactly 1)")
             continue
         fn, d = entries[0]
-        c = str(d["content"])
-        # The SOP prose must name the step tools IN STEPS ORDER. Match the step sequence as a
-        # SUBSEQUENCE of the prose (walk a cursor forward, each step consuming the next mention
-        # of its tool after the previous one). A tool legitimately reused at several steps —
-        # e.g. register intake, settle, then register again — is named once per step, and the
-        # cursor consumes them in turn. (Keying on each tool's FIRST occurrence instead would
-        # make any non-adjacent repeat unsatisfiable: two steps would resolve to the same index,
-        # forcing the tool between them to be simultaneously before and after itself.)
-        step_tools = [s.get("tool") for s in (wf.get("steps") or [])]
-        cursor = 0
-        for idx, t in enumerate(step_tools, 1):
-            i = c.find(t, cursor)
-            if i < 0:
-                if t in c:
-                    n_need = step_tools.count(t)
-                    fails.append(f"{fn}: SOP step {idx} names {t}, but the prose does not mention it "
-                                 f"again in steps order (this workflow uses it at {n_need} step(s); "
-                                 "name it once per step, in order)")
-                else:
-                    fails.append(f"{fn}: SOP doc missing step tool {t}")
-                break
-            cursor = i + len(t)
+        text = str(d.get("title", "")) + "\n" + str(d.get("content", ""))
+        # The course of a workflow is what the solver works out: the document carries purpose,
+        # parties and what each part relies on. Naming the step tools, or numbering steps, turns
+        # it back into a recipe (tool names stay in their own invocation documents).
+        named = sorted({str(s.get("tool")) for s in (wf.get("steps") or [])
+                        if s.get("tool") and str(s.get("tool")) in text})
+        if named:
+            fails.append(f"{fn}: workflow doc names its step tool(s) {named} — tool names belong only to "
+                         "their invocation docs; the workflow doc carries purpose and reliance, not a recipe")
+        hit = STEP_NUMBERING.search(text)
+        if hit:
+            fails.append(f"{fn}: workflow doc numbers its steps via {hit.group(0)!r} — the order must follow "
+                         "from the stated reasons, never be listed")
     for w in sops:
         if w not in wfs:
             fails.append(f"meta.workflow '{w}' is not a workflow of this product")
@@ -568,7 +672,7 @@ def main():
                 fails.append(f"supersession: the retired clause of '{pid}' is declared by {homes} "
                              "— exactly one home, same as every other bearing relation")
 
-    # ---- prerequisite: one-hop carriage, no aggregation, no cross-problem pointers -----
+    # ---- prerequisite: carried by entailment, never stated, no cross-problem pointers ---
     prereq_edges = []            # (owner_id, owner_is_workflow, entry)
     for _pid, _p in sorted(eps.items()):
         for _e in (_p.get("prerequisite") or []):
@@ -584,25 +688,34 @@ def main():
         key = "workflow" if is_workflow else "policy_id"
         return [(fn, d) for fn, d in docs if (d.get("meta") or {}).get(key) == problem_id]
 
-    carriers_per_doc = {}        # fn -> set of owner problem ids whose prerequisites it carries
+    sentences = {fn: _sentences(d.get("content")) for fn, d in docs}
     for owner, owner_is_wf, e in prereq_edges:
-        cond = _nows(e.get("condition"))
-        if not cond:
-            continue
-        where = f"prerequisite of '{owner}' (condition opens {str(e.get('condition'))[:24]!r})"
         own_docs = {fn for fn, _ in _docs_of_problem(owner, owner_is_wf)}
-        homes = [fn for fn, d in docs if cond in _nows(d.get("content"))]
-        if not homes:
-            fails.append(f"{where}: no doc carries this condition — a prerequisite absent from the KB "
-                         "is undiscoverable, and the task that depends on it becomes unsolvable")
-        else:
-            outside = [fn for fn in homes if fn not in own_docs]
-            if outside:
-                fails.append(f"{where}: carried by {outside} which do not belong to the problem it "
-                             "blocks — a prerequisite condition is one-hop law and belongs only to the "
-                             "docs of the problem it gates")
-            for fn in homes:
-                carriers_per_doc.setdefault(fn, set()).add(owner)
+        # The hop is entailed by a principle plus the depended-on rules and the facts; the source's
+        # own sentences for it (condition, policy_source) are never written into the prose —
+        # neither verbatim nor as a close restatement carrying a gating/ordering cue.
+        for field in ("condition", "policy_source"):
+            src = str(e.get(field) or "").strip()
+            if not src:
+                continue
+            where = f"prerequisite of '{owner}' ({field} opens {src[:24]!r})"
+            norm = _nows(src)
+            verbatim = {fn for fn, d in docs if norm in _nows(d.get("content"))}
+            for fn in sorted(verbatim):
+                fails.append(f"{fn}: states the {where} verbatim — a prerequisite is carried by entailment "
+                             "from definitions and principles, never written out")
+            cw = _content_words(src)
+            if len(cw) < 6:
+                continue
+            for fn, _d in docs:
+                if fn in verbatim:
+                    continue
+                for sent in sentences[fn]:
+                    if len(cw & _content_words(sent)) / len(cw) >= NEAR_RESTATE and ORDER_CUE.search(sent):
+                        fails.append(f"{fn}: restates the {where} as an instruction ({sent.strip()[:90]!r}) — "
+                                     "state the governing principle in the document's own terms, never the "
+                                     "condition or an order")
+                        break
         # resolved_by must not leak into the blocked problem's docs as an operational pointer
         rb = str(e.get("resolved_by") or "").strip()
         if rb:
@@ -613,12 +726,6 @@ def main():
                                  "docs of the problem it blocks — the source declares a condition, never "
                                  "a cross-problem instruction; the resolving action belongs to the other "
                                  "problem's own doc")
-    for fn, owners_here in sorted(carriers_per_doc.items()):
-        if len(owners_here) > 1:
-            fails.append(f"{fn}: carries prerequisite conditions of {sorted(owners_here)} — that is a "
-                         "dependency table. The chain must be walked one hop at a time; no doc may let "
-                         "the reader read the whole tree off a list")
-
     # ---- coverage: single-home quantitative keys ---------------------------------------
     claims = {}
     for fn, d in docs:
@@ -673,9 +780,11 @@ def main():
             print("   -", f)
         print("DOCS NOT OK")
         sys.exit(1)
-    print("\n  [PASS] mechanical gates: structure, zero implementation leaks, tool/SOP fidelity, "
-          "non-directory hubs, private compute-binding coverage, single-home quantitative coverage")
-    print("  [MANUAL REQUIRED] normative claims <-> structured source semantic bijection")
+    print("\n  [PASS] mechanical gates: structure, zero implementation leaks, tool fidelity, one implicit "
+          "workflow doc each, non-directory hubs, private compute-binding coverage, single-home quantitative "
+          "coverage, no stated prerequisites or scaffolding, no copied or templated wording")
+    print("  [MANUAL REQUIRED] normative claims <-> structured source semantic bijection; every dependency and "
+          "order entailed at the source's strength yet stated nowhere")
     print("DOCS OK")
     sys.exit(0)
 

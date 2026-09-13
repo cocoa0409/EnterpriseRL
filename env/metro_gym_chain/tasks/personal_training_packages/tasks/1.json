@@ -1,0 +1,909 @@
+{
+    "frozen_time": "2025-09-10 14:00:00 America/New_York",
+    "design_rationale": "WHY THIS IS A GOOD TEST: the surface goal ('activate the Elite Specialty Coaching package I applied for') never names sessions_granted, forfeited_sessions or closed_date; the agent must read pt_ext_purchase_pricing's rule to learn that activation is blocked while the member's open-package count (including the application itself) exceeds max_per_customer, discover that OLD_PTH is stale per pt_package_expiration_policy, and resolve that chain (lapse then archive) before activation's own signing-bonus calculation is correct at handling time. This is long (lapse -> archive -> activate is a strict 3-deep chain, each link's resolution changing what the next link may legally do) and broad (pt_ext_lapse_forfeit reads membership CPARAM for its grace credit, pt_ext_archive_closed reads membership CFIELD for its tenure check, pt_ext_purchase_pricing reads membership CPARAM again for its signing bonus; history reconciliation over 8 pre-existing pt_session_redeemed rows on the stale package). SCOPE CLAIMED: this task claims the whole chain rooted at pt_ext_purchase_pricing -- pt_ext_archive_closed and pt_ext_lapse_forfeit as its transitive prerequisites -- disjoint from task 0's workflow and its four policies (pt_ext_late_cancel_fee, pt_ext_refund, pt_ext_bonus_loyalty, pt_ext_trainer_reassignment), which govern pt_session_cancelled_late/pt_package_refunded/pt_bonus_session_granted/pt_trainer_reassigned exclusively; this task governs pt_package_lapsed/pt_package_expired/pt_package_archived/pt_package_activated exclusively. No tool, policy or event type is shared between the two tasks. BASE-INVARIANT CARD: pt_package_expiration_policy's expiration_window_elapsed eligibility (applies_to pt_package_lapsed) anchors on OLD_PTH's own opened_date=2025-02-02 with duration_source=expiration_window_days=180 (20-Session Performance Pack), relation not_before, boundary inclusive: 2025-02-02+180d=2025-08-01; frozen_time date 2025-09-10 is well past that boundary -- satisfied (a case at 2025-08-01 exactly would still pass since the boundary is inclusive; a case at 2025-07-31 would fail). pt_agg_multi_holding's cap (max_per_customer=2) is confirmed violated at the opening: OLD_PTH (active), CUR_PTH (active) and NEW_PTH (applied) are all non-closed, three open holdings against a cap of 2 -- this is the world fact this task's extended eligibility (activation must not leave the count over max_per_customer) reads. pt_specialty_membership_gating's purchase_requires_qualifying_membership is confirmed satisfied (membership active at Black Card All-Access, rank 6 >= minimum_membership_tier_rank 4 for Elite Specialty Coaching), though this gate formally applies to pt_package_purchased, which already happened before this call (NEW_PTH was seeded as applied). WORLD ROW LOAD-BEARING ROLES: the 8 pre-existing pt_session_redeemed rows on OLD_PTH explain why its sessions_remaining reads 12 rather than 20 (8 consumed of 20 included); CUR_PTH exists purely to make the open-package count exceed the cap of 2 at the opening (delete it and the count would only be 2 even before archiving OLD_PTH, and the cap prerequisite would already be satisfied vacuously -- CUR_PTH is therefore load-bearing on the prerequisite's own unresolved-at-opening status, not on any compute value). The active membership (Black Card All-Access, personal_training_discount_pct=15) is load-bearing on two independent computations: it supplies pt_ext_lapse_forfeit's grace credit (int(12*15/100)=1, forfeiting 11 instead of 12) and pt_ext_purchase_pricing's signing bonus (15>=10 threshold, +2 sessions, granting 22 instead of 20); removing the membership row would change both. Membership tenure (200 days, opened 2025-02-22) comfortably clears pt_ext_archive_closed's own min_membership_age_for_backdate_days=30 threshold, making established_membership genuinely true and therefore genuinely load-bearing: forcing the membership factor off would flip backdate_ok false and change closed_date from 2025-08-01 to frozen_time's own date. The not_backdatable branch itself stays untriggered in this world -- the required untriggered branch on that key computation. BUSINESS-OBJECT CARD: OLD_PTH is the sole target of the lapse and archive writes, correlated throughout by pt_holding_id; NEW_PTH is the sole target of the activation write; CUR_PTH is never touched by any gold write, distinguishable from OLD_PTH by its own pt_holding_id and its unrelated variant/history. PROBLEM-TREE CARD: root_problem=pt_ext_purchase_pricing (the customer's surface request -- activate the applied package). Two prerequisites, chained: (1) pt_ext_archive_closed, kind=state_gate, gate=pt_agg_multi_holding.max_per_customer -- unresolved at frozen_time because OLD_PTH, CUR_PTH and NEW_PTH together are 3 non-closed holdings against a cap of 2; resolved by archive_pt_package_1350ea96, which closes OLD_PTH and brings the count to 2. (2) pt_ext_lapse_forfeit, kind=value_input (a prerequisite of pt_ext_archive_closed, transitively of the root), gate=result -- unresolved at frozen_time because OLD_PTH's status is still 'active' rather than 'expired', so pt_ext_archive_closed's own forfeiture_recorded binding reads false and its result binding would compute frozen_time's date (2025-09-10) rather than OLD_PTH's own expiration_date (2025-08-01); resolved by lapse_expire_package_bc252d9e. Since this is a strict chain (not a fan-out), resolution_order is unique: lapse, then archive, then activate -- there is no second valid ordering to prove equivalent. NO_USER_HINT: user_scenario (below) never names a lapse, an archive, a session cap, or any prerequisite; Marcus only ever states his own situation, and mentions the old Performance Pack only as a forgotten, unrelated fact when asked, never as something he thinks needs fixing. TOOLS_DO_NOT_BLOCK: neither lapse_expire_package_bc252d9e nor archive_pt_package_1350ea96 nor activate_pt_package_46fb321d checks any precondition in task_tools.py -- each simply looks up the holding by id and writes; an agent that called activate_pt_package_46fb321d before resolving either prerequisite would still get a normal confirmation string back, just with a lower, wrong sessions_granted computed at the wrong handling time and OLD_PTH left open, which only the terminal-hash comparison catches. STANDARD SOLUTION: locate and verify Marcus; read his packages, history and membership; recognize from pt_package_expiration_policy that OLD_PTH has lapsed and lapse it; recognize from pt_ext_purchase_pricing's rule that the open-package count (OLD_PTH+CUR_PTH+NEW_PTH=3) exceeds the cap and archive OLD_PTH; then activate NEW_PTH with the handling-time-correct sessions_granted and expiration_date. VERIFICATION (executed by hand against this exact seed, reproduced here): lapse -- current_remaining=12, membership_pt_disc=15, grace_credit=int(12*15/100)=1, forfeited=max(0,12-1)=11. archive -- forfeiture_recorded=true (status now expired), backdate_ok=true, not_backdatable=false, result=OLD_PTH's own expiration_date=2025-08-01. activate -- sessions_included=20 (Elite), is_unlimited=false, membership_active=true, membership_pt_disc=15, threshold=10, qualifies_bonus=(true and 15>=10)=true, does_not_qualify=false, bonus_sessions=2, result=20+2=22; expiration_date=NEW_PTH's own opened_date (2025-09-07) + expiration_window_days=180 = 2026-03-06. Skip-lapse sensitivity on archive: with lapse skipped, current_status stays 'active', forfeiture_recorded=false, long_tenured=false (tenure 200<365), backdate_ok=false, not_backdatable=true, result=frozen_time's date 2025-09-10, not 2025-08-01 -- confirming the value_input edge is load-bearing. DRAFT RECOMPUTATION FROM VISIBLE CONTEXT ONLY: reading only the published rule prose, the tool schemas and Marcus's own lines (masking compute/expected/GT), the same three numbers are re-derivable: the chain is stated in general prose reachable from each policy's own rule field once rendered, the read tools return the same rows, and no second candidate action or object exists in this world -- agreement confirmed.",
+    "user_scenario": "Marcus Webb calls sounding upbeat and ready to get going. He's been a Black Card member for years and says he wants to activate the Elite Specialty Coaching package he applied for -- he signed up for it a few days ago but it never went through, so he'd like it finished today. He's happy for the representative to look at his account and set everything up; he doesn't need to do anything himself. If asked to verify who he is, he gives his mobile number, 5555550233, and, if asked for a second detail, his date of birth, 1979-11-02 (November 2nd, 1979); he doesn't offer his email or photo id unless specifically asked for those instead. If asked whether he currently holds any other personal-training package, he mentions, a little sheepishly, that he thinks he still has an old Performance Pack on his account from earlier in the year, but he hasn't been in for a session on it in months -- he'd honestly forgotten about it until asked. If asked who he'd like as his trainer for the new package, he says Elena Cho -- that's who he requested when he first signed up. He doesn't ask about his membership or bring up any billing detail beyond wanting the new package activated; he has no opinion on how the old package gets handled and doesn't ask about it further. Once the representative tells him the new package is active, he thanks them and says that's everything -- he doesn't ask for a receipt to be sent anywhere, doesn't bring up any other topic, and ends the call satisfied.",
+    "solvability_contract": {
+        "request_binding_version": 1,
+        "request_alignment": [
+            {
+                "claim": "Marcus wants his previously applied Elite Specialty Coaching package activated, with the representative handling everything.",
+                "evidence": [
+                    "user_scenario:he wants to activate the Elite Specialty Coaching package he applied for -- he signed up for it a few days ago but it never went through, so he'd like it finished today",
+                    "user_scenario:He's happy for the representative to look at his account and set everything up; he doesn't need to do anything himself."
+                ]
+            }
+        ],
+        "gold_actions": [
+            {
+                "step": 7,
+                "business_effect": "transitions 5ecca50a-ba1f-4f48-b41b-7e48b27c367e to expired and forfeits its unused sessions net of a loyalty grace credit",
+                "request_binding": {
+                    "action_semantics": "pt_package_expiration_policy's own time eligibility, read against OLD_PTH's opened_date and frozen_time, shows the package has already lapsed; this is discovered from policy and the world, not from anything Marcus asks for",
+                    "intent_source": {
+                        "kind": "initial_state",
+                        "evidence": [
+                            "initial_state.pt_holdings.5ecca50a-ba1f-4f48-b41b-7e48b27c367e.opened_date",
+                            "initial_state.pt_holdings.5ecca50a-ba1f-4f48-b41b-7e48b27c367e.status"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "a package whose expiration_window_days has already elapsed while still showing an open status uniquely identifies it as due to be lapsed, not archived or activated",
+                        "evidence": [
+                            "initial_state.pt_holdings.5ecca50a-ba1f-4f48-b41b-7e48b27c367e.opened_date"
+                        ],
+                        "action_arg": "pt_holding_id",
+                        "value": "5ecca50a-ba1f-4f48-b41b-7e48b27c367e"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "performed_by_this_tool",
+                    "fact": "the lapse and forfeiture are recorded on the spot by this call",
+                    "evidence": [
+                        "initial_state.pt_holdings.5ecca50a-ba1f-4f48-b41b-7e48b27c367e"
+                    ]
+                },
+                "requires_external_wait": false,
+                "zero_wait_proof": "lapsing a package whose window has already elapsed is a same-turn write; the elapsed-window fact and the membership grace-credit input are both already in initial_state at the start of the call",
+                "base_preconditions": [
+                    {
+                        "policy_id": "pt_package_expiration_policy",
+                        "eligibility_id": "expiration_window_elapsed",
+                        "condition": "A package lapses and its remaining sessions are forfeited once frozen_time is not before opened_date (the date the package was purchased) plus expiration_window_days calendar days, counted as full calendar days from opened_date with no partial-day rounding.",
+                        "evidence": [
+                            "frozen_time",
+                            "initial_state.pt_holdings.5ecca50a-ba1f-4f48-b41b-7e48b27c367e.opened_date",
+                            "initial_state.pt_holdings.5ecca50a-ba1f-4f48-b41b-7e48b27c367e.pt_holding_id"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "pt_holdings.pt_holding_id",
+                                "source": "initial_state.pt_holdings.5ecca50a-ba1f-4f48-b41b-7e48b27c367e.pt_holding_id",
+                                "action_arg": "pt_holding_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "pt_agg_session_pool",
+                        "eligibility_id": "policy_scope",
+                        "condition": "pt_agg_session_pool governs which package a forfeiture is drawn from when multiple packages are open; the forfeiture here is fixed to OLD_PTH by policy, not drawn from a pool",
+                        "evidence": [
+                            "initial_state.pt_holdings.5ecca50a-ba1f-4f48-b41b-7e48b27c367e"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 9,
+                "business_effect": "transitions 5ecca50a-ba1f-4f48-b41b-7e48b27c367e to closed with closed_date backdated to its own expiration_date",
+                "request_binding": {
+                    "action_semantics": "pt_ext_purchase_pricing's rule requires the member's open-package count not to exceed max_per_customer before the applied package may be activated; with OLD_PTH, CUR_PTH and NEW_PTH all non-closed the count is 3, over the cap of 2, so OLD_PTH (now expired) must be archived",
+                    "intent_source": {
+                        "kind": "prior_step",
+                        "evidence": [
+                            "prior_step:7"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "a package already transitioned to expired by the prior step uniquely identifies it as ready for administrative archival",
+                        "evidence": [
+                            "prior_step:7"
+                        ],
+                        "action_arg": "pt_holding_id",
+                        "value": "5ecca50a-ba1f-4f48-b41b-7e48b27c367e"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "established_by_prior_tool",
+                    "fact": "OLD_PTH's expired status, established by step 7's lapse",
+                    "evidence": [
+                        "prior_step:7"
+                    ]
+                },
+                "requires_external_wait": false,
+                "zero_wait_proof": "archiving a package already transitioned to expired earlier in this same turn is a same-turn write; no external event or delay is required",
+                "base_preconditions": [
+                    {
+                        "policy_id": "pt_package_expiration_policy",
+                        "eligibility_id": "policy_scope",
+                        "condition": "pt_package_expiration_policy also governs pt_package_archived; that event carries no structured eligibility gate of its own beyond the general administrative-archival scope",
+                        "evidence": [
+                            "prior_step:7"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 11,
+                "business_effect": "transitions 2a3e7d87-9d28-4139-aea2-32613aa4f980 to active with the computed session balance and expiration date",
+                "request_binding": {
+                    "action_semantics": "Marcus's own request to activate the Elite Specialty Coaching package he already applied for uniquely selects this activation write over any other package action",
+                    "intent_source": {
+                        "kind": "user_scenario",
+                        "evidence": [
+                            "user_scenario:he wants to activate the Elite Specialty Coaching package he applied for -- he signed up for it a few days ago but it never went through, so he'd like it finished today"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "he wants to activate the Elite Specialty Coaching package he applied for",
+                        "evidence": [
+                            "user_scenario:he wants to activate the Elite Specialty Coaching package he applied for -- he signed up for it a few days ago but it never went through, so he'd like it finished today"
+                        ],
+                        "action_arg": "pt_holding_id",
+                        "value": "2a3e7d87-9d28-4139-aea2-32613aa4f980"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "established_by_prior_tool",
+                    "fact": "the open-package count falling back within max_per_customer, established by step 9's archival of OLD_PTH",
+                    "evidence": [
+                        "prior_step:9"
+                    ]
+                },
+                "requires_external_wait": false,
+                "zero_wait_proof": "activating an already-applied package immediately after the cap is cleared earlier in this same turn is a same-turn write; every input to sessions_granted (the tier's own sessions_included and the active membership's discount) is already reachable earlier in this same turn",
+                "base_preconditions": [
+                    {
+                        "policy_id": "pt_tier_pricing",
+                        "eligibility_id": "policy_scope",
+                        "condition": "pt_tier_pricing governs the sessions credited and the expiration date set at activation, with no structured eligibility gate of its own beyond the general tier-pricing scope",
+                        "evidence": [
+                            "initial_state.pt_holdings.2a3e7d87-9d28-4139-aea2-32613aa4f980.variant_name"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    }
+                ]
+            }
+        ],
+        "temporal_feasibility": [
+            {
+                "step": 7,
+                "policy_id": "pt_package_expiration_policy",
+                "eligibility_id": "expiration_window_elapsed",
+                "condition": "A package lapses and its remaining sessions are forfeited once frozen_time is not before opened_date (the date the package was purchased) plus expiration_window_days calendar days, counted as full calendar days from opened_date with no partial-day rounding.",
+                "temporal_basis": {
+                    "clock": "frozen_time",
+                    "anchor_event": "the package was purchased",
+                    "anchor_source": "pt_holdings.opened_date",
+                    "relation": "not_before",
+                    "duration_source": "variants.expiration_window_days",
+                    "unit": "calendar_days",
+                    "counting_rule": "counted as full calendar days from opened_date with no partial-day rounding",
+                    "boundary": "inclusive"
+                },
+                "as_of": "frozen_time",
+                "evidence": [
+                    "frozen_time",
+                    "initial_state.pt_holdings.5ecca50a-ba1f-4f48-b41b-7e48b27c367e.opened_date"
+                ],
+                "satisfied": true,
+                "boundary_check": {
+                    "just_before": "at 2025-07-31 (one day short of opened_date+180=2025-08-01) the package would not yet have lapsed",
+                    "at_boundary": "at 2025-08-01 exactly (opened_date+180, inclusive) the package has just lapsed; this task's frozen_time of 2025-09-10 is well past that boundary"
+                }
+            }
+        ],
+        "required_user_inputs": [
+            {
+                "information": "the reference number/phone/dob needed to locate and verify Marcus",
+                "source": "user_scenario:he gives his mobile number, 5555550233, and, if asked for a second detail, his date of birth, 1979-11-02 (November 2nd, 1979)"
+            },
+            {
+                "information": "which package he wants activated",
+                "source": "user_scenario:he wants to activate the Elite Specialty Coaching package he applied for"
+            },
+            {
+                "information": "whether he holds any other personal-training package",
+                "source": "user_scenario:he thinks he still has an old Performance Pack on his account from earlier in the year, but he hasn't been in for a session on it in months"
+            },
+            {
+                "information": "his preferred trainer for the new package",
+                "source": "user_scenario:he says Elena Cho -- that's who he requested when he first signed up"
+            }
+        ],
+        "seed_consistency": [
+            {
+                "row": "initial_state.pt_holdings.5ecca50a-ba1f-4f48-b41b-7e48b27c367e",
+                "policy_id": "pt_package_expiration_policy",
+                "check": "status=active, opened_date=2025-02-02 plus expiration_window_days=180 (20-Session Performance Pack) is 2025-08-01, well before frozen_time 2025-09-10, so the package has lapsed but its status was never administratively updated; sessions_remaining=12 equals sessions_included(20) minus the 8 pre-existing redemptions, consistent with the ledger",
+                "evidence": [
+                    "initial_state.pt_holdings.5ecca50a-ba1f-4f48-b41b-7e48b27c367e.status",
+                    "initial_state.pt_holdings.5ecca50a-ba1f-4f48-b41b-7e48b27c367e.opened_date",
+                    "initial_state.pt_holdings.5ecca50a-ba1f-4f48-b41b-7e48b27c367e.sessions_remaining"
+                ]
+            },
+            {
+                "row": "initial_state.pt_holdings.ad0c9bd4-4426-43df-bb16-25730a26cc84",
+                "policy_id": "pt_tier_pricing",
+                "check": "a perfectly ordinary, unrelated active package on a different tier, never touched by any gold action; its presence is what pushes the open-package count over max_per_customer alongside OLD_PTH and NEW_PTH",
+                "evidence": [
+                    "initial_state.pt_holdings.ad0c9bd4-4426-43df-bb16-25730a26cc84.status",
+                    "initial_state.pt_holdings.ad0c9bd4-4426-43df-bb16-25730a26cc84.variant_name"
+                ]
+            },
+            {
+                "row": "initial_state.pt_holdings.2a3e7d87-9d28-4139-aea2-32613aa4f980",
+                "policy_id": "pt_specialty_membership_gating",
+                "check": "status=applied (the purchase already happened before this call but activation never completed), variant_name=Elite Specialty Coaching, requiring membership active at rank>=4, satisfied by the Black Card All-Access membership on file",
+                "evidence": [
+                    "initial_state.pt_holdings.2a3e7d87-9d28-4139-aea2-32613aa4f980.status",
+                    "initial_state.pt_holdings.2a3e7d87-9d28-4139-aea2-32613aa4f980.variant_name"
+                ]
+            },
+            {
+                "row": "initial_state.membership_holdings.5544d755-c824-4b84-b7d8-0f9eeeaac448",
+                "policy_id": "pt_specialty_membership_gating",
+                "check": "status=active at Black Card All-Access (rank 6), satisfying Elite Specialty Coaching's minimum_membership_tier_rank=4, and supplying the genuine personal_training_discount_pct=15 cross-category factor read by pt_ext_lapse_forfeit and pt_ext_purchase_pricing alike",
+                "evidence": [
+                    "initial_state.membership_holdings.5544d755-c824-4b84-b7d8-0f9eeeaac448.status",
+                    "initial_state.membership_holdings.5544d755-c824-4b84-b7d8-0f9eeeaac448.variant_name"
+                ]
+            },
+            {
+                "row": "initial_state.pt_events.75b2ebcf-b4f1-4f54-a310-5641389494c1",
+                "policy_id": "pt_session_redemption_eligibility",
+                "check": "one of 8 pre-existing redemptions against OLD_PTH, recorded while the package was active, sessions_delta=-1, chronologically ordered and consistent with sessions_remaining=12 (20 included minus 8 consumed)",
+                "evidence": [
+                    "initial_state.pt_events.75b2ebcf-b4f1-4f54-a310-5641389494c1.event_timestamp",
+                    "initial_state.pt_events.75b2ebcf-b4f1-4f54-a310-5641389494c1.sessions_delta"
+                ]
+            },
+            {
+                "row": "initial_state.pt_events.c5ed7968-047c-4ea4-b357-bea2bf1caab4",
+                "policy_id": "pt_session_redemption_eligibility",
+                "check": "one of 8 pre-existing redemptions against OLD_PTH, recorded while the package was active, sessions_delta=-1, chronologically ordered and consistent with sessions_remaining=12 (20 included minus 8 consumed)",
+                "evidence": [
+                    "initial_state.pt_events.c5ed7968-047c-4ea4-b357-bea2bf1caab4.event_timestamp",
+                    "initial_state.pt_events.c5ed7968-047c-4ea4-b357-bea2bf1caab4.sessions_delta"
+                ]
+            },
+            {
+                "row": "initial_state.pt_events.c799d8fd-f84e-4873-8a8c-b1ef1f74b5b7",
+                "policy_id": "pt_session_redemption_eligibility",
+                "check": "one of 8 pre-existing redemptions against OLD_PTH, recorded while the package was active, sessions_delta=-1, chronologically ordered and consistent with sessions_remaining=12 (20 included minus 8 consumed)",
+                "evidence": [
+                    "initial_state.pt_events.c799d8fd-f84e-4873-8a8c-b1ef1f74b5b7.event_timestamp",
+                    "initial_state.pt_events.c799d8fd-f84e-4873-8a8c-b1ef1f74b5b7.sessions_delta"
+                ]
+            },
+            {
+                "row": "initial_state.pt_events.386ab8de-e661-4b3f-8a33-f5b96e68e6a7",
+                "policy_id": "pt_session_redemption_eligibility",
+                "check": "one of 8 pre-existing redemptions against OLD_PTH, recorded while the package was active, sessions_delta=-1, chronologically ordered and consistent with sessions_remaining=12 (20 included minus 8 consumed)",
+                "evidence": [
+                    "initial_state.pt_events.386ab8de-e661-4b3f-8a33-f5b96e68e6a7.event_timestamp",
+                    "initial_state.pt_events.386ab8de-e661-4b3f-8a33-f5b96e68e6a7.sessions_delta"
+                ]
+            },
+            {
+                "row": "initial_state.pt_events.2f59dbf8-803e-4bf4-aeaf-b3190325b5d6",
+                "policy_id": "pt_session_redemption_eligibility",
+                "check": "one of 8 pre-existing redemptions against OLD_PTH, recorded while the package was active, sessions_delta=-1, chronologically ordered and consistent with sessions_remaining=12 (20 included minus 8 consumed)",
+                "evidence": [
+                    "initial_state.pt_events.2f59dbf8-803e-4bf4-aeaf-b3190325b5d6.event_timestamp",
+                    "initial_state.pt_events.2f59dbf8-803e-4bf4-aeaf-b3190325b5d6.sessions_delta"
+                ]
+            },
+            {
+                "row": "initial_state.pt_events.551f7ead-4960-4469-96f5-15a7faab8ef9",
+                "policy_id": "pt_session_redemption_eligibility",
+                "check": "one of 8 pre-existing redemptions against OLD_PTH, recorded while the package was active, sessions_delta=-1, chronologically ordered and consistent with sessions_remaining=12 (20 included minus 8 consumed)",
+                "evidence": [
+                    "initial_state.pt_events.551f7ead-4960-4469-96f5-15a7faab8ef9.event_timestamp",
+                    "initial_state.pt_events.551f7ead-4960-4469-96f5-15a7faab8ef9.sessions_delta"
+                ]
+            },
+            {
+                "row": "initial_state.pt_events.6a55adb2-2ada-4f33-94af-174275267fa3",
+                "policy_id": "pt_session_redemption_eligibility",
+                "check": "one of 8 pre-existing redemptions against OLD_PTH, recorded while the package was active, sessions_delta=-1, chronologically ordered and consistent with sessions_remaining=12 (20 included minus 8 consumed)",
+                "evidence": [
+                    "initial_state.pt_events.6a55adb2-2ada-4f33-94af-174275267fa3.event_timestamp",
+                    "initial_state.pt_events.6a55adb2-2ada-4f33-94af-174275267fa3.sessions_delta"
+                ]
+            },
+            {
+                "row": "initial_state.pt_events.917951fd-7106-4609-831f-daef8df99fc3",
+                "policy_id": "pt_session_redemption_eligibility",
+                "check": "one of 8 pre-existing redemptions against OLD_PTH, recorded while the package was active, sessions_delta=-1, chronologically ordered and consistent with sessions_remaining=12 (20 included minus 8 consumed)",
+                "evidence": [
+                    "initial_state.pt_events.917951fd-7106-4609-831f-daef8df99fc3.event_timestamp",
+                    "initial_state.pt_events.917951fd-7106-4609-831f-daef8df99fc3.sessions_delta"
+                ]
+            }
+        ]
+    },
+    "initial_state": {
+        "customers": {
+            "3e3dee32-3717-4bd7-ad1d-f12f41eb0ba2": {
+                "customer_id": "3e3dee32-3717-4bd7-ad1d-f12f41eb0ba2",
+                "full_name": "Marcus Webb",
+                "phone_number": "5555550233",
+                "email": "marcus.webb.pt@example.com",
+                "date_of_birth": "1979-11-02",
+                "photo_id_last4": "5521",
+                "member_since_date": "2016-06-01",
+                "home_club_id": ""
+            }
+        },
+        "membership_holdings": {
+            "5544d755-c824-4b84-b7d8-0f9eeeaac448": {
+                "membership_id": "5544d755-c824-4b84-b7d8-0f9eeeaac448",
+                "customer_id": "3e3dee32-3717-4bd7-ad1d-f12f41eb0ba2",
+                "variant_name": "Black Card All-Access",
+                "status": "active",
+                "home_club_id": "",
+                "opened_date": "2025-02-22",
+                "closed_date": "",
+                "dues_balance": 0.0,
+                "guest_passes_remaining": 4,
+                "freeze_start_date": "",
+                "freeze_end_date": "",
+                "past_due_since_date": ""
+            }
+        },
+        "pt_holdings": {
+            "5ecca50a-ba1f-4f48-b41b-7e48b27c367e": {
+                "pt_holding_id": "5ecca50a-ba1f-4f48-b41b-7e48b27c367e",
+                "customer_id": "3e3dee32-3717-4bd7-ad1d-f12f41eb0ba2",
+                "variant_name": "20-Session Performance Pack",
+                "status": "active",
+                "opened_date": "2025-02-02",
+                "closed_date": "",
+                "expiration_date": "2025-08-01",
+                "sessions_remaining": 12,
+                "assigned_trainer_name": "Renee Frost"
+            },
+            "ad0c9bd4-4426-43df-bb16-25730a26cc84": {
+                "pt_holding_id": "ad0c9bd4-4426-43df-bb16-25730a26cc84",
+                "customer_id": "3e3dee32-3717-4bd7-ad1d-f12f41eb0ba2",
+                "variant_name": "Single Session Pack",
+                "status": "active",
+                "opened_date": "2025-09-05",
+                "closed_date": "",
+                "expiration_date": "2025-10-05",
+                "sessions_remaining": 1,
+                "assigned_trainer_name": "Devon Shaw"
+            },
+            "2a3e7d87-9d28-4139-aea2-32613aa4f980": {
+                "pt_holding_id": "2a3e7d87-9d28-4139-aea2-32613aa4f980",
+                "customer_id": "3e3dee32-3717-4bd7-ad1d-f12f41eb0ba2",
+                "variant_name": "Elite Specialty Coaching",
+                "status": "applied",
+                "opened_date": "2025-09-07",
+                "closed_date": "",
+                "expiration_date": "",
+                "sessions_remaining": 0,
+                "assigned_trainer_name": "Elena Cho"
+            }
+        },
+        "pt_events": {
+            "75b2ebcf-b4f1-4f54-a310-5641389494c1": {
+                "event_id": "75b2ebcf-b4f1-4f54-a310-5641389494c1",
+                "pt_holding_id": "5ecca50a-ba1f-4f48-b41b-7e48b27c367e",
+                "customer_id": "3e3dee32-3717-4bd7-ad1d-f12f41eb0ba2",
+                "event_type": "pt_session_redeemed",
+                "event_timestamp": "2025-02-07 10:00:00 America/New_York",
+                "sessions_delta": -1,
+                "amount_usd": 0.0,
+                "session_type": "standard",
+                "trainer_name": "Renee Frost"
+            },
+            "c5ed7968-047c-4ea4-b357-bea2bf1caab4": {
+                "event_id": "c5ed7968-047c-4ea4-b357-bea2bf1caab4",
+                "pt_holding_id": "5ecca50a-ba1f-4f48-b41b-7e48b27c367e",
+                "customer_id": "3e3dee32-3717-4bd7-ad1d-f12f41eb0ba2",
+                "event_type": "pt_session_redeemed",
+                "event_timestamp": "2025-02-19 10:00:00 America/New_York",
+                "sessions_delta": -1,
+                "amount_usd": 0.0,
+                "session_type": "standard",
+                "trainer_name": "Renee Frost"
+            },
+            "c799d8fd-f84e-4873-8a8c-b1ef1f74b5b7": {
+                "event_id": "c799d8fd-f84e-4873-8a8c-b1ef1f74b5b7",
+                "pt_holding_id": "5ecca50a-ba1f-4f48-b41b-7e48b27c367e",
+                "customer_id": "3e3dee32-3717-4bd7-ad1d-f12f41eb0ba2",
+                "event_type": "pt_session_redeemed",
+                "event_timestamp": "2025-03-03 10:00:00 America/New_York",
+                "sessions_delta": -1,
+                "amount_usd": 0.0,
+                "session_type": "standard",
+                "trainer_name": "Renee Frost"
+            },
+            "386ab8de-e661-4b3f-8a33-f5b96e68e6a7": {
+                "event_id": "386ab8de-e661-4b3f-8a33-f5b96e68e6a7",
+                "pt_holding_id": "5ecca50a-ba1f-4f48-b41b-7e48b27c367e",
+                "customer_id": "3e3dee32-3717-4bd7-ad1d-f12f41eb0ba2",
+                "event_type": "pt_session_redeemed",
+                "event_timestamp": "2025-03-15 10:00:00 America/New_York",
+                "sessions_delta": -1,
+                "amount_usd": 0.0,
+                "session_type": "standard",
+                "trainer_name": "Renee Frost"
+            },
+            "2f59dbf8-803e-4bf4-aeaf-b3190325b5d6": {
+                "event_id": "2f59dbf8-803e-4bf4-aeaf-b3190325b5d6",
+                "pt_holding_id": "5ecca50a-ba1f-4f48-b41b-7e48b27c367e",
+                "customer_id": "3e3dee32-3717-4bd7-ad1d-f12f41eb0ba2",
+                "event_type": "pt_session_redeemed",
+                "event_timestamp": "2025-03-27 10:00:00 America/New_York",
+                "sessions_delta": -1,
+                "amount_usd": 0.0,
+                "session_type": "standard",
+                "trainer_name": "Renee Frost"
+            },
+            "551f7ead-4960-4469-96f5-15a7faab8ef9": {
+                "event_id": "551f7ead-4960-4469-96f5-15a7faab8ef9",
+                "pt_holding_id": "5ecca50a-ba1f-4f48-b41b-7e48b27c367e",
+                "customer_id": "3e3dee32-3717-4bd7-ad1d-f12f41eb0ba2",
+                "event_type": "pt_session_redeemed",
+                "event_timestamp": "2025-04-08 10:00:00 America/New_York",
+                "sessions_delta": -1,
+                "amount_usd": 0.0,
+                "session_type": "standard",
+                "trainer_name": "Renee Frost"
+            },
+            "6a55adb2-2ada-4f33-94af-174275267fa3": {
+                "event_id": "6a55adb2-2ada-4f33-94af-174275267fa3",
+                "pt_holding_id": "5ecca50a-ba1f-4f48-b41b-7e48b27c367e",
+                "customer_id": "3e3dee32-3717-4bd7-ad1d-f12f41eb0ba2",
+                "event_type": "pt_session_redeemed",
+                "event_timestamp": "2025-04-20 10:00:00 America/New_York",
+                "sessions_delta": -1,
+                "amount_usd": 0.0,
+                "session_type": "standard",
+                "trainer_name": "Renee Frost"
+            },
+            "917951fd-7106-4609-831f-daef8df99fc3": {
+                "event_id": "917951fd-7106-4609-831f-daef8df99fc3",
+                "pt_holding_id": "5ecca50a-ba1f-4f48-b41b-7e48b27c367e",
+                "customer_id": "3e3dee32-3717-4bd7-ad1d-f12f41eb0ba2",
+                "event_type": "pt_session_redeemed",
+                "event_timestamp": "2025-05-02 10:00:00 America/New_York",
+                "sessions_delta": -1,
+                "amount_usd": 0.0,
+                "session_type": "standard",
+                "trainer_name": "Renee Frost"
+            }
+        }
+    },
+    "db_closure": {
+        "pt_holdings": {
+            "5ecca50a-ba1f-4f48-b41b-7e48b27c367e": {
+                "pt_holding_id": "5ecca50a-ba1f-4f48-b41b-7e48b27c367e",
+                "customer_id": "3e3dee32-3717-4bd7-ad1d-f12f41eb0ba2",
+                "variant_name": "20-Session Performance Pack",
+                "status": "active",
+                "opened_date": "2025-02-02",
+                "closed_date": "",
+                "expiration_date": "2025-08-01",
+                "sessions_remaining": 12,
+                "assigned_trainer_name": "Renee Frost"
+            },
+            "2a3e7d87-9d28-4139-aea2-32613aa4f980": {
+                "pt_holding_id": "2a3e7d87-9d28-4139-aea2-32613aa4f980",
+                "customer_id": "3e3dee32-3717-4bd7-ad1d-f12f41eb0ba2",
+                "variant_name": "Elite Specialty Coaching",
+                "status": "applied",
+                "opened_date": "2025-09-07",
+                "closed_date": "",
+                "expiration_date": "",
+                "sessions_remaining": 0,
+                "assigned_trainer_name": "Elena Cho"
+            },
+            "ad0c9bd4-4426-43df-bb16-25730a26cc84": {
+                "pt_holding_id": "ad0c9bd4-4426-43df-bb16-25730a26cc84",
+                "customer_id": "3e3dee32-3717-4bd7-ad1d-f12f41eb0ba2",
+                "variant_name": "Single Session Pack",
+                "status": "active",
+                "opened_date": "2025-09-05",
+                "closed_date": "",
+                "expiration_date": "2025-10-05",
+                "sessions_remaining": 1,
+                "assigned_trainer_name": "Devon Shaw"
+            }
+        },
+        "pt_events": {
+            "551f7ead-4960-4469-96f5-15a7faab8ef9": {
+                "event_id": "551f7ead-4960-4469-96f5-15a7faab8ef9",
+                "pt_holding_id": "5ecca50a-ba1f-4f48-b41b-7e48b27c367e",
+                "customer_id": "3e3dee32-3717-4bd7-ad1d-f12f41eb0ba2",
+                "event_type": "pt_session_redeemed",
+                "event_timestamp": "2025-04-08 10:00:00 America/New_York",
+                "sessions_delta": -1,
+                "amount_usd": 0.0,
+                "session_type": "standard",
+                "trainer_name": "Renee Frost"
+            },
+            "386ab8de-e661-4b3f-8a33-f5b96e68e6a7": {
+                "event_id": "386ab8de-e661-4b3f-8a33-f5b96e68e6a7",
+                "pt_holding_id": "5ecca50a-ba1f-4f48-b41b-7e48b27c367e",
+                "customer_id": "3e3dee32-3717-4bd7-ad1d-f12f41eb0ba2",
+                "event_type": "pt_session_redeemed",
+                "event_timestamp": "2025-03-15 10:00:00 America/New_York",
+                "sessions_delta": -1,
+                "amount_usd": 0.0,
+                "session_type": "standard",
+                "trainer_name": "Renee Frost"
+            },
+            "6a55adb2-2ada-4f33-94af-174275267fa3": {
+                "event_id": "6a55adb2-2ada-4f33-94af-174275267fa3",
+                "pt_holding_id": "5ecca50a-ba1f-4f48-b41b-7e48b27c367e",
+                "customer_id": "3e3dee32-3717-4bd7-ad1d-f12f41eb0ba2",
+                "event_type": "pt_session_redeemed",
+                "event_timestamp": "2025-04-20 10:00:00 America/New_York",
+                "sessions_delta": -1,
+                "amount_usd": 0.0,
+                "session_type": "standard",
+                "trainer_name": "Renee Frost"
+            },
+            "c5ed7968-047c-4ea4-b357-bea2bf1caab4": {
+                "event_id": "c5ed7968-047c-4ea4-b357-bea2bf1caab4",
+                "pt_holding_id": "5ecca50a-ba1f-4f48-b41b-7e48b27c367e",
+                "customer_id": "3e3dee32-3717-4bd7-ad1d-f12f41eb0ba2",
+                "event_type": "pt_session_redeemed",
+                "event_timestamp": "2025-02-19 10:00:00 America/New_York",
+                "sessions_delta": -1,
+                "amount_usd": 0.0,
+                "session_type": "standard",
+                "trainer_name": "Renee Frost"
+            },
+            "2f59dbf8-803e-4bf4-aeaf-b3190325b5d6": {
+                "event_id": "2f59dbf8-803e-4bf4-aeaf-b3190325b5d6",
+                "pt_holding_id": "5ecca50a-ba1f-4f48-b41b-7e48b27c367e",
+                "customer_id": "3e3dee32-3717-4bd7-ad1d-f12f41eb0ba2",
+                "event_type": "pt_session_redeemed",
+                "event_timestamp": "2025-03-27 10:00:00 America/New_York",
+                "sessions_delta": -1,
+                "amount_usd": 0.0,
+                "session_type": "standard",
+                "trainer_name": "Renee Frost"
+            },
+            "917951fd-7106-4609-831f-daef8df99fc3": {
+                "event_id": "917951fd-7106-4609-831f-daef8df99fc3",
+                "pt_holding_id": "5ecca50a-ba1f-4f48-b41b-7e48b27c367e",
+                "customer_id": "3e3dee32-3717-4bd7-ad1d-f12f41eb0ba2",
+                "event_type": "pt_session_redeemed",
+                "event_timestamp": "2025-05-02 10:00:00 America/New_York",
+                "sessions_delta": -1,
+                "amount_usd": 0.0,
+                "session_type": "standard",
+                "trainer_name": "Renee Frost"
+            },
+            "75b2ebcf-b4f1-4f54-a310-5641389494c1": {
+                "event_id": "75b2ebcf-b4f1-4f54-a310-5641389494c1",
+                "pt_holding_id": "5ecca50a-ba1f-4f48-b41b-7e48b27c367e",
+                "customer_id": "3e3dee32-3717-4bd7-ad1d-f12f41eb0ba2",
+                "event_type": "pt_session_redeemed",
+                "event_timestamp": "2025-02-07 10:00:00 America/New_York",
+                "sessions_delta": -1,
+                "amount_usd": 0.0,
+                "session_type": "standard",
+                "trainer_name": "Renee Frost"
+            },
+            "c799d8fd-f84e-4873-8a8c-b1ef1f74b5b7": {
+                "event_id": "c799d8fd-f84e-4873-8a8c-b1ef1f74b5b7",
+                "pt_holding_id": "5ecca50a-ba1f-4f48-b41b-7e48b27c367e",
+                "customer_id": "3e3dee32-3717-4bd7-ad1d-f12f41eb0ba2",
+                "event_type": "pt_session_redeemed",
+                "event_timestamp": "2025-03-03 10:00:00 America/New_York",
+                "sessions_delta": -1,
+                "amount_usd": 0.0,
+                "session_type": "standard",
+                "trainer_name": "Renee Frost"
+            }
+        },
+        "membership_holdings": {
+            "5544d755-c824-4b84-b7d8-0f9eeeaac448": {
+                "membership_id": "5544d755-c824-4b84-b7d8-0f9eeeaac448",
+                "customer_id": "3e3dee32-3717-4bd7-ad1d-f12f41eb0ba2",
+                "variant_name": "Black Card All-Access",
+                "status": "active",
+                "home_club_id": "",
+                "opened_date": "2025-02-22",
+                "closed_date": "",
+                "dues_balance": 0.0,
+                "guest_passes_remaining": 4,
+                "freeze_start_date": "",
+                "freeze_end_date": "",
+                "past_due_since_date": ""
+            }
+        },
+        "customers": {
+            "3e3dee32-3717-4bd7-ad1d-f12f41eb0ba2": {
+                "customer_id": "3e3dee32-3717-4bd7-ad1d-f12f41eb0ba2",
+                "full_name": "Marcus Webb",
+                "phone_number": "5555550233",
+                "email": "marcus.webb.pt@example.com",
+                "date_of_birth": "1979-11-02",
+                "photo_id_last4": "5521",
+                "member_since_date": "2016-06-01",
+                "home_club_id": ""
+            }
+        }
+    },
+    "db_closure_matches_initial_state": true,
+    "evaluation_criteria": [
+        {
+            "owner": "agent",
+            "tool": "find_customers",
+            "arguments": {
+                "phone_number": "5555550233",
+                "date_of_birth": "1979-11-02"
+            },
+            "objective": "locate Marcus's member profile from his stated phone number and date of birth.",
+            "necessity": "obtains customer_id, the locator every later read and write needs."
+        },
+        {
+            "owner": "agent",
+            "tool": "verify_member_identity",
+            "arguments": {
+                "customer_id": "3e3dee32-3717-4bd7-ad1d-f12f41eb0ba2",
+                "phone_number": "5555550233",
+                "date_of_birth": "1979-11-02"
+            },
+            "objective": "verify Marcus's identity with 2 matching details before any account change.",
+            "necessity": "no write may be made before identity is verified."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_pt_holdings",
+            "arguments": {
+                "customer_id": "3e3dee32-3717-4bd7-ad1d-f12f41eb0ba2"
+            },
+            "objective": "read all of Marcus's personal-training packages: OLD_PTH, CUR_PTH and NEW_PTH, their statuses, dates and session balances.",
+            "necessity": "reveals the stale OLD_PTH, the ordinary CUR_PTH, and the applied-but-not-active NEW_PTH -- the closure needed to discover both prerequisites and the target of activation."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_pt_events",
+            "arguments": {
+                "pt_holding_id": "5ecca50a-ba1f-4f48-b41b-7e48b27c367e"
+            },
+            "objective": "read OLD_PTH's full session ledger.",
+            "necessity": "confirms sessions_remaining=12 is consistent with 8 prior redemptions out of 20 included sessions."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_membership_holdings",
+            "arguments": {
+                "customer_id": "3e3dee32-3717-4bd7-ad1d-f12f41eb0ba2"
+            },
+            "objective": "read Marcus's club membership status and tier.",
+            "necessity": "supplies the membership_active/personal_training_discount_pct factor read by pt_ext_lapse_forfeit, pt_ext_archive_closed and pt_ext_purchase_pricing alike, and confirms pt_specialty_membership_gating's rank requirement."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_corporate_wellness_enrollments",
+            "arguments": {
+                "customer_id": "3e3dee32-3717-4bd7-ad1d-f12f41eb0ba2"
+            },
+            "objective": "check whether Marcus holds any corporate wellness enrollment.",
+            "necessity": "confirms none is on file, ruling out a factor this task's policies do not read for this customer."
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "lapse_expire_package_bc252d9e"
+            },
+            "objective": "unlock the package-lapse tool.",
+            "necessity": "required once before it can be called."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "lapse_expire_package_bc252d9e",
+                "arguments": {
+                    "pt_holding_id": "5ecca50a-ba1f-4f48-b41b-7e48b27c367e",
+                    "forfeited_sessions": 11
+                }
+            },
+            "objective": "lapse OLD_PTH and forfeit its unused sessions net of the loyalty grace credit.",
+            "necessity": "pt_ext_lapse_forfeit's compute uniquely produces forfeited_sessions=11 from current_remaining=12 and the active membership's grace credit; this must land before pt_ext_archive_closed's own compute is correct.",
+            "argument_uniqueness_tracing": {
+                "pt_holding_id": "value=5ecca50a-ba1f-4f48-b41b-7e48b27c367e; basis: the only package on file whose expiration window has already elapsed (initial_state.pt_holdings); uniqueness: CUR_PTH and NEW_PTH are both well within their own windows.",
+                "forfeited_sessions": "value=11; factors: status_active=(F('status')=='active')=true; status_paused=false; status_ok=true; days_open=DAYS(2025-02-02,2025-09-10)=220; window_days=P('expiration_window_days')=180; window_elapsed=(220>=180)=true; current_remaining=F('sessions_remaining')=12; membership_active=EXISTS('membership',status='active')=true; no_membership=false; membership_pt_disc=CPARAM('membership','personal_training_discount_pct',status='active')=15; grace_credit=int(12*15/100)=1; forfeited=MX(0,12-1)=11; ineligible=not(true and true)=false; result=11; any correctly-calculating agent converges on 11."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "archive_pt_package_1350ea96"
+            },
+            "objective": "unlock the package-archive tool.",
+            "necessity": "required once before it can be called."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "archive_pt_package_1350ea96",
+                "arguments": {
+                    "pt_holding_id": "5ecca50a-ba1f-4f48-b41b-7e48b27c367e",
+                    "closed_date": "2025-08-01"
+                }
+            },
+            "objective": "archive OLD_PTH, closing it and freeing its slot against the open-package cap.",
+            "necessity": "pt_ext_archive_closed's compute uniquely produces closed_date=2025-08-01 (OLD_PTH's own expiration_date, since forfeiture_recorded is now true) rather than frozen_time's date; this must land before pt_ext_purchase_pricing's own eligibility is satisfied.",
+            "argument_uniqueness_tracing": {
+                "pt_holding_id": "value=5ecca50a-ba1f-4f48-b41b-7e48b27c367e; basis: the same package just lapsed in the prior step; uniqueness: no second candidate object exists.",
+                "closed_date": "value=2025-08-01; factors: current_status=F('status')='expired' (set by step 7); forfeiture_recorded=(current_status=='expired')=true; membership_active=true; membership_opened=CFIELD('membership','opened_date',status='active')=2025-02-22; membership_tenure_days=DAYS(2025-02-22,2025-09-10)=200; min_tenure_for_backdate=K('min_membership_age_for_backdate_days')=30; established_membership=(true and 200>=30)=true; backdate_ok=(true and true)=true; not_backdatable=not true=false; expiration_date=F('expiration_date')=2025-08-01; result=2025-08-01 (not frozen_time's date, since not_backdatable is false); any correctly-calculating agent converges on 2025-08-01."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "activate_pt_package_46fb321d"
+            },
+            "objective": "unlock the package-activation tool.",
+            "necessity": "required once before it can be called."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "activate_pt_package_46fb321d",
+                "arguments": {
+                    "pt_holding_id": "2a3e7d87-9d28-4139-aea2-32613aa4f980",
+                    "sessions_granted": 22,
+                    "expiration_date": "2026-03-06"
+                }
+            },
+            "objective": "activate NEW_PTH with the handling-time-correct session balance and expiration date.",
+            "necessity": "pt_ext_purchase_pricing's compute uniquely produces sessions_granted=22 only once the open-package count has fallen back within max_per_customer, which step 9's archival establishes.",
+            "argument_uniqueness_tracing": {
+                "pt_holding_id": "value=2a3e7d87-9d28-4139-aea2-32613aa4f980; basis: the only applied-but-not-active package on file, the one Marcus asked to have activated (user_scenario); uniqueness: OLD_PTH and CUR_PTH are both already in a settled status (closed / active) and neither is the one he applied for.",
+                "sessions_granted": "value=22; factors: sessions_included=P('sessions_included')=20 (Elite Specialty Coaching); is_unlimited=(20==-1)=false; membership_active=true; membership_pt_disc=15; threshold=K('purchase_signing_bonus_discount_threshold_pct')=10; qualifies_bonus=(true and 15>=10)=true; does_not_qualify=false; bonus_sessions=K('purchase_signing_bonus_sessions')=2; result=20+2=22; any correctly-calculating agent converges on 22.",
+                "expiration_date": "value=2026-03-06 (verbatim per the tool's date format); basis: base's pt_tier_pricing rule sets expiration_date to opened_date plus expiration_window_days calendar days; NEW_PTH's own opened_date is 2025-09-07 (initial_state.pt_holdings) and Elite Specialty Coaching's expiration_window_days is 180, giving 2025-09-07+180d=2026-03-06; uniqueness: no other opened_date or window applies to this package."
+            }
+        }
+    ],
+    "prerequisite_closure": {
+        "root_problem": "pt_ext_purchase_pricing",
+        "edges": [
+            {
+                "from": "pt_ext_purchase_pricing",
+                "to": "pt_ext_archive_closed",
+                "kind": "state_gate",
+                "gate": "pt_agg_multi_holding.max_per_customer",
+                "condition": "activating the package must not leave the member holding more than max_per_customer packages open (any status other than closed) on this category, counting the package being activated itself",
+                "policy_source": "A previously applied package may be activated only once doing so would not leave the member holding more than max_per_customer packages open (any status other than closed) on this category, counting the package being activated itself",
+                "resolved_by": "archive_pt_package_1350ea96",
+                "unresolved_at_frozen_time": {
+                    "why_false": "OLD_PTH, CUR_PTH and NEW_PTH are all non-closed at frozen_time, three open holdings against a cap of 2",
+                    "evidence": [
+                        "initial_state.pt_holdings.5ecca50a-ba1f-4f48-b41b-7e48b27c367e.status",
+                        "initial_state.pt_holdings.ad0c9bd4-4426-43df-bb16-25730a26cc84.status",
+                        "initial_state.pt_holdings.2a3e7d87-9d28-4139-aea2-32613aa4f980.status"
+                    ],
+                    "flips_to_true_by": "once archive_pt_package_1350ea96 runs on OLD_PTH, its status becomes closed, dropping the open count to 2 (CUR_PTH and NEW_PTH), within the cap"
+                }
+            },
+            {
+                "from": "pt_ext_archive_closed",
+                "to": "pt_ext_lapse_forfeit",
+                "kind": "value_input",
+                "gate": "result",
+                "condition": "the package's expiration forfeiture (its transition to expired) must already be on record before the package can be archived",
+                "policy_source": "An exhausted or expired package is administratively archived to closed only once its status is already exhausted or expired; a package that is still active or paused may not be archived.",
+                "resolved_by": "lapse_expire_package_bc252d9e",
+                "unresolved_at_frozen_time": {
+                    "why_false": "OLD_PTH's status is still 'active' rather than 'expired' at frozen_time",
+                    "evidence": [
+                        "initial_state.pt_holdings.5ecca50a-ba1f-4f48-b41b-7e48b27c367e.status"
+                    ],
+                    "flips_to_true_by": "once lapse_expire_package_bc252d9e runs, pt_holdings.status becomes expired, flipping forfeiture_recorded to true and switching the result binding from frozen_time's date to OLD_PTH's own expiration_date"
+                }
+            }
+        ],
+        "resolution_order": [
+            "pt_ext_lapse_forfeit",
+            "pt_ext_archive_closed",
+            "pt_ext_purchase_pricing"
+        ],
+        "order_uniqueness": "This is a strict chain, not a fan-out: pt_ext_purchase_pricing depends only on pt_ext_archive_closed, which depends only on pt_ext_lapse_forfeit. There is no pair of independent prerequisites to reorder, so the topological order lapse -> archive -> activate is the unique valid order; no second ordering needs to be proven equivalent.",
+        "edge_load_bearing": [
+            {
+                "edge": "pt_ext_purchase_pricing -> pt_ext_archive_closed",
+                "skipped_effect": "skipping the archive leaves OLD_PTH's status at expired (not closed) and the open-package count at 3 instead of 2, over the cap; NEW_PTH's activation would still write (the tool does not block), but OLD_PTH would remain open in the terminal state instead of closed -- a changed terminal field."
+            },
+            {
+                "edge": "pt_ext_archive_closed -> pt_ext_lapse_forfeit",
+                "skipped_effect": "skipping the lapse leaves OLD_PTH's status at active instead of expired, so pt_ext_archive_closed's forfeiture_recorded reads false and, with long_tenured also false (tenure 200<365), not_backdatable becomes true, changing closed_date from 2025-08-01 to frozen_time's date 2025-09-10 -- a changed scored parameter."
+            }
+        ],
+        "no_user_hint": "user_scenario never names a lapse, an archive, a session cap, or any prerequisite; Marcus mentions the old Performance Pack only as a forgotten, unrelated fact when asked, never suggesting it needs to be resolved.",
+        "tools_do_not_block": "lapse_expire_package_bc252d9e, archive_pt_package_1350ea96 and activate_pt_package_46fb321d (task_tools.py) each simply look up the holding by id and write, with no check of window elapsed, cap, or prior archival; an agent that called activate before resolving either prerequisite would still get a normal confirmation string back."
+    },
+    "charter_scope": {
+        "extended_policies": [
+            "pt_ext_lapse_forfeit",
+            "pt_ext_archive_closed",
+            "pt_ext_purchase_pricing"
+        ],
+        "workflows": [],
+        "task_tools": [
+            "lapse_expire_package_bc252d9e",
+            "archive_pt_package_1350ea96",
+            "activate_pt_package_46fb321d"
+        ]
+    },
+    "required_documents": [
+        "pt_ext_lapse_forfeit",
+        "pt_ext_archive_closed",
+        "pt_ext_purchase_pricing"
+    ],
+    "computations": [
+        {
+            "policy_id": "pt_ext_lapse_forfeit",
+            "target_holding_id": "5ecca50a-ba1f-4f48-b41b-7e48b27c367e",
+            "step": 7,
+            "arg": "forfeited_sessions",
+            "expected": 11,
+            "factor_trace": [
+                "status_active=(F('status')=='active')=true",
+                "status_paused=false",
+                "status_ok=true",
+                "days_open=DAYS(2025-02-02,2025-09-10)=220",
+                "window_days=P('expiration_window_days')=180",
+                "window_elapsed=(220>=180)=true",
+                "current_remaining=F('sessions_remaining')=12",
+                "membership_active=EXISTS('membership',status='active')=true",
+                "no_membership=false",
+                "membership_pt_disc=CPARAM('membership','personal_training_discount_pct',status='active')=15",
+                "grace_credit=int(12*15/100)=1",
+                "forfeited=MX(0,12-1)=11",
+                "ineligible=false",
+                "result=11"
+            ]
+        },
+        {
+            "policy_id": "pt_ext_archive_closed",
+            "target_holding_id": "5ecca50a-ba1f-4f48-b41b-7e48b27c367e",
+            "step": 9,
+            "arg": "closed_date",
+            "expected": "2025-08-01",
+            "factor_trace": [
+                "current_status=F('status')='expired'",
+                "forfeiture_recorded=true",
+                "membership_active=true",
+                "membership_opened=CFIELD('membership','opened_date',status='active')=2025-02-22",
+                "membership_tenure_days=DAYS(2025-02-22,2025-09-10)=200",
+                "min_tenure_for_backdate=K('min_membership_age_for_backdate_days')=30",
+                "established_membership=(true and 200>=30)=true",
+                "backdate_ok=(true and true)=true",
+                "not_backdatable=false",
+                "expiration_date=F('expiration_date')=2025-08-01",
+                "result=2025-08-01"
+            ]
+        },
+        {
+            "policy_id": "pt_ext_purchase_pricing",
+            "target_holding_id": "2a3e7d87-9d28-4139-aea2-32613aa4f980",
+            "step": 11,
+            "arg": "sessions_granted",
+            "expected": 22,
+            "factor_trace": [
+                "sessions_included=P('sessions_included')=20",
+                "is_unlimited=false",
+                "membership_active=true",
+                "membership_pt_disc=15",
+                "threshold=K('purchase_signing_bonus_discount_threshold_pct')=10",
+                "qualifies_bonus=(true and 15>=10)=true",
+                "does_not_qualify=false",
+                "bonus_sessions=K('purchase_signing_bonus_sessions')=2",
+                "result=20+2=22"
+            ]
+        }
+    ]
+}

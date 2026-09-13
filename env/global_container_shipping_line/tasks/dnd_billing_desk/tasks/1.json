@@ -1,0 +1,1058 @@
+{
+    "frozen_time": "2026-09-15 09:40:00 CEST",
+    "design_rationale": "WORKLOG task 1 (non-workflow task, last task of the difficulty) — dnd_billing_desk, M=2.\n[Step 0 scope snapshot] Occupied by task 0: dnd_ext_final_detention_charge, dnd_ext_final_demurrage_charge, dnd_ext_goodwill_waiver_amount, workflow dnd_wf_combined_record_closeout, tools book_detention_invoice_dba94f21, book_demurrage_invoice_a2ad21e7, grant_goodwill_waiver_e03c98b1, pay_dnd_balance_a831ef2f, settle_dnd_record_d9ada3ba. This task claims the unoccupied dispute / late-invoice space of dnd_invoice_dispute: dnd_ext_dispute_lodged_amount (lodge_dnd_dispute_1c3d36b3, the billed party's own act), dnd_ext_dispute_credit_amount (book_dispute_credit_515e844f) and dnd_ext_late_invoice_waiver (clear_late_invoice_2264ae48). workflows = []. No policy or tool of task 0 is reused; no future task remains (M=2), so nothing is reserved.\n[Why a good test] The caller asks one layman's question: is an invoice dated 27 August for a container returned in June still valid. The desk rule says such a row is not collectible and is cleared by a late-invoice waiver, but only after any overcharge on it has been credited through a decided dispute, because the dangerous-goods uplift share of what remains stays collectible. Discovering that there is an overcharge needs a full recomputation of the demurrage row (separate import clock, Extension 7 free days 11, dry class, 50% DG uplift) against the invoiced 6 days; crediting it needs a dispute that only the billed party can lodge, for the open amount less its uplift share; the credit is the smaller of overcharge and disputed amount; the waiver then acts on the remainder. Difficulty = recomputation arithmetic x ledger reconciliation (two operations waivers, the new credit, the withdrawn dispute) x branches (late or not, DG or not, class, overcharge or none, credit vs disputed cap).\n[Long and broad] Depth: surface question -> lateness test (clock_stopped_date 2026-06-24 + 30 = 2026-07-24 < 2026-08-27) -> late waiver rule requires prior crediting of any overcharge -> recompute -> overcharge 210.00 -> a credit needs a submitted dispute -> customer lodges (user tool) -> credit -> waiver. Breadth: record dates and product, booking cargo_type (cross-category), the ledger row, the two operations waivers referencing it, the dispute table (withdrawn dispute does not block a new one), the goodwill gates that apply to every dnd_charge_waived row.\n[Policies, lineage, overwrites] dnd_ext_dispute_lodged_amount refines dnd_invoice_dispute (governs dnd_dispute_credited) with dnd_invoicing as lineage; base is silent on the amount disputed, so overwrite []. dnd_ext_dispute_credit_amount refines dnd_invoice_dispute's rate/free-time recomputation and credit 'never more than the disputed_amount_usd', adds how the outcome is recorded (upheld / partially_upheld / denied), and declares the same booking-cargo rate-class overwrite of dnd_invoicing as task 0's invoice policies. dnd_ext_late_invoice_waiver refines dnd_invoice_dispute's late-invoice ground and declares one overwrite: 'the whole amount still open on the invoice is cleared ...' replaced by clearing the open amount except its dangerous-goods uplift share; it keeps the lateness test and inherits dnd_goodwill_waiver's gates that apply to every dnd_charge_waived row. Triggers: lodge on_request, credit state_due (a submitted dispute must be decided), late waiver state_due (an uncollectible row).\n[Base-invariant card] Lodge (action 7) and credit (action 10), dnd_invoice_dispute: dispute_window — anchor dnd_ledger.event_date 2026-08-27 + dispute_window_days 30 (Extension 7) = 2026-09-26 inclusive, frozen 2026-09-15 satisfied, 2026-09-27 would fail; one_dispute_per_invoice — the only dispute on ea35f038-d6ad-412a-8f0e-267c634289dc is 6934fef4-0017-48fd-8fb7-4cd10f62c890, outcome withdrawn, which the dedup filter (submitted/upheld/partially_upheld/denied) does not count; credit_on_invoiced_record — status invoiced. Late waiver (action 12): credit_on_invoiced_record; goodwill_quota — the customer has no commercial_goodwill row in the trailing 365 days (the only waivers are operations waivers), 0 < 1 of Extension 7; goodwill_window — 2026-08-27 + 30 = 2026-09-26; one_goodwill_per_invoice — no commercial_goodwill row references ea35f038-d6ad-412a-8f0e-267c634289dc.\n[Business-object card] Target record 34646ced-915c-4db4-be30-93726b227987 (container AHLU3629157, booking 4e6176a6-2d15-49f9-9210-d3945b6f8e53 AHLU26SHA362915, cargo_type dangerous_goods). Target row ea35f038-d6ad-412a-8f0e-267c634289dc (demurrage, 2026-08-27, 6 days, 847.50). Rows reconciled on it: operations waivers f760f06c-67ff-4849-9939-99fbc2aead84 (terminal_closure 127.50) and 11c75bdd-cb11-4e6e-aae5-d44ab270c1c9 (carrier_caused_delay 127.50) — they reduce the open amount but are not desk credits and are not goodwill; the credit created at action 10 references both the row and the dispute. Excluded: the extension fee 069ca2aa-427b-4afb-b716-0dd6a408960f (not an invoice, not late, not disputable, stays owed), and the withdrawn dispute 6934fef4-0017-48fd-8fb7-4cd10f62c890 (not a submitted dispute, cannot be credited).\n[Seed design] One customer, one DG booking, one import record on Extension 7 bought as an upgrade while running (fee 195.00), clock stopped 2026-06-24; the final demurrage row came late on 2026-08-27 and bills one day too many (6 days from 2026-06-13 instead of 5 from 2026-06-14); operations waived two uplifted days (127.50 each) and the customer withdrew his carrier-delay dispute afterwards. The balance 787.50 = 195.00 + 847.50 - 255.00 is consistent. Nothing else is pending: detention stayed inside free time, no base automatic clause fires.\n[Problem-tree card] Root dnd_ext_late_invoice_waiver. Edge 1: root -> dnd_ext_dispute_credit_amount, value_input on earlier_credits; condition 'Any overcharge a late demurrage row carries against its recomputation is credited through a decided dispute before the row is cleared.'; policy_source from the late-waiver rule; false at opening: the row bills 847.50 against a recomputed 637.50 and carries only the two operations waivers. Edge 2: dnd_ext_dispute_credit_amount -> dnd_ext_dispute_lodged_amount, value_input on disputed_amount; condition 'A dispute credit requires a dispute the billed party has lodged on the invoice row and that is still submitted.'; false at opening: the only dispute is withdrawn. Chain, single topological order lodge -> credit -> waiver. Sensitivity (dnd_verify.py): skip credit -> waiver 395.00 instead of 255.00; skip lodge -> credit 0.00 instead of 210.00. user_scenario mentions no overcharge, recomputation, credit or need to dispute; tools check nothing.\n[Persona] Jannik Oberhäuser, precise and formal. Volunteers only the late-invoice question with the container and booking, and permission for the desk to book what the rules give. When asked: email + VAT (phone third), that the figures are on the invoice, his earlier withdrawn dispute. Passive: lodges the dispute himself with exactly the line, ground and amount the agent gives; declines to pay today; ends when told what is still owed. His last reaction answers the last gold action (the waiver and the remaining balance).\n[Traps] (1) Clearing the whole open amount 592.50 as base describes, or the whole minus uplift without first removing the overcharge (395.00). (2) Treating the withdrawn dispute as blocking a new one, or crediting against it. (3) Recomputing without the DG uplift (425.00 -> overcharge 422.50) or with Tariff free days. (4) Lodging the whole open amount 592.50 (forgetting the uplift share is never disputed) or lodging the overcharge instead of the prescribed disputed amount. (5) Recording the dispute upheld although the credit is below the amount disputed. (6) Waiving the extension fee.\n[Standard solution] find_customers(email) -> verify(email, VAT) -> find_dnd_free_time -> find_bookings -> find_dnd_ledger -> find_dnd_disputes -> hand over lodging: customer lodges free_time_misapplied, 395.00 on the row -> find_dnd_disputes to confirm the submitted dispute and its amount -> book credit 210.00 partially_upheld on the demurrage line (the tool decides the latest dispute lodged against it, the one just lodged) -> clear late row with 255.00. Arithmetic: open = 847.50 - 255.00 = 592.50; disputed = 592.50 x 100/150 = 395.00; recompute 16 days - 11 free = 5 x 85.00 x 1.5 = 637.50; overcharge 210.00; credit min(210.00, 395.00) = 210.00; open after credit 382.50; waiver 382.50 x 100/150 = 255.00; remaining 195.00 + 127.50 = 322.50.\n[Verification run] .venv/bin/python scratchpad/dnd_desk/dnd_verify.py 1 (replays gold with real tools, evaluates each compute in the gate sandbox): 'dnd_ext_dispute_lodged_amount handling-time 395.0 expected 395.0 cross-off 592.5', 'dnd_ext_dispute_credit_amount handling-time 210.0 expected 210.0 cross-off 395.0', 'dnd_ext_late_invoice_waiver handling-time 255.0 expected 255.0 cross-off 382.5', 'skip dnd_ext_dispute_credit_amount -> dnd_ext_late_invoice_waiver = 395.0', 'skip dnd_ext_dispute_lodged_amount -> dnd_ext_dispute_credit_amount = 0.0', terminal balance 322.5, status invoiced. Per-task gates: EXTENDED OK, TASK TOOL CONTRACT OK, REPLAY OK (13 actions, closure 8 = init 8), SOLVABILITY OK, COMPUTE OK (history rows 9), GROUNDING OK, SCOPE OK.\n[Closure] charter_scope.extended_policies = computations policy ids = required_documents = [lodge, credit, late]; task_tools = the three tools in first-call order; every call carries argument tracing; solvability_contract binds each gate to pre-write evidence (the credit's dispute correlation comes from the DB delta of action 7).\n[Draft recomputation from the visible context] From the published late-waiver, credit and lodging prose plus the record, booking and ledger: the row is late; the late rule demands crediting any overcharge first; recomputation gives 637.50 vs 847.50; a credit needs a lodged dispute, which the customer must file for the open amount less the uplift share (395.00); the credit is 210.00, partially upheld; the waiver is 255.00. Same as gold.\n[Revisions] (a) check_compute flagged the lodge and late computations as key computations (8 factors) with no untriggered branch; the bindings were consolidated to five (same arithmetic, same prose), leaving the credit recomputation as the key computation with untriggered reefer/special class branches. (b) check_solvability asked the credit's dispute_window evidence to cover dnd_disputes.created_at; the correlation now binds the lodged dispute's invoice_event_id from the DB delta of action 7. (c) The shared scratch area held a sibling's verify.py; my verification script was moved to a private subfolder (dnd_desk/dnd_verify.py) and no sibling file was read.\n[Difficulty-level closing record] Union of task scopes = all six extended policies; scopes pairwise disjoint (task 0: detention, demurrage, goodwill + workflow + 5 tools; task 1: lodge, credit, late + 3 tools); exactly one workflow, claimed by task 0 only; no handoff in any gold.\n[Revisions round 2 — audit policy_task/dnd_billing_desk rev 1] F-1.1: seed_consistency of the disputed demurrage row now states the true arithmetic (5 x 85.00 + 1 x 140.00) x 1.5 = 847.50 against the recomputed 5 x 85.00 x 1.5 = 637.50, and why the defect is the free-time day count, not the rate. O-4: dnd_ext_dispute_credit_amount now reads the submitted dispute on the demurrage row itself (invoice_event_id = demurrage_row_id), factor trace updated. O-5: the late-invoice rule no longer promises an uncomputed detention branch; a late detention row is delegated to dnd_invoice_dispute alone. O-6: the lodged-amount rule states that a withdrawn dispute does not count toward the one dispute a row may carry (the reading of the base dedup contract this task relies on). O-8: the late-invoice rule now states which dnd_goodwill_waiver gates apply to every waiver row (quota, window, one goodwill per row), matching base_preconditions of action 12; all hold here (0 < 1, window to 2026-09-26, no goodwill on the row). O-3: the credit rule states that a credit may include uplift billed on days the recomputation removes, never the uplift of the recomputed amount; the lodged-amount rule's pass-through sentence is scoped to the open amount. Re-run dnd_verify.py 1: 395.0 / 210.0 / 255.0, skips 395.0 and 0.0, terminal balance 322.5 invoiced — unchanged.\n[Audit observations without a scored consequence, round 2] Lodged-amount sensitivity: the credit (210.00) does not move with the lodged amount above 210.00; the lodge fixes the credit's existence and the outcome label (partially_upheld because 210.00 < 395.00), and skipping it makes the credit compute 0.00; had no credit then been booked the waiver would be 395.00, while replaying the gold credit call regardless attaches it to the withdrawn dispute (see edge_load_bearing), so the edge bears weight either way. O-7 (difficulty level): the claimed events dnd_free_time_extended / dnd_extension_fee_charged stay governed by base dnd_free_time_upgrade and dnd_agg_overdue_portfolio_block only; with M = 2 the six extended policies went to the invoicing/goodwill chain and the dispute/late-invoice chain, and every seeded extension row (in both tasks) is consistent with the base upgrade rule. Rounding observation: the rules round to the nearest cent at the end only; no intermediate or result in either world lands on a half cent, so Python round and half-up agree.\n[Revisions round 3 — check_traceability] Symptom: the credit call passed dispute_id dsp_38f923b404d6, a reference minted by the customer's own lodging whose receipt only the customer sees, so no agent-reachable context held it (the gate replays only agent-owned actions, so even a later dispute lookup cannot surface it). Root cause: a system-generated id was an agent-facing argument. Change: dispute_id was removed from book_dispute_credit_515e844f; the tool attaches the credit to, and records the decision on, the latest dispute lodged against the invoice line passed in (a system-generated id minted by the lodging, not a policy amount, status or decision). A find_dnd_disputes(dnd_id) read was added after the lodging (action 8) so the desk sees the submitted dispute and its disputed amount before deciding; later indices moved by one (credit now action 10, late waiver action 12) and computations, gold_actions, temporal_feasibility, prior_step references, prerequisite_closure texts and factor traces were re-pointed. The credit's discriminator is now the invoice line. Amounts, outcome and order are unchanged; the gate was not changed.\n[Revisions round 4 — audit policy_task/dnd_billing_desk rev 3] F-1.2: prerequisite_closure.edge_load_bearing[1] claimed that with the lodge skipped 'no dispute row exists in the terminal state'; a fresh replay on the current tools shows the replayed credit attaching to the withdrawn dispute and rewriting its outcome to partially_upheld. The sentence now states the replayed terminal state (credit compute 0.00; no new dispute; withdrawn dispute rewritten; waiver compute 255.00; balance 322.50); edge_load_bearing[0] now also states its replayed terminal state (dispute stays submitted, balance 532.50), tools_do_not_block describes the credit tool's latest-dispute attachment, and the audit-observation sentence on lodged-amount sensitivity no longer states a 395.00 waiver for the skip-lodge replay. O-9: the credit tool's docstring now says it decides the latest dispute on the line whatever outcome it carries and replaces that outcome; the tool still judges nothing, so an off-policy credit shows up in the terminal state (as in edge_load_bearing[1]) rather than being refused. effect-field observation: all four prerequisite effect texts in the charter are now plain language without parameter keys or binding names. Sweep: every world-fact and skip-replay sentence of design_rationale and prerequisite_closure was re-checked against a fresh gold and per-edge skip replay on the current tools (gold: 395.00 / 210.00 / 255.00, terminal balance 322.50, dispute dsp_38f923b404d6 partially_upheld, the other dispute withdrawn).",
+    "user_scenario": "You are Jannik Oberhäuser, head of import logistics at Kessler Lacktechnik GmbH, an industrial coatings maker in Hamburg. You are calm, precise and a little formal, and you like to hear the reasoning before anything is booked. You call because your accounts payable team has just forwarded you a demurrage invoice dated 27 August for container AHLU3629157, which came in from Shanghai on booking AHLU26SHA362915 and which your haulier returned empty in late June. Your question is simple: you want to know whether an invoice issued that late is valid at all, and you want the desk to deal with it according to the line's own rules; you are content for the desk to book whatever those rules give without asking your approval line by line. You do not know the invoiced amount by heart and you never state amounts, days or rates; if asked, you say the figures are on the invoice and in the line's records. When the agent needs to confirm your identity, you give the registered email j.oberhaeuser@kessler-lacktechnik.de and the VAT number DE281563374; if a further detail is needed you give the phone number +494083517229. Only if the agent asks whether you have disputed this invoice before, you say that you did, about the vessel delay, and that you withdrew it once the operations people had taken something off. If the agent explains that part of the invoice has to be formally disputed by you as the billed party and hands the dispute over to you, you agree and he lodges the dispute himself, using exactly the invoice line, the ground and the amount the agent gives him, without questioning the figure. If the agent asks whether you want to pay anything today, you say no, accounts payable will pay whatever remains through the normal run. When the agent tells you what is still owed on the container once the late invoice has been dealt with, you thank them and end the call.",
+    "initial_state": {
+        "customers": {
+            "38f8aabe-5034-40ea-8acd-a4e8b113b873": {
+                "customer_id": "38f8aabe-5034-40ea-8acd-a4e8b113b873",
+                "company_name": "Kessler Lacktechnik GmbH",
+                "contact_name": "Jannik Oberhäuser",
+                "phone_number": "+494083517229",
+                "email": "j.oberhaeuser@kessler-lacktechnik.de",
+                "customer_code": "AHL-DE-341279",
+                "tax_registration_number": "DE281563374",
+                "profile_opened_date": "2017-09-05",
+                "customer_role": "beneficial_cargo_owner",
+                "country_code": "DE",
+                "credit_status": "credit_approved",
+                "credit_days": 30,
+                "ebl_platform_enrolled": true
+            }
+        },
+        "bookings": {
+            "4e6176a6-2d15-49f9-9210-d3945b6f8e53": {
+                "booking_id": "4e6176a6-2d15-49f9-9210-d3945b6f8e53",
+                "customer_id": "38f8aabe-5034-40ea-8acd-a4e8b113b873",
+                "variant_name": "AHL Spot Flex",
+                "status": "closed",
+                "booking_number": "AHLU26SHA362915",
+                "contract_id": null,
+                "trade_lane": "asia_north_europe",
+                "pol_code": "CNSHA",
+                "pod_code": "DEHAM",
+                "vessel_voyage": "AHL ELBE HORIZON 618W",
+                "equipment_type": "40HC",
+                "container_count": 1,
+                "cargo_type": "dangerous_goods",
+                "freight_terms": "prepaid",
+                "channel": "online_portal",
+                "requested_date": "2026-04-10",
+                "confirmed_date": "2026-04-11",
+                "etd_date": "2026-04-27",
+                "cargo_cutoff": "2026-04-25T12:00",
+                "si_cutoff": "2026-04-24T12:00",
+                "vgm_cutoff": "2026-04-25T08:00",
+                "si_submitted_at": "2026-04-23T10:15",
+                "vgm_submitted_at": "2026-04-24T16:40",
+                "cancelled_date": "",
+                "departed_date": "2026-04-28",
+                "charges_due_usd": 0.0
+            }
+        },
+        "dnd_free_time": {
+            "34646ced-915c-4db4-be30-93726b227987": {
+                "dnd_id": "34646ced-915c-4db4-be30-93726b227987",
+                "customer_id": "38f8aabe-5034-40ea-8acd-a4e8b113b873",
+                "variant_name": "AHL Free Time Extension 7",
+                "status": "invoiced",
+                "booking_id": "4e6176a6-2d15-49f9-9210-d3945b6f8e53",
+                "container_number": "AHLU3629157",
+                "direction": "import",
+                "equipment_type": "40HC",
+                "port_code": "DEHAM",
+                "discharge_date": "2026-06-02",
+                "full_gate_out_date": "2026-06-18",
+                "empty_return_date": "2026-06-24",
+                "empty_pickup_date": "",
+                "full_gate_in_date": "",
+                "loaded_date": "",
+                "clock_stopped_date": "2026-06-24",
+                "opened_date": "2026-06-02",
+                "settled_date": "",
+                "balance_due_usd": 787.5
+            }
+        },
+        "dnd_ledger": {
+            "069ca2aa-427b-4afb-b716-0dd6a408960f": {
+                "dnd_event_id": "069ca2aa-427b-4afb-b716-0dd6a408960f",
+                "dnd_id": "34646ced-915c-4db4-be30-93726b227987",
+                "customer_id": "38f8aabe-5034-40ea-8acd-a4e8b113b873",
+                "event_type": "dnd_extension_fee_charged",
+                "event_date": "2026-06-05",
+                "charge_type": "free_time_extension",
+                "amount_usd": 195.0,
+                "chargeable_days": 0,
+                "period_start_date": "",
+                "period_end_date": "",
+                "target_variant": "AHL Free Time Extension 7",
+                "waiver_reason": "none",
+                "payment_reference": "",
+                "reference_event_id": null,
+                "dispute_id": null
+            },
+            "ea35f038-d6ad-412a-8f0e-267c634289dc": {
+                "dnd_event_id": "ea35f038-d6ad-412a-8f0e-267c634289dc",
+                "dnd_id": "34646ced-915c-4db4-be30-93726b227987",
+                "customer_id": "38f8aabe-5034-40ea-8acd-a4e8b113b873",
+                "event_type": "dnd_demurrage_invoiced",
+                "event_date": "2026-08-27",
+                "charge_type": "import_demurrage",
+                "amount_usd": 847.5,
+                "chargeable_days": 6,
+                "period_start_date": "2026-06-13",
+                "period_end_date": "2026-06-18",
+                "target_variant": "not_applicable",
+                "waiver_reason": "none",
+                "payment_reference": "",
+                "reference_event_id": null,
+                "dispute_id": null
+            },
+            "f760f06c-67ff-4849-9939-99fbc2aead84": {
+                "dnd_event_id": "f760f06c-67ff-4849-9939-99fbc2aead84",
+                "dnd_id": "34646ced-915c-4db4-be30-93726b227987",
+                "customer_id": "38f8aabe-5034-40ea-8acd-a4e8b113b873",
+                "event_type": "dnd_charge_waived",
+                "event_date": "2026-09-02",
+                "charge_type": "waiver",
+                "amount_usd": 127.5,
+                "chargeable_days": 0,
+                "period_start_date": "",
+                "period_end_date": "",
+                "target_variant": "not_applicable",
+                "waiver_reason": "terminal_closure",
+                "payment_reference": "",
+                "reference_event_id": "ea35f038-d6ad-412a-8f0e-267c634289dc",
+                "dispute_id": null
+            },
+            "11c75bdd-cb11-4e6e-aae5-d44ab270c1c9": {
+                "dnd_event_id": "11c75bdd-cb11-4e6e-aae5-d44ab270c1c9",
+                "dnd_id": "34646ced-915c-4db4-be30-93726b227987",
+                "customer_id": "38f8aabe-5034-40ea-8acd-a4e8b113b873",
+                "event_type": "dnd_charge_waived",
+                "event_date": "2026-09-03",
+                "charge_type": "waiver",
+                "amount_usd": 127.5,
+                "chargeable_days": 0,
+                "period_start_date": "",
+                "period_end_date": "",
+                "target_variant": "not_applicable",
+                "waiver_reason": "carrier_caused_delay",
+                "payment_reference": "",
+                "reference_event_id": "ea35f038-d6ad-412a-8f0e-267c634289dc",
+                "dispute_id": null
+            }
+        },
+        "dnd_disputes": {
+            "6934fef4-0017-48fd-8fb7-4cd10f62c890": {
+                "dispute_id": "6934fef4-0017-48fd-8fb7-4cd10f62c890",
+                "customer_id": "38f8aabe-5034-40ea-8acd-a4e8b113b873",
+                "dnd_id": "34646ced-915c-4db4-be30-93726b227987",
+                "invoice_event_id": "ea35f038-d6ad-412a-8f0e-267c634289dc",
+                "dispute_ground": "carrier_caused_delay",
+                "disputed_amount_usd": 127.5,
+                "outcome": "withdrawn",
+                "created_at": "2026-08-31 14:05:00 CEST"
+            }
+        }
+    },
+    "db_closure": {
+        "dnd_ledger": {
+            "069ca2aa-427b-4afb-b716-0dd6a408960f": {
+                "dnd_event_id": "069ca2aa-427b-4afb-b716-0dd6a408960f",
+                "dnd_id": "34646ced-915c-4db4-be30-93726b227987",
+                "customer_id": "38f8aabe-5034-40ea-8acd-a4e8b113b873",
+                "event_type": "dnd_extension_fee_charged",
+                "event_date": "2026-06-05",
+                "charge_type": "free_time_extension",
+                "amount_usd": 195.0,
+                "chargeable_days": 0,
+                "period_start_date": "",
+                "period_end_date": "",
+                "target_variant": "AHL Free Time Extension 7",
+                "waiver_reason": "none",
+                "payment_reference": "",
+                "reference_event_id": null,
+                "dispute_id": null
+            },
+            "f760f06c-67ff-4849-9939-99fbc2aead84": {
+                "dnd_event_id": "f760f06c-67ff-4849-9939-99fbc2aead84",
+                "dnd_id": "34646ced-915c-4db4-be30-93726b227987",
+                "customer_id": "38f8aabe-5034-40ea-8acd-a4e8b113b873",
+                "event_type": "dnd_charge_waived",
+                "event_date": "2026-09-02",
+                "charge_type": "waiver",
+                "amount_usd": 127.5,
+                "chargeable_days": 0,
+                "period_start_date": "",
+                "period_end_date": "",
+                "target_variant": "not_applicable",
+                "waiver_reason": "terminal_closure",
+                "payment_reference": "",
+                "reference_event_id": "ea35f038-d6ad-412a-8f0e-267c634289dc",
+                "dispute_id": null
+            },
+            "11c75bdd-cb11-4e6e-aae5-d44ab270c1c9": {
+                "dnd_event_id": "11c75bdd-cb11-4e6e-aae5-d44ab270c1c9",
+                "dnd_id": "34646ced-915c-4db4-be30-93726b227987",
+                "customer_id": "38f8aabe-5034-40ea-8acd-a4e8b113b873",
+                "event_type": "dnd_charge_waived",
+                "event_date": "2026-09-03",
+                "charge_type": "waiver",
+                "amount_usd": 127.5,
+                "chargeable_days": 0,
+                "period_start_date": "",
+                "period_end_date": "",
+                "target_variant": "not_applicable",
+                "waiver_reason": "carrier_caused_delay",
+                "payment_reference": "",
+                "reference_event_id": "ea35f038-d6ad-412a-8f0e-267c634289dc",
+                "dispute_id": null
+            },
+            "ea35f038-d6ad-412a-8f0e-267c634289dc": {
+                "dnd_event_id": "ea35f038-d6ad-412a-8f0e-267c634289dc",
+                "dnd_id": "34646ced-915c-4db4-be30-93726b227987",
+                "customer_id": "38f8aabe-5034-40ea-8acd-a4e8b113b873",
+                "event_type": "dnd_demurrage_invoiced",
+                "event_date": "2026-08-27",
+                "charge_type": "import_demurrage",
+                "amount_usd": 847.5,
+                "chargeable_days": 6,
+                "period_start_date": "2026-06-13",
+                "period_end_date": "2026-06-18",
+                "target_variant": "not_applicable",
+                "waiver_reason": "none",
+                "payment_reference": "",
+                "reference_event_id": null,
+                "dispute_id": null
+            }
+        },
+        "dnd_free_time": {
+            "34646ced-915c-4db4-be30-93726b227987": {
+                "dnd_id": "34646ced-915c-4db4-be30-93726b227987",
+                "customer_id": "38f8aabe-5034-40ea-8acd-a4e8b113b873",
+                "variant_name": "AHL Free Time Extension 7",
+                "status": "invoiced",
+                "booking_id": "4e6176a6-2d15-49f9-9210-d3945b6f8e53",
+                "container_number": "AHLU3629157",
+                "direction": "import",
+                "equipment_type": "40HC",
+                "port_code": "DEHAM",
+                "discharge_date": "2026-06-02",
+                "full_gate_out_date": "2026-06-18",
+                "empty_return_date": "2026-06-24",
+                "empty_pickup_date": "",
+                "full_gate_in_date": "",
+                "loaded_date": "",
+                "clock_stopped_date": "2026-06-24",
+                "opened_date": "2026-06-02",
+                "settled_date": "",
+                "balance_due_usd": 787.5
+            }
+        },
+        "bookings": {
+            "4e6176a6-2d15-49f9-9210-d3945b6f8e53": {
+                "booking_id": "4e6176a6-2d15-49f9-9210-d3945b6f8e53",
+                "customer_id": "38f8aabe-5034-40ea-8acd-a4e8b113b873",
+                "variant_name": "AHL Spot Flex",
+                "status": "closed",
+                "booking_number": "AHLU26SHA362915",
+                "contract_id": null,
+                "trade_lane": "asia_north_europe",
+                "pol_code": "CNSHA",
+                "pod_code": "DEHAM",
+                "vessel_voyage": "AHL ELBE HORIZON 618W",
+                "equipment_type": "40HC",
+                "container_count": 1,
+                "cargo_type": "dangerous_goods",
+                "freight_terms": "prepaid",
+                "channel": "online_portal",
+                "requested_date": "2026-04-10",
+                "confirmed_date": "2026-04-11",
+                "etd_date": "2026-04-27",
+                "cargo_cutoff": "2026-04-25T12:00",
+                "si_cutoff": "2026-04-24T12:00",
+                "vgm_cutoff": "2026-04-25T08:00",
+                "si_submitted_at": "2026-04-23T10:15",
+                "vgm_submitted_at": "2026-04-24T16:40",
+                "cancelled_date": "",
+                "departed_date": "2026-04-28",
+                "charges_due_usd": 0.0
+            }
+        },
+        "customers": {
+            "38f8aabe-5034-40ea-8acd-a4e8b113b873": {
+                "customer_id": "38f8aabe-5034-40ea-8acd-a4e8b113b873",
+                "company_name": "Kessler Lacktechnik GmbH",
+                "contact_name": "Jannik Oberhäuser",
+                "phone_number": "+494083517229",
+                "email": "j.oberhaeuser@kessler-lacktechnik.de",
+                "customer_code": "AHL-DE-341279",
+                "tax_registration_number": "DE281563374",
+                "profile_opened_date": "2017-09-05",
+                "customer_role": "beneficial_cargo_owner",
+                "country_code": "DE",
+                "credit_status": "credit_approved",
+                "credit_days": 30,
+                "ebl_platform_enrolled": true
+            }
+        },
+        "dnd_disputes": {
+            "6934fef4-0017-48fd-8fb7-4cd10f62c890": {
+                "dispute_id": "6934fef4-0017-48fd-8fb7-4cd10f62c890",
+                "customer_id": "38f8aabe-5034-40ea-8acd-a4e8b113b873",
+                "dnd_id": "34646ced-915c-4db4-be30-93726b227987",
+                "invoice_event_id": "ea35f038-d6ad-412a-8f0e-267c634289dc",
+                "dispute_ground": "carrier_caused_delay",
+                "disputed_amount_usd": 127.5,
+                "outcome": "withdrawn",
+                "created_at": "2026-08-31 14:05:00 CEST"
+            }
+        }
+    },
+    "db_closure_matches_initial_state": true,
+    "solvability_contract": {
+        "request_binding_version": 1,
+        "request_alignment": [
+            {
+                "claim": "The customer asks whether the demurrage invoice dated 27 August on container AHLU3629157 is valid given how late it came, and wants it handled by the rules.",
+                "evidence": [
+                    "user_scenario:whether an invoice issued that late is valid at all"
+                ]
+            },
+            {
+                "claim": "He authorises the desk to book what the rules give, and will lodge a dispute himself if one is needed.",
+                "evidence": [
+                    "user_scenario:you are content for the desk to book whatever those rules give",
+                    "user_scenario:he lodges the dispute himself, using exactly the invoice line, the ground and the amount the agent gives him"
+                ]
+            }
+        ],
+        "gold_actions": [
+            {
+                "step": 7,
+                "business_effect": "Registers the customer's free_time_misapplied dispute of USD 395.00 on the demurrage row, status submitted.",
+                "request_binding": {
+                    "action_semantics": "The billed party alone can dispute an invoice row; once the agent explains the overcharge must be formally disputed, the customer lodges it himself, which selects the lodging action and not a desk credit or waiver.",
+                    "intent_source": {
+                        "kind": "user_scenario",
+                        "evidence": [
+                            "user_scenario:he lodges the dispute himself, using exactly the invoice line, the ground and the amount the agent gives him"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "lodges the dispute himself",
+                        "evidence": [
+                            "user_scenario:he lodges the dispute himself, using exactly the invoice line, the ground and the amount the agent gives him"
+                        ],
+                        "action_arg": "dispute_ground",
+                        "value": "free_time_misapplied"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "performed_by_this_tool",
+                    "fact": "The dispute is lodged by this call; the disputed row exists before the call.",
+                    "evidence": [
+                        "initial_state.dnd_ledger.ea35f038-d6ad-412a-8f0e-267c634289dc.dnd_event_id"
+                    ]
+                },
+                "requires_external_wait": false,
+                "zero_wait_proof": "Lodging is the customer's own synchronous act in the call on a row already in the ledger.",
+                "base_preconditions": [
+                    {
+                        "policy_id": "dnd_invoice_dispute",
+                        "eligibility_id": "dispute_window",
+                        "condition": "The dispute must be lodged no later than the product's dispute_window_days calendar days after the disputed invoice was issued.",
+                        "evidence": [
+                            "initial_state.dnd_ledger.ea35f038-d6ad-412a-8f0e-267c634289dc.dnd_event_id",
+                            "initial_state.dnd_ledger.ea35f038-d6ad-412a-8f0e-267c634289dc.event_date",
+                            "initial_state.dnd_disputes.6934fef4-0017-48fd-8fb7-4cd10f62c890.created_at",
+                            "frozen_time"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "dnd_ledger.dnd_event_id",
+                                "source": "initial_state.dnd_ledger.ea35f038-d6ad-412a-8f0e-267c634289dc.dnd_event_id",
+                                "action_arg": "invoice_event_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "dnd_invoice_dispute",
+                        "eligibility_id": "one_dispute_per_invoice",
+                        "condition": "An invoice row carries at most one dispute.",
+                        "evidence": [
+                            "initial_state.dnd_disputes.6934fef4-0017-48fd-8fb7-4cd10f62c890.invoice_event_id",
+                            "initial_state.dnd_disputes.6934fef4-0017-48fd-8fb7-4cd10f62c890.outcome"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "dnd_disputes.invoice_event_id",
+                                "source": "initial_state.dnd_disputes.6934fef4-0017-48fd-8fb7-4cd10f62c890.invoice_event_id",
+                                "action_arg": "invoice_event_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "dnd_invoice_dispute",
+                        "eligibility_id": "credit_on_invoiced_record",
+                        "condition": "A credit may be booked only on a record whose status is invoiced.",
+                        "evidence": [
+                            "initial_state.dnd_free_time.34646ced-915c-4db4-be30-93726b227987.dnd_id",
+                            "initial_state.dnd_free_time.34646ced-915c-4db4-be30-93726b227987.status"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "dnd_free_time.dnd_id",
+                                "source": "initial_state.dnd_free_time.34646ced-915c-4db4-be30-93726b227987.dnd_id",
+                                "action_arg": "dnd_id"
+                            }
+                        ],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 10,
+                "business_effect": "Decides the lodged dispute partially_upheld and books a dispute credit of USD 210.00 against the demurrage row.",
+                "request_binding": {
+                    "action_semantics": "A submitted dispute must be decided by the desk; on free_time_misapplied the desk recomputes and credits the difference, which selects a dispute credit, not a goodwill or late waiver.",
+                    "intent_source": {
+                        "kind": "prior_step",
+                        "evidence": [
+                            "prior_step:7"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "decision of the submitted free_time_misapplied dispute lodged on the demurrage row",
+                        "evidence": [
+                            "prior_step:7",
+                            "initial_state.dnd_ledger.ea35f038-d6ad-412a-8f0e-267c634289dc.chargeable_days"
+                        ],
+                        "action_arg": "invoice_event_id",
+                        "value": "ea35f038-d6ad-412a-8f0e-267c634289dc"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "established_by_prior_tool",
+                    "fact": "The submitted dispute being decided was lodged at action 7.",
+                    "evidence": [
+                        "prior_step:7"
+                    ]
+                },
+                "requires_external_wait": false,
+                "zero_wait_proof": "Needs the dispute just lodged (prior_synchronous_tool_effect) and the recorded dates, product and booking (initial_state_preexisting); the decision is made from the records at once.",
+                "base_preconditions": [
+                    {
+                        "policy_id": "dnd_invoice_dispute",
+                        "eligibility_id": "dispute_window",
+                        "condition": "The dispute must be lodged no later than the product's dispute_window_days calendar days after the disputed invoice was issued.",
+                        "evidence": [
+                            "initial_state.dnd_ledger.ea35f038-d6ad-412a-8f0e-267c634289dc.dnd_event_id",
+                            "initial_state.dnd_ledger.ea35f038-d6ad-412a-8f0e-267c634289dc.event_date",
+                            "prior_step:7",
+                            "frozen_time"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "dnd_ledger.dnd_event_id",
+                                "source": "prior_step:7",
+                                "source_table": "dnd_disputes",
+                                "source_field": "invoice_event_id",
+                                "action_arg": "invoice_event_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "dnd_invoice_dispute",
+                        "eligibility_id": "one_dispute_per_invoice",
+                        "condition": "An invoice row carries at most one dispute.",
+                        "evidence": [
+                            "prior_step:7",
+                            "initial_state.dnd_disputes.6934fef4-0017-48fd-8fb7-4cd10f62c890.outcome"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "dnd_disputes.invoice_event_id",
+                                "source": "prior_step:7",
+                                "source_table": "dnd_disputes",
+                                "source_field": "invoice_event_id",
+                                "action_arg": "invoice_event_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "dnd_invoice_dispute",
+                        "eligibility_id": "credit_on_invoiced_record",
+                        "condition": "A credit may be booked only on a record whose status is invoiced.",
+                        "evidence": [
+                            "initial_state.dnd_free_time.34646ced-915c-4db4-be30-93726b227987.dnd_id",
+                            "initial_state.dnd_free_time.34646ced-915c-4db4-be30-93726b227987.status"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "dnd_free_time.dnd_id",
+                                "source": "initial_state.dnd_free_time.34646ced-915c-4db4-be30-93726b227987.dnd_id",
+                                "action_arg": "dnd_id"
+                            }
+                        ],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 12,
+                "business_effect": "Books a late_invoice waiver of USD 255.00 against the demurrage row, leaving the dangerous-goods uplift share 127.50 and the extension fee 195.00 owed.",
+                "request_binding": {
+                    "action_semantics": "The row is dated 2026-08-27, after the deadline 2026-07-24, so it is not collectible whatever the caller asked; this selects the late-invoice waiver rather than goodwill (goodwill would be a percentage) or a further dispute credit.",
+                    "intent_source": {
+                        "kind": "initial_state",
+                        "evidence": [
+                            "initial_state.dnd_ledger.ea35f038-d6ad-412a-8f0e-267c634289dc.event_date",
+                            "initial_state.dnd_free_time.34646ced-915c-4db4-be30-93726b227987.clock_stopped_date"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "invoice row issued after the invoicing deadline",
+                        "evidence": [
+                            "initial_state.dnd_ledger.ea35f038-d6ad-412a-8f0e-267c634289dc.event_date",
+                            "initial_state.dnd_free_time.34646ced-915c-4db4-be30-93726b227987.clock_stopped_date",
+                            "initial_state.dnd_free_time.34646ced-915c-4db4-be30-93726b227987.variant_name"
+                        ],
+                        "action_arg": "reference_event_id",
+                        "value": "ea35f038-d6ad-412a-8f0e-267c634289dc"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "established_by_prior_tool",
+                    "fact": "The overcharge on the row was credited at action 10, so the waiver acts on what remains.",
+                    "evidence": [
+                        "prior_step:10"
+                    ]
+                },
+                "requires_external_wait": false,
+                "zero_wait_proof": "Needs the lateness facts in the ledger and record (initial_state_preexisting) and the credit booked at action 10 (prior_synchronous_tool_effect).",
+                "base_preconditions": [
+                    {
+                        "policy_id": "dnd_invoice_dispute",
+                        "eligibility_id": "credit_on_invoiced_record",
+                        "condition": "A credit may be booked only on a record whose status is invoiced.",
+                        "evidence": [
+                            "initial_state.dnd_free_time.34646ced-915c-4db4-be30-93726b227987.dnd_id",
+                            "initial_state.dnd_free_time.34646ced-915c-4db4-be30-93726b227987.status"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "dnd_free_time.dnd_id",
+                                "source": "initial_state.dnd_free_time.34646ced-915c-4db4-be30-93726b227987.dnd_id",
+                                "action_arg": "dnd_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "dnd_goodwill_waiver",
+                        "eligibility_id": "goodwill_quota",
+                        "condition": "The customer's goodwill waivers in the trailing 365 days must be fewer than the product's goodwill_waivers_per_365d.",
+                        "evidence": [
+                            "initial_state.dnd_ledger.f760f06c-67ff-4849-9939-99fbc2aead84.customer_id",
+                            "initial_state.dnd_ledger.f760f06c-67ff-4849-9939-99fbc2aead84.event_type",
+                            "initial_state.dnd_ledger.f760f06c-67ff-4849-9939-99fbc2aead84.waiver_reason",
+                            "initial_state.dnd_ledger.f760f06c-67ff-4849-9939-99fbc2aead84.event_date",
+                            "initial_state.dnd_free_time.34646ced-915c-4db4-be30-93726b227987.variant_name"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "dnd_ledger.customer_id",
+                                "source": "initial_state.dnd_ledger.f760f06c-67ff-4849-9939-99fbc2aead84.customer_id",
+                                "action_arg": "customer_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "dnd_goodwill_waiver",
+                        "eligibility_id": "goodwill_window",
+                        "condition": "The waiver must be requested no later than the product's waiver_request_window_days calendar days after the invoice being waived was issued.",
+                        "evidence": [
+                            "initial_state.dnd_ledger.ea35f038-d6ad-412a-8f0e-267c634289dc.dnd_event_id",
+                            "initial_state.dnd_ledger.ea35f038-d6ad-412a-8f0e-267c634289dc.event_date",
+                            "frozen_time"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "dnd_ledger.dnd_event_id",
+                                "source": "initial_state.dnd_ledger.ea35f038-d6ad-412a-8f0e-267c634289dc.dnd_event_id",
+                                "action_arg": "reference_event_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "dnd_goodwill_waiver",
+                        "eligibility_id": "one_goodwill_per_invoice",
+                        "condition": "Each invoice row takes at most one goodwill waiver.",
+                        "evidence": [
+                            "initial_state.dnd_ledger.f760f06c-67ff-4849-9939-99fbc2aead84.reference_event_id",
+                            "initial_state.dnd_ledger.f760f06c-67ff-4849-9939-99fbc2aead84.waiver_reason",
+                            "initial_state.dnd_ledger.11c75bdd-cb11-4e6e-aae5-d44ab270c1c9.waiver_reason"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "dnd_ledger.reference_event_id",
+                                "source": "initial_state.dnd_ledger.f760f06c-67ff-4849-9939-99fbc2aead84.reference_event_id",
+                                "action_arg": "reference_event_id"
+                            }
+                        ],
+                        "satisfied": true
+                    }
+                ]
+            }
+        ],
+        "temporal_feasibility": [
+            {
+                "step": 7,
+                "policy_id": "dnd_invoice_dispute",
+                "eligibility_id": "dispute_window",
+                "condition": "The dispute must be lodged no later than the product's dispute_window_days calendar days after the disputed invoice was issued.",
+                "temporal_basis": {
+                    "clock": "frozen_time",
+                    "anchor_event": "the disputed invoice was issued",
+                    "anchor_source": "dnd_ledger.event_date",
+                    "relation": "not_after",
+                    "duration_source": "variants.dispute_window_days",
+                    "unit": "calendar_days",
+                    "counting_rule": "The window ends on the invoice's event_date plus the product's window days counted on calendar dates, and a dispute lodged on the last day is in time.",
+                    "boundary": "inclusive"
+                },
+                "as_of": "frozen_time",
+                "evidence": [
+                    "frozen_time",
+                    "initial_state.dnd_ledger.ea35f038-d6ad-412a-8f0e-267c634289dc.event_date",
+                    "initial_state.dnd_free_time.34646ced-915c-4db4-be30-93726b227987.variant_name"
+                ],
+                "satisfied": true,
+                "boundary_check": {
+                    "just_before": "Invoice dated 2026-08-27 + dispute_window_days 30 of Extension 7 = 2026-09-26; a dispute lodged 2026-09-27 would be out of time.",
+                    "at_boundary": "A dispute lodged on 2026-09-26 is in time (inclusive); 2026-09-15 is inside."
+                }
+            },
+            {
+                "step": 10,
+                "policy_id": "dnd_invoice_dispute",
+                "eligibility_id": "dispute_window",
+                "condition": "The dispute must be lodged no later than the product's dispute_window_days calendar days after the disputed invoice was issued.",
+                "temporal_basis": {
+                    "clock": "frozen_time",
+                    "anchor_event": "the disputed invoice was issued",
+                    "anchor_source": "dnd_ledger.event_date",
+                    "relation": "not_after",
+                    "duration_source": "variants.dispute_window_days",
+                    "unit": "calendar_days",
+                    "counting_rule": "The window ends on the invoice's event_date plus the product's window days counted on calendar dates, and a dispute lodged on the last day is in time.",
+                    "boundary": "inclusive"
+                },
+                "as_of": "frozen_time",
+                "evidence": [
+                    "frozen_time",
+                    "initial_state.dnd_ledger.ea35f038-d6ad-412a-8f0e-267c634289dc.event_date",
+                    "prior_step:7"
+                ],
+                "satisfied": true,
+                "boundary_check": {
+                    "just_before": "The dispute decided here was lodged 2026-09-15, inside the window ending 2026-09-26; lodged 2026-09-27 it would have been out of time.",
+                    "at_boundary": "Lodging on 2026-09-26 is the last day in time."
+                }
+            },
+            {
+                "step": 12,
+                "policy_id": "dnd_goodwill_waiver",
+                "eligibility_id": "goodwill_window",
+                "condition": "The waiver must be requested no later than the product's waiver_request_window_days calendar days after the invoice being waived was issued.",
+                "temporal_basis": {
+                    "clock": "frozen_time",
+                    "anchor_event": "the invoice being waived was issued",
+                    "anchor_source": "dnd_ledger.event_date",
+                    "relation": "not_after",
+                    "duration_source": "variants.waiver_request_window_days",
+                    "unit": "calendar_days",
+                    "counting_rule": "The window ends on the invoice's event_date plus the product's window days counted on calendar dates, and a request on the last day is inside it.",
+                    "boundary": "inclusive"
+                },
+                "as_of": "frozen_time",
+                "evidence": [
+                    "frozen_time",
+                    "initial_state.dnd_ledger.ea35f038-d6ad-412a-8f0e-267c634289dc.event_date",
+                    "initial_state.dnd_free_time.34646ced-915c-4db4-be30-93726b227987.variant_name"
+                ],
+                "satisfied": true,
+                "boundary_check": {
+                    "just_before": "Row dated 2026-08-27 + waiver_request_window_days 30 = 2026-09-26; a waiver request on 2026-09-27 would be outside.",
+                    "at_boundary": "A request on 2026-09-26 is inside (inclusive); 2026-09-15 is inside."
+                }
+            }
+        ],
+        "required_user_inputs": [
+            {
+                "information": "Registered email (locator and credential)",
+                "source": "user_scenario:j.oberhaeuser@kessler-lacktechnik.de"
+            },
+            {
+                "information": "VAT number (credential)",
+                "source": "user_scenario:DE281563374"
+            },
+            {
+                "information": "Container and booking concerned",
+                "source": "user_scenario:container AHLU3629157, which came in from Shanghai on booking AHLU26SHA362915"
+            },
+            {
+                "information": "The customer's question about the late invoice",
+                "source": "user_scenario:whether an invoice issued that late is valid at all"
+            },
+            {
+                "information": "Earlier dispute history if asked",
+                "source": "user_scenario:you withdrew it once the operations people had taken something off"
+            },
+            {
+                "information": "Whether he pays today",
+                "source": "user_scenario:accounts payable will pay whatever remains through the normal run"
+            }
+        ],
+        "seed_consistency": [
+            {
+                "row": "initial_state.dnd_free_time.34646ced-915c-4db4-be30-93726b227987",
+                "policy_id": "dnd_invoicing",
+                "check": "Import 40HC record on AHL Free Time Extension 7 (bought 2026-06-05 while running, dry class allowed); discharge 2026-06-02, gate-out 2026-06-18, empty return 2026-06-24 = clock_stopped_date; status invoiced; balance 787.50 = 195.00 + 847.50 - 127.50 - 127.50. Detention used 6 days within 11 free, so no detention row.",
+                "evidence": [
+                    "initial_state.dnd_free_time.34646ced-915c-4db4-be30-93726b227987.balance_due_usd",
+                    "initial_state.bookings.4e6176a6-2d15-49f9-9210-d3945b6f8e53.cargo_type"
+                ]
+            },
+            {
+                "row": "initial_state.dnd_ledger.069ca2aa-427b-4afb-b716-0dd6a408960f",
+                "policy_id": "dnd_free_time_upgrade",
+                "check": "Extension fee 195.00 = Extension 7 price minus 0.00 of Tariff Free Time, bought 2026-06-05, before Tariff's 4 demurrage free days ended on 2026-06-06.",
+                "evidence": [
+                    "initial_state.dnd_ledger.069ca2aa-427b-4afb-b716-0dd6a408960f.amount_usd"
+                ]
+            },
+            {
+                "row": "initial_state.dnd_ledger.ea35f038-d6ad-412a-8f0e-267c634289dc",
+                "policy_id": "dnd_invoicing",
+                "check": "Final demurrage row dated 2026-08-27, after the deadline 2026-06-24 + 30 = 2026-07-24 (late). It bills 6 days, 2026-06-13 to 2026-06-18, at their correct slab positions: 5 slab-1 days at 85.00 and 1 slab-2 day at 140.00, raised by the 50% dangerous-goods uplift, (5 x 85.00 + 1 x 140.00) x 1.5 = 847.50. The recorded dates under AHL Free Time Extension 7 give 16 days used and 11 free, so 5 chargeable days from 2026-06-14 (5 x 85.00 x 1.5 = 637.50): the row counts one day too many, as if the free days were counted from the discharge day itself. Every billed position carries the right slab rate for a dry 40HC, so the defect is the free-time day count (free_time_misapplied), not the rate; the overcharge is 847.50 - 637.50 = 210.00.",
+                "evidence": [
+                    "initial_state.dnd_ledger.ea35f038-d6ad-412a-8f0e-267c634289dc.chargeable_days",
+                    "initial_state.dnd_ledger.ea35f038-d6ad-412a-8f0e-267c634289dc.amount_usd"
+                ]
+            },
+            {
+                "row": "initial_state.dnd_ledger.f760f06c-67ff-4849-9939-99fbc2aead84",
+                "policy_id": "dnd_invoice_dispute",
+                "check": "Operations waiver terminal_closure 127.50 (one uplifted dry slab-1 day) dated 2026-09-02, referencing the demurrage row; granted by operations, not the desk.",
+                "evidence": [
+                    "initial_state.dnd_ledger.f760f06c-67ff-4849-9939-99fbc2aead84.reference_event_id"
+                ]
+            },
+            {
+                "row": "initial_state.dnd_ledger.11c75bdd-cb11-4e6e-aae5-d44ab270c1c9",
+                "policy_id": "dnd_invoice_dispute",
+                "check": "Operations waiver carrier_caused_delay 127.50 dated 2026-09-03 referencing the demurrage row; after it the customer withdrew his carrier-delay dispute of 2026-08-31.",
+                "evidence": [
+                    "initial_state.dnd_ledger.11c75bdd-cb11-4e6e-aae5-d44ab270c1c9.reference_event_id",
+                    "initial_state.dnd_disputes.6934fef4-0017-48fd-8fb7-4cd10f62c890.outcome"
+                ]
+            }
+        ]
+    },
+    "evaluation_criteria": [
+        {
+            "owner": "agent",
+            "tool": "find_customers",
+            "arguments": {
+                "email": "j.oberhaeuser@kessler-lacktechnik.de"
+            },
+            "objective": "Locate the Kessler Lacktechnik GmbH profile by the registered email the caller gives.",
+            "necessity": "All account reads and writes need the internal customer reference."
+        },
+        {
+            "owner": "agent",
+            "tool": "verify_customer_identity",
+            "arguments": {
+                "customer_id": "38f8aabe-5034-40ea-8acd-a4e8b113b873",
+                "email": "j.oberhaeuser@kessler-lacktechnik.de",
+                "tax_registration_number": "DE281563374"
+            },
+            "objective": "Record the in-session identity check with the email and VAT number the caller states.",
+            "necessity": "Two matching credentials are required before any account business."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_dnd_free_time",
+            "arguments": {
+                "customer_id": "38f8aabe-5034-40ea-8acd-a4e8b113b873"
+            },
+            "objective": "Read the free-time record of container AHLU3629157: import, AHL Free Time Extension 7, discharge 2026-06-02, gate-out 2026-06-18, empty return 2026-06-24 = clock_stopped_date, status invoiced, balance 787.50.",
+            "necessity": "Supplies the clock-stop date for the lateness test, the product and dates for the recomputation of the demurrage row, and the record status for the credit gates."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_bookings",
+            "arguments": {
+                "customer_id": "38f8aabe-5034-40ea-8acd-a4e8b113b873"
+            },
+            "objective": "Read the customer's booking AHLU26SHA362915 with cargo_type dangerous_goods.",
+            "necessity": "Cross-category input: dangerous_goods raises every demurrage day rate by 50% in the recomputation and makes the uplift share excluded from the dispute and retained on the late waiver."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_dnd_ledger",
+            "arguments": {
+                "customer_id": "38f8aabe-5034-40ea-8acd-a4e8b113b873"
+            },
+            "objective": "Read the record's ledger: extension fee 195.00, the demurrage row of 2026-08-27 (6 days, 847.50), and the operations waivers for terminal_closure and carrier_caused_delay (127.50 each) referencing it.",
+            "necessity": "Gives the invoice date that makes the row late (after 2026-06-24 + 30 = 2026-07-24), the invoiced amount and day count to compare with the recomputation, and the credits already on the row for the open amount."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_dnd_disputes",
+            "arguments": {
+                "customer_id": "38f8aabe-5034-40ea-8acd-a4e8b113b873"
+            },
+            "objective": "Read the customer's disputes: one carrier_caused_delay dispute on the same row, withdrawn.",
+            "necessity": "Shows no submitted dispute exists (the withdrawn one does not count against one dispute per row), so the billed party must lodge one before any credit."
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "lodge_dnd_dispute_1c3d36b3"
+            },
+            "objective": "Hand the dispute lodging tool to the customer.",
+            "necessity": "Lodging is the billed party's own act; the agent unlocks it for the user. No DB effect."
+        },
+        {
+            "owner": "user",
+            "tool": "call_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "lodge_dnd_dispute_1c3d36b3",
+                "arguments": {
+                    "dnd_id": "34646ced-915c-4db4-be30-93726b227987",
+                    "invoice_event_id": "ea35f038-d6ad-412a-8f0e-267c634289dc",
+                    "dispute_ground": "free_time_misapplied",
+                    "disputed_amount_usd": 395.0
+                }
+            },
+            "objective": "The customer lodges a free_time_misapplied dispute on the demurrage row for USD 395.00.",
+            "necessity": "dnd_ext_dispute_lodged_amount computes the amount disputed; a credit may only be booked against a dispute the billed party lodged.",
+            "argument_uniqueness_tracing": {
+                "dnd_id": "34646ced-915c-4db4-be30-93726b227987 — Id: the free-time record of container AHLU3629157 returned by find_dnd_free_time, passed to the customer by the agent.",
+                "invoice_event_id": "ea35f038-d6ad-412a-8f0e-267c634289dc — Id: the demurrage invoice row dated 2026-08-27 returned by find_dnd_ledger, the line the customer calls about.",
+                "dispute_ground": "free_time_misapplied — Enum: the row bills 6 days from 2026-06-13 although Extension 7 leaves 11 free days so billing starts on 2026-06-14 (5 days); the error is in the free days/day count, the tool contract's 'free_time_misapplied (the free days or the day count billed are wrong)'. rate_misapplied does not fit (the dry slab-1 rate 85.00 x 1.5 is correct), invoice_issued_late is cleared without a dispute and would leave the overcharge, the operational grounds are not decidable at the desk.",
+                "disputed_amount_usd": "395.00 — Calculated: amount still open = 847.50 - (127.50 + 127.50) = 592.50; cargo_type dangerous_goods so the uplift share 592.50 x 50/150 = 197.50 is left out; 592.50 - 197.50 = 395.00."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "find_dnd_disputes",
+            "arguments": {
+                "dnd_id": "34646ced-915c-4db4-be30-93726b227987"
+            },
+            "objective": "Look up the record's disputes after the customer has lodged: the new free_time_misapplied dispute (submitted, USD 395.00) on the demurrage row, lodged today, next to the carrier-delay dispute of 2026-08-31, withdrawn.",
+            "necessity": "The customer's lodging receipt is not shown to the desk; this lookup confirms that a submitted dispute now stands on the demurrage row and gives its disputed amount, which bounds the credit, before the desk decides it."
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "book_dispute_credit_515e844f"
+            },
+            "objective": "Unlock the dispute credit tool.",
+            "necessity": "First half of the unlock/call pair; no DB effect."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "book_dispute_credit_515e844f",
+                "arguments": {
+                    "dnd_id": "34646ced-915c-4db4-be30-93726b227987",
+                    "invoice_event_id": "ea35f038-d6ad-412a-8f0e-267c634289dc",
+                    "outcome": "partially_upheld",
+                    "amount_usd": 210.0
+                }
+            },
+            "objective": "Decide the lodged dispute partially_upheld and book a credit of USD 210.00 against the demurrage row; balance 577.50.",
+            "necessity": "dnd_ext_dispute_credit_amount computes the credit on the world where the dispute lodged at action 7 exists; the tool attaches the credit to the latest dispute lodged against the invoice line, which is that dispute.",
+            "argument_uniqueness_tracing": {
+                "dnd_id": "34646ced-915c-4db4-be30-93726b227987 — Id: record of container AHLU3629157.",
+                "invoice_event_id": "ea35f038-d6ad-412a-8f0e-267c634289dc — Id: the disputed demurrage row, the same line named in the dispute the customer lodged at action 7; the credit tool decides the latest dispute lodged against this line, which is that submitted dispute (lodged 2026-09-15), not the carrier-delay dispute withdrawn on 2026-08-31.",
+                "outcome": "partially_upheld — Enum: rule 'partially_upheld when the credit is positive but smaller' than the disputed amount; the credit 210.00 is below the disputed 395.00, so upheld (credit equals disputed) and denied (no overcharge) do not hold, and submitted/withdrawn are not decisions.",
+                "amount_usd": "210.00 — Calculated: recomputation: separate import demurrage clock 2026-06-02 to 2026-06-18 = 16 days, free 11 (Extension 7), 5 chargeable days, all slab 1, dry class (40HC), dem_dry_slab1_usd 85.00 raised by 50% for dangerous_goods = 127.50 per day, 637.50; overcharge = 847.50 - 637.50 = 210.00; credit = min(210.00, disputed 395.00) = 210.00."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "clear_late_invoice_2264ae48"
+            },
+            "objective": "Unlock the late-invoice waiver tool.",
+            "necessity": "First half of the unlock/call pair; no DB effect."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "clear_late_invoice_2264ae48",
+                "arguments": {
+                    "dnd_id": "34646ced-915c-4db4-be30-93726b227987",
+                    "customer_id": "38f8aabe-5034-40ea-8acd-a4e8b113b873",
+                    "reference_event_id": "ea35f038-d6ad-412a-8f0e-267c634289dc",
+                    "amount_usd": 255.0
+                }
+            },
+            "objective": "Clear the late demurrage row with a late_invoice waiver of USD 255.00; USD 322.50 (195.00 extension fee + 127.50 retained uplift) remains owed.",
+            "necessity": "dnd_ext_late_invoice_waiver computes the waiver on the world where the dispute credit is booked; the row dated 2026-08-27 is later than 2026-06-24 + 30 days.",
+            "argument_uniqueness_tracing": {
+                "dnd_id": "34646ced-915c-4db4-be30-93726b227987 — Id: record of container AHLU3629157.",
+                "customer_id": "38f8aabe-5034-40ea-8acd-a4e8b113b873 — Id: billed party returned by find_customers and verified at action 1.",
+                "reference_event_id": "ea35f038-d6ad-412a-8f0e-267c634289dc — Id: the late demurrage row being cleared (event_date 2026-08-27 > deadline 2026-07-24); the extension fee row is not an invoice and is not late.",
+                "amount_usd": "255.00 — Calculated: amount still open = 847.50 - (127.50 + 127.50 + 210.00) = 382.50; dangerous_goods uplift share = 382.50 x 50/150 = 127.50 stays collectible; waiver = 382.50 - 127.50 = 255.00."
+            }
+        }
+    ],
+    "prerequisite_closure": {
+        "root_problem": "dnd_ext_late_invoice_waiver",
+        "edges": [
+            {
+                "from": "dnd_ext_late_invoice_waiver",
+                "to": "dnd_ext_dispute_credit_amount",
+                "kind": "value_input",
+                "gate": "earlier_credits",
+                "condition": "Any overcharge a late demurrage row carries against its recomputation is credited through a decided dispute before the row is cleared.",
+                "policy_source": "Before a late demurrage row is cleared, any overcharge it carries against its recomputation is taken off through a decided dispute credit, so that the late-invoice waiver acts on what remains.",
+                "resolved_by": "book_dispute_credit_515e844f",
+                "unresolved_at_frozen_time": {
+                    "why_false": "The demurrage row bills 6 days / USD 847.50 while the record's dates and product (discharge 2026-06-02, gate-out 2026-06-18, AHL Free Time Extension 7 with 11 free days, dangerous-goods booking) recompute to 5 days / USD 637.50; the only credits on the row are two operations waivers of 127.50, so an overcharge of 210.00 stands uncredited.",
+                    "evidence": [
+                        "initial_state.dnd_ledger.ea35f038-d6ad-412a-8f0e-267c634289dc.amount_usd = 847.5",
+                        "initial_state.dnd_ledger.ea35f038-d6ad-412a-8f0e-267c634289dc.chargeable_days = 6",
+                        "initial_state.dnd_free_time.34646ced-915c-4db4-be30-93726b227987.discharge_date = 2026-06-02",
+                        "initial_state.dnd_free_time.34646ced-915c-4db4-be30-93726b227987.full_gate_out_date = 2026-06-18",
+                        "initial_state.dnd_free_time.34646ced-915c-4db4-be30-93726b227987.variant_name = AHL Free Time Extension 7",
+                        "initial_state.dnd_ledger.f760f06c-67ff-4849-9939-99fbc2aead84.waiver_reason = terminal_closure",
+                        "initial_state.dnd_ledger.11c75bdd-cb11-4e6e-aae5-d44ab270c1c9.waiver_reason = carrier_caused_delay"
+                    ],
+                    "flips_to_true_by": "The dispute credit of 210.00 booked at action 10 against the row raises earlier_credits from 255.00 to 465.00, so the amount still open falls from 592.50 to 382.50 and the late waiver becomes 255.00."
+                }
+            },
+            {
+                "from": "dnd_ext_dispute_credit_amount",
+                "to": "dnd_ext_dispute_lodged_amount",
+                "kind": "value_input",
+                "gate": "disputed_amount",
+                "condition": "A dispute credit requires a dispute the billed party has lodged on the invoice row and that is still submitted.",
+                "policy_source": "A dispute credit is booked only against a dispute the billed party has lodged on the invoice row and that is still submitted, and the credit references both that dispute and the disputed row.",
+                "resolved_by": "lodge_dnd_dispute_1c3d36b3",
+                "unresolved_at_frozen_time": {
+                    "why_false": "The only dispute on the row is the carrier_caused_delay dispute of 2026-08-31, which the customer withdrew; no submitted dispute exists, so disputed_amount is 0 and the policy allows no credit (the credit tool itself checks nothing and would still write one, see edge_load_bearing).",
+                    "evidence": [
+                        "initial_state.dnd_disputes.6934fef4-0017-48fd-8fb7-4cd10f62c890.outcome = withdrawn",
+                        "initial_state.dnd_disputes.6934fef4-0017-48fd-8fb7-4cd10f62c890.dispute_ground = carrier_caused_delay",
+                        "initial_state.dnd_disputes.6934fef4-0017-48fd-8fb7-4cd10f62c890.invoice_event_id = ea35f038-d6ad-412a-8f0e-267c634289dc"
+                    ],
+                    "flips_to_true_by": "The customer's own dispute lodged at action 7 (free_time_misapplied, USD 395.00, submitted) makes disputed_amount 395.00, and the credit becomes min(overcharge 210.00, 395.00) = 210.00."
+                }
+            }
+        ],
+        "resolution_order": [
+            "dnd_ext_dispute_lodged_amount",
+            "dnd_ext_dispute_credit_amount",
+            "dnd_ext_late_invoice_waiver"
+        ],
+        "order_uniqueness": "The tree is a chain (late waiver -> dispute credit -> lodged dispute), so its only topological order is lodge, credit, late waiver; the credit-before-waiver order is pinned by 'Before a late demurrage row is cleared, any overcharge it carries against its recomputation is taken off through a decided dispute credit, so that the late-invoice waiver acts on what remains.'",
+        "edge_load_bearing": [
+            {
+                "edge": "dnd_ext_late_invoice_waiver -> dnd_ext_dispute_credit_amount",
+                "skipped_effect": "Skipping the credit (action 10) and replaying everything else with the current tools: at the late waiver earlier_credits is 255.00, the amount still open 592.50, the uplift share 197.50 and the late-waiver compute 395.00 instead of 255.00. Terminal state of that replay: no credit row, the dispute lodged at action 7 stays submitted, the replayed waiver of 255.00 is still booked and the balance is 532.50 instead of 322.50."
+            },
+            {
+                "edge": "dnd_ext_dispute_credit_amount -> dnd_ext_dispute_lodged_amount",
+                "skipped_effect": "Skipping the customer's lodging (action 7) and replaying everything else with the current tools: at the credit the compute finds no submitted dispute on the line, so disputed_amount is 0 and the credit compute gives 0.00 instead of 210.00. No new dispute is created; the replayed credit call (action 10) still books its 210.00 and, as its tool attaches a credit to the latest dispute lodged against the line, attaches it to the carrier-delay dispute 6934fef4-0017-48fd-8fb7-4cd10f62c890 and overwrites that dispute's outcome from withdrawn to partially_upheld. Because that credit is still booked, the late-waiver compute of that replay stays 255.00 and the terminal balance 322.50, but the terminal dispute table differs from gold (no dispute dsp_38f923b404d6; the withdrawn dispute now reads partially_upheld)."
+            }
+        ],
+        "no_user_hint": "user_scenario raises only the lateness of the 27 August invoice. It never mentions an overcharge, a wrong day count, a recomputation, a credit or the need to dispute; the earlier withdrawn dispute is disclosed only if the agent asks, and lodging appears only as a passive reaction after the agent explains a dispute is needed and hands it over. No prerequisite problem id appears in it.",
+        "tools_do_not_block": "clear_late_invoice_2264ae48 writes its waiver whatever credits exist; book_dispute_credit_515e844f writes the credit and sets the outcome of the latest dispute lodged against the line without checking that a dispute exists, is submitted or was lodged in the call (with no new dispute it attaches to the withdrawn one, see edge_load_bearing); lodge_dnd_dispute_1c3d36b3 registers any dispute passed to it. The only Error return in task_tools.py is a missing free-time record."
+    },
+    "charter_scope": {
+        "extended_policies": [
+            "dnd_ext_dispute_lodged_amount",
+            "dnd_ext_dispute_credit_amount",
+            "dnd_ext_late_invoice_waiver"
+        ],
+        "workflows": [],
+        "task_tools": [
+            "lodge_dnd_dispute_1c3d36b3",
+            "book_dispute_credit_515e844f",
+            "clear_late_invoice_2264ae48"
+        ]
+    },
+    "required_documents": [
+        "dnd_ext_dispute_lodged_amount",
+        "dnd_ext_dispute_credit_amount",
+        "dnd_ext_late_invoice_waiver"
+    ],
+    "computations": [
+        {
+            "policy_id": "dnd_ext_dispute_lodged_amount",
+            "target_holding_id": "34646ced-915c-4db4-be30-93726b227987",
+            "step": 7,
+            "arg": "disputed_amount_usd",
+            "expected": 395.0,
+            "factor_trace": [
+                "demurrage_row_id = LATEST demurrage row = the 2026-08-27 row",
+                "earlier_credits = SUM of rows referencing it = 127.50 (terminal_closure) + 127.50 (carrier_caused_delay) = 255.00",
+                "open_amount = 847.50 - 255.00 = 592.50",
+                "dg_uplift_pct = 50 (CFIELD booking cargo_type dangerous_goods; off -> 0 -> 592.50)",
+                "result = RND(592.50 - 592.50 x 50/150) = 395.00"
+            ]
+        },
+        {
+            "policy_id": "dnd_ext_dispute_credit_amount",
+            "target_holding_id": "34646ced-915c-4db4-be30-93726b227987",
+            "step": 10,
+            "arg": "amount_usd",
+            "expected": 210.0,
+            "factor_trace": [
+                "demurrage_row_id = LATEST demurrage row = the 2026-08-27 row; disputed_amount = LATEST submitted dispute on that row = 395.00 (lodged at action 7; the withdrawn carrier-delay dispute is excluded by outcome; skipped -> 0 -> credit 0.00)",
+                "invoiced_amount = 847.50",
+                "clock_model separate, import: demurrage clock discharge 2026-06-02 to gate-out 2026-06-18, days_used 16",
+                "free_days = import_demurrage_free_days 11 (Extension 7)",
+                "demurrage_days = 5, slab_offset 0 -> 5 days slab 1",
+                "container_class dry (40HC; reefer/special branches untriggered)",
+                "dg_uplift_pct 50 (dangerous_goods) -> 85.00 x 1.5 = 127.50 per day",
+                "recomputed_amount = 637.50 (cross-category off: 425.00)",
+                "overcharge = 847.50 - 637.50 = 210.00",
+                "result = min(210.00, 395.00) = 210.00 (cross-category off: min(422.50, 395.00) = 395.00)"
+            ]
+        },
+        {
+            "policy_id": "dnd_ext_late_invoice_waiver",
+            "target_holding_id": "34646ced-915c-4db4-be30-93726b227987",
+            "step": 12,
+            "arg": "amount_usd",
+            "expected": 255.0,
+            "factor_trace": [
+                "demurrage_row_id = the 2026-08-27 row",
+                "earlier_credits = 127.50 + 127.50 + 210.00 (credit of action 10) = 465.00 (without the credit: 255.00 -> waiver 395.00)",
+                "open_amount = 847.50 - 465.00 = 382.50",
+                "dg_uplift_pct = 50 (dangerous_goods; off -> 0 -> 382.50)",
+                "result = RND(382.50 - 382.50 x 50/150) = 255.00"
+            ]
+        }
+    ]
+}

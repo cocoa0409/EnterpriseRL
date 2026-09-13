@@ -1,0 +1,15 @@
+# Network accounting — policy audit rework round 2
+
+Read all three assigned reports in full: _difficulty.md, 0.md and 1.md.
+
+- **F1 closed.** The assessment now declares three verbatim source-allocation overrides and their exact monthly-aggregate replacement. Its route requires the sole monthly primary charge, matching invoice/reconciliation aggregate quantity, a completed full month, unchanged source/holding attributes, and us_east. Original invoice attribution stays fixed. The existing task-0 target is uniquely 643.20; the first-export-only zero target is expressly outside the replacement basis.
+- **F2 closed.** The correction chain follows the selected pending refund authorization to its exact review and original charge; assessment dereferences the charge period. Credit original explicitly requires posted, target requires both selected-review and source IDs, and prior offsets select only posted financial corrections for that source. The invoice chain selects one review and its exact full-month source. Accepted authorization also matches the selected review; assessed net matches review and source; issued net additionally matches internet_egress and source period. The narrow full-month-source invoice scope preserves inherited source allocation.
+- **O1 addressed.** Workflow and each of its four steps now carry requires_external_wait=false and concrete zero_wait_proof, propagated to the per-action solvability ledger.
+- **O2 preserved.** Tools remain permissive atomic CRUD, with no new source, deduplication or prerequisite guards. task_tools.py SHA256 remains the exact audited value dfa53d76568d1fdc55380d1ecb2085aba8a31367a3bc4f8cc148b2d6dbd9c6f6.
+- **Auditor derivation corrections preserved.** Refund uses consent request Q as network_event_id; invoice uses posted meter S. Neither was an artifact defect, and neither argument changed.
+
+The runnable verify_audit_regressions.py checks both reported historical-review countermodels using local alternate-history snapshots with settled prior-source accounting. A 100.00 unrelated review leaves credit -16.80, invoice 2055.45 and tax 169.57 unchanged. It also checks all eight source/status/meter/period predicates highlighted by F2 and the explicit F1/O1 metadata. Result: AUDIT REGRESSIONS OK. The original task seeds are unchanged.
+
+Fresh verify.py results retain task-0 amounts [643.20, -16.80, 27.20] and task-1 amounts [2225.85, 2055.45, 2055.45, 169.57], their original receipt identifiers and all prerequisite sensitivities. Factor traces, argument proofs, rule-based action necessity, solvability action semantics and task rationales were propagated together. No blueprint, runtime, skill, audit or sibling artifact was changed.
+
+Full final gate snapshot: gate_snapshot_round_2.txt. Machine-readable equivalent: gate_results_round_2.json. EXTENDED, TASK TOOL CONTRACT, REPLAY, SOLVABILITY, COMPUTE, GROUNDING and SCOPE all pass with EXIT_CODE=0; the optional cache diagnostic also exits zero. Task closure counts remain 32/32 and 25/25; compute factors are now 30 and 36, reflecting the explicit source-selection bindings. Published-KB traceability remains deferred.

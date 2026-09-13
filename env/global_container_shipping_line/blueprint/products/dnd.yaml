@@ -1,0 +1,685 @@
+category: dnd
+display_name: Demurrage and Detention Free Time
+
+# Functional closure (real capabilities of a demurrage and detention billing desk, each carried below):
+#   opening a per-container free-time record and assigning the product (dnd_free_time_opened; dnd_record_opening, dnd_agg_multi_holding)
+#   clock start, expiry of free time, clock stop (dnd_free_time_expired, dnd_clock_stopped, dnd_movement_recorded; dnd_clock_rules)
+#   invoicing by slab, class, dangerous-goods uplift, invoice deadline, minimum invoice (dnd_invoice_issued, dnd_demurrage_invoiced, dnd_detention_invoiced, dnd_settled; dnd_invoicing)
+#   buying more free time before it runs out (dnd_free_time_extended, dnd_extension_fee_charged; dnd_free_time_upgrade, dnd_agg_overdue_portfolio_block)
+#   invoice disputes and late-invoice forfeiture (dnd_dispute_credited, dnd_charge_waived; dnd_invoice_dispute)
+#   goodwill waivers (dnd_charge_waived; dnd_goodwill_waiver)
+#   payment and settlement (dnd_payment_received, dnd_settled; dnd_payment)
+#   cancellation with the booking (dnd_cancelled; dnd_cancellation)
+#   not applicable: interest on overdue invoices and container-loss claims, which credit control and equipment control handle outside this desk.
+
+binding:
+  holding_table: dnd_free_time
+  event_tables: [dnd_ledger]
+  intake_tables: [dnd_disputes]
+  status_field: status
+  variant_field: variant_name
+  quantity_fields: {balance_due_usd: dnd_charges}
+
+lifecycle:
+  states: [free_time_running, charges_accruing, clock_stopped, invoiced, settled, cancelled]
+  transitions:
+    - {from: free_time_running, to: charges_accruing, by: system, means: A clock passed the end of its free time while still running.}
+    - {from: free_time_running, to: clock_stopped, by: system, means: The last clock stopped inside free time.}
+    - {from: charges_accruing, to: clock_stopped, by: system, means: The last clock stopped after free time had run out.}
+    - {from: clock_stopped, to: invoiced, by: agent, means: The final demurrage and detention invoice is issued.}
+    - {from: clock_stopped, to: settled, by: agent, means: Nothing is invoiced because no day was chargeable, the total is below the minimum invoice, or the invoice deadline passed.}
+    - {from: invoiced, to: settled, by: agent, means: The balance due reached 0.00 through payments, waivers and dispute credits.}
+    - {from: free_time_running, to: cancelled, by: agent, means: The record is cancelled because its booking was cancelled before any clock ran.}
+
+accounts:
+  - key: dnd_charges
+    unit: USD
+    meaning: Demurrage, detention and free-time purchases owed on one container record — invoices and extension fees in, payments, waivers and dispute credits out.
+
+parameter_schema:
+  clock_model: Whether demurrage and detention run on separate clocks with their own free days (separate) or on one merged clock (combined) (enum string).
+  import_demurrage_free_days: Free days on the import demurrage clock, discharge to full gate-out; used only when clock_model is separate (integer calendar days).
+  import_detention_free_days: Free days on the import detention clock, full gate-out to empty return; used only when clock_model is separate (integer calendar days).
+  export_detention_free_days: Free days on the export detention clock, empty pickup to full gate-in; used only when clock_model is separate (integer calendar days).
+  export_demurrage_free_days: Free days on the export demurrage clock, full gate-in to loading; used only when clock_model is separate (integer calendar days).
+  combined_import_free_days: Free days on the merged import clock, discharge to empty return; used only when clock_model is combined (integer calendar days).
+  combined_export_free_days: Free days on the merged export clock, empty pickup to loading; used only when clock_model is combined (integer calendar days).
+  clock_start_offset_days: Days after the start event on which a clock's first counted day falls (integer days).
+  slab1_length_days: Chargeable days billed at slab 1 rates (integer days).
+  slab2_length_days: Chargeable days after slab 1 billed at slab 2 rates (integer days).
+  slab3_length_days: Chargeable days after slab 2 billed at slab 3 rates; every later day is slab 4 (integer days).
+  dem_dry_slab1_usd: Demurrage day rate, dry class, slab 1 (USD per container per day).
+  dem_dry_slab2_usd: Demurrage day rate, dry class, slab 2 (USD per container per day).
+  dem_dry_slab3_usd: Demurrage day rate, dry class, slab 3 (USD per container per day).
+  dem_dry_slab4_usd: Demurrage day rate, dry class, slab 4 (USD per container per day).
+  dem_reefer_slab1_usd: Demurrage day rate, reefer class, slab 1 (USD per container per day).
+  dem_reefer_slab2_usd: Demurrage day rate, reefer class, slab 2 (USD per container per day).
+  dem_reefer_slab3_usd: Demurrage day rate, reefer class, slab 3 (USD per container per day).
+  dem_reefer_slab4_usd: Demurrage day rate, reefer class, slab 4 (USD per container per day).
+  dem_special_slab1_usd: Demurrage day rate, special class, slab 1 (USD per container per day).
+  dem_special_slab2_usd: Demurrage day rate, special class, slab 2 (USD per container per day).
+  dem_special_slab3_usd: Demurrage day rate, special class, slab 3 (USD per container per day).
+  dem_special_slab4_usd: Demurrage day rate, special class, slab 4 (USD per container per day).
+  det_dry_slab1_usd: Detention day rate, dry class, slab 1 (USD per container per day).
+  det_dry_slab2_usd: Detention day rate, dry class, slab 2 (USD per container per day).
+  det_dry_slab3_usd: Detention day rate, dry class, slab 3 (USD per container per day).
+  det_dry_slab4_usd: Detention day rate, dry class, slab 4 (USD per container per day).
+  det_reefer_slab1_usd: Detention day rate, reefer class, slab 1 (USD per container per day).
+  det_reefer_slab2_usd: Detention day rate, reefer class, slab 2 (USD per container per day).
+  det_reefer_slab3_usd: Detention day rate, reefer class, slab 3 (USD per container per day).
+  det_reefer_slab4_usd: Detention day rate, reefer class, slab 4 (USD per container per day).
+  det_special_slab1_usd: Detention day rate, special class, slab 1 (USD per container per day).
+  det_special_slab2_usd: Detention day rate, special class, slab 2 (USD per container per day).
+  det_special_slab3_usd: Detention day rate, special class, slab 3 (USD per container per day).
+  det_special_slab4_usd: Detention day rate, special class, slab 4 (USD per container per day).
+  equipment_class_map: Rate class of each equipment type (mapping of dnd_free_time.equipment_type value to dry, reefer or special).
+  allowed_equipment_classes: Rate classes the product may be applied to (list of dry, reefer, special).
+  dg_container_uplift_pct: Increase of demurrage day rates for a container on a dangerous_goods booking (integer percent).
+  purchasable_as_upgrade: Whether the product may be bought on a running record in place of a lower product (boolean).
+  product_price_per_container_usd: List price of the product per container record (USD per container).
+  max_upgrades_per_record: Upgrades a record may still take while it carries this product (integer).
+  min_contract_tier_rank: Lowest service contract tier rank whose bookings are opened on this product; 0 when no contract is needed (integer rank).
+  overdue_balance_block_usd: Customer's overdue demurrage and detention balance above which this product cannot be bought as an upgrade (USD).
+  invoice_issue_deadline_days: Latest the final invoice may be issued, in calendar days after charges stopped accruing (integer days).
+  minimum_invoice_usd: Total below which no invoice is issued (USD per record).
+  invoice_payment_terms_days: Payment term of a demurrage and detention invoice counted from its date (integer calendar days).
+  dispute_window_days: Calendar days from the invoice date within which the billed party may dispute it (integer days).
+  dispute_response_days: Calendar days from a dispute within which the line decides it (integer days).
+  goodwill_waiver_pct_max: Largest goodwill waiver as percent of the invoice amount still open after credits (integer percent).
+  goodwill_waiver_cap_usd: Largest goodwill waiver per invoice in money (USD per invoice).
+  goodwill_waivers_per_365d: Goodwill waivers per customer in the trailing 365 days (integer).
+  waiver_request_window_days: Calendar days from the invoice date within which a goodwill waiver may be requested (integer days).
+
+variants:
+  - name: AHL Tariff Free Time
+    rank: 1
+    entry_gate: {applied_by_default: true, equipment_classes: [dry, reefer, special]}
+    parameters: {clock_model: separate, import_demurrage_free_days: 4, import_detention_free_days: 4, export_detention_free_days: 5, export_demurrage_free_days: 5, combined_import_free_days: 0, combined_export_free_days: 0, clock_start_offset_days: 1, slab1_length_days: 5, slab2_length_days: 5, slab3_length_days: 10, dem_dry_slab1_usd: 85.00, dem_dry_slab2_usd: 140.00, dem_dry_slab3_usd: 210.00, dem_dry_slab4_usd: 290.00, dem_reefer_slab1_usd: 150.00, dem_reefer_slab2_usd: 225.00, dem_reefer_slab3_usd: 320.00, dem_reefer_slab4_usd: 420.00, dem_special_slab1_usd: 120.00, dem_special_slab2_usd: 190.00, dem_special_slab3_usd: 275.00, dem_special_slab4_usd: 370.00, det_dry_slab1_usd: 65.00, det_dry_slab2_usd: 110.00, det_dry_slab3_usd: 165.00, det_dry_slab4_usd: 230.00, det_reefer_slab1_usd: 120.00, det_reefer_slab2_usd: 180.00, det_reefer_slab3_usd: 260.00, det_reefer_slab4_usd: 340.00, det_special_slab1_usd: 95.00, det_special_slab2_usd: 150.00, det_special_slab3_usd: 220.00, det_special_slab4_usd: 300.00, equipment_class_map: {20DV: dry, 40DV: dry, 40HC: dry, 45HC: dry, 20RF: reefer, 40RH: reefer, 20OT: special, 40OT: special, 20FR: special, 40FR: special, 20TK: special}, allowed_equipment_classes: [dry, reefer, special], dg_container_uplift_pct: 50, purchasable_as_upgrade: false, product_price_per_container_usd: 0.00, max_upgrades_per_record: 1, min_contract_tier_rank: 0, overdue_balance_block_usd: 1500.00, invoice_issue_deadline_days: 30, minimum_invoice_usd: 25.00, invoice_payment_terms_days: 15, dispute_window_days: 30, dispute_response_days: 30, goodwill_waiver_pct_max: 0, goodwill_waiver_cap_usd: 0.00, goodwill_waivers_per_365d: 0, waiver_request_window_days: 30}
+  - name: AHL Free Time Extension 3
+    rank: 2
+    entry_gate: {purchase_on_running_record: true, equipment_classes: [dry, reefer, special]}
+    parameters: {clock_model: separate, import_demurrage_free_days: 7, import_detention_free_days: 7, export_detention_free_days: 8, export_demurrage_free_days: 8, combined_import_free_days: 0, combined_export_free_days: 0, clock_start_offset_days: 1, slab1_length_days: 5, slab2_length_days: 5, slab3_length_days: 10, dem_dry_slab1_usd: 85.00, dem_dry_slab2_usd: 140.00, dem_dry_slab3_usd: 210.00, dem_dry_slab4_usd: 290.00, dem_reefer_slab1_usd: 150.00, dem_reefer_slab2_usd: 225.00, dem_reefer_slab3_usd: 320.00, dem_reefer_slab4_usd: 420.00, dem_special_slab1_usd: 120.00, dem_special_slab2_usd: 190.00, dem_special_slab3_usd: 275.00, dem_special_slab4_usd: 370.00, det_dry_slab1_usd: 65.00, det_dry_slab2_usd: 110.00, det_dry_slab3_usd: 165.00, det_dry_slab4_usd: 230.00, det_reefer_slab1_usd: 120.00, det_reefer_slab2_usd: 180.00, det_reefer_slab3_usd: 260.00, det_reefer_slab4_usd: 340.00, det_special_slab1_usd: 95.00, det_special_slab2_usd: 150.00, det_special_slab3_usd: 220.00, det_special_slab4_usd: 300.00, equipment_class_map: {20DV: dry, 40DV: dry, 40HC: dry, 45HC: dry, 20RF: reefer, 40RH: reefer, 20OT: special, 40OT: special, 20FR: special, 40FR: special, 20TK: special}, allowed_equipment_classes: [dry, reefer, special], dg_container_uplift_pct: 50, purchasable_as_upgrade: true, product_price_per_container_usd: 95.00, max_upgrades_per_record: 1, min_contract_tier_rank: 0, overdue_balance_block_usd: 1500.00, invoice_issue_deadline_days: 30, minimum_invoice_usd: 25.00, invoice_payment_terms_days: 15, dispute_window_days: 30, dispute_response_days: 30, goodwill_waiver_pct_max: 10, goodwill_waiver_cap_usd: 250.00, goodwill_waivers_per_365d: 1, waiver_request_window_days: 30}
+  - name: AHL Free Time Extension 7
+    rank: 3
+    entry_gate: {purchase_on_running_record: true, equipment_classes: [dry, reefer]}
+    parameters: {clock_model: separate, import_demurrage_free_days: 11, import_detention_free_days: 11, export_detention_free_days: 12, export_demurrage_free_days: 12, combined_import_free_days: 0, combined_export_free_days: 0, clock_start_offset_days: 1, slab1_length_days: 5, slab2_length_days: 5, slab3_length_days: 10, dem_dry_slab1_usd: 85.00, dem_dry_slab2_usd: 140.00, dem_dry_slab3_usd: 210.00, dem_dry_slab4_usd: 290.00, dem_reefer_slab1_usd: 150.00, dem_reefer_slab2_usd: 225.00, dem_reefer_slab3_usd: 320.00, dem_reefer_slab4_usd: 420.00, dem_special_slab1_usd: 120.00, dem_special_slab2_usd: 190.00, dem_special_slab3_usd: 275.00, dem_special_slab4_usd: 370.00, det_dry_slab1_usd: 65.00, det_dry_slab2_usd: 110.00, det_dry_slab3_usd: 165.00, det_dry_slab4_usd: 230.00, det_reefer_slab1_usd: 120.00, det_reefer_slab2_usd: 180.00, det_reefer_slab3_usd: 260.00, det_reefer_slab4_usd: 340.00, det_special_slab1_usd: 95.00, det_special_slab2_usd: 150.00, det_special_slab3_usd: 220.00, det_special_slab4_usd: 300.00, equipment_class_map: {20DV: dry, 40DV: dry, 40HC: dry, 45HC: dry, 20RF: reefer, 40RH: reefer, 20OT: special, 40OT: special, 20FR: special, 40FR: special, 20TK: special}, allowed_equipment_classes: [dry, reefer], dg_container_uplift_pct: 50, purchasable_as_upgrade: true, product_price_per_container_usd: 195.00, max_upgrades_per_record: 1, min_contract_tier_rank: 0, overdue_balance_block_usd: 2500.00, invoice_issue_deadline_days: 30, minimum_invoice_usd: 25.00, invoice_payment_terms_days: 15, dispute_window_days: 30, dispute_response_days: 30, goodwill_waiver_pct_max: 10, goodwill_waiver_cap_usd: 350.00, goodwill_waivers_per_365d: 1, waiver_request_window_days: 30}
+  - name: AHL Combined Free Time 14
+    rank: 4
+    entry_gate: {purchase_on_running_record: true, equipment_classes: [dry, reefer, special]}
+    parameters: {clock_model: combined, import_demurrage_free_days: 0, import_detention_free_days: 0, export_detention_free_days: 0, export_demurrage_free_days: 0, combined_import_free_days: 14, combined_export_free_days: 14, clock_start_offset_days: 1, slab1_length_days: 5, slab2_length_days: 5, slab3_length_days: 10, dem_dry_slab1_usd: 85.00, dem_dry_slab2_usd: 140.00, dem_dry_slab3_usd: 210.00, dem_dry_slab4_usd: 290.00, dem_reefer_slab1_usd: 150.00, dem_reefer_slab2_usd: 225.00, dem_reefer_slab3_usd: 320.00, dem_reefer_slab4_usd: 420.00, dem_special_slab1_usd: 120.00, dem_special_slab2_usd: 190.00, dem_special_slab3_usd: 275.00, dem_special_slab4_usd: 370.00, det_dry_slab1_usd: 65.00, det_dry_slab2_usd: 110.00, det_dry_slab3_usd: 165.00, det_dry_slab4_usd: 230.00, det_reefer_slab1_usd: 120.00, det_reefer_slab2_usd: 180.00, det_reefer_slab3_usd: 260.00, det_reefer_slab4_usd: 340.00, det_special_slab1_usd: 95.00, det_special_slab2_usd: 150.00, det_special_slab3_usd: 220.00, det_special_slab4_usd: 300.00, equipment_class_map: {20DV: dry, 40DV: dry, 40HC: dry, 45HC: dry, 20RF: reefer, 40RH: reefer, 20OT: special, 40OT: special, 20FR: special, 40FR: special, 20TK: special}, allowed_equipment_classes: [dry, reefer, special], dg_container_uplift_pct: 50, purchasable_as_upgrade: true, product_price_per_container_usd: 245.00, max_upgrades_per_record: 1, min_contract_tier_rank: 0, overdue_balance_block_usd: 5000.00, invoice_issue_deadline_days: 30, minimum_invoice_usd: 25.00, invoice_payment_terms_days: 30, dispute_window_days: 30, dispute_response_days: 30, goodwill_waiver_pct_max: 15, goodwill_waiver_cap_usd: 500.00, goodwill_waivers_per_365d: 2, waiver_request_window_days: 45}
+  - name: AHL Combined Free Time 21
+    rank: 5
+    entry_gate: {purchase_on_running_record: true, equipment_classes: [dry]}
+    parameters: {clock_model: combined, import_demurrage_free_days: 0, import_detention_free_days: 0, export_detention_free_days: 0, export_demurrage_free_days: 0, combined_import_free_days: 21, combined_export_free_days: 21, clock_start_offset_days: 1, slab1_length_days: 5, slab2_length_days: 5, slab3_length_days: 10, dem_dry_slab1_usd: 85.00, dem_dry_slab2_usd: 140.00, dem_dry_slab3_usd: 210.00, dem_dry_slab4_usd: 290.00, dem_reefer_slab1_usd: 150.00, dem_reefer_slab2_usd: 225.00, dem_reefer_slab3_usd: 320.00, dem_reefer_slab4_usd: 420.00, dem_special_slab1_usd: 120.00, dem_special_slab2_usd: 190.00, dem_special_slab3_usd: 275.00, dem_special_slab4_usd: 370.00, det_dry_slab1_usd: 65.00, det_dry_slab2_usd: 110.00, det_dry_slab3_usd: 165.00, det_dry_slab4_usd: 230.00, det_reefer_slab1_usd: 120.00, det_reefer_slab2_usd: 180.00, det_reefer_slab3_usd: 260.00, det_reefer_slab4_usd: 340.00, det_special_slab1_usd: 95.00, det_special_slab2_usd: 150.00, det_special_slab3_usd: 220.00, det_special_slab4_usd: 300.00, equipment_class_map: {20DV: dry, 40DV: dry, 40HC: dry, 45HC: dry, 20RF: reefer, 40RH: reefer, 20OT: special, 40OT: special, 20FR: special, 40FR: special, 20TK: special}, allowed_equipment_classes: [dry], dg_container_uplift_pct: 50, purchasable_as_upgrade: true, product_price_per_container_usd: 395.00, max_upgrades_per_record: 1, min_contract_tier_rank: 0, overdue_balance_block_usd: 5000.00, invoice_issue_deadline_days: 30, minimum_invoice_usd: 25.00, invoice_payment_terms_days: 30, dispute_window_days: 30, dispute_response_days: 30, goodwill_waiver_pct_max: 15, goodwill_waiver_cap_usd: 750.00, goodwill_waivers_per_365d: 2, waiver_request_window_days: 45}
+  - name: AHL Contract Free Time 30
+    rank: 6
+    entry_gate: {booking_rated_under_contract: true, min_contract_tier_rank: 4, contract_status: active, equipment_classes: [dry, reefer, special]}
+    parameters: {clock_model: combined, import_demurrage_free_days: 0, import_detention_free_days: 0, export_detention_free_days: 0, export_demurrage_free_days: 0, combined_import_free_days: 30, combined_export_free_days: 30, clock_start_offset_days: 1, slab1_length_days: 7, slab2_length_days: 7, slab3_length_days: 14, dem_dry_slab1_usd: 68.00, dem_dry_slab2_usd: 112.00, dem_dry_slab3_usd: 168.00, dem_dry_slab4_usd: 232.00, dem_reefer_slab1_usd: 120.00, dem_reefer_slab2_usd: 180.00, dem_reefer_slab3_usd: 256.00, dem_reefer_slab4_usd: 336.00, dem_special_slab1_usd: 96.00, dem_special_slab2_usd: 152.00, dem_special_slab3_usd: 220.00, dem_special_slab4_usd: 296.00, det_dry_slab1_usd: 52.00, det_dry_slab2_usd: 88.00, det_dry_slab3_usd: 132.00, det_dry_slab4_usd: 184.00, det_reefer_slab1_usd: 96.00, det_reefer_slab2_usd: 144.00, det_reefer_slab3_usd: 208.00, det_reefer_slab4_usd: 272.00, det_special_slab1_usd: 76.00, det_special_slab2_usd: 120.00, det_special_slab3_usd: 176.00, det_special_slab4_usd: 240.00, equipment_class_map: {20DV: dry, 40DV: dry, 40HC: dry, 45HC: dry, 20RF: reefer, 40RH: reefer, 20OT: special, 40OT: special, 20FR: special, 40FR: special, 20TK: special}, allowed_equipment_classes: [dry, reefer, special], dg_container_uplift_pct: 25, purchasable_as_upgrade: false, product_price_per_container_usd: 0.00, max_upgrades_per_record: 0, min_contract_tier_rank: 4, overdue_balance_block_usd: 15000.00, invoice_issue_deadline_days: 30, minimum_invoice_usd: 50.00, invoice_payment_terms_days: 45, dispute_window_days: 45, dispute_response_days: 30, goodwill_waiver_pct_max: 25, goodwill_waiver_cap_usd: 1500.00, goodwill_waivers_per_365d: 4, waiver_request_window_days: 60}
+
+events:
+  # ---- holding (dnd_free_time) ----
+  - type: dnd_free_time_opened
+    target: dnd_free_time
+    mutation: create
+    meaning: A free-time record is opened for one container on one leg of a booking.
+    grain: One row per container per booking per direction.
+    fields: {dnd_id: new record reference, customer_id: billed party, variant_name: product applied at opening, booking_id: booking, container_number: container, direction: import or export, equipment_type: equipment type, port_code: port where the clock runs, discharge_date: import discharge date, empty_pickup_date: export empty pickup date, opened_date: opening date}
+    triggers: []
+  - type: dnd_free_time_expired
+    target: dnd_free_time
+    mutation: {transition: {from: free_time_running, to: charges_accruing}}
+    meaning: Free time ran out on a clock that is still running.
+    grain: One row per record whose free time ran out.
+    fields: {status: becomes charges_accruing}
+    triggers: []
+  - type: dnd_clock_stopped
+    target: dnd_free_time
+    mutation: {transition: [{from: free_time_running, to: clock_stopped}, {from: charges_accruing, to: clock_stopped}]}
+    meaning: The last clock of the record stopped, by empty return on import or by loading on export.
+    grain: One row per record.
+    fields: {status: becomes clock_stopped, empty_return_date: import empty return date, loaded_date: export loading date, clock_stopped_date: date charges stopped accruing}
+    triggers: []
+  - type: dnd_movement_recorded
+    target: dnd_free_time
+    mutation: update
+    meaning: A container movement date that starts or stops a clock is recorded by the terminal or depot.
+    grain: One row per movement recorded.
+    fields: {discharge_date: discharge date, full_gate_out_date: full gate-out date, empty_pickup_date: empty pickup date, full_gate_in_date: full gate-in date}
+    triggers: []
+  - type: dnd_invoice_issued
+    target: dnd_free_time
+    mutation: {transition: {from: clock_stopped, to: invoiced}}
+    meaning: The final demurrage and detention invoice of the record is issued.
+    grain: One row per record invoiced.
+    fields: {status: becomes invoiced}
+    triggers: []
+  - type: dnd_settled
+    target: dnd_free_time
+    mutation: {transition: [{from: clock_stopped, to: settled}, {from: invoiced, to: settled}]}
+    meaning: The record is closed with nothing owed.
+    grain: One row per record settled.
+    fields: {status: becomes settled, settled_date: settlement date}
+    triggers: []
+  - type: dnd_cancelled
+    target: dnd_free_time
+    mutation: {transition: {from: free_time_running, to: cancelled}}
+    meaning: The record is cancelled because its booking was cancelled before the container moved.
+    grain: One row per record cancelled.
+    fields: {status: becomes cancelled, settled_date: cancellation date, booking_id: booking cancelled}
+    triggers: []
+  - type: dnd_free_time_extended
+    target: dnd_free_time
+    mutation: update
+    meaning: The customer buys a higher free-time product for a running record.
+    grain: One row per upgrade.
+    fields: {variant_name: product bought}
+    triggers:
+      - event: dnd:dnd_extension_fee_charged
+        map: {dnd_id: dnd_id, customer_id: customer_id, charge_type: free_time_extension, target_variant: variant_name}
+  # ---- ledger (dnd_ledger) ----
+  - type: dnd_demurrage_invoiced
+    target: dnd_ledger
+    meaning: Demurrage days beyond free time are invoiced.
+    grain: One row per demurrage charge type per invoiced period per record.
+    distinguish_by: [charge_type, period_end_date]
+    fields: {dnd_id: record, customer_id: billed party, event_date: invoice date, charge_type: import_demurrage or export_demurrage, amount_usd: invoice amount, chargeable_days: demurrage days billed, period_start_date: first demurrage day billed, period_end_date: last demurrage day billed}
+    account: dnd_charges
+    direction: in
+    triggers: []
+  - type: dnd_detention_invoiced
+    target: dnd_ledger
+    meaning: Detention days beyond free time are invoiced.
+    grain: One row per detention charge type per invoiced period per record.
+    distinguish_by: [charge_type, period_end_date]
+    fields: {dnd_id: record, customer_id: billed party, event_date: invoice date, charge_type: import_detention or export_detention, amount_usd: invoice amount, chargeable_days: detention days billed, period_start_date: first detention day billed, period_end_date: last detention day billed}
+    account: dnd_charges
+    direction: in
+    triggers: []
+  - type: dnd_extension_fee_charged
+    target: dnd_ledger
+    meaning: The price of a free-time upgrade is charged.
+    grain: One row per product bought on the record.
+    distinguish_by: [target_variant]
+    fields: {dnd_id: record, customer_id: billed party, event_date: purchase date, charge_type: free_time_extension, amount_usd: price difference paid, target_variant: product bought}
+    account: dnd_charges
+    direction: in
+    triggers: []
+  - type: dnd_payment_received
+    target: dnd_ledger
+    meaning: A remittance is applied to the record's balance.
+    grain: One row per remittance per record.
+    distinguish_by: [payment_reference]
+    fields: {dnd_id: record, customer_id: paying party, event_date: value date, charge_type: payment, amount_usd: amount remitted, payment_reference: remittance reference quoted by the customer}
+    account: dnd_charges
+    direction: out
+    triggers: []
+  - type: dnd_charge_waived
+    target: dnd_ledger
+    meaning: All or part of an invoice is waived, for a late invoice, as goodwill, or on an operations decision.
+    grain: One row per invoice per waiver reason.
+    distinguish_by: [reference_event_id, waiver_reason]
+    fields: {dnd_id: record, customer_id: billed party, event_date: waiver date, charge_type: waiver, amount_usd: amount waived, waiver_reason: controlled reason, reference_event_id: invoice row waived}
+    account: dnd_charges
+    direction: out
+    triggers: []
+  - type: dnd_dispute_credited
+    target: dnd_ledger
+    meaning: A dispute found in the customer's favour is credited against the disputed invoice.
+    grain: One row per dispute resolved with a credit.
+    distinguish_by: [dispute_id]
+    fields: {dnd_id: record, customer_id: billed party, event_date: decision date, charge_type: dispute_credit, amount_usd: amount credited, reference_event_id: invoice row disputed, dispute_id: dispute resolved}
+    account: dnd_charges
+    direction: out
+    triggers: []
+
+measures:
+  - id: dnd_msr_overdue_balance
+    window: Current state of every record of the customer on the handling date.
+    measure: Sum of balance_due_usd over the customer's records in status invoiced whose invoice is past due, an invoice being past due when the handling date is later than its event_date plus its payment term and no submitted dispute stands against it.
+  - id: dnd_msr_upgrades_on_record
+    window: Life of the record.
+    measure: Count of dnd_extension_fee_charged rows on the dnd_id.
+  - id: dnd_msr_invoice_credits
+    window: Life of the invoice row, before the row being handled.
+    measure: Sum of amount_usd of dnd_charge_waived and dnd_dispute_credited rows whose reference_event_id is the invoice row.
+  - id: dnd_msr_goodwill_waivers_365d
+    window: Trailing 365 calendar days ending on the waiver date, inclusive, across all records of the customer.
+    measure: Count of dnd_charge_waived rows for the customer_id with waiver_reason commercial_goodwill and event_date inside the window.
+
+policies:
+  - id: dnd_agg_multi_holding
+    subject: [dnd_free_time_opened]
+    rule: >-
+      A customer holds one free-time record for every container on every leg it is billed for, with no cap on the number of records. Each
+      container of a booking has at most one record per direction. A second record for the same container, booking and direction is never
+      opened; a container that moves again under another booking gets a record under that booking.
+    eligibility:
+      - id: one_record_per_container_leg
+        applies_to: [dnd_free_time_opened]
+        kind: dedup
+        condition: Each container of a booking has at most one record per direction.
+        evidence_fields: [dnd_free_time.booking_id, dnd_free_time.container_number, dnd_free_time.direction]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [dnd_free_time.booking_id, dnd_free_time.container_number, dnd_free_time.direction]
+          action_bindings: {dnd_free_time.booking_id: booking_id, dnd_free_time.container_number: container_number, dnd_free_time.direction: direction}
+        dedup_contract:
+          table: dnd_free_time
+          mode: separate_record
+          object_bindings: {booking_id: booking_id, container_number: container_number, direction: direction}
+          duplicate_filters: {status: [free_time_running, charges_accruing, clock_stopped, invoiced, settled]}
+          distinct_fields: []
+    params: {max_per_customer: null}
+
+  - id: dnd_agg_overdue_portfolio_block
+    subject: [dnd_free_time_extended, dnd_extension_fee_charged]
+    rule: >-
+      Free-time purchases are judged against the customer's whole demurrage and detention portfolio. dnd_msr_overdue_balance adds up the
+      balance of every record of the customer whose invoice is past its payment term, where the term is invoice_payment_terms_days of that
+      record's product counted from the invoice date, or the customer's credit_days when the customer is credit_approved and credit_days is
+      longer; an invoice under a submitted dispute is not past due. An upgrade may be bought only when the customer's overdue demurrage and
+      detention balance does not exceed the overdue_balance_block_usd of the product being bought. Balances of other product categories,
+      such as booking or documentation charges, never count toward this measure.
+    eligibility:
+      - id: overdue_below_block
+        applies_to: [dnd_free_time_extended, dnd_extension_fee_charged]
+        kind: authorization
+        condition: An upgrade may be bought only when the customer's overdue demurrage and detention balance does not exceed the overdue_balance_block_usd of the product being bought.
+        evidence_fields: [dnd_free_time.customer_id, dnd_free_time.status, dnd_free_time.balance_due_usd, dnd_ledger.event_date, customers.credit_days]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [dnd_free_time.customer_id]
+          action_bindings: {dnd_free_time.customer_id: customer_id}
+    params:
+      per_tier:
+        AHL Tariff Free Time: {overdue_balance_block_usd: "=overdue_balance_block_usd"}
+        AHL Free Time Extension 3: {overdue_balance_block_usd: "=overdue_balance_block_usd"}
+        AHL Free Time Extension 7: {overdue_balance_block_usd: "=overdue_balance_block_usd"}
+        AHL Combined Free Time 14: {overdue_balance_block_usd: "=overdue_balance_block_usd"}
+        AHL Combined Free Time 21: {overdue_balance_block_usd: "=overdue_balance_block_usd"}
+        AHL Contract Free Time 30: {overdue_balance_block_usd: "=overdue_balance_block_usd"}
+    formula:
+      purchase_blocked: dnd_msr_overdue_balance > overdue_balance_block_usd
+    measures: [dnd_msr_overdue_balance]
+
+  - id: dnd_record_opening
+    subject: [dnd_free_time_opened]
+    rule: >-
+      A record opens on the product that applies to the container at that moment. It is opened on AHL Contract Free Time 30 when the booking
+      is rated under a service contract of the same customer whose tier rank is at least that product's min_contract_tier_rank and which is
+      active, and otherwise on AHL Tariff Free Time. The service contract referenced by the booking must be active for a record to open on
+      AHL Contract Free Time 30. The equipment's rate class, taken from equipment_class_map, must be one of the product's
+      allowed_equipment_classes; a contract booking whose equipment class is outside that list opens on AHL Tariff Free Time instead. The
+      export record opens when empties are released for the booking and the import record opens when the container is discharged. The other
+      products are never applied at opening; they are bought later under dnd_free_time_upgrade.
+    eligibility:
+      - id: contract_active_for_contract_free_time
+        applies_to: [dnd_free_time_opened]
+        kind: state
+        condition: The service contract referenced by the booking must be active for a record to open on AHL Contract Free Time 30.
+        evidence_fields: [service_contracts.contract_id, service_contracts.status, bookings.contract_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [service_contracts.contract_id]
+          action_bindings: {service_contracts.contract_id: contract_id}
+        state_contract:
+          field: service_contracts.status
+          allowed: [active]
+
+  - id: dnd_clock_rules
+    subject: [dnd_free_time_expired, dnd_clock_stopped, dnd_movement_recorded]
+    rule: >-
+      Each clock starts clock_start_offset_days after the calendar day of its start event and runs to the calendar day of its stop event,
+      both counted, so with an offset of 1 the days used by a clock are the stop date minus the start date in calendar days; any part of a
+      day counts as a whole day, and weekends and public holidays are counted. Under clock_model separate, an import record runs a demurrage
+      clock from discharge_date to full_gate_out_date against import_demurrage_free_days and a detention clock from full_gate_out_date to
+      empty_return_date against import_detention_free_days; an export record runs a detention clock from empty_pickup_date to
+      full_gate_in_date against export_detention_free_days and a demurrage clock from full_gate_in_date to loaded_date against
+      export_demurrage_free_days. Under clock_model combined, an import record runs one clock from discharge_date to empty_return_date against
+      combined_import_free_days and an export record one clock from empty_pickup_date to loaded_date against combined_export_free_days. The
+      product in force on the record when the last clock stops governs every clock of the record, including days used before an upgrade.
+      Free time is judged on the dates the terminal and depot systems record; the customer's own account of a movement date never replaces
+      a recorded date. The record moves to charges_accruing when any clock passes its free days while running, and to clock_stopped on the
+      empty return of an import record or the loading of an export record, with clock_stopped_date set to that date.
+    eligibility: []
+    formula:
+      import_demurrage_used: full_gate_out_date - discharge_date - clock_start_offset_days + 1
+      import_detention_used: empty_return_date - full_gate_out_date - clock_start_offset_days + 1
+      export_detention_used: full_gate_in_date - empty_pickup_date - clock_start_offset_days + 1
+      export_demurrage_used: loaded_date - full_gate_in_date - clock_start_offset_days + 1
+      combined_import_used: empty_return_date - discharge_date - clock_start_offset_days + 1
+      combined_export_used: loaded_date - empty_pickup_date - clock_start_offset_days + 1
+
+  - id: dnd_invoicing
+    subject: [dnd_invoice_issued, dnd_demurrage_invoiced, dnd_detention_invoiced, dnd_settled]
+    rule: >-
+      The final invoice of a record is computed once its last clock has stopped. Chargeable days of a clock are its days used beyond its free
+      days. Under clock_model separate the demurrage clock's chargeable days are billed at demurrage rates and the detention clock's at
+      detention rates, the slabs restarting on each clock. Under clock_model combined the chargeable days follow the end of the merged free
+      time, and each chargeable day is billed at demurrage rates while the container is inside the terminal and at detention rates while it
+      is outside: on import, days up to and including full_gate_out_date are demurrage days and later days are detention days; on export,
+      days up to and including full_gate_in_date are detention days and later days are demurrage days; the slab position of a day is counted
+      across the whole sequence of chargeable days. The n-th chargeable day falls in slab 1 while n is at most slab1_length_days, in slab 2
+      while n is at most slab1_length_days plus slab2_length_days, in slab 3 while n is at most the sum of the three slab lengths, and in
+      slab 4 afterwards. Each day is billed at the rate of its clock type, slab and the rate class of the container given by
+      equipment_class_map; when the booking's cargo_type is dangerous_goods, demurrage days only are increased by dg_container_uplift_pct
+      percent. One demurrage row and one detention row are written, each with its chargeable days, the first and last billed day and the sum
+      of its day rates rounded to the cent, and a row with no chargeable day is not written. When the two rows together are below
+      minimum_invoice_usd, nothing is invoiced and the record is settled. The invoice must be issued no later than the product's
+      invoice_issue_deadline_days calendar days after the charges stopped accruing. The deadline is the clock_stopped_date plus the product's
+      deadline days counted on calendar dates, and an invoice dated on the deadline itself is in time. A record whose deadline has passed
+      without an invoice is settled without one, because the charges are no longer collectible. Invoice rows may be booked only on a record
+      whose status is clock_stopped or invoiced. The invoice is due invoice_payment_terms_days calendar days after its date, or after the
+      customer's credit_days when the customer is credit_approved and credit_days is longer. A record whose invoice has been fully paid,
+      waived or credited is settled.
+    eligibility:
+      - id: invoice_deadline
+        applies_to: [dnd_invoice_issued, dnd_demurrage_invoiced, dnd_detention_invoiced]
+        kind: time
+        condition: The invoice must be issued no later than the product's invoice_issue_deadline_days calendar days after the charges stopped accruing.
+        evidence_fields: [dnd_free_time.dnd_id, dnd_free_time.clock_stopped_date]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [dnd_free_time.dnd_id]
+          action_bindings: {dnd_free_time.dnd_id: dnd_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the charges stopped accruing
+          anchor_source: dnd_free_time.clock_stopped_date
+          relation: not_after
+          duration_source: variants.invoice_issue_deadline_days
+          unit: calendar_days
+          counting_rule: The deadline is the clock_stopped_date plus the product's deadline days counted on calendar dates, and an invoice dated on the deadline itself is in time.
+          boundary: inclusive
+      - id: invoice_on_stopped_record
+        applies_to: [dnd_demurrage_invoiced, dnd_detention_invoiced]
+        kind: state
+        condition: Invoice rows may be booked only on a record whose status is clock_stopped or invoiced.
+        evidence_fields: [dnd_free_time.dnd_id, dnd_free_time.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [dnd_free_time.dnd_id]
+          action_bindings: {dnd_free_time.dnd_id: dnd_id}
+        state_contract:
+          field: dnd_free_time.status
+          allowed: [clock_stopped, invoiced]
+    params:
+      per_tier:
+        AHL Tariff Free Time: {clock_model: "=clock_model", import_demurrage_free_days: "=import_demurrage_free_days", import_detention_free_days: "=import_detention_free_days", export_detention_free_days: "=export_detention_free_days", export_demurrage_free_days: "=export_demurrage_free_days", combined_import_free_days: "=combined_import_free_days", combined_export_free_days: "=combined_export_free_days", minimum_invoice_usd: "=minimum_invoice_usd", invoice_payment_terms_days: "=invoice_payment_terms_days", dg_container_uplift_pct: "=dg_container_uplift_pct"}
+        AHL Free Time Extension 3: {clock_model: "=clock_model", import_demurrage_free_days: "=import_demurrage_free_days", import_detention_free_days: "=import_detention_free_days", export_detention_free_days: "=export_detention_free_days", export_demurrage_free_days: "=export_demurrage_free_days", combined_import_free_days: "=combined_import_free_days", combined_export_free_days: "=combined_export_free_days", minimum_invoice_usd: "=minimum_invoice_usd", invoice_payment_terms_days: "=invoice_payment_terms_days", dg_container_uplift_pct: "=dg_container_uplift_pct"}
+        AHL Free Time Extension 7: {clock_model: "=clock_model", import_demurrage_free_days: "=import_demurrage_free_days", import_detention_free_days: "=import_detention_free_days", export_detention_free_days: "=export_detention_free_days", export_demurrage_free_days: "=export_demurrage_free_days", combined_import_free_days: "=combined_import_free_days", combined_export_free_days: "=combined_export_free_days", minimum_invoice_usd: "=minimum_invoice_usd", invoice_payment_terms_days: "=invoice_payment_terms_days", dg_container_uplift_pct: "=dg_container_uplift_pct"}
+        AHL Combined Free Time 14: {clock_model: "=clock_model", import_demurrage_free_days: "=import_demurrage_free_days", import_detention_free_days: "=import_detention_free_days", export_detention_free_days: "=export_detention_free_days", export_demurrage_free_days: "=export_demurrage_free_days", combined_import_free_days: "=combined_import_free_days", combined_export_free_days: "=combined_export_free_days", minimum_invoice_usd: "=minimum_invoice_usd", invoice_payment_terms_days: "=invoice_payment_terms_days", dg_container_uplift_pct: "=dg_container_uplift_pct"}
+        AHL Combined Free Time 21: {clock_model: "=clock_model", import_demurrage_free_days: "=import_demurrage_free_days", import_detention_free_days: "=import_detention_free_days", export_detention_free_days: "=export_detention_free_days", export_demurrage_free_days: "=export_demurrage_free_days", combined_import_free_days: "=combined_import_free_days", combined_export_free_days: "=combined_export_free_days", minimum_invoice_usd: "=minimum_invoice_usd", invoice_payment_terms_days: "=invoice_payment_terms_days", dg_container_uplift_pct: "=dg_container_uplift_pct"}
+        AHL Contract Free Time 30: {clock_model: "=clock_model", import_demurrage_free_days: "=import_demurrage_free_days", import_detention_free_days: "=import_detention_free_days", export_detention_free_days: "=export_detention_free_days", export_demurrage_free_days: "=export_demurrage_free_days", combined_import_free_days: "=combined_import_free_days", combined_export_free_days: "=combined_export_free_days", minimum_invoice_usd: "=minimum_invoice_usd", invoice_payment_terms_days: "=invoice_payment_terms_days", dg_container_uplift_pct: "=dg_container_uplift_pct"}
+    formula:
+      separate_import_demurrage_chargeable: max(0, full_gate_out_date - discharge_date - clock_start_offset_days + 1 - import_demurrage_free_days)
+      separate_import_detention_chargeable: max(0, empty_return_date - full_gate_out_date - clock_start_offset_days + 1 - import_detention_free_days)
+      combined_import_chargeable: max(0, empty_return_date - discharge_date - clock_start_offset_days + 1 - combined_import_free_days)
+      combined_export_chargeable: max(0, loaded_date - empty_pickup_date - clock_start_offset_days + 1 - combined_export_free_days)
+      slab1_days_of_n: min(chargeable_days, slab1_length_days)
+      slab2_days_of_n: min(max(0, chargeable_days - slab1_length_days), slab2_length_days)
+      slab3_days_of_n: min(max(0, chargeable_days - slab1_length_days - slab2_length_days), slab3_length_days)
+      slab4_days_of_n: max(0, chargeable_days - slab1_length_days - slab2_length_days - slab3_length_days)
+
+  - id: dnd_free_time_upgrade
+    subject: [dnd_free_time_extended, dnd_extension_fee_charged]
+    rule: >-
+      While a record's free time is still running, the billed party may buy a higher product for it. A product can be bought only while the
+      record's status is free_time_running; once charges accrue it is too late, and the purchase is never backdated. The product bought must
+      have purchasable_as_upgrade true and a higher rank than the product on the record, and the container's rate class must be one of its
+      allowed_equipment_classes; AHL Contract Free Time 30 is never sold. A record may take an upgrade only while dnd_msr_upgrades_on_record
+      is below the max_upgrades_per_record of the product currently on it. The price charged is the product_price_per_container_usd of the
+      product bought minus that of the product already on the record, so the customer never pays twice for the same days. The upgrade
+      replaces the product on the record and, under dnd_clock_rules, governs every clock of the record. Purchases are also subject to
+      dnd_agg_overdue_portfolio_block. A bought product is not refundable when the container is returned early.
+    eligibility:
+      - id: running_record_only
+        applies_to: [dnd_free_time_extended, dnd_extension_fee_charged]
+        kind: state
+        condition: A product can be bought only while the record's status is free_time_running; once charges accrue it is too late, and the purchase is never backdated.
+        evidence_fields: [dnd_free_time.dnd_id, dnd_free_time.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [dnd_free_time.dnd_id]
+          action_bindings: {dnd_free_time.dnd_id: dnd_id}
+        state_contract:
+          field: dnd_free_time.status
+          allowed: [free_time_running]
+      - id: upgrades_remaining
+        applies_to: [dnd_free_time_extended, dnd_extension_fee_charged]
+        kind: authorization
+        condition: A record may take an upgrade only while dnd_msr_upgrades_on_record is below the max_upgrades_per_record of the product currently on it.
+        evidence_fields: [dnd_ledger.dnd_id, dnd_ledger.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [dnd_ledger.dnd_id]
+          action_bindings: {dnd_ledger.dnd_id: dnd_id}
+    params:
+      per_tier:
+        AHL Tariff Free Time: {purchasable_as_upgrade: "=purchasable_as_upgrade", product_price_per_container_usd: "=product_price_per_container_usd", max_upgrades_per_record: "=max_upgrades_per_record", allowed_equipment_classes: "=allowed_equipment_classes"}
+        AHL Free Time Extension 3: {purchasable_as_upgrade: "=purchasable_as_upgrade", product_price_per_container_usd: "=product_price_per_container_usd", max_upgrades_per_record: "=max_upgrades_per_record", allowed_equipment_classes: "=allowed_equipment_classes"}
+        AHL Free Time Extension 7: {purchasable_as_upgrade: "=purchasable_as_upgrade", product_price_per_container_usd: "=product_price_per_container_usd", max_upgrades_per_record: "=max_upgrades_per_record", allowed_equipment_classes: "=allowed_equipment_classes"}
+        AHL Combined Free Time 14: {purchasable_as_upgrade: "=purchasable_as_upgrade", product_price_per_container_usd: "=product_price_per_container_usd", max_upgrades_per_record: "=max_upgrades_per_record", allowed_equipment_classes: "=allowed_equipment_classes"}
+        AHL Combined Free Time 21: {purchasable_as_upgrade: "=purchasable_as_upgrade", product_price_per_container_usd: "=product_price_per_container_usd", max_upgrades_per_record: "=max_upgrades_per_record", allowed_equipment_classes: "=allowed_equipment_classes"}
+        AHL Contract Free Time 30: {purchasable_as_upgrade: "=purchasable_as_upgrade", product_price_per_container_usd: "=product_price_per_container_usd", max_upgrades_per_record: "=max_upgrades_per_record", allowed_equipment_classes: "=allowed_equipment_classes"}
+    measures: [dnd_msr_upgrades_on_record]
+
+  - id: dnd_invoice_dispute
+    subject: [dnd_dispute_credited, dnd_charge_waived]
+    rule: >-
+      The billed party may dispute one invoice row, which only the billed party can do; the dispute is lodged by the customer and decided by
+      the desk within dispute_response_days. The dispute must be lodged no later than the product's dispute_window_days calendar days after
+      the disputed invoice was issued. The window ends on the invoice's event_date plus the product's window days counted on calendar dates,
+      and a dispute lodged on the last day is in time. An invoice row carries at most one dispute. The desk decides three grounds from the
+      records. On invoice_issued_late, the invoice is upheld as not collectible when its event_date is later than the record's
+      clock_stopped_date plus invoice_issue_deadline_days, and the whole amount still open on the invoice is cleared by a dnd_charge_waived row
+      with waiver_reason late_invoice; no dispute credit is written for this ground, and the same waiver clears a late invoice raised by the
+      customer without a formal dispute. On rate_misapplied or free_time_misapplied, the desk recomputes the invoice row under dnd_invoicing
+      with the product and recorded dates of the record; when the invoiced amount exceeds the recomputed amount, the dispute is upheld or
+      partially upheld and credited by a dnd_dispute_credited row of the difference, but never more than the disputed_amount_usd, and when
+      it does not, the dispute is denied with no row. Disputes on incorrect_event_dates, carrier_caused_delay or terminal_closure turn on
+      operational facts the desk's records do not hold; the desk registers them and cannot decide them. A credit may be booked only on a
+      record whose status is invoiced. A disputed invoice is not due while its dispute is submitted.
+    eligibility:
+      - id: dispute_window
+        applies_to: [dnd_dispute_credited]
+        kind: time
+        condition: The dispute must be lodged no later than the product's dispute_window_days calendar days after the disputed invoice was issued.
+        evidence_fields: [dnd_ledger.dnd_event_id, dnd_ledger.event_date, dnd_disputes.created_at]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [dnd_ledger.dnd_event_id]
+          action_bindings: {dnd_ledger.dnd_event_id: invoice_event_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the disputed invoice was issued
+          anchor_source: dnd_ledger.event_date
+          relation: not_after
+          duration_source: variants.dispute_window_days
+          unit: calendar_days
+          counting_rule: The window ends on the invoice's event_date plus the product's window days counted on calendar dates, and a dispute lodged on the last day is in time.
+          boundary: inclusive
+      - id: one_dispute_per_invoice
+        applies_to: [dnd_dispute_credited]
+        kind: dedup
+        condition: An invoice row carries at most one dispute.
+        evidence_fields: [dnd_disputes.invoice_event_id, dnd_disputes.outcome]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [dnd_disputes.invoice_event_id]
+          action_bindings: {dnd_disputes.invoice_event_id: invoice_event_id}
+        dedup_contract:
+          table: dnd_disputes
+          mode: separate_record
+          object_bindings: {invoice_event_id: invoice_event_id}
+          duplicate_filters: {outcome: [submitted, upheld, partially_upheld, denied]}
+          distinct_fields: []
+      - id: credit_on_invoiced_record
+        applies_to: [dnd_dispute_credited, dnd_charge_waived]
+        kind: state
+        condition: A credit may be booked only on a record whose status is invoiced.
+        evidence_fields: [dnd_free_time.dnd_id, dnd_free_time.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [dnd_free_time.dnd_id]
+          action_bindings: {dnd_free_time.dnd_id: dnd_id}
+        state_contract:
+          field: dnd_free_time.status
+          allowed: [invoiced]
+    params:
+      per_tier:
+        AHL Tariff Free Time: {dispute_window_days: "=dispute_window_days", dispute_response_days: "=dispute_response_days", invoice_issue_deadline_days: "=invoice_issue_deadline_days"}
+        AHL Free Time Extension 3: {dispute_window_days: "=dispute_window_days", dispute_response_days: "=dispute_response_days", invoice_issue_deadline_days: "=invoice_issue_deadline_days"}
+        AHL Free Time Extension 7: {dispute_window_days: "=dispute_window_days", dispute_response_days: "=dispute_response_days", invoice_issue_deadline_days: "=invoice_issue_deadline_days"}
+        AHL Combined Free Time 14: {dispute_window_days: "=dispute_window_days", dispute_response_days: "=dispute_response_days", invoice_issue_deadline_days: "=invoice_issue_deadline_days"}
+        AHL Combined Free Time 21: {dispute_window_days: "=dispute_window_days", dispute_response_days: "=dispute_response_days", invoice_issue_deadline_days: "=invoice_issue_deadline_days"}
+        AHL Contract Free Time 30: {dispute_window_days: "=dispute_window_days", dispute_response_days: "=dispute_response_days", invoice_issue_deadline_days: "=invoice_issue_deadline_days"}
+    formula:
+      late_invoice_waiver_amount: amount_usd - dnd_msr_invoice_credits
+    measures: [dnd_msr_invoice_credits]
+
+  - id: dnd_goodwill_waiver
+    subject: [dnd_charge_waived]
+    rule: >-
+      The desk may grant one commercial goodwill waiver on an invoice row at the billed party's request, recorded with waiver_reason
+      commercial_goodwill. The waiver is at most goodwill_waiver_pct_max percent of the amount still open on the invoice row after earlier
+      credits and waivers, dnd_msr_invoice_credits, and never more than goodwill_waiver_cap_usd, rounded down to the cent; the desk grants the
+      full amount so computed, never a smaller figure of its own choosing. The customer's goodwill waivers in the trailing 365 days must be
+      fewer than the product's goodwill_waivers_per_365d. The waiver must be requested no later than the product's waiver_request_window_days
+      calendar days after the invoice being waived was issued. The window ends on the invoice's event_date plus the product's window days
+      counted on calendar dates, and a request on the last day is inside it. Each invoice row takes at most one goodwill waiver. When a
+      dispute on the invoice is still submitted, the dispute is decided first and goodwill is computed on what remains. Products whose
+      goodwill_waiver_pct_max is 0 give no goodwill. Waivers for carrier_caused_delay or terminal_closure are granted only by the operations
+      department and never by the desk.
+    eligibility:
+      - id: goodwill_quota
+        applies_to: [dnd_charge_waived]
+        kind: authorization
+        condition: The customer's goodwill waivers in the trailing 365 days must be fewer than the product's goodwill_waivers_per_365d.
+        evidence_fields: [dnd_ledger.customer_id, dnd_ledger.event_type, dnd_ledger.waiver_reason, dnd_ledger.event_date]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [dnd_ledger.customer_id]
+          action_bindings: {dnd_ledger.customer_id: customer_id}
+      - id: goodwill_window
+        applies_to: [dnd_charge_waived]
+        kind: time
+        condition: The waiver must be requested no later than the product's waiver_request_window_days calendar days after the invoice being waived was issued.
+        evidence_fields: [dnd_ledger.dnd_event_id, dnd_ledger.event_date]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [dnd_ledger.dnd_event_id]
+          action_bindings: {dnd_ledger.dnd_event_id: reference_event_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the invoice being waived was issued
+          anchor_source: dnd_ledger.event_date
+          relation: not_after
+          duration_source: variants.waiver_request_window_days
+          unit: calendar_days
+          counting_rule: The window ends on the invoice's event_date plus the product's window days counted on calendar dates, and a request on the last day is inside it.
+          boundary: inclusive
+      - id: one_goodwill_per_invoice
+        applies_to: [dnd_charge_waived]
+        kind: dedup
+        condition: Each invoice row takes at most one goodwill waiver.
+        evidence_fields: [dnd_ledger.reference_event_id, dnd_ledger.waiver_reason]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [dnd_ledger.reference_event_id]
+          action_bindings: {dnd_ledger.reference_event_id: reference_event_id}
+        dedup_contract:
+          table: dnd_ledger
+          mode: separate_record
+          object_bindings: {reference_event_id: reference_event_id}
+          duplicate_filters: {waiver_reason: [commercial_goodwill]}
+          distinct_fields: []
+    params:
+      per_tier:
+        AHL Tariff Free Time: {goodwill_waiver_pct_max: "=goodwill_waiver_pct_max", goodwill_waiver_cap_usd: "=goodwill_waiver_cap_usd", goodwill_waivers_per_365d: "=goodwill_waivers_per_365d", waiver_request_window_days: "=waiver_request_window_days"}
+        AHL Free Time Extension 3: {goodwill_waiver_pct_max: "=goodwill_waiver_pct_max", goodwill_waiver_cap_usd: "=goodwill_waiver_cap_usd", goodwill_waivers_per_365d: "=goodwill_waivers_per_365d", waiver_request_window_days: "=waiver_request_window_days"}
+        AHL Free Time Extension 7: {goodwill_waiver_pct_max: "=goodwill_waiver_pct_max", goodwill_waiver_cap_usd: "=goodwill_waiver_cap_usd", goodwill_waivers_per_365d: "=goodwill_waivers_per_365d", waiver_request_window_days: "=waiver_request_window_days"}
+        AHL Combined Free Time 14: {goodwill_waiver_pct_max: "=goodwill_waiver_pct_max", goodwill_waiver_cap_usd: "=goodwill_waiver_cap_usd", goodwill_waivers_per_365d: "=goodwill_waivers_per_365d", waiver_request_window_days: "=waiver_request_window_days"}
+        AHL Combined Free Time 21: {goodwill_waiver_pct_max: "=goodwill_waiver_pct_max", goodwill_waiver_cap_usd: "=goodwill_waiver_cap_usd", goodwill_waivers_per_365d: "=goodwill_waivers_per_365d", waiver_request_window_days: "=waiver_request_window_days"}
+        AHL Contract Free Time 30: {goodwill_waiver_pct_max: "=goodwill_waiver_pct_max", goodwill_waiver_cap_usd: "=goodwill_waiver_cap_usd", goodwill_waivers_per_365d: "=goodwill_waivers_per_365d", waiver_request_window_days: "=waiver_request_window_days"}
+    formula:
+      goodwill_amount: min(goodwill_waiver_cap_usd, (amount_usd - dnd_msr_invoice_credits) * goodwill_waiver_pct_max / 100)
+    measures: [dnd_msr_invoice_credits, dnd_msr_goodwill_waivers_365d]
+
+  - id: dnd_payment
+    subject: [dnd_payment_received, dnd_settled]
+    rule: >-
+      A remittance is applied to one record, written with the remittance reference exactly as quoted and the amount remitted. A payment may be
+      booked only on a record whose status is invoiced. A payment may not exceed the record's balance_due_usd; any excess is returned by
+      finance and not booked. A remittance reference is recorded only once per record. When the balance reaches 0.00 through payments,
+      waivers and credits, the record is settled with settled_date set to that day; a record with a submitted dispute is settled only after
+      the dispute is decided.
+    eligibility:
+      - id: pay_invoiced_record
+        applies_to: [dnd_payment_received]
+        kind: state
+        condition: A payment may be booked only on a record whose status is invoiced.
+        evidence_fields: [dnd_free_time.dnd_id, dnd_free_time.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [dnd_free_time.dnd_id]
+          action_bindings: {dnd_free_time.dnd_id: dnd_id}
+        state_contract:
+          field: dnd_free_time.status
+          allowed: [invoiced]
+      - id: reference_once
+        applies_to: [dnd_payment_received]
+        kind: dedup
+        condition: A remittance reference is recorded only once per record.
+        evidence_fields: [dnd_ledger.dnd_id, dnd_ledger.payment_reference, dnd_ledger.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [dnd_ledger.dnd_id, dnd_ledger.payment_reference]
+          action_bindings: {dnd_ledger.dnd_id: dnd_id, dnd_ledger.payment_reference: payment_reference}
+        dedup_contract:
+          table: dnd_ledger
+          mode: separate_record
+          object_bindings: {dnd_id: dnd_id, payment_reference: payment_reference}
+          duplicate_filters: {event_type: [dnd_payment_received]}
+          distinct_fields: []
+    formula:
+      applied_amount: min(amount_usd, dnd_charges)
+
+  - id: dnd_cancellation
+    subject: [dnd_cancelled]
+    rule: >-
+      A record is cancelled when its booking is cancelled while the record's free time is still running and no clock-stopping movement has
+      been recorded; the cancellation carries no charge, and any product bought for it stays charged because bought products are not
+      refundable. A record whose container has already been picked up empty or discharged is never cancelled; its clocks run to their stop
+      events and are invoiced under dnd_invoicing.
+    eligibility: []

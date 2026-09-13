@@ -1,0 +1,1056 @@
+{
+    "frozen_time": "2025-06-20 10:15:00 America/New_York",
+    "design_rationale": "WHY THIS IS A GOOD TEST: the surface goal ('cancel my Elite Specialty package and refund what I haven't used') never names refund_amount_usd, cancellation_amount_usd, reassignment_fee_usd or sessions_delta; the agent must read pt_ext_refund's rule to learn that the unused-session count is sessions_included + bonus grants - (redeemed+late-cancelled), that the effective refund pct uplifts cancellation_refund_pct by half of any active corp enrollment's employer_discount_pct, and that a trainer-of-record mismatch must be reconciled first. This is long (bonus-loyalty and trainer-reassignment must both be discovered and resolved before refund's own compute is correct at handling time) and broad (parallel policies: pt_ext_bonus_loyalty reads membership CPARAM, pt_ext_trainer_reassignment and pt_ext_late_cancel_fee and pt_ext_refund all read corp CPARAM; history reconciliation over 4 pre-existing pt_session_redeemed rows and 1 pre-existing pt_trainer_reassigned row). SCOPE CLAIMED: this task claims the difficulty's single workflow (pt_wf_cancel_refund) as its root problem, plus the two extended policies that gate it (pt_ext_bonus_loyalty, pt_ext_trainer_reassignment) and the one nested inside it that is not itself a step (pt_ext_late_cancel_fee is nested at workflow step 1; pt_ext_refund is nested at workflow step 3). Task 1 (not yet written) will claim the remaining three policies (pt_ext_lapse_forfeit, pt_ext_archive_closed, pt_ext_purchase_pricing), which govern a disjoint set of base events (pt_package_lapsed/expired/archived/purchased/activated) never touched here. BASE-INVARIANT CARD: pt_session_redemption_eligibility (subject pt_session_redeemed) requires pt_holdings.status=active, evidenced pre-action by initial_state.pt_holdings.<PTH>.status=active — true throughout this call since nothing before step 3 (cancellation) changes status. pt_package_refund_policy's refund_requires_open_package eligibility allows status in {active, paused, closed-from-this-cancellation}; at step 3's handling time status is closed (set by step 2's cancellation the same turn), which is the closed-from-this-cancellation branch — satisfied. Its refund_within_window time eligibility anchors on pt_holdings.opened_date=2025-06-14 with duration_source=refund_window_days=10 (Elite tier), relation not_after, boundary inclusive: 2025-06-14+10d=2025-06-24; frozen_time date 2025-06-20 is not after that boundary — satisfied (a boundary case one day past 2025-06-24 would fail; a case exactly on 2025-06-24 would still pass since the boundary is inclusive). pt_specialty_membership_gating is irrelevant here (it gates purchase, not cancellation/refund) but is confirmed satisfied anyway since the membership is active at rank 4. WORLD ROW LOAD-BEARING ROLES: the 4 pre-existing pt_session_redeemed rows (ev 2025-06-15/16/17/18) are the redeemed_count history pt_ext_refund's compute sums; removing any one changes sessions_used and therefore refund_amount_usd. The 1 pre-existing pt_trainer_reassigned row (2025-06-16, trainer_name=Jordan Wu) is the authoritative evidence that pt_holdings.assigned_trainer_name='Marcus Bell' is stale (the LATEST reassignment ledger entry disagrees with the holding's own field) — this is the trainer-reconciliation prerequisite's only evidence; without this row the mismatch could not be proven and the prerequisite would already be satisfied vacuously. The active membership (Metro Multi-Club Access, personal_training_discount_pct=5) and active corp enrollment (Small Business Partner, employer_discount_pct=15) are both load-bearing cross-category holdings: removing the membership row raises pt_ext_bonus_loyalty's min_tenure from 6 back to the full 7 days, which flips tenure_met false (days_open=6 no longer clears 7) and owed to 0, so the membership CPARAM factor is genuinely load-bearing there; the percentage_elapsed proration branch of pt_ext_refund and the under_free branch of pt_ext_trainer_reassignment are each deliberately kept untriggered in this world (the required untriggered branch on each key >=6-factor computation); removing the corp row zeroes every corp-discount factor in pt_ext_late_cancel_fee, pt_ext_trainer_reassignment and pt_ext_refund, which is exactly why corp EXISTS/CPARAM is a genuine, exercised, load-bearing factor and not a decorative reference. BUSINESS-OBJECT CARD: every ledger row and every write carries pt_holding_id=PTH as its correlation key; there is only one PT package in this world, so no sibling-holding exclusion is needed; the trainer-reassignment fee and the refund both settle against this same PTH, never against a case-wide or customer-wide aggregate. PROBLEM-TREE CARD: root_problem=pt_wf_cancel_refund (the customer's surface request — cancel and refund). Two prerequisites, both external to the workflow's own 4 steps: (1) pt_ext_bonus_loyalty, kind=value_input, gate= the total_granted compute binding of pt_ext_refund — unresolved at frozen_time because no pt_bonus_session_granted row exists yet for PTH while eligible_tier=true and days_open(6)>=min_tenure(6) (the membership-shortened requirement; without the active membership the full 7-day requirement would not yet be met); resolved by grant_bonus_session_f02d8384; once resolved, total_granted rises from 20 to 21, moving refund_amount_usd from 970.60 to 1039.93 (the skip-sensitivity run below). (2) pt_ext_trainer_reassignment, kind=state_gate, gate= pt_holdings.assigned_trainer_name — unresolved at frozen_time because assigned_trainer_name='Marcus Bell' while the latest pt_trainer_reassigned row names 'Jordan Wu'; resolved by reassign_trainer_0e491cd1, which sets assigned_trainer_name to match. Topological order: both prerequisites are mutually independent (neither writes a field the other reads), so [bonus_loyalty, trainer_reassignment] and [trainer_reassignment, bonus_loyalty] are both valid; gold uses the former. NO_USER_HINT: user_scenario (below) never names a bonus session, a trainer reassignment, or any prerequisite; Priya only ever states her own situation, and gives her trainer's name only when asked, using the name that happens to match the ledger's own truth (Jordan Wu), not the stale holdings field she has no way of knowing about. TOOLS_DO_NOT_BLOCK: neither grant_bonus_session_f02d8384 nor reassign_trainer_0e491cd1 nor record_package_refund_4aaf76ef checks any precondition in task_tools.py — each simply looks up the holding by id and writes; an agent that calls record_package_refund_4aaf76ef before resolving either prerequisite would still get a normal confirmation string back, just with a lower, wrong refund_amount_usd and a stale trainer name, which only the terminal-hash comparison catches. STANDARD SOLUTION: locate and verify Priya; read pt_holdings, pt_events, membership_holdings, corporate_wellness_enrollments; recognize from pt_ext_bonus_loyalty's rule that a bonus session is owed (grant it); recognize from pt_ext_refund's rule that the trainer-of-record must be reconciled (reassign it); then run the workflow: log the session already attended (redeem), log the session being cancelled right now within the window (late-cancel, pt_ext_late_cancel_fee), let Priya confirm cancellation (user tool), and finally record the refund (pt_ext_refund) with the handling-time-correct amount. VERIFICATION (executed by hand against this exact seed, reproduced here): per_session_value=1499/20=74.95; after bonus (+1) and workflow (redeemed 4th=-1, late-cancelled=-1): total_granted=21, sessions_used=6, unused=15, unused_value=15*74.95=1124.25; base_pct=85, corp employer_discount_pct=15 -> uplift=7.5 -> effective_pct=92.5; refund_amount_usd=round(1124.25*0.925,2)=1039.93. late-cancel: base_fee=25, fee_after_corp=25*(1-7.5/100)=23.125, prior_late_count=0 so (0+1)<threshold(4) -> penalty=0 -> cancellation_amount_usd=round(23.125,2)=23.12 (Python banker's-adjacent float rounding of 23.125 -> 23.12, verified by running round(23.125,2) in the actual interpreter). trainer reassignment: flat_fee=30, prior_count=1, free_uses=1, under_free=(1<1)=false, fee_after_corp=30*(1-15/100)=25.5 -> reassignment_fee_usd=25.5. Skip-bonus sensitivity: with total_granted held at 20 instead of 21, unused=14, unused_value=14*74.95=1049.3, refund=round(1049.3*0.925,2)=970.60 != 1039.93, confirming the value_input edge is load-bearing. DRAFT RECOMPUTATION FROM VISIBLE CONTEXT ONLY: reading only the published rule prose, the tool schemas and Priya's own lines (masking compute/expected/GT), the same four numbers are re-derivable: the two prerequisite rules are stated in general prose reachable from pt_ext_bonus_loyalty and pt_ext_trainer_reassignment's rule fields once rendered, the read tools return the same rows, and no second candidate action or object exists in this world — agreement confirmed.",
+    "user_scenario": "Priya Anand calls in sounding a little rushed but friendly. She explains she's moving out of the metro area at the end of the month for a new job, so she needs to cancel her personal-training package and get back whatever she hasn't used yet -- she paid for a full block of sessions up front and doesn't want to lose that money since she won't be around to use them. She's fine with the representative pulling up her account and handling the cancellation and refund directly; she just wants to confirm the cancellation herself once everything is ready, since it's her package. If asked to verify who she is, she gives her mobile number, 5555550212, and, if asked for a second detail, her date of birth, 1988-04-11 (April 11th, 1988); she doesn't offer her email or photo id unless specifically asked for those instead. If asked which package she means, she says it's her Elite Specialty Coaching package -- the one with the specialty trainer, not any regular membership. If the representative asks whether she's had any sessions recently that might not be on file yet, she says yes, actually, she had a session just a couple of days ago that she doesn't think got logged. She also mentions, only if asked, that she has one more session on the calendar for tomorrow that she now has to cancel because of the move -- she won't be able to make it, and she understands there's a cancellation charge for cancelling this close to the session, which is fine. If asked who her trainer is, she says Jordan Wu -- that's who she's been working with for the last little while. She doesn't mention anything about a trainer reassignment, a bonus session, or any billing discrepancy; she doesn't know her file still lists an old trainer's name, and she has no reason to bring it up. She also doesn't ask about her club membership or her employer's wellness program; she only confirms, if asked, that yes, she believes both are still active and in good standing, since nothing has changed on either front recently. Once the representative tells her the cancellation is ready to confirm, she goes ahead and confirms it right away using her own confirmation. Once the representative tells her the refund has been recorded, she thanks them and says that's everything she needed -- she doesn't ask for anything further, doesn't request any paperwork be mailed anywhere, and doesn't raise any new topic.",
+    "solvability_contract": {
+        "request_binding_version": 1,
+        "request_alignment": [
+            {
+                "claim": "Priya wants her Elite Specialty Coaching package cancelled and a refund of her unused sessions, with the representative acting for her except for her own final confirmation.",
+                "evidence": [
+                    "user_scenario:she needs to cancel her personal-training package and get back whatever she hasn't used yet",
+                    "user_scenario:She's fine with the representative pulling up her account and handling the cancellation and refund directly; she just wants to confirm the cancellation herself"
+                ]
+            }
+        ],
+        "gold_actions": [
+            {
+                "step": 7,
+                "business_effect": "credits exactly 1 complimentary loyalty bonus session to package 6e419281-0d0b-43e8-adad-c6c1c1827b3c",
+                "request_binding": {
+                    "action_semantics": "pt_ext_bonus_loyalty's rule entitles this package to a bonus session once its tier is eligible, its tenure requirement is met, and none has yet been granted; this is discovered from policy and the world, not from anything Priya asks for",
+                    "intent_source": {
+                        "kind": "initial_state",
+                        "evidence": [
+                            "initial_state.pt_holdings.6e419281-0d0b-43e8-adad-c6c1c1827b3c.opened_date",
+                            "initial_state.pt_holdings.6e419281-0d0b-43e8-adad-c6c1c1827b3c.variant_name",
+                            "initial_state.membership_holdings.bf9ad3f1-4376-464f-985d-3d770eddd996.status"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "the tier's bonus_session_eligible flag together with the (membership-shortened) tenure requirement being met and no prior grant on file uniquely identify this as an owed loyalty bonus grant",
+                        "evidence": [
+                            "initial_state.pt_holdings.6e419281-0d0b-43e8-adad-c6c1c1827b3c.opened_date"
+                        ],
+                        "action_arg": "sessions_delta",
+                        "value": 1
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "performed_by_this_tool",
+                    "fact": "the bonus session is credited on the spot by this call",
+                    "evidence": [
+                        "initial_state.pt_holdings.6e419281-0d0b-43e8-adad-c6c1c1827b3c"
+                    ]
+                },
+                "requires_external_wait": false,
+                "zero_wait_proof": "granting a bonus session is a same-turn ledger write requiring no external event; the tenure and eligibility facts it depends on are already in initial_state and frozen_time, both available at the start of the call",
+                "base_preconditions": [
+                    {
+                        "policy_id": "pt_agg_session_pool",
+                        "eligibility_id": "policy_scope",
+                        "condition": "pt_agg_session_pool governs how a grant is drawn/attributed when multiple packages are open; only one package exists here so it attributes trivially to 6e419281-0d0b-43e8-adad-c6c1c1827b3c",
+                        "evidence": [
+                            "initial_state.pt_holdings.6e419281-0d0b-43e8-adad-c6c1c1827b3c"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 9,
+                "business_effect": "updates assigned_trainer_name on 6e419281-0d0b-43e8-adad-c6c1c1827b3c to Jordan Wu and logs the reassignment with its fee",
+                "request_binding": {
+                    "action_semantics": "pt_ext_refund's rule requires the trainer-of-record to be reconciled with the latest pt_trainer_reassigned ledger entry before a refund can be recorded; the mismatch is discovered by comparing pt_holdings.assigned_trainer_name against that ledger row, not from anything Priya says",
+                    "intent_source": {
+                        "kind": "initial_state",
+                        "evidence": [
+                            "initial_state.pt_holdings.6e419281-0d0b-43e8-adad-c6c1c1827b3c.assigned_trainer_name",
+                            "initial_state.pt_events.aa7e76a6-7b87-40d0-b7b1-a09bb0929832.trainer_name"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "the disagreement between the holding's own trainer field and the latest reassignment ledger row uniquely identifies this as a reconciling reassignment rather than a fresh member-requested one",
+                        "evidence": [
+                            "initial_state.pt_holdings.6e419281-0d0b-43e8-adad-c6c1c1827b3c.assigned_trainer_name",
+                            "initial_state.pt_events.aa7e76a6-7b87-40d0-b7b1-a09bb0929832.trainer_name"
+                        ],
+                        "action_arg": "new_trainer_name",
+                        "value": "Jordan Wu"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "performed_by_this_tool",
+                    "fact": "the reassignment and its fee are recorded on the spot by this call",
+                    "evidence": [
+                        "initial_state.pt_events.aa7e76a6-7b87-40d0-b7b1-a09bb0929832"
+                    ]
+                },
+                "requires_external_wait": false,
+                "zero_wait_proof": "reconciling the trainer-of-record is a same-turn ledger write and field update requiring no external event; the mismatch and the fee's inputs (prior_count, free_uses, the active corp enrollment) are all already in initial_state",
+                "base_preconditions": [
+                    {
+                        "policy_id": "pt_trainer_reassignment_policy",
+                        "eligibility_id": "policy_scope",
+                        "condition": "the first trainer_reassignment_free_uses reassignments on a package are free, and each further one is charged trainer_reassignment_fee_usd",
+                        "evidence": [
+                            "initial_state.pt_events.aa7e76a6-7b87-40d0-b7b1-a09bb0929832"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 11,
+                "business_effect": "logs the session Priya already attended a couple of days before the call, decrementing sessions_remaining by 1",
+                "request_binding": {
+                    "action_semantics": "Priya volunteers, when asked, that a recent session was not yet logged; base pt_session_redemption_eligibility requires the package to be active for this write, which it is",
+                    "intent_source": {
+                        "kind": "user_scenario",
+                        "evidence": [
+                            "user_scenario:she had a session just a couple of days ago that she doesn't think got logged"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "an already-attended session that is missing from the ledger is uniquely a redemption to log, not a cancellation or a refund",
+                        "evidence": [
+                            "user_scenario:she had a session just a couple of days ago that she doesn't think got logged"
+                        ],
+                        "action_arg": "trainer_name",
+                        "value": "Jordan Wu"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "performed_by_this_tool",
+                    "fact": "the redemption is logged on the spot by this call",
+                    "evidence": [
+                        "initial_state.pt_holdings.6e419281-0d0b-43e8-adad-c6c1c1827b3c.status"
+                    ]
+                },
+                "requires_external_wait": false,
+                "zero_wait_proof": "logging an already-attended session is a same-turn ledger write; the session already happened before the call began, and the package's active status is already on record",
+                "base_preconditions": [
+                    {
+                        "policy_id": "pt_session_redemption_eligibility",
+                        "eligibility_id": "redemption_requires_active_package",
+                        "condition": "A session may be redeemed only while the package is active.",
+                        "evidence": [
+                            "initial_state.pt_holdings.6e419281-0d0b-43e8-adad-c6c1c1827b3c.status",
+                            "initial_state.pt_holdings.6e419281-0d0b-43e8-adad-c6c1c1827b3c.pt_holding_id"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "pt_holdings.pt_holding_id",
+                                "source": "initial_state.pt_holdings.6e419281-0d0b-43e8-adad-c6c1c1827b3c.pt_holding_id",
+                                "action_arg": "pt_holding_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "pt_agg_session_pool",
+                        "eligibility_id": "policy_scope",
+                        "condition": "only one open package exists for this member, so the redemption trivially attributes to 6e419281-0d0b-43e8-adad-c6c1c1827b3c",
+                        "evidence": [
+                            "initial_state.pt_holdings.6e419281-0d0b-43e8-adad-c6c1c1827b3c"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 13,
+                "business_effect": "logs the late cancellation of tomorrow's session, decrementing sessions_remaining by 1 and charging the computed fee",
+                "request_binding": {
+                    "action_semantics": "Priya states, when asked, that she must cancel tomorrow's session and accepts the late-cancellation charge; base pt_session_redemption_eligibility's active-only footing, extended by this policy's own rule to a late cancellation, requires the package to be active for this write",
+                    "intent_source": {
+                        "kind": "user_scenario",
+                        "evidence": [
+                            "user_scenario:she has one more session on the calendar for tomorrow that she now has to cancel because of the move -- she won't be able to make it, and she understands there's a cancellation charge"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "she has one more session on the calendar for tomorrow that she now has to cancel because of the move -- she won't be able to make it",
+                        "evidence": [
+                            "user_scenario:she has one more session on the calendar for tomorrow that she now has to cancel because of the move -- she won't be able to make it, and she understands there's a cancellation charge for cancelling this close to the session"
+                        ],
+                        "action_arg": "cancellation_amount_usd",
+                        "value": 23.12
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "performed_by_this_tool",
+                    "fact": "the late cancellation and its fee are recorded on the spot by this call",
+                    "evidence": [
+                        "initial_state.pt_holdings.6e419281-0d0b-43e8-adad-c6c1c1827b3c.status"
+                    ]
+                },
+                "requires_external_wait": false,
+                "zero_wait_proof": "logging a late cancellation Priya is reporting this same turn is a same-turn ledger write; no external event or delay is required",
+                "base_preconditions": [
+                    {
+                        "policy_id": "pt_late_cancellation_policy",
+                        "eligibility_id": "policy_scope",
+                        "condition": "cancelling a scheduled session within late_cancel_window_hours forfeits the session and charges cancellation_fee_usd",
+                        "evidence": [
+                            "initial_state.pt_holdings.6e419281-0d0b-43e8-adad-c6c1c1827b3c.status"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "pt_habitual_late_cancellation",
+                        "eligibility_id": "policy_scope",
+                        "condition": "once habitual_late_cancel_threshold prior late cancellations on this package are reached, a further penalty applies; here prior_late_count=0 is well below threshold=4",
+                        "evidence": [
+                            "initial_state.pt_holdings.6e419281-0d0b-43e8-adad-c6c1c1827b3c.status"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 15,
+                "business_effect": "transitions 6e419281-0d0b-43e8-adad-c6c1c1827b3c to status closed with today's date as closed_date",
+                "request_binding": {
+                    "action_semantics": "confirming cancellation of one's own package for a refund is the member's own decision, carried out only through the member's own confirmation, exactly as base's lifecycle transition (active/paused -> closed, by: user) requires",
+                    "intent_source": {
+                        "kind": "user_scenario",
+                        "evidence": [
+                            "user_scenario:she just wants to confirm the cancellation herself once everything is ready"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "Priya's own explicit confirmation, once the representative says it is ready, is what uniquely authorizes the cancellation write",
+                        "evidence": [
+                            "user_scenario:Once the representative tells her the cancellation is ready to confirm, she goes ahead and confirms it right away"
+                        ],
+                        "action_arg": "pt_holding_id",
+                        "value": "6e419281-0d0b-43e8-adad-c6c1c1827b3c"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "performed_by_this_tool",
+                    "fact": "the cancellation is recorded on the spot by this call",
+                    "evidence": [
+                        "initial_state.pt_holdings.6e419281-0d0b-43e8-adad-c6c1c1827b3c.status"
+                    ]
+                },
+                "requires_external_wait": false,
+                "zero_wait_proof": "the member's own confirmation is a same-turn action carried out immediately once the agent hands the tool over; no external event is required",
+                "base_preconditions": [
+                    {
+                        "policy_id": "pt_package_refund_policy",
+                        "eligibility_id": "policy_scope",
+                        "condition": "pt_package_refund_policy also governs pt_package_cancelled; that event carries no structured eligibility gate of its own, only the base lifecycle transition (active/paused -> closed, by: user) which Priya's own confirmation satisfies",
+                        "evidence": [
+                            "initial_state.pt_holdings.6e419281-0d0b-43e8-adad-c6c1c1827b3c.status"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 17,
+                "business_effect": "records the refund of unused sessions on 6e419281-0d0b-43e8-adad-c6c1c1827b3c and zeroes its session balance",
+                "request_binding": {
+                    "action_semantics": "Priya's request to be refunded for unused sessions, combined with the package now being closed by her own confirmation and within refund_window_days of purchase, uniquely selects a refund write over any other package action",
+                    "intent_source": {
+                        "kind": "user_scenario",
+                        "evidence": [
+                            "user_scenario:she needs to cancel her personal-training package and get back whatever she hasn't used yet"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "she needs to cancel her personal-training package and get back whatever she hasn't used yet",
+                        "evidence": [
+                            "user_scenario:she needs to cancel her personal-training package and get back whatever she hasn't used yet"
+                        ],
+                        "action_arg": "refund_amount_usd",
+                        "value": 1039.93
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "established_by_prior_tool",
+                    "fact": "the package's closed status, established by step 15, is the same-moment cancellation branch of refund_requires_open_package",
+                    "evidence": [
+                        "prior_step:15"
+                    ]
+                },
+                "requires_external_wait": false,
+                "zero_wait_proof": "recording the refund immediately after the member's own confirmation is a same-turn write; every input to its amount (the ledger rows, the tier parameters, the active corp enrollment) is already reachable earlier in this same turn",
+                "base_preconditions": [
+                    {
+                        "policy_id": "pt_package_refund_policy",
+                        "eligibility_id": "refund_requires_open_package",
+                        "condition": "A refund of unused sessions may be recorded only while the package is active, paused, or in the same moment as its confirmed cancellation to closed",
+                        "evidence": [
+                            "prior_step:15"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "pt_holdings.pt_holding_id",
+                                "source": "prior_step:15",
+                                "source_table": "pt_holdings",
+                                "action_arg": "pt_holding_id",
+                                "source_field": "pt_holding_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "pt_package_refund_policy",
+                        "eligibility_id": "refund_within_window",
+                        "condition": "only when the customer requests the refund before refund_window_days have elapsed since the package was purchased, counted as full calendar days from opened_date with no partial-day rounding",
+                        "evidence": [
+                            "frozen_time",
+                            "initial_state.pt_holdings.6e419281-0d0b-43e8-adad-c6c1c1827b3c.opened_date",
+                            "initial_state.pt_holdings.6e419281-0d0b-43e8-adad-c6c1c1827b3c.pt_holding_id"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "pt_holdings.pt_holding_id",
+                                "source": "initial_state.pt_holdings.6e419281-0d0b-43e8-adad-c6c1c1827b3c.pt_holding_id",
+                                "action_arg": "pt_holding_id"
+                            }
+                        ],
+                        "satisfied": true
+                    }
+                ]
+            }
+        ],
+        "temporal_feasibility": [
+            {
+                "step": 17,
+                "policy_id": "pt_package_refund_policy",
+                "eligibility_id": "refund_within_window",
+                "condition": "only when the customer requests the refund before refund_window_days have elapsed since the package was purchased, counted as full calendar days from opened_date with no partial-day rounding",
+                "temporal_basis": {
+                    "clock": "frozen_time",
+                    "anchor_event": "the package was purchased",
+                    "anchor_source": "pt_holdings.opened_date",
+                    "relation": "not_after",
+                    "duration_source": "variants.refund_window_days",
+                    "unit": "calendar_days",
+                    "counting_rule": "counted as full calendar days from opened_date with no partial-day rounding",
+                    "boundary": "inclusive"
+                },
+                "as_of": "frozen_time",
+                "evidence": [
+                    "frozen_time",
+                    "initial_state.pt_holdings.6e419281-0d0b-43e8-adad-c6c1c1827b3c.opened_date"
+                ],
+                "satisfied": true,
+                "boundary_check": {
+                    "just_before": "at 2025-06-25 (one day past opened_date+10=2025-06-24) the refund would already be out of window and must be refused",
+                    "at_boundary": "at 2025-06-24 exactly (opened_date+10, inclusive) the refund is still just barely allowed; this task's frozen_time of 2025-06-20 is comfortably inside that boundary"
+                }
+            }
+        ],
+        "required_user_inputs": [
+            {
+                "information": "the reference number/phone/dob needed to locate and verify Priya",
+                "source": "user_scenario:she gives her mobile number, 5555550212, and, if asked for a second detail, her date of birth, 1988-04-11 (April 11th, 1988)"
+            },
+            {
+                "information": "which package she means",
+                "source": "user_scenario:it's her Elite Specialty Coaching package"
+            },
+            {
+                "information": "whether an unlogged session exists",
+                "source": "user_scenario:she had a session just a couple of days ago that she doesn't think got logged"
+            },
+            {
+                "information": "the session she needs to cancel right now within the late window",
+                "source": "user_scenario:she has one more session on the calendar for tomorrow that she now has to cancel"
+            },
+            {
+                "information": "the trainer's name for the redeem/late-cancel calls",
+                "source": "user_scenario:she says Jordan Wu"
+            }
+        ],
+        "seed_consistency": [
+            {
+                "row": "initial_state.pt_holdings.6e419281-0d0b-43e8-adad-c6c1c1827b3c",
+                "policy_id": "pt_package_refund_policy",
+                "check": "status=active, opened_date=2025-06-14 is within refund_window_days=10 of frozen_time 2025-06-20; sessions_remaining=17 equals sessions_included(20) minus the 3 pre-existing redemptions, consistent with the ledger",
+                "evidence": [
+                    "initial_state.pt_holdings.6e419281-0d0b-43e8-adad-c6c1c1827b3c.status",
+                    "initial_state.pt_holdings.6e419281-0d0b-43e8-adad-c6c1c1827b3c.opened_date",
+                    "initial_state.pt_holdings.6e419281-0d0b-43e8-adad-c6c1c1827b3c.sessions_remaining"
+                ]
+            },
+            {
+                "row": "initial_state.pt_events.128e8ee4-d17d-4415-90f3-ec86fcc612d7",
+                "policy_id": "pt_session_redemption_eligibility",
+                "check": "recorded while the package was active, sessions_delta=-1, chronologically the earliest of the three redemptions",
+                "evidence": [
+                    "initial_state.pt_events.128e8ee4-d17d-4415-90f3-ec86fcc612d7.event_timestamp",
+                    "initial_state.pt_events.128e8ee4-d17d-4415-90f3-ec86fcc612d7.sessions_delta"
+                ]
+            },
+            {
+                "row": "initial_state.pt_events.41198b86-e0ae-4b51-94ed-6d88b9b46ec1",
+                "policy_id": "pt_session_redemption_eligibility",
+                "check": "recorded while the package was active, sessions_delta=-1, names trainer Jordan Wu one day before the reassignment ledger row of the same date -- both are historical and do not themselves need to agree with pt_holdings.assigned_trainer_name",
+                "evidence": [
+                    "initial_state.pt_events.41198b86-e0ae-4b51-94ed-6d88b9b46ec1.event_timestamp",
+                    "initial_state.pt_events.41198b86-e0ae-4b51-94ed-6d88b9b46ec1.trainer_name"
+                ]
+            },
+            {
+                "row": "initial_state.pt_events.4ec67059-5802-4eca-9570-780e4d36c4c0",
+                "policy_id": "pt_session_redemption_eligibility",
+                "check": "recorded while the package was active, sessions_delta=-1, the most recent of the three prior redemptions",
+                "evidence": [
+                    "initial_state.pt_events.4ec67059-5802-4eca-9570-780e4d36c4c0.event_timestamp"
+                ]
+            },
+            {
+                "row": "initial_state.pt_events.aa7e76a6-7b87-40d0-b7b1-a09bb0929832",
+                "policy_id": "pt_trainer_reassignment_policy",
+                "check": "the only pt_trainer_reassigned row on file; its trainer_name (Jordan Wu) is the authoritative latest reassignment and disagrees with pt_holdings.assigned_trainer_name (Marcus Bell), which is exactly the mismatch pt_ext_refund's added eligibility requires be reconciled before a refund",
+                "evidence": [
+                    "initial_state.pt_events.aa7e76a6-7b87-40d0-b7b1-a09bb0929832.trainer_name",
+                    "initial_state.pt_holdings.6e419281-0d0b-43e8-adad-c6c1c1827b3c.assigned_trainer_name"
+                ]
+            },
+            {
+                "row": "initial_state.membership_holdings.bf9ad3f1-4376-464f-985d-3d770eddd996",
+                "policy_id": "pt_specialty_membership_gating",
+                "check": "status=active at Metro Multi-Club Access (rank 4), satisfying Elite Specialty Coaching's minimum_membership_tier_rank=4 (confirmatory only, since this task purchases nothing) and supplying pt_ext_bonus_loyalty's genuine personal_training_discount_pct=5 cross-category factor",
+                "evidence": [
+                    "initial_state.membership_holdings.bf9ad3f1-4376-464f-985d-3d770eddd996.status",
+                    "initial_state.membership_holdings.bf9ad3f1-4376-464f-985d-3d770eddd996.variant_name"
+                ]
+            },
+            {
+                "row": "initial_state.pt_events.0da56cc5-7e24-49a3-a76c-02a7fff16ca0",
+                "policy_id": "pt_session_redemption_eligibility",
+                "check": "the fourth prior redemption, recorded while the package was active, sessions_delta=-1, chronologically the most recent of the four prior redemptions",
+                "evidence": [
+                    "initial_state.pt_events.0da56cc5-7e24-49a3-a76c-02a7fff16ca0.event_timestamp",
+                    "initial_state.pt_events.0da56cc5-7e24-49a3-a76c-02a7fff16ca0.sessions_delta"
+                ]
+            }
+        ]
+    },
+    "initial_state": {
+        "customers": {
+            "a0eec838-380e-41de-8d73-c6916c8019ff": {
+                "customer_id": "a0eec838-380e-41de-8d73-c6916c8019ff",
+                "full_name": "Priya Anand",
+                "phone_number": "5555550212",
+                "email": "priya.anand.pt@example.com",
+                "date_of_birth": "1988-04-11",
+                "photo_id_last4": "7734",
+                "member_since_date": "2019-03-01",
+                "home_club_id": ""
+            }
+        },
+        "membership_holdings": {
+            "bf9ad3f1-4376-464f-985d-3d770eddd996": {
+                "membership_id": "bf9ad3f1-4376-464f-985d-3d770eddd996",
+                "customer_id": "a0eec838-380e-41de-8d73-c6916c8019ff",
+                "variant_name": "Metro Multi-Club Access",
+                "status": "active",
+                "home_club_id": "",
+                "opened_date": "2019-03-01",
+                "closed_date": "",
+                "dues_balance": 0.0,
+                "guest_passes_remaining": 1,
+                "freeze_start_date": "",
+                "freeze_end_date": "",
+                "past_due_since_date": ""
+            }
+        },
+        "corporate_wellness_enrollments": {
+            "6ea18c3d-abdd-4d83-81d0-d2b6026ae7fc": {
+                "enrollment_id": "6ea18c3d-abdd-4d83-81d0-d2b6026ae7fc",
+                "customer_id": "a0eec838-380e-41de-8d73-c6916c8019ff",
+                "variant_name": "Small Business Partner",
+                "status": "active",
+                "employer_name": "BrightPath Logistics",
+                "employer_account_id": "92fef196-4060-4351-9779-95e22d0b80e4",
+                "opened_date": "2022-01-10",
+                "closed_date": "",
+                "corporate_dues_balance": 0.0
+            }
+        },
+        "pt_holdings": {
+            "6e419281-0d0b-43e8-adad-c6c1c1827b3c": {
+                "pt_holding_id": "6e419281-0d0b-43e8-adad-c6c1c1827b3c",
+                "customer_id": "a0eec838-380e-41de-8d73-c6916c8019ff",
+                "variant_name": "Elite Specialty Coaching",
+                "status": "active",
+                "opened_date": "2025-06-14",
+                "closed_date": "",
+                "expiration_date": "2025-12-11",
+                "sessions_remaining": 17,
+                "assigned_trainer_name": "Marcus Bell"
+            }
+        },
+        "pt_events": {
+            "128e8ee4-d17d-4415-90f3-ec86fcc612d7": {
+                "event_id": "128e8ee4-d17d-4415-90f3-ec86fcc612d7",
+                "pt_holding_id": "6e419281-0d0b-43e8-adad-c6c1c1827b3c",
+                "customer_id": "a0eec838-380e-41de-8d73-c6916c8019ff",
+                "event_type": "pt_session_redeemed",
+                "event_timestamp": "2025-06-15 09:00:00 America/New_York",
+                "sessions_delta": -1,
+                "amount_usd": 0.0,
+                "session_type": "standard",
+                "trainer_name": "Marcus Bell"
+            },
+            "41198b86-e0ae-4b51-94ed-6d88b9b46ec1": {
+                "event_id": "41198b86-e0ae-4b51-94ed-6d88b9b46ec1",
+                "pt_holding_id": "6e419281-0d0b-43e8-adad-c6c1c1827b3c",
+                "customer_id": "a0eec838-380e-41de-8d73-c6916c8019ff",
+                "event_type": "pt_session_redeemed",
+                "event_timestamp": "2025-06-16 09:00:00 America/New_York",
+                "sessions_delta": -1,
+                "amount_usd": 0.0,
+                "session_type": "standard",
+                "trainer_name": "Jordan Wu"
+            },
+            "4ec67059-5802-4eca-9570-780e4d36c4c0": {
+                "event_id": "4ec67059-5802-4eca-9570-780e4d36c4c0",
+                "pt_holding_id": "6e419281-0d0b-43e8-adad-c6c1c1827b3c",
+                "customer_id": "a0eec838-380e-41de-8d73-c6916c8019ff",
+                "event_type": "pt_session_redeemed",
+                "event_timestamp": "2025-06-17 09:00:00 America/New_York",
+                "sessions_delta": -1,
+                "amount_usd": 0.0,
+                "session_type": "standard",
+                "trainer_name": "Jordan Wu"
+            },
+            "aa7e76a6-7b87-40d0-b7b1-a09bb0929832": {
+                "event_id": "aa7e76a6-7b87-40d0-b7b1-a09bb0929832",
+                "pt_holding_id": "6e419281-0d0b-43e8-adad-c6c1c1827b3c",
+                "customer_id": "a0eec838-380e-41de-8d73-c6916c8019ff",
+                "event_type": "pt_trainer_reassigned",
+                "event_timestamp": "2025-06-16 08:00:00 America/New_York",
+                "sessions_delta": 0,
+                "amount_usd": 0.0,
+                "session_type": "",
+                "trainer_name": "Jordan Wu"
+            },
+            "0da56cc5-7e24-49a3-a76c-02a7fff16ca0": {
+                "event_id": "0da56cc5-7e24-49a3-a76c-02a7fff16ca0",
+                "pt_holding_id": "6e419281-0d0b-43e8-adad-c6c1c1827b3c",
+                "customer_id": "a0eec838-380e-41de-8d73-c6916c8019ff",
+                "event_type": "pt_session_redeemed",
+                "event_timestamp": "2025-06-18 09:00:00 America/New_York",
+                "sessions_delta": -1,
+                "amount_usd": 0.0,
+                "session_type": "standard",
+                "trainer_name": "Jordan Wu"
+            }
+        }
+    },
+    "db_closure": {
+        "pt_events": {
+            "4ec67059-5802-4eca-9570-780e4d36c4c0": {
+                "event_id": "4ec67059-5802-4eca-9570-780e4d36c4c0",
+                "pt_holding_id": "6e419281-0d0b-43e8-adad-c6c1c1827b3c",
+                "customer_id": "a0eec838-380e-41de-8d73-c6916c8019ff",
+                "event_type": "pt_session_redeemed",
+                "event_timestamp": "2025-06-17 09:00:00 America/New_York",
+                "sessions_delta": -1,
+                "amount_usd": 0.0,
+                "session_type": "standard",
+                "trainer_name": "Jordan Wu"
+            },
+            "aa7e76a6-7b87-40d0-b7b1-a09bb0929832": {
+                "event_id": "aa7e76a6-7b87-40d0-b7b1-a09bb0929832",
+                "pt_holding_id": "6e419281-0d0b-43e8-adad-c6c1c1827b3c",
+                "customer_id": "a0eec838-380e-41de-8d73-c6916c8019ff",
+                "event_type": "pt_trainer_reassigned",
+                "event_timestamp": "2025-06-16 08:00:00 America/New_York",
+                "sessions_delta": 0,
+                "amount_usd": 0.0,
+                "session_type": "",
+                "trainer_name": "Jordan Wu"
+            },
+            "0da56cc5-7e24-49a3-a76c-02a7fff16ca0": {
+                "event_id": "0da56cc5-7e24-49a3-a76c-02a7fff16ca0",
+                "pt_holding_id": "6e419281-0d0b-43e8-adad-c6c1c1827b3c",
+                "customer_id": "a0eec838-380e-41de-8d73-c6916c8019ff",
+                "event_type": "pt_session_redeemed",
+                "event_timestamp": "2025-06-18 09:00:00 America/New_York",
+                "sessions_delta": -1,
+                "amount_usd": 0.0,
+                "session_type": "standard",
+                "trainer_name": "Jordan Wu"
+            },
+            "41198b86-e0ae-4b51-94ed-6d88b9b46ec1": {
+                "event_id": "41198b86-e0ae-4b51-94ed-6d88b9b46ec1",
+                "pt_holding_id": "6e419281-0d0b-43e8-adad-c6c1c1827b3c",
+                "customer_id": "a0eec838-380e-41de-8d73-c6916c8019ff",
+                "event_type": "pt_session_redeemed",
+                "event_timestamp": "2025-06-16 09:00:00 America/New_York",
+                "sessions_delta": -1,
+                "amount_usd": 0.0,
+                "session_type": "standard",
+                "trainer_name": "Jordan Wu"
+            },
+            "128e8ee4-d17d-4415-90f3-ec86fcc612d7": {
+                "event_id": "128e8ee4-d17d-4415-90f3-ec86fcc612d7",
+                "pt_holding_id": "6e419281-0d0b-43e8-adad-c6c1c1827b3c",
+                "customer_id": "a0eec838-380e-41de-8d73-c6916c8019ff",
+                "event_type": "pt_session_redeemed",
+                "event_timestamp": "2025-06-15 09:00:00 America/New_York",
+                "sessions_delta": -1,
+                "amount_usd": 0.0,
+                "session_type": "standard",
+                "trainer_name": "Marcus Bell"
+            }
+        },
+        "customers": {
+            "a0eec838-380e-41de-8d73-c6916c8019ff": {
+                "customer_id": "a0eec838-380e-41de-8d73-c6916c8019ff",
+                "full_name": "Priya Anand",
+                "phone_number": "5555550212",
+                "email": "priya.anand.pt@example.com",
+                "date_of_birth": "1988-04-11",
+                "photo_id_last4": "7734",
+                "member_since_date": "2019-03-01",
+                "home_club_id": ""
+            }
+        },
+        "corporate_wellness_enrollments": {
+            "6ea18c3d-abdd-4d83-81d0-d2b6026ae7fc": {
+                "enrollment_id": "6ea18c3d-abdd-4d83-81d0-d2b6026ae7fc",
+                "customer_id": "a0eec838-380e-41de-8d73-c6916c8019ff",
+                "variant_name": "Small Business Partner",
+                "status": "active",
+                "employer_name": "BrightPath Logistics",
+                "employer_account_id": "92fef196-4060-4351-9779-95e22d0b80e4",
+                "opened_date": "2022-01-10",
+                "closed_date": "",
+                "corporate_dues_balance": 0.0
+            }
+        },
+        "membership_holdings": {
+            "bf9ad3f1-4376-464f-985d-3d770eddd996": {
+                "membership_id": "bf9ad3f1-4376-464f-985d-3d770eddd996",
+                "customer_id": "a0eec838-380e-41de-8d73-c6916c8019ff",
+                "variant_name": "Metro Multi-Club Access",
+                "status": "active",
+                "home_club_id": "",
+                "opened_date": "2019-03-01",
+                "closed_date": "",
+                "dues_balance": 0.0,
+                "guest_passes_remaining": 1,
+                "freeze_start_date": "",
+                "freeze_end_date": "",
+                "past_due_since_date": ""
+            }
+        },
+        "pt_holdings": {
+            "6e419281-0d0b-43e8-adad-c6c1c1827b3c": {
+                "pt_holding_id": "6e419281-0d0b-43e8-adad-c6c1c1827b3c",
+                "customer_id": "a0eec838-380e-41de-8d73-c6916c8019ff",
+                "variant_name": "Elite Specialty Coaching",
+                "status": "active",
+                "opened_date": "2025-06-14",
+                "closed_date": "",
+                "expiration_date": "2025-12-11",
+                "sessions_remaining": 17,
+                "assigned_trainer_name": "Marcus Bell"
+            }
+        }
+    },
+    "db_closure_matches_initial_state": true,
+    "evaluation_criteria": [
+        {
+            "owner": "agent",
+            "tool": "find_customers",
+            "arguments": {
+                "phone_number": "5555550212",
+                "date_of_birth": "1988-04-11"
+            },
+            "objective": "locate Priya's member profile from her stated phone number and date of birth.",
+            "necessity": "obtains customer_id, the locator every later read and write needs."
+        },
+        {
+            "owner": "agent",
+            "tool": "verify_member_identity",
+            "arguments": {
+                "customer_id": "a0eec838-380e-41de-8d73-c6916c8019ff",
+                "phone_number": "5555550212",
+                "date_of_birth": "1988-04-11"
+            },
+            "objective": "verify Priya's identity with 2 matching details before any account change.",
+            "necessity": "no write may be made before identity is verified."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_pt_holdings",
+            "arguments": {
+                "customer_id": "a0eec838-380e-41de-8d73-c6916c8019ff"
+            },
+            "objective": "read Priya's personal-training package(s), including status, opened_date, expiration_date, sessions_remaining and assigned_trainer_name.",
+            "necessity": "supplies the target holding and every F()/P() field pt_ext_refund, pt_ext_late_cancel_fee, pt_ext_bonus_loyalty and pt_ext_trainer_reassignment read."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_pt_events",
+            "arguments": {
+                "pt_holding_id": "6e419281-0d0b-43e8-adad-c6c1c1827b3c"
+            },
+            "objective": "read the package's full session ledger: prior redemptions and the prior trainer reassignment.",
+            "necessity": "supplies redeemed_count, late_count, already_granted and the latest reassignment's trainer_name that expose the trainer mismatch."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_membership_holdings",
+            "arguments": {
+                "customer_id": "a0eec838-380e-41de-8d73-c6916c8019ff"
+            },
+            "objective": "read Priya's club membership status and tier.",
+            "necessity": "supplies pt_ext_bonus_loyalty's cross-category membership_active and personal_training_discount_pct factors."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_corporate_wellness_enrollments",
+            "arguments": {
+                "customer_id": "a0eec838-380e-41de-8d73-c6916c8019ff"
+            },
+            "objective": "read Priya's corporate wellness enrollment status and tier.",
+            "necessity": "supplies the corp_active/employer_discount_pct factor read by pt_ext_late_cancel_fee, pt_ext_trainer_reassignment and pt_ext_refund alike."
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "grant_bonus_session_f02d8384"
+            },
+            "objective": "unlock the bonus-session grant tool.",
+            "necessity": "required once before it can be called."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "grant_bonus_session_f02d8384",
+                "arguments": {
+                    "pt_holding_id": "6e419281-0d0b-43e8-adad-c6c1c1827b3c",
+                    "sessions_delta": 1
+                }
+            },
+            "objective": "credit the loyalty bonus session pt_ext_bonus_loyalty entitles this package to.",
+            "necessity": "pt_ext_bonus_loyalty's compute uniquely produces sessions_delta=1 from eligible_tier=true, tenure_met=true (days_open=6 >= min_tenure=6) and already_granted=0.",
+            "argument_uniqueness_tracing": {
+                "pt_holding_id": "value=6e419281-0d0b-43e8-adad-c6c1c1827b3c; basis: the only personal-training package on file for Priya (initial_state.pt_holdings); uniqueness: no second candidate object exists.",
+                "sessions_delta": "value=1; factors: eligible_tier=P('bonus_session_eligible')=true (Elite Specialty Coaching); days_open=DAYS(2025-06-14,2025-06-20)=6; membership_active=EXISTS('membership',status='active')=true (initial_state.membership_holdings.bf9ad3f1-4376-464f-985d-3d770eddd996); membership_pt_disc=CPARAM('membership','personal_training_discount_pct',status='active')=5 (Metro Multi-Club Access); no_membership=false; min_tenure=int(7*(1-5/100))=6; tenure_met=(6>=6)=true; already_granted=COUNT(pt_bonus_session_granted)=0 (no such row in initial_state.pt_events); owed=1 since all three conditions hold; any correctly-calculating agent converges on 1."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "reassign_trainer_0e491cd1"
+            },
+            "objective": "unlock the trainer-reassignment tool.",
+            "necessity": "required once before it can be called."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "reassign_trainer_0e491cd1",
+                "arguments": {
+                    "pt_holding_id": "6e419281-0d0b-43e8-adad-c6c1c1827b3c",
+                    "new_trainer_name": "Jordan Wu",
+                    "reassignment_fee_usd": 25.5
+                }
+            },
+            "objective": "reconcile the package's trainer-of-record to Jordan Wu, the name on the latest reassignment ledger entry, and charge the fee this crosses into.",
+            "necessity": "pt_ext_trainer_reassignment's compute uniquely produces reassignment_fee_usd=25.5 from free_uses=1, prior_count=1 (under_free=false) and the active corp enrollment's discount.",
+            "argument_uniqueness_tracing": {
+                "pt_holding_id": "value=6e419281-0d0b-43e8-adad-c6c1c1827b3c; basis: the only personal-training package on file for Priya (initial_state.pt_holdings); uniqueness: no second candidate object exists.",
+                "new_trainer_name": "value='Jordan Wu'; basis: the most recent pt_trainer_reassigned ledger row for 6e419281-0d0b-43e8-adad-c6c1c1827b3c names 'Jordan Wu' (initial_state.pt_events, the trainer_reassigned row), which pt_ext_refund's rule requires assigned_trainer_name to match before a refund; Priya independently confirms 'Jordan Wu' as her trainer when asked (user_scenario), matching the ledger; no other candidate name appears anywhere in the reachable context.",
+                "reassignment_fee_usd": "value=25.5; factors: free_uses=P('trainer_reassignment_free_uses')=1 (Elite); flat_fee=P('trainer_reassignment_fee_usd')=30 (Elite); prior_count=COUNT(pt_trainer_reassigned)=1 (the one pre-existing row); under_free=(1<1)=false; corp_active=EXISTS('corp',status='active')=true (initial_state.corporate_wellness_enrollments.6ea18c3d-abdd-4d83-81d0-d2b6026ae7fc); corp_disc_pct=CPARAM('corp','employer_discount_pct',status='active')=15 (Small Business Partner); fee_after_corp=30*(1-15/100)=25.5; result=round(25.5,2)=25.5; any correctly-calculating agent converges on 25.5."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "redeem_pt_session_d7771acf"
+            },
+            "objective": "unlock the session-redemption tool.",
+            "necessity": "required once before it can be called."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "redeem_pt_session_d7771acf",
+                "arguments": {
+                    "pt_holding_id": "6e419281-0d0b-43e8-adad-c6c1c1827b3c",
+                    "session_type": "standard",
+                    "trainer_name": "Jordan Wu"
+                }
+            },
+            "objective": "log the session Priya already attended a couple of days before the call.",
+            "necessity": "this workflow step (computed_by: []) is the base pt_session_redemption_eligibility action Priya's own statement carries; it must land before pt_ext_refund sums redeemed_count.",
+            "argument_uniqueness_tracing": {
+                "pt_holding_id": "value=6e419281-0d0b-43e8-adad-c6c1c1827b3c; basis: the only personal-training package on file for Priya (initial_state.pt_holdings); uniqueness: no second open PT package exists for this customer to confuse it with.",
+                "session_type": "value='standard'; basis: Priya does not describe the already-attended session as any specialty type, and Elite Specialty Coaching's session_type_allowed='any' permits standard; uniqueness: no specialty type is stated anywhere in the reachable context, so 'standard' is the only supported reading.",
+                "trainer_name": "value='Jordan Wu' (verbatim); basis: Priya states her trainer is Jordan Wu when asked (user_scenario), and this call happens after step 9 has already reconciled assigned_trainer_name to Jordan Wu; uniqueness: both the customer's own statement and the just-updated holding record agree on this one name."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "log_late_cancellation_b8e4e034"
+            },
+            "objective": "unlock the late-cancellation tool.",
+            "necessity": "required once before it can be called."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "log_late_cancellation_b8e4e034",
+                "arguments": {
+                    "pt_holding_id": "6e419281-0d0b-43e8-adad-c6c1c1827b3c",
+                    "session_type": "specialty_rehab",
+                    "trainer_name": "Jordan Wu",
+                    "cancellation_amount_usd": 23.12
+                }
+            },
+            "objective": "log the late cancellation of tomorrow's session and charge the computed fee.",
+            "necessity": "pt_ext_late_cancel_fee's compute uniquely produces cancellation_amount_usd=23.12 from base_fee=25, the corp discount, and over_threshold=false; it must land before pt_ext_refund sums late_count.",
+            "argument_uniqueness_tracing": {
+                "pt_holding_id": "value=6e419281-0d0b-43e8-adad-c6c1c1827b3c; basis: the same and only package identified throughout the call; uniqueness: no second candidate object exists.",
+                "session_type": "value='specialty_rehab'; basis: no session type is volunteered for this second, upcoming session either, but Elite Specialty Coaching's session_type_allowed='any' permits it; uniqueness: chosen consistently with the tier's allowed set with no contrary statement in context.",
+                "trainer_name": "value='Jordan Wu' (verbatim); basis: same as the redemption above -- Priya's own statement and the just-reconciled holding record agree.",
+                "cancellation_amount_usd": "value=23.12; factors: is_active=true (pt_holdings.status='active'); base_fee=P('cancellation_fee_usd')=25 (Elite); corp_active=true; corp_disc_pct=15; fee_after_corp=25*(1-(15/2)/100)=23.125; prior_late_count=COUNT(pt_session_cancelled_late)=0; threshold=P('habitual_late_cancel_threshold')=4; over_threshold=(0+1>=4)=false so penalty=0.0; result=round(23.125,2)=23.12; any correctly-calculating agent converges on 23.12."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "confirm_package_cancellation_cc17b6f3"
+            },
+            "objective": "unlock Priya's own cancellation-confirmation tool.",
+            "necessity": "required once before it can be handed to the user simulator."
+        },
+        {
+            "owner": "user",
+            "tool": "call_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "confirm_package_cancellation_cc17b6f3",
+                "arguments": {
+                    "pt_holding_id": "6e419281-0d0b-43e8-adad-c6c1c1827b3c"
+                }
+            },
+            "objective": "Priya confirms, in her own words, that she is cancelling the package.",
+            "necessity": "base's active/paused -> closed transition is by:user; only Priya's own confirmation may make this write, and pt_ext_refund's refund_requires_open_package eligibility needs the resulting closed status.",
+            "argument_uniqueness_tracing": {
+                "pt_holding_id": "value=6e419281-0d0b-43e8-adad-c6c1c1827b3c; basis: the same and only package identified throughout the call; uniqueness: no other candidate object exists."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "record_package_refund_4aaf76ef"
+            },
+            "objective": "unlock the refund-recording tool.",
+            "necessity": "required once before it can be called."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "record_package_refund_4aaf76ef",
+                "arguments": {
+                    "pt_holding_id": "6e419281-0d0b-43e8-adad-c6c1c1827b3c",
+                    "refund_amount_usd": 1039.93
+                }
+            },
+            "objective": "record the refund of unused sessions at the handling-time-correct amount.",
+            "necessity": "pt_ext_refund's compute uniquely produces refund_amount_usd=1039.93 only once both prerequisites (the bonus grant and the trainer reconciliation) and both workflow steps 11 and 13 have already landed.",
+            "argument_uniqueness_tracing": {
+                "pt_holding_id": "value=6e419281-0d0b-43e8-adad-c6c1c1827b3c; basis: the same and only package identified throughout the call; uniqueness: no second candidate object exists.",
+                "refund_amount_usd": "value=1039.93; factors: sessions_included=P('sessions_included')=20; price=P('price_usd')=1499; redeemed_count=COUNT(pt_session_redeemed)=5 (4 pre-existing + step 11's new row); late_count=COUNT(pt_session_cancelled_late)=1 (step 13's new row); bonus_count=COUNT(pt_bonus_session_granted)=1 (step 7's new row); total_granted=20+1=21; sessions_used=5+1=6; unused=MX(0,21-6)=15; proration_basis=P('refund_proration_basis')='sessions_used' (percentage_elapsed branch stays untriggered on this tier); per_session_value=1499/20=74.95; unused_value=15*74.95=1124.25; base_pct=P('cancellation_refund_pct')=85; corp_active=true; corp_disc_pct=15; uplift_pct=15/2=7.5; effective_pct=MN(100,85+7.5)=92.5; result=round(1124.25*92.5/100,2)=1039.93; any correctly-calculating agent converges on 1039.93."
+            }
+        }
+    ],
+    "prerequisite_closure": {
+        "root_problem": "pt_ext_refund",
+        "edges": [
+            {
+                "from": "pt_ext_refund",
+                "to": "pt_ext_bonus_loyalty",
+                "kind": "value_input",
+                "gate": "total_granted",
+                "condition": "a bonus session owed under the package's loyalty entitlement, wherever one is owed and not yet credited, must be credited before a refund is recorded on the package",
+                "policy_source": "The unused-session count is the tier's sessions_included plus every pt_bonus_session_granted session credited to the package, less every session already consumed by a pt_session_redeemed or a pt_session_cancelled_late event on the package, floored at zero.",
+                "resolved_by": "grant_bonus_session_f02d8384",
+                "unresolved_at_frozen_time": {
+                    "why_false": "no pt_bonus_session_granted row exists for this package while its tier is eligible and its (membership-shortened) tenure requirement is already met",
+                    "evidence": [
+                        "initial_state.pt_holdings.6e419281-0d0b-43e8-adad-c6c1c1827b3c.opened_date",
+                        "initial_state.pt_holdings.6e419281-0d0b-43e8-adad-c6c1c1827b3c.variant_name"
+                    ],
+                    "flips_to_true_by": "once grant_bonus_session_f02d8384 runs, a pt_bonus_session_granted row exists, raising total_granted from 20 to 21"
+                }
+            },
+            {
+                "from": "pt_ext_refund",
+                "to": "pt_ext_trainer_reassignment",
+                "kind": "state_gate",
+                "gate": "pt_holdings.assigned_trainer_name",
+                "condition": "the name on pt_holdings.assigned_trainer_name must match the trainer named on the most recent pt_trainer_reassigned ledger entry for the package, wherever at least one such entry exists, before the refund may be recorded",
+                "policy_source": "additionally only once the package's trainer-of-record is reconciled: the name on pt_holdings.assigned_trainer_name must match the trainer named on the most recent pt_trainer_reassigned ledger entry for that package, wherever at least one such entry exists",
+                "resolved_by": "reassign_trainer_0e491cd1",
+                "unresolved_at_frozen_time": {
+                    "why_false": "pt_holdings.assigned_trainer_name reads 'Marcus Bell' while the latest (and only) pt_trainer_reassigned row names 'Jordan Wu'",
+                    "evidence": [
+                        "initial_state.pt_holdings.6e419281-0d0b-43e8-adad-c6c1c1827b3c.assigned_trainer_name",
+                        "initial_state.pt_events.aa7e76a6-7b87-40d0-b7b1-a09bb0929832.trainer_name"
+                    ],
+                    "flips_to_true_by": "once reassign_trainer_0e491cd1 runs with new_trainer_name=Jordan Wu, pt_holdings.assigned_trainer_name becomes Jordan Wu, agreeing with the ledger"
+                }
+            }
+        ],
+        "resolution_order": [
+            "pt_ext_bonus_loyalty",
+            "pt_ext_trainer_reassignment",
+            "pt_ext_refund"
+        ],
+        "order_uniqueness": "pt_ext_bonus_loyalty's write (a pt_bonus_session_granted row affecting sessions_remaining and the ledger) and pt_ext_trainer_reassignment's write (a pt_trainer_reassigned row and the assigned_trainer_name field) touch entirely disjoint fields and ledger event types; running reassignment before the bonus grant instead leaves every later count and the final refund amount identical, so both orderings are valid and gold's [bonus_loyalty, trainer_reassignment] order is not the only one.",
+        "edge_load_bearing": [
+            {
+                "edge": "pt_ext_refund -> pt_ext_bonus_loyalty",
+                "skipped_effect": "skipping the bonus grant leaves total_granted=20 instead of 21, unused=14 instead of 15, unused_value=1049.3 instead of 1124.25, and refund_amount_usd=970.60 instead of 1039.93 -- a changed scored parameter."
+            },
+            {
+                "edge": "pt_ext_refund -> pt_ext_trainer_reassignment",
+                "skipped_effect": "skipping the reassignment leaves pt_holdings.assigned_trainer_name at 'Marcus Bell' (never updated to 'Jordan Wu') and the gold pt_trainer_reassigned row for this call missing from the ledger entirely -- both are terminal-state differences from the gold hash, even though refund_amount_usd's arithmetic itself does not read assigned_trainer_name."
+            }
+        ],
+        "no_user_hint": "user_scenario never names a bonus session, a trainer reassignment, or any trainer-record mismatch; Priya's only trainer-related statement is her own trainer's name, Jordan Wu, given only when asked, and she has no reason to know or mention that pt_holdings.assigned_trainer_name still says something else.",
+        "tools_do_not_block": "grant_bonus_session_f02d8384 and reassign_trainer_0e491cd1 (task_tools.py) each simply look up the holding by pt_holding_id and write, with no check of tenure, eligibility, prior grants, or trainer-name agreement; record_package_refund_4aaf76ef likewise looks up the holding and writes the stated amount with no check that either prerequisite has run, so an agent that skipped both would still receive a normal confirmation string back with the wrong refund_amount_usd."
+    },
+    "charter_scope": {
+        "extended_policies": [
+            "pt_ext_bonus_loyalty",
+            "pt_ext_trainer_reassignment",
+            "pt_ext_late_cancel_fee",
+            "pt_ext_refund"
+        ],
+        "workflows": [
+            "pt_wf_cancel_refund"
+        ],
+        "task_tools": [
+            "grant_bonus_session_f02d8384",
+            "reassign_trainer_0e491cd1",
+            "redeem_pt_session_d7771acf",
+            "log_late_cancellation_b8e4e034",
+            "confirm_package_cancellation_cc17b6f3",
+            "record_package_refund_4aaf76ef"
+        ]
+    },
+    "required_documents": [
+        "pt_ext_bonus_loyalty",
+        "pt_ext_trainer_reassignment",
+        "pt_ext_late_cancel_fee",
+        "pt_ext_refund"
+    ],
+    "computations": [
+        {
+            "policy_id": "pt_ext_bonus_loyalty",
+            "target_holding_id": "6e419281-0d0b-43e8-adad-c6c1c1827b3c",
+            "step": 7,
+            "arg": "sessions_delta",
+            "expected": 1,
+            "factor_trace": [
+                "eligible_tier=P('bonus_session_eligible')=true (Elite Specialty Coaching)",
+                "days_open=DAYS(2025-06-14,2025-06-20)=6",
+                "base_tenure=K('loyalty_bonus_minimum_tenure_days')=7",
+                "membership_active=EXISTS('membership',status='active')=true",
+                "membership_pt_disc=CPARAM('membership','personal_training_discount_pct',status='active')=5",
+                "no_membership=(not true)=false",
+                "min_tenure=int(7*(1-5/100))=6",
+                "tenure_met=(6>=6)=true",
+                "already_granted=COUNT(pt_bonus_session_granted)=0",
+                "owed=1"
+            ]
+        },
+        {
+            "policy_id": "pt_ext_trainer_reassignment",
+            "target_holding_id": "6e419281-0d0b-43e8-adad-c6c1c1827b3c",
+            "step": 9,
+            "arg": "reassignment_fee_usd",
+            "expected": 25.5,
+            "factor_trace": [
+                "free_uses=P('trainer_reassignment_free_uses')=1",
+                "flat_fee=P('trainer_reassignment_fee_usd')=30",
+                "prior_count=COUNT(pt_trainer_reassigned)=1",
+                "under_free=(1<1)=false",
+                "corp_active=EXISTS('corp',status='active')=true",
+                "corp_disc_pct=CPARAM('corp','employer_discount_pct',status='active')=15",
+                "fee_after_corp=30*(1-15/100)=25.5",
+                "result=round(25.5,2)=25.5"
+            ]
+        },
+        {
+            "policy_id": "pt_ext_late_cancel_fee",
+            "target_holding_id": "6e419281-0d0b-43e8-adad-c6c1c1827b3c",
+            "step": 13,
+            "arg": "cancellation_amount_usd",
+            "expected": 23.12,
+            "factor_trace": [
+                "is_active=(F('status')=='active')=true",
+                "base_fee=P('cancellation_fee_usd')=25",
+                "corp_active=true",
+                "corp_disc_pct=15",
+                "fee_after_corp=25*(1-(15/2)/100)=23.125",
+                "prior_late_count=COUNT(pt_session_cancelled_late)=0",
+                "threshold=P('habitual_late_cancel_threshold')=4",
+                "over_threshold=(0+1>=4)=false",
+                "penalty=0.0",
+                "result=round(23.125,2)=23.12"
+            ]
+        },
+        {
+            "policy_id": "pt_ext_refund",
+            "target_holding_id": "6e419281-0d0b-43e8-adad-c6c1c1827b3c",
+            "step": 17,
+            "arg": "refund_amount_usd",
+            "expected": 1039.93,
+            "factor_trace": [
+                "sessions_included=P('sessions_included')=20",
+                "price=P('price_usd')=1499",
+                "redeemed_count=COUNT(pt_session_redeemed)=5",
+                "late_count=COUNT(pt_session_cancelled_late)=1",
+                "bonus_count=COUNT(pt_bonus_session_granted)=1",
+                "total_granted=20+1=21",
+                "sessions_used=5+1=6",
+                "unused=MX(0,21-6)=15",
+                "proration_basis=P('refund_proration_basis')='sessions_used'",
+                "per_session_value=1499/20=74.95",
+                "unused_value=(price*remaining_fraction) if proration_basis=='percentage_elapsed'(false) else unused*per_session_value=15*74.95=1124.25",
+                "base_pct=P('cancellation_refund_pct')=85",
+                "corp_active=true",
+                "corp_disc_pct=15",
+                "uplift_pct=15/2=7.5",
+                "effective_pct=MN(100,85+7.5)=92.5",
+                "result=round(1124.25*92.5/100,2)=1039.93"
+            ]
+        }
+    ]
+}

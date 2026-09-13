@@ -1,0 +1,16 @@
+# Network accounting — round 3 audit response
+
+Read `_difficulty.md`, `0.md`, `1.md` and `revision_2_calculation_evidence.json` completely, including preserved original and revision_2 sections.
+
+- **F1 remains closed.** No assessment allocation rule or task-0 content was edited in this round. Its three exact allocation overrides remain present; local regression confirms the sole aggregate quantity 20000 and corrected target 643.20.
+- **F2 remains closed.** Every exact-source binding remains unchanged. The unrelated approved-review100 countermodels still leave correction -16.80, invoice2055.45 and tax169.57 unchanged. Eight additional source/status/meter/period predicates remain explicit.
+- **F3 closed in source artifacts, pending independent re-audit.** Both `network_ext_price` and `network_ext_invoice` now expressly replace four exact base clauses: usage-based portfolio selection, inclusive threshold applicability, the portfolio higher-priority restriction, and primary discount priority. Their rule text limits the replacements to the existing completed single-source assisted on-demand invoice route. The assessment selects the declared assisted fraction independently of ordinary portfolio eligibility; issuance uses that exact approved assessment without a second price selection. Each replacement is literal in its rule, and the affected discount/assessed compute_basis, task factor traces, argument proofs, action necessity, solvability semantics and rationale were propagated. This is a charter defect repaired in the extended scope; the frozen blueprint is unchanged.
+- **O1 remains addressed.** Workflow and every step retain explicit synchronous no-wait metadata; all four step proofs pass the regression check.
+- **O2 remains preserved.** The exact frozen tool hash remains `dfa53d76568d1fdc55380d1ecb2085aba8a31367a3bc4f8cc148b2d6dbd9c6f6`; no policy validation or extra effect was added to any atomic tool.
+- **Auditor derivation corrections preserved.** Task-0 refund uses consent Q; task-1 invoice uses posted meter S. These were audit derivation corrections, not artifact findings.
+
+The F3 local Decimal check explicitly reproduces standard monetary portfolio usage2485 <25000 and the excluded ordinary net2130/tax175.73. It then verifies the declared assisted assessment and invoice2055.45 and tax169.57. Both candidate nets fit the accepted ceiling and posting cap; the new explicit source clauses supply uniqueness. The existing task amounts, initial records, exact receipt dataflow and prerequisite sensitivities remain intact.
+
+Final validation: both local gold verifiers, the F1/F2/F3 regression verifier, and all seven mandatory gates pass with EXIT_CODE=0. Optional CACHE-DIFF also exits0. Replay remains deterministic and nonvacuous; task0 closure32/32, task1 closure25/25. Computations retain30 and36 factors; the task suite remains exactly2 tasks with exactly1 four-write workflow, including its user-owned acceptance.
+
+Full command/output/exit-code snapshot: `gate_snapshot_round_3.txt`. Machine-readable snapshot: `gate_results_round_3.json`. Regression evidence: `audit_regressions_round_3.json`; gold receipts and sensitivities: `verification_0.json`, `verification_1.json`. No temporary authoring script was created this round; none remains. Published-KB traceability remains deferred by pipeline instruction.

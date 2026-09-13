@@ -1,0 +1,248 @@
+---
+name: erl-task-policy-audit
+description: Audit one difficulty's structured policy and task bundle: whether the policy is self-consistent, whether the prerequisites the policy imposes are genuinely unmet at the opening when the customer raises only the root problem (whether the problem tree holds and every edge bears weight), and whether it uniquely entails the scored solution in each task's world. The inputs are that difficulty's product charter, task tool contracts and M tasks; the output is a per-task verdict with evidence — find every problem, report every problem, never edit the artifacts and never arrange the fix. It defines audit strategy only, and has nothing to do with orchestration.
+---
+
+# erl-task-policy-audit (task <-> structured policy)
+
+Audit one difficulty's policy and task bundle: **find every problem it has, report them one by one, with re-checkable evidence.** And there it stops — you edit no artifact, and you arrange no one to fix anything. Every command is run from the enterprise_rl repository root.
+
+## Input: four artifacts and how they relate
+
+| Artifact | What it is |
+| --- | --- |
+| Scenario constitution | `blueprint.yaml`, `db_schema.json`, `share_tools.py` and this category's `products/<category>.yaml` under `blueprint/` — the world's table structure, the shared tool contracts, and this category's base policies |
+| Extended charter | `tasks/<difficulty>/<product>.extended.yaml`: a verbatim copy of the base section + `extended_policies` + at most one `workflows`; each policy and workflow additionally carries `prerequisite`, declaring the other problems that must be resolved before this one can be handled |
+| Task tool contracts | `task_tools.py` in the same directory: the signatures, owners, docstrings and runnable effects of the hidden task tools |
+| M tasks | `tasks/<difficulty>/tasks/0.json ... M-1.json`, each containing `frozen_time`, `user_scenario`, `initial_state`, `evaluation_criteria`, `computations`, `solvability_contract`, `prerequisite_closure`, `charter_scope` and `required_documents` |
+
+The relationships among the four are the entire object of this audit:
+
+- **The extended charter is the only structured policy surface.** The base section and the extended section together are all the policy currently in force for this category; the base copy must be verbatim identical to the scenario constitution, and every deviation of extended from base is declared sentence by sentence in that policy's `overwrite`.
+- **Each task is one instantiation of the policy**: `initial_state` gives a world, `frozen_time` gives the single clock, and `user_scenario` gives what the customer brings and what can be elicited from them; together the three constitute the whole situation of one transaction.
+- **`evaluation_criteria` + `computations` are the scored solution**: the write-tool sequence, the owners, the order, each parameter's value, and the terminal state.
+- So what must be decided is: **whether the policy is self-consistent**, and **whether, in that situation, the policy can entail only this one solution**.
+
+## Core constraints: three relationships
+
+| Relationship | What must be proved | Recorded when it fails |
+| --- | --- | --- |
+| Policy self-consistency | Every conflict between base and extended is declared sentence by sentence in `overwrite`, and the merged semantics after the declaration are unique; `rule -> compute_basis -> compute` is lossless in both directions; eligibility, time, triggers, objects, cross-category reads and terminal states carry no conflict, omission or invented procedure | `SOURCE-POLICY RED` |
+| Policy <-> task unique solution | Under this task's `user_scenario`, world and scored solution, the user's need, the authorisation boundary and the timing of the transaction are clearly expressed, and the structured policy uniquely entails act-now/wait/refuse, the object, the parameters, the owner, the order and the terminal state; the agent need only act within the scope of the user's need; there is neither no solution nor several | `SOURCE-TASK RED` |
+| The problem tree holds | The customer raises only the root problem, and the prerequisites the policy imposes on it are genuinely unmet at `frozen_time`; the tree has at least 2 prerequisites, at least 1 `value_input` edge, and no cycle; the existence of each prerequisite is conveyed by policy text rather than by the customer; every edge bears weight; the resolving action requires no waiting; the tool layer validates no prerequisite; each scored parameter is evaluated at the moment "after all of its own prerequisites are resolved and before this problem itself is written" | `SOURCE-CHAIN RED` |
+
+**A RED arises only from these three relationships, and its consequence must be demonstrated on the spot.** Anything that cannot be demonstrated is recorded as an observation: observations still go into the report, but they are not grounds for rework.
+
+| Relationship | What a red light must demonstrate |
+| --- | --- |
+| Policy self-consistency | Quote the two passages of the artifacts verbatim and show that they reach different conclusions in the same situation |
+| The problem tree holds | Point at the row in `initial_state` that makes the prerequisite already satisfied at the opening; or skip the depended-on problem's write, recompute, and show the dependent's scored value unchanged (the edge does not bear weight) |
+| Policy <-> task unique solution | Write out the second reading, and the value it produces |
+
+This aligns the threshold for a red light with the product requirements; it **does not restrict what shapes may be found**: any shape at all is a red light so long as it can demonstrate the consequence the table above demands, and it need not have appeared on any list beforehand. Conversely, a stylistic blemish, a disagreement about granularity, or a "this could have been clearer" that demonstrates no consequence is not a red light.
+
+Take them in order: policy self-consistency first, then the problem tree, then the unique solution. When the policy itself is contradictory, "can it uniquely entail a solution" has no determinate meaning; and when the problem tree does not hold (for example, a prerequisite already satisfied at the opening), the task is not testing what it claims to test, so even a valid unique solution belongs to a different, easier task.
+
+The verdict rests on those four artifacts alone. **Do not erect a third set of business rules**: whether a tool accepts a business negative case, a nonzero result from some unclaimed policy, a cache diagnostic, or the auditor's personal preference — none of these changes whether the three relationships hold.
+
+The need-versus-dialogue boundary is a necessary part of the unique solution: `user_scenario` is responsible for making clear what the customer wants, on which object, when it is to be done, whether they authorise the agent to act for them or require doing it themselves, and which outcomes they respond to only once a condition is met — and that is all; it carries no policy, no scored solution, no calculated answer, and no steering of the agent toward one correct path. The user simulator's role is to convey those needs and facts, to respond passively to the agent under explicit if/else conditions, and to execute an `owner=user` tool when the agent hands it over and asks explicitly; it may not supply policy judgements for the agent, correct calculations, or actively push a hidden solution forward.
+
+## Output: one charter-global file, plus a per-task verdict with evidence
+
+The artifacts land in `env/<scenario>/audits/policy_task/<difficulty>/`: one `_difficulty.md` holding the conclusions that belong to the shared charter, and one `<task_id>.md` per task. Each task file must independently answer, **for its own task**, whether the three relationships hold, **citing `_difficulty.md` by path for the charter-global conclusions instead of re-deriving them**, and for each failure give **symptom -> root cause -> evidence -> demonstrated consequence -> affected artifact and location**. The evidence must be re-checkable quotations and paths: the policy's rule sentence, the `compute` binding, the DB row path, the tool contract, the persona's lines.
+
+**Report problems; do not design the fix.** When the policy contradicts itself, write the contradiction down as it is; never suggest "reword it and the problem goes away" — that leaves the defect in place under a new name. Likewise, never attribute a problem to the solving agent: several solutions, no solution, a real-world wait, a hidden-field dependency, a mismatch between policy and task — these are defects of the artifacts; "the tool call succeeded" does not mean the policy is correct, and a rollout agent's arithmetic slip is not a defect.
+
+The audit unit is one difficulty: the M tasks share one extended charter and one set of tool contracts, and must jointly satisfy the difficulty-level policy conflict scan, scope exclusivity and "exactly one workflow task", so all M must be audited in one pass by one auditor.
+
+**What that unit implies for the output: a conclusion about the shared charter is reached once and written once.** The extended charter, the tool module and the `prerequisite` graph are single objects, so checking them once per task yields M copies of one finding rather than M findings. Keep the finding and its consequence apart and neither is repeated nor lost: **the charter-global check is performed once, in `_difficulty.md`, while the demonstration of what that defect costs a particular task stays in that task's file** — a consequence is only ever demonstrable against one world and one scored solution, which is exactly why it cannot be hoisted, and a charter-global fact carries no world, which is exactly why it must not be repeated. A task file that restates a `_difficulty.md` conclusion instead of citing it is a defect of this audit, not thoroughness.
+
+## Boundaries and isolation
+
+- The write domain is only `env/<scenario>/audits/policy_task/<difficulty>/`, and nothing else: an audit does not change `blueprint/`, `tasks/` or the runtime `erlbench/` — a problem found goes into the report, and the audited artifact is not touched.
+- The read domain is this scenario's blueprint, this difficulty's instantiation artifacts (under the masking division of the next section) and `erlbench/`; **no other `env/` scenario may be read**, and neither may a sibling difficulty's tasks directory.
+- The auditor must be independent of the agent that wrote these artifacts; it accepts no answers supplied on its behalf, and makes no cross-difficulty merge judgements for anyone else.
+- Each task is audited and written to disk separately; "another task in the same difficulty passed" never substitutes for auditing this one. The division is by what the conclusion depends on, never by convenience: **the two per-task relationships — the problem tree and the unique solution — are never shared, cited or inherited between tasks**, because each rests on that task's own world and scored solution; only the charter-global half of policy self-consistency lives in `_difficulty.md`, and a task file cites it.
+- Any re-audit must preserve the old revision, freezing the new derivation before appending the comparison; an old blind answer must never be rewritten to accommodate new GT.
+
+## The source-layer view and the freezing rule
+
+The auditor may read:
+
+- the blueprint's product for this category, its base policies, the DB schema and the shared tool schemas;
+- this difficulty's `<product>.extended.yaml` (the base section + `extended_policies` + `workflows`) and the tool contracts in `task_tools.py`;
+- that task's `frozen_time`, `user_scenario` and `initial_state`;
+- the structured policy's `rule`, `compute_basis`, `compute`, `overwrite`, `prerequisite`, the workflow and its dataflow, and the runnable tool effects.
+
+Until the independent derivation for that task is complete and on disk, the following must be masked or left unread:
+
+- the whole of `evaluation_criteria`, including read/write tools, owner, order, arguments, objective, necessity and tracing;
+- the whole of `computations`, including expected, factor_trace, step/arg, and every gold parameter and GT sequence;
+- `charter_scope`, `required_documents`, `design_rationale`, `solvability_contract`, `prerequisite_closure` and the closure fields;
+- existing audit conclusions, historical revisions and any hidden meta.
+
+The raw `initial_state` may be used as an audit oracle for the ground truth of the world, because it is precisely the policy-task closure that is being verified; but any fact used **to derive the answer** must additionally have a reachable source — a runtime share query path, a persona line, or the output of a user/agent tool that has already occurred in order and entered the shared transcript. A field visible only in the raw seed, which the agent can neither query nor elicit, remains unreachable, and does not become permissible merely because the auditor can see `initial_state`. The derivation must rest on the scenario, the DB and the executable policy that task itself declares, and must never use expected/rationale to prove itself.
+
+**Ordering is a hard constraint: the independent derivation must be frozen to disk first, and only then may the masked GT fields be read and the comparison appended.** Reverse that order once and the blind audit of that task is void. Any early contact with GT — including reading a scored value out of the brief, out of a recursive grep, or out of a side file — must be honestly recorded in the file as `contamination_disclosure`, with that task's blind audit treated as void; concealing contamination is worse than the contamination itself, because it lets an untrustworthy blind answer pose as evidence. Recursive grep is a measured leak path: think through the path scope before running any search, and never let `tasks/*.json` fall into the match domain.
+
+**Every task's independent derivation must be frozen to disk before any task's GT is revealed.** Auditing straight through one task — freeze, reveal, compare — and only then starting the next would let the first task's revealed conventions, formulas and parameter shapes into the later task's supposedly blind derivation, and the leak is invisible afterwards because both files look correctly ordered on their own. Freeze all M first, then reveal. `_difficulty.md` shares one file across all M tasks and is therefore the sharpest form of this path: **while any task's derivation is still unfrozen, nothing derived from a revealed GT may be written into it** — its charter-global section is built from the charter, the schema and the tool contracts alone, all of which are readable before any reveal, so this costs nothing.
+
+## The audit procedure
+
+### Step 0: confirm the entry conditions
+
+The following must be supplied along with the input, and the auditor only checks and cites them rather than running the gates itself: that this difficulty's instantiation-stage gates are all green, that the masked views have been constructed per the division above (together with their hashes), and that the gate snapshot (the commands and their actual output lines) came with the brief. If any is missing, report "incomplete input" as a problem; do not run them yourself and do not lower the standard.
+
+**A machine green light is only the qualification to enter a manual audit, not a proof of correctness.** Scripts can prove structure, references and parsability; they cannot prove that a structured policy is self-consistent across its real domain, nor that it has only one answer in this world.
+
+### Step 1: the charter-global scan, written once, then per-task policy self-consistency
+
+First run one conflict scan over this difficulty's complete structured policy: do all base/extended policies reach compatible conclusions on overlapping subjects, triggers, eligibility, time anchors, action parameters, terminal states and cross-category read boundaries; are the claimed scopes of the M tasks mutually exclusive and jointly complete. Write the scan into `_difficulty.md`; every affected task's audit file then **cites it by path**, and a conflict may not be ignored merely because the conflicting policy happens to belong to another task. Citing is the whole point of writing it once: an instruction to "cite" with no file to cite degenerates into re-deriving.
+
+Then work through the seven checks below. **Where each goes is decided by what its conclusion depends on, and nothing else.**
+
+- **Once, into `_difficulty.md`: checks 2, 3 and 7.** Each interrogates a single shared object — the `rule`/`compute` correspondence across the charter's policies, the `(target_tool, computes)` claims and the uuid8s of the one tool module, and the acyclicity and quotability of the one `prerequisite` graph. None of the three reads a task's world, so running them per task produces identical conclusions M times over. Partitioning them by which policies a task claims is no better: a coverage check split in half reports half its gaps in one file and half in another, and neither file can see the whole.
+- **Check 1 splits, and the split is the general rule.** Its sentence-by-sentence override-declaration sweep runs **once** across all of the charter's extended policies in `_difficulty.md`, because base and extended are rendered into the documents together, so an undeclared override anywhere is a defect of the charter. But **the demonstration that it hands a particular task a second defensible answer belongs in that task's file** — a consequence exists only against one world and one scored solution. Finding is O(1); demonstrating is O(M).
+- **Per task: checks 4, 5 and 6.** Handling time is evaluated on that task's own world, and the single workflow is claimed by exactly one task, so none of the three is shared and none repeats.
+
+The seven are set out in full below whichever file their conclusion lands in; build each task's `source_derivation_frozen` section from the per-task ones plus its citations. Check at least the following:
+
+1. **base/extended closure and override declarations**: this guards against **two clauses in the KB fighting over the same quantity** — base and extended are rendered into the documents together, and if the value an agent computes by following the base clause differs from the scored value, the task has acquired a second defensible answer. **Declaring an override makes the override legal; it does not make several solutions legal.**
+
+   The base section is verbatim compatible and the base copy may not be rewritten; an override holds only by being declared on the extended side. Every conflict must name, in that policy's `overwrite`, the base sentence being replaced — not naming it IS **an undeclared override**, recorded as `SOURCE-POLICY RED`; where it is named, the merged semantics after replacement must still be unique. Every base provision not hit by an `overwrite` (eligibility, authoritative evidence, time anchors, status/liability/dedup/channel boundaries) is inherited in full, and may not be weakened by extended, by a tool, or by the persona.
+
+   Check at the granularity of **the sentences of the cited base policy**: take each entry in `base_policy_refs` and judge, sentence by sentence, whether extended follows it or handles the quantity it governs differently; the criterion is "the quantity that ultimately gets scored", not "whether a new parameter name appeared". **Reaching a conclusion on each sentence is what counts as having checked it** — an exhaustive enumeration of value combinations is not required, and "some value combination was not tried" may not be recorded as a red light. `overwrite: []` is checked by the same sentence-by-sentence conclusions, and is not held to a stricter standard for being an empty list.
+
+   Three disguised forms need specific attention: **the anonymous intermediate factor** (the override hides in an intermediate of the calculation chain, with no new parameter name), **the 0/1 multiplier** (an existence condition multiplied onto an amount or quantity base has already fixed, zeroing it out), and **the dropped branch** (base declares a branch that extended's selector never produces). Another strong signal: the author calling base's output a "wrong value" or "the algorithm to avoid" in the rule, in `compute_basis` or in any of their own notes shows they already know they deviated from base — check whether that deviation has been declared.
+
+2. **rule/compute equivalence in both directions**: every quantity, history window, filter, tier, branch, cross-category read, acting base, grouping of operations, cap/floor, rounding mode, rounding point and interval counting convention has a verbatim quotation in `compute_basis` and is implemented by a restricted expression; sweep back sentence by sentence to confirm that compute invents no basis of its own and that the rule makes no empty promise.
+
+3. **unique action binding and tool UUIDs**: each `(target_tool, computes)` is claimed by at most one policy; the policy's subject, base refs, target tool, tool docstring, workflow step and terminal state admit only one business reading; and no confirmation, review, wait or procedure outside the policy is added. Check each task tool's `<verb>_<object>_<uuid8>` individually: every uuid8 must be independently newly generated for that tool and frozen with it, never reused across tools, never copied and given a different tail, and never appearing to be batch-derived from a common prefix, a sequence number or adjacent values.
+
+4. **handling time**: every formula is evaluated on the world of "`initial_state` + the preceding synchronous writes" at its corresponding write step; a later write is never computed early, and persona, expected or a tool fallback never substitutes for an eligibility judgement.
+
+5. **zero-wait workflow**: every prerequisite of every workflow step must fall under `initial_state_preexisting`, `prior_synchronous_tool_effect` or `current_user_input`. A diagnosis/visit, a delivery/call-out, a payment clearing, a manual/external approval, third-party processing, a back-office batch, a future date, a cooling-off period and the mere passage of time may never become a prerequisite of a later step if they have not completed at the opening. Creating a `completed` row, changing a status, renaming a tool or a persona line cannot fabricate a real-world event; a waiting point can only be the end of the workflow.
+
+6. **workflow shape**: exactly one workflow, at least 4 non-trivial synchronous write steps, and at least one `owner=user` step that can be completed now; adjacent ordering is supported by policy, `dataflow`'s production and consumption of objects/states correspond verbatim, and `requires_external_wait=false` and `zero_wait_proof` are both present.
+
+7. **policy self-consistency of the `prerequisite` declarations**: every policy and workflow has filled in `prerequisite` (`[]` when there is none); every `problem` points at another policy id or workflow id in this file, never at a base policy and never at itself, and the whole graph is acyclic; each edge's `policy_source` is verbatim locatable in the cited `rule` — if it cannot be quoted, that prerequisite is not written into general text, the agent can never discover it, and it is recorded as `SOURCE-POLICY RED`; `condition` agrees semantically with the cited sentence and has not been quietly strengthened or weakened by the `prerequisite` field; the action `resolved_by` points at genuinely makes the gate described in `effect` hold or changes the binding's value; and `kind` matches `gate` (`state_gate` points at a real eligibility gate, `value_input` at a binding name that genuinely exists in this policy's compute). `prerequisite` is part of the general text, so authoring-viewpoint phrasing such as "in this task / at the opening / the current world" written into it is likewise a red light.
+
+Conflicts, pseudo-synchronous real-world events, drifting formula bases or undiscoverable prerequisites found in this section are recorded as **`SOURCE-POLICY RED`** whenever their consequence can be demonstrated per the "Core constraints" section, and as observations when it cannot. It is recorded where its conclusion lives — a charter-global finding in `_difficulty.md`, the demonstration of what it costs a given task in that task's file — and must carry "symptom -> root cause -> evidence -> demonstrated consequence -> affected artifact and location", and must never be written up as the agent getting the task wrong.
+
+### Step 2: per-task independent derivation; freeze, then reveal GT and compare
+
+Once policy self-consistency passes, still within the same frozen section, the auditor uses only the structured policy, `frozen_time`, `user_scenario`, the raw DB and the available tool schemas/synchronous effects to derive the complete solution independently:
+
+1. Whether the user clearly expressed the target object, the timing, the boundary of the action and the mode of authorisation (the agent acting for them, the customer acting in person, a query/quote only, or performing a write); the agent's convenience may never be used to infer an authorisation the user did not express; **and separately confirm that `user_scenario` raises only the root problem and nowhere mentions or hints at any prerequisite** — if the customer names a prerequisite outright, or steers the agent toward one with "do I need to sort something out first?", the persona has short-circuited the task's problem-tree difficulty, recorded as `SOURCE-CHAIN RED`; the same holds for any other item of work the customer names — a document to send, an address to send it to, a statement to put something on — which is a new task the customer issues that `evaluation_criteria` does not contain, so an agent following `user_scenario` faithfully would have to act outside gold, and is recorded the same way; and confirm the persona closes where `evaluation_criteria` closes — a reaction that moves the agent past its last gold action is recorded the same way;
+2. Whether, at `frozen_time`, the answer is act now, wait for a future condition, or refuse; every base eligibility, authoritative record, time boundary and zero-wait justification;
+3. The narrowest business object, the correlation keys, the history rows included and excluded, and the source objects of reversals/compensation/adjustments;
+4. **Walk the problem tree yourself, starting from the root problem**: read the root problem's policy text and list every condition that must hold before it can be handled; for each condition, use the raw DB to decide whether it holds at `frozen_time`; for each that does not, find which problem the policy says resolves it, and repeat the same questioning for that problem, until every condition holds. Write down the tree you derived (nodes, edges, `kind`), the topological order, and the DB row evidence for "why this is false at the opening" on each edge. The criterion here is not "how many edges the author declared" but **whether reading the policy and the world alone yields the same tree**;
+5. Each scored parameter's complete formula, input rows, intermediates, branches, acting base, ordering, cap/floor, rounding and its value at handling time — **each problem's moment is after all of its own prerequisites are resolved and before it is itself written**; if the root problem would evaluate to a different number on the opening world, write both numbers down and explain why the latter is the right one;
+6. The write-tool sequence executable on the spot, the owners, the forward and backward dependencies, the customer input and the terminal state.
+
+Before deriving, close the context: every policy input and eligibility fact must be obtainable through a runtime share tool query, or supplied by the persona or a preceding user tool output; every value the customer states and every piece of information a real agent must ask for must already have a definite answer in the persona; and the query parameters themselves must come from earlier reachable information, while the actual output of a preceding user/agent tool becomes reachable information once the call completes. Separately check whether the user's need clearly covers the action, owner, timing and terminal state GT requires: if the user only asks for a quote while GT charges, if the user says they will submit it themselves afterwards while GT requires submitting it now, or if any other authorisation/boundary cannot be uniquely derived from the scenario, record `SOURCE-TASK RED`. The persona and the DB conflicting on the same authoritative fact, a necessary field hidden only in the seed, or the simulator having to improvise all make GT unsolvable or multiply solvable.
+
+After the independent derivation, apply a separate set of judgements to the problem tree; any one that fails is recorded as **`SOURCE-CHAIN RED`**:
+
+- **A prerequisite that is not in fact unmet at the opening**: some declared edge whose `condition`, judged against the raw DB at `frozen_time`, is already true. That edge is not a prerequisite at all, merely an eligibility already satisfied; and if removing it leaves fewer than 2 prerequisites in the tree, the whole task degenerates into exactly the single-problem task it claims to surpass. This is the most common failure of this relationship, and the one most easily masked by the wording of `design_rationale` — the criterion is the DB, never the author's account.
+- **An edge that does not bear weight**: skip the write of one prerequisite problem, replay everything else unchanged, and no scored parameter or terminal field changes. It is a decorative dependency.
+- **No `value_input` edge**: every edge is a `state_gate`, so the whole tree tests ordering and never calculation.
+- **Two solutions on parallel edges**: one problem has several out-edges whose writes affect one another (a shared balance, a shared cap, a shared dedup key), and the policy does not exclusively pin down the order — two orders give two equally defensible terminal states.
+- **A prerequisite that cannot be resolved without waiting**: the resolving action needs a real-world event that can only occur after the consultation begins (an offline payment clearing, a manual approval, a back-office batch, the date advancing). Here the correct solution can only be to wait, so the problem tree does not hold.
+- **The tool layer judging the prerequisite**: a task tool refuses the call, errors, or gives a hint while the prerequisite is unresolved. That moves the agent's core decision into the environment, so the task no longer tests what it claims to. Confirm by reading each function body in `task_tools.py`.
+- **A prerequisite undiscoverable from the policy surface**: an edge whose existence is written only in the `prerequisite` field or in `design_rationale`, with `policy_source` quoting no `rule` sentence at all — the agent could read every policy and still never know to do that, so the task is unsolvable for it.
+- **The topological order disagreeing with the GT write order**: `resolution_order`, the direction of the `prerequisite` edges, and the problem-level write order in `evaluation_criteria` contradict one another.
+
+A workflow must be recomputed step by step in order, each later step reading only the state that holds at that time. A non-workflow task must likewise have its unique atomic write path confirmed; do not skip the eligibility and object derivation merely because there is only one write step. If the independent derivation yields two equally defensible answers, no feasible answer, a need for a hidden field or a future event, something incompatible with the user's surface request or authorisation boundary, or if the user simulator can only push the agent down a path by drawing on policy/GT, record **`SOURCE-TASK RED`**.
+
+The frozen section must list the policy rule sentences, DB row paths, tool contracts and persona-line evidence actually used, and may cite no masked field. **Only after the freeze is on disk** may the full `evaluation_criteria`, `computations` and the remaining GT fields be revealed and compared item by item in `source_gt_comparison`: the user's need/authorisation/timing, the necessary read set, now/wait/refuse, eligibility, the object, each parameter, tool/owner/order/dataflow, and the terminal state. The closest alternative candidate must be excluded by explicit policy/world evidence — "GT chose this one" is not exclusion evidence.
+
+An independent derivation that differs from GT is still **`SOURCE-TASK RED`**, not a shortcoming of the model.
+
+### Step 3: settle the problems one by one
+
+The auditor produces only verdicts and evidence, **edits no artifact**, and arranges no fix. Two disciplines may not be crossed:
+
+- **Never attribute to the solving agent.** Several solutions, no solution, a real-world wait, a hidden-field dependency, a mismatch between policy and task — all are task defects; "the tool call succeeded" does not mean the policy is correct, and a rollout agent's arithmetic slip is not a red light against the task.
+- **Report problems only; do not design the fix.** When the structured policy contradicts itself, write the contradiction down as it is; never propose "reword it and it goes away" — that leaves the defect in place under a new name.
+
+**A red light turns on whether an assertion is true, not on who can read it.** An audit verifies whether the proof the artifact submits holds, not whether re-solving the task reaches the same answer — reaching the same conclusion does not mean the proof holds. So every sentence in `design_rationale`, in the various closures, in `factor_trace` and in `argument_uniqueness_tracing` that **asserts what the world is like** (a number, the value of a field in a row, the figures from skipping a step) is part of the proof: verify it word for word, recompute it on the world of the moment it names for itself, and where it contradicts the recomputation, red-light it under the relationship it supports. Every sentence that **expresses what the author thinks** (wording, granularity, an assessment of the difficulty or the design) changes no relationship and is recorded as an observation. That the auditor has already worked out the right answer is what makes it competent to rule, not a reason for exemption.
+
+Every problem states: the verdict, the symptom, the root cause, the re-checkable evidence, the demonstrated consequence (per the table in "Core constraints"), the affected artifact and location (policy / compute / seed row / persona / tool / workflow / which parts of the scored solution), and its relation to the previous revision.
+
+### Step 4: closing out the difficulty
+
+Once all M tasks have a frozen `source_derivation_frozen` and a `source_gt_comparison`, and all three relationships PASS, close out the difficulty, writing the checklist below into `_difficulty.md` under its own heading. It is the one difficulty-level conclusion reached **after** the reveals, so it sits below the charter-global section rather than inside it — that section is pre-reveal by construction and must stay that way:
+
+- the per-task audit files correspond one-to-one with the tasks and `_difficulty.md` sits alongside them, old revisions are traceable, and every comparison section carries a PASS;
+- this difficulty's extended policies are fully covered, the M tasks' scopes are pairwise disjoint (a scope spans the whole problem tree, the root problem and all of its prerequisite problems), there is exactly one workflow and exactly one task claims it, task tools and GT are closed, and each task tool uses an independently generated, frozen uuid8;
+- every task's problem tree has at least 2 prerequisites, at least 1 `value_input` edge and no cycle; and the `prerequisite` edges of the whole difficulty together are still a directed acyclic graph, with no cycle created by cross-task references;
+- this difficulty's instantiation-stage gates are re-run once on the final form.
+
+The closing output takes the form of **two verdicts per task + the difficulty's closing checklist in `_difficulty.md`**. The cross-difficulty merge surface and the scenario-level check do not belong to this skill — do not run them, and do not rewrite your own verdicts on the strength of their results.
+
+Only when "policy self-consistency PASS + problem tree holds PASS + unique solution PASS" hold together does this difficulty pass the source-layer audit.
+
+## Minimum format of the audit files
+
+`env/<scenario>/audits/policy_task/<difficulty>/_difficulty.md` — written once, before any task's GT is revealed, and containing nothing derived from a revealed GT
+
+```markdown
+# Policy-task audit — <difficulty> / charter-global
+
+## charter_global_frozen
+freeze hash of `<product>.extended.yaml` and `task_tools.py`, freeze time, auditor; the fields permitted and the fields explicitly masked
+
+### policy_conflict_scan
+the conflict scan over the difficulty's complete structured policy: overlapping subjects, triggers, eligibility, time anchors, action parameters, terminal states, cross-category read boundaries; and whether the M tasks' claimed scopes are mutually exclusive and jointly complete
+
+### rule_compute_equivalence
+check 2 over every policy of the charter: the verbatim `compute_basis` quotation behind every quantity, window, filter, tier, branch, cross-category read, acting base, grouping, cap/floor and rounding convention, and the sweep back confirming compute invents no basis and the rule makes no empty promise
+
+### action_binding_and_uuids
+check 3 over the whole charter and the one tool module: each `(target_tool, computes)` claimed by at most one policy, and every uuid8 independently generated, frozen, unreused and not batch-derived
+
+### prerequisite_graph
+check 7 over the whole graph: `prerequisite` filled in everywhere, every `problem` pointing at a policy or workflow id in this file, acyclicity, each edge's `policy_source` verbatim locatable in the cited `rule`, `condition` neither strengthened nor weakened, `resolved_by` genuinely making `effect` hold, and `kind` matching `gate`
+
+### override_declarations
+check 1's finding half, once over all extended policies: sentence by sentence against each `base_policy_refs` entry, which base sentences extended follows and which it handles differently, and whether every conflict is named in that policy's `overwrite`. Findings only — each affected task's file demonstrates the consequence against its own world
+
+### findings
+charter-global findings one by one, each naming which tasks it bears on so their files can pick up the demonstration
+
+## closing_checklist
+written after all M tasks PASS: Step 4's list, and the re-run of this difficulty's instantiation-stage gates on the final form
+```
+
+`env/<scenario>/audits/policy_task/<difficulty>/<task_id>.md`
+
+```markdown
+# Policy-task audit — <difficulty> / task <id>
+
+## source_derivation_frozen
+freeze hash, freeze time, auditor, the fields permitted and the fields explicitly masked; if there was contamination, add contamination_disclosure
+
+### policy_self_consistency (this task only)
+the per-task checks — handling time, and the workflow checks if this task is the one claiming it — with quotations from policy rule/compute/overwrite for whatever is argued here, the differential check result and the earliest root cause; plus, for every charter-global conclusion this task rests on, a **citation of `_difficulty.md` by path and heading rather than a restatement of it**, and, where a charter-global defect bears on this task, the consequence demonstrated against this task's own world and scored solution
+
+### problem_chain
+the problem tree walked out from the policy and the world alone: nodes, edges and kinds, the topological order, the DB row evidence per edge for "why it is false at the opening", the per-edge load-bearing run, the terminal-state argument for parallel edges, the zero-wait argument, and the function-body citation showing the tools do not judge prerequisites; and whether it is isomorphic to the tree the author declared
+
+### task_independent_derivation
+now/wait/refuse, the object, the formulas, the parameters, the order, the owners, the terminal state and their source-layer evidence; mark each problem's own handling time, and give the root problem a contrasting number for "what it would evaluate to on the opening world"
+
+## source_gt_comparison
+the reveal time, item-by-item same/different, the grounds excluding the closest candidate, an item-by-item comparison of the problem tree against `prerequisite_closure` (value against value; "points at the same rows" or "same shape, same order" may not stand in for a value comparison), and SOURCE-POLICY / SOURCE-CHAIN / SOURCE-TASK / PASS
+
+## findings
+one by one: verdict/observation, symptom, root cause, evidence, demonstrated consequence, affected artifact and location, relation to previous revisions
+```
+
+Across rounds, append under `## revision_N`, leaving the text of older revisions untouched.
+
+A re-audit re-derives a charter-global section only when its shared inputs can have moved it. Compare the `<product>.extended.yaml` and `task_tools.py` hashes against the round that produced the section: where both are unchanged, carry the section forward by reference and record the two hashes as the grounds for doing so; where either has changed, re-derive it in full. Each task's per-task sections are judged the same way against its own task file. This is a rule about re-deriving, not about re-reading: a rework can move a task's proof fields while the charter stands still, and those are per-task.
+
+## Definition of done
+
+This skill is complete not when "some number of reports have been written", but when every task of this difficulty can be answered with evidence on record: the structured policy is self-consistent; the customer raises only the root problem while the prerequisites the policy imposes are genuinely unmet at the opening, the problem tree can be derived independently from the policy and the world, and every edge bears weight; and it uniquely entails GT under that scenario/DB. Any of the three that fails is reported honestly, is not blamed on the rollout agent, and is not papered over by the audit report adding business steps or calculations of its own.

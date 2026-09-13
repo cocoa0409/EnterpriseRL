@@ -1,0 +1,1937 @@
+{
+    "frozen_time": "2026-08-14 10:20:00 EDT",
+    "design_rationale": "WORKLOG / TEST DOSSIER - task 0 (workflow task auto_wf_autopay_source_change)\n\n[1] Why this is a good test. The caller asks only to move his car-loan autopay to a new checking account and to have it come out on the 20th. The scored values sit behind a problem tree he never mentions: the August autopay debit on his old Private Client account was returned unpaid (reversal 2026-08-06, returned_payment fee 25.00), so the 2026-08-05 installment has no standing credit and is 9 days past due. The agent must (a) read in auto_ext_autopay_enroll_rate that an enrollment carries the autopay discount only when the loan has no installment past due (a past-due installment brought current in the same call is paid before the enrollment is recorded) and that a new enrollment is recorded only when no enrollment stands, (b) discover from the ledger that the installment is unpaid although a payment toward it exists (it was reversed), (c) compute the catch-up payment split from ledger-reconciled fees and principal plus daily simple interest, (d) move the due day, which auto_due_date_change blocks while an installment is past due, (e) hand the borrower the cancellation of the standing enrollment and rebuild the APR keeping only the relationship discount, confirmed from a checking account that is now CLOSED but was held on the funding date, and (f) hand him the new enrollment and rebuild the APR with both discounts. Difficulty comes from reading policy, reconciling a returned-payment ledger and rebuilding APRs from components, not from missing information or tool guessing.\n\n[2] Scope snapshot (Step 0). Occupied before this task: nothing. Claimed here: extended policies auto_ext_catchup_installment_payment, auto_ext_autopay_cancel_rate, auto_ext_autopay_enroll_rate; the single workflow auto_wf_autopay_source_change (4 write steps, 2 owner=user); tools post_installment_payment_660c6229, change_due_day_df9bec35, cancel_autopay_a2c51ad3, enroll_autopay_b9bffdb4. Headroom left for task 1: payoff (auto_payment payoff), fee waivers (auto_fee_waiver), lien release and GAP events remain wholly unclaimed; task 1 claims a payoff tree whose prerequisites are bank-error fee waivers, all with new tools. auto_extend is not used by any task: its borrower_signs gate has mixed authority on a single correlation key, which cannot be evidenced by both system and caller values on one field.\n\n[3] Policies, lineage and trigger. auto_ext_catchup_installment_payment (on_request, subject auto_payment, base refs auto_evt_payment_allocation + auto_evt_payoff_and_lien = every base policy whose subject contains auto_payment; overwrite []): refines base allocation (fees, then interest through the credit date, then principal; installment satisfied at monthly_payment) with a standing-credit reconciliation (returned payments do not stand), a posted-funds cap from the active checking account, ledger-recomputed fees and principal. auto_ext_autopay_cancel_rate (on_request, auto_set_autopay, refs auto_agg_relationship_discount + auto_evt_autopay; overwrite: two declared entries, listed at the end of this section): the APR after cancellation is rebuilt as rate + recorded discounts - kept discounts; it equals base 'the APR rises by the autopay discount actually applied' in every consistent world and differs only where the recorded list and the checking records disagree or the floor binds, which is why the deviation is declared, with the relationship discount confirmed from the checking record held on funded_date ('fixed for the life of the loan once granted ... nor removed if it later closes'). auto_ext_autopay_enroll_rate (on_request, same refs) declares two overwrites, one per base sentence that reaches a different conclusion on the enrolled APR: (i) auto_evt_autopay 'Enrolling adds the autopay discount to the APR, within the cap and floor ..., from the next installment due at least autopay_lead_days ...' replaced by 'The autopay discount is added at enrollment only when the loan has no installment past due ... carries no autopay discount.'; (ii) auto_agg_relationship_discount 'and re-enrolling later restores it' replaced by 'Re-enrolling after a cancellation restores the autopay discount only on the same terms as a first enrollment ...'. Enrollment itself stays legal on an active or delinquent loan (base auto_evt_autopay sentence kept in force since round 3); a past-due loan can be enrolled but without the autopay discount, and the rule 'When the loan has an installment past due and the borrower brings it current in the same call, the scheduled payment is posted before the enrollment is recorded ...' orders the catch-up first. Evaluated in this world: base would give 8.24 even without the payment, the extended rule gives 8.49 without it; with the loan current both give 8.24. auto_ext_autopay_cancel_rate declares two overwrites: auto_agg_relationship_discount 'When autopay is cancelled and autopay_discount_removed_on_cancel is true, the APR rises by the autopay discount actually applied' replaced by the rebuild sentence 'The new APR is the rate before discounts less the discounts kept ...', and auto_evt_autopay 'cancelling removes it on the same schedule when autopay_discount_removed_on_cancel is true' replaced by 'The APR written on the cancellation is ... in force from the cancellation, not from a later installment.' Both give 8.49 here. Cross-category (checking) numeric reads: CFIELD ledger_balance (catch-up cap), CFIELD opened_date/closed_date by tier (relationship confirmation), EXISTS active checking (paying account).\n\n[4] Base-invariant card. Step 6 auto_payment: auto_evt_payment_allocation.loan_open 'Payments post only to a loan whose status is active or delinquent.' - auto_loans.status = active (system record, correlated by auto_loan_id); auto_evt_payoff_and_lien has no gate for auto_payment (policy_scope). Step 8 auto_change_due_date: once_a_year (time; anchor auto_loans.last_due_date_change_date, relation not_before, duration params.due_date_change_window_days 365, calendar days, inclusive, 'or when there has been no earlier change') - last_due_date_change_date is empty, so allowed; positive/negative cases: a change on 2025-08-14 would allow 2026-08-14 (inclusive), one on 2025-08-15 would not. current_and_active 'The loan must be active with no installment past due.' - FALSE at the opening (days_past_due 9), TRUE after step 6 (days_past_due 0, status active) - cited as prior_step:6. Steps 10/12 auto_set_autopay: auto_evt_autopay.source_account 'The autopay source must be a checking account of the same customer in active status when autopay is enrolled.' - the new Premier 7d2ab1e4... is active and owned by the customer (step 12); for the cancellation the cancelled enrollment's account is the Private Client af221038... (active when enrolled in 2025, closed 2026-08-10). auto_agg_relationship_discount's only gate applies to auto_fund, so it is policy_scope here.\n\n[5] Business-object card. Target: the Auto Refinance Loan 93193f27-... (last4 8826), installment 2026-08-05. Rows entering the standing credit: the auto_payment ea9422da-... (438.01 toward 2026-08-05) and, as its offset, the auto_payment_reversal 1844e7fa-... whose source_item_id is ea9422da-...; nothing else was credited toward that due date. Fees: the returned_payment fee 24685022-... (25.00, source_item_id ea9422da-...) is the only fee and is unpaid. Principal: disbursement 21480.00 less 19 principal portions 5906.22 plus reversal 330.30 = 15904.08 = principal_balance. Excluded: the 18 earlier payments toward earlier due dates (they satisfy their own installments). The new payment carries installment_due_date 2026-08-05 and counterparty 7d2ab1e4-... as correlation keys.\n\n[6] initial_state rows and why each exists. customers (identity, NC). checking_accounts: Private Client (opened 2019-06-03, closed 2026-08-10) - removing it drops the relationship discount and changes both APRs (8.74 before discounts would become 8.74-0 = 8.74 on cancel, 8.49 on enroll); Premier (opened 2026-08-07, active, 4382.16) - removing it makes funds 0 and the payment 0, and makes the paying account missing; it is also a trap: a qualifying tier opened after funding never earns the relationship discount. auto_loans row (tier, rate, discounts, dates, autopay on the old account). auto_transactions: disbursement, 18 on-time autopay payments (ledger principal reconciliation), the returned August payment + reversal + returned fee (the past-due fact and the fee). Removing the reversal makes the installment look paid and the whole tree collapses. Automatic clauses checked: no late charge is owed (NC grace 15 days: 2026-08-05 + 15 = 2026-08-20 > 2026-08-14 and the payment today satisfies it); not delinquent (9 < 30); the returned fee is legitimate because the account was active on the debit date (closed 2026-08-10 > 2026-08-05), so the bank-error waiver rule claimed by task 1 does not fire here (negative space). No cache trap: principal_balance and fees_due equal the ledger.\n\n[7] Problem-tree card. Root auto_ext_autopay_enroll_rate. Edge 1 -> auto_ext_catchup_installment_payment, value_input, gate autopay_added, condition 'The loan has no installment past due when autopay is enrolled, so the enrollment carries the autopay discount.', policy_source 'When the loan has an installment past due and the borrower brings it current in the same call, the scheduled payment is posted before the enrollment is recorded, so that the enrollment is recorded on a loan with no installment past due and carries the autopay discount.', resolved_by post_installment_payment_660c6229 (a value edge: a past-due enrollment is permitted but carries no autopay discount; the rule orders the same-call payment first); false at the opening: auto_loans.days_past_due = 9, next_payment_due_date = 2026-08-05, reversal source_item_id = the only payment. Edge 2 -> auto_ext_autopay_cancel_rate, state_gate, gate auto_loans.autopay_enrolled, condition 'No autopay enrollment stands on the loan when a new enrollment is recorded.', policy_source 'A new enrollment is recorded only on a loan with no enrollment standing; ... first cancelled under its own rule ...', resolved_by cancel_autopay_a2c51ad3; false at the opening: autopay_enrolled = true on af221038-... Topological order: catch-up, cancel, enroll (the workflow runs catch-up, due day, cancel, enroll). Parallel edges: disjoint writes and reads. The policy order is catch-up, due day, cancel, enroll (base due-day gate, then the cancel rule's due-date sentence, then E2); a replay with the cancellation moved before the payment gives the same terminal hash, which shows only that the two edges do not interact, not that cancel-first is a policy-permitted order. Deletion sensitivity (sens_t0.py): skip payment -> enroll APR 8.49 instead of 8.24 and no payment rows; skip cancel -> terminal differs (no cancellation request row). user_scenario never mentions the returned payment, a past-due installment or cancelling; tools validate nothing (they write their arguments).\n\n[8] Zero-wait causal card (per workflow step). Step 0 payment: prerequisites loan active, installment 2026-08-05 unsatisfied, Premier active with 4382.16 - initial_state_preexisting (auto_loans row, reversal row, checking row); borrower's authorisation - current_user_input; a transfer between his own PCB accounts books on the spot. Step 1 due day: loan current - prior_synchronous_tool_effect of step 0 (days_past_due 0 written on the loan); no earlier change - initial_state_preexisting; day 20 - current_user_input. Step 2 cancel: standing enrollment - initial_state_preexisting; borrower runs the handed tool - current_user_input. Step 3 enroll: no standing enrollment - prior_synchronous_tool_effect of step 2; loan current - step 0; Premier active and Private Client held on funded_date - initial_state_preexisting. No step waits for clearing, mail, review or time; the future autopay draw on 2026-09-20 is not a prerequisite of anything.\n\n[9] Persona design. Marcus Whitlock, brisk estimator on a site-visit day; opens with the surface goal only (autopay to the new account, due on the 20th); identity (phone, then DOB and SSN last four, ZIP if needed), the paying account (Premier ending 8561) and loan last4 8826 are given only when asked; he has not looked at the loan lately and does not know about the returned debit. Passive reactions: agrees to 'pay whatever is needed' from 8561 only after the agent explains a payment is required; lets the agent do the payment and due day; runs the cancellation and enrollment himself when handed; on rate talk he only says he wants whatever discount he is entitled to and leaves the figures to the agent (no corrective branch: he never prompts a re-check of a wrong answer); closes once the enrollment on the new account is confirmed (the last gold action). No figure of gold appears in the persona (grounding gate: answers 272.98, 8.49, 8.24 absent).\n\n[10] Traps and how a careful agent avoids them. (a) Seeing a 438.01 payment toward 2026-08-05 and concluding the installment is paid - the reversal names it. (b) Enrolling first - permitted on a past-due loan but then without the autopay discount (8.49); the enrollment rule posts a same-call catch-up payment before the enrollment, and the base due-day gate plus the cancel rule's due-date sentence put the payment first anyway. (c) Dropping the relationship discount because the Private Client account is closed - base says it is not removed if the account later closes; or granting it because of the new Premier - opened after funding, never counts. (d) Using the closed account as payer or autopay source. (e) Computing interest from 2026-08-05 (the returned payment date) instead of last_payment_date 2026-07-06. (f) Forgetting the 25.00 fee comes first in the split. (g) Moving the due date before the payment (past due).\n\n[11] Standard solution. find_customers(phone) -> verify(phone, DOB, SSN4) -> find_auto_loans -> find_auto_transactions -> find_checking_accounts -> payment 438.01 = 25.00 + 140.03 + 272.98 toward 2026-08-05 from 8561 (next due 2026-09-05, dpd 0) -> due day 20, next due 2026-09-20 -> borrower cancels (old account, APR 8.49, relationship) -> borrower enrolls (8561, APR 8.24, autopay_and_relationship).\n\n[12] Verification code and runs. scratch verify_lib.py replays gold writes with the real share/task tools and evaluates each policy's compute on the handling-time world (initial_state + earlier gold writes). calc_t0.py output: CATCHUP {credited 438.01, returned_credit 438.01, shortfall 438.01, funds 4382.16, amount 438.01, fees_due 25.0, fees_portion 25.0, principal 15904.08, accrued 140.03, interest_portion 140.03, result 272.98}; CANCEL {pre_rate 8.74, held_premier False, held_private True, kept 0.25, result 8.49}; ENROLL {rec_rel 0.25, pre_rate 8.74, autopay_added 0.25, total_disc 0.5, result 8.24}; 'ENROLL skip payment 8.49'. sens_t0.py: gold hash bd55b28d...; cancel-first same terminal True; skip cancel same terminal False. Gates run: check_extended --task 0 EXTENDED OK; check_task_tools TASK TOOL CONTRACT OK; replay_tasks --task 0 REPLAY OK (13 acts, closure 26 = init 26); check_solvability --task 0 SOLVABILITY OK; check_compute --task 0 COMPUTE OK (3 comps, 33 factors, 22 history rows, 28 branches); check_grounding --task 0 GROUNDING OK; check_cross_fire --task 0 SCOPE OK.\n\n[13] Closure. workflow steps computed_by = {catchup} U {} U {cancel} U {enroll} = computations policy set = charter_scope.extended_policies = required_documents (same order). GT task-tool sequence = workflow steps in tool, owner and order. Two-way rule/compute sweep: every binding cites a rule sentence (compute_basis); every rule quantity sentence (standing credit, returned payment, shortfall floor 0, funds cap, fees ledger, principal ledger, rounding once, interest from last_payment_date exclusive to credit date inclusive; rate before discounts, recorded discount cap, relationship held-on-funded-date test, removal flag, floor, 2-decimal rounding; add-then-cap-then-subtract-once) has a binding.\n\n[14] Draft recomputation from visible context only (policy prose, tool schemas, lookups, persona): installment 2026-08-05 unpaid because its only payment was reversed -> pay 438.01 from the only active account; split fees 25 then 39 days of interest on 15904.08 at 8.24 = 140.03 then 272.98; due day 20 allowed (shift 15, no earlier change, now current); cancel keeps relationship (Private Client held on 2025-01-10) -> 8.74 - 0.25 = 8.49; enroll adds both -> 8.24. Agrees with gold.\n\n[15] Revisions. (r1) symptom: skipping the cancellation left an identical terminal hash (state_gate edge decorative). root cause: enroll overwrote the same loan fields. change: both autopay tools also register a completed autopay_change request (auto_requests), so the borrower's cancellation leaves its own record. re-run: skip cancel same terminal False; gates re-run green. (r2) symptom: check_extended flagged the helper _reference_digits as an undiscoverable tool. change: inlined the reference derivation into the payment tool. re-run EXTENDED OK. (r3) factor_trace principal line corrected to the ledger figures 21480.00 - 5906.22 + 330.30 (earlier draft mixed in the new principal portion).\n\n[16] Round-2 rework (audit revision 1: task 0 SOURCE-POLICY RED, task 1 PASS). Changes, by finding id:\n- F1 (state as of round 2; the first of the two overwrites named here was withdrawn in round 3, see [17]): auto_ext_autopay_enroll_rate then declared the two missing overwrites (auto_evt_autopay 'Enrolling or cancelling ... active or delinquent.' and auto_agg_relationship_discount 'and re-enrolling later restores it'), each with a replaced_by sentence added verbatim to its rule; the existing clause-(i) overwrite is kept. The policy_source of edge E1 is unchanged, so prerequisite_closure.edges[0] keeps its condition and policy_source; [3] above now names all three declarations. Re-run: every computed value unchanged (272.98 / 8.49 / 8.24).\n- OB-T0-1: kept as a state_gate. The legality sentence 'A new enrollment is recorded only on a loan with no enrollment standing' is what bears it; the cancellation's completed autopay_change request is its terminal trace (skip-cancel terminal differs). A state_gate may be value-invariant; one value_input edge (E1) remains.\n- OB-T0-2: no change; the separate prior cancellation is stated in the enrollment rule, which is the only surface the agent needs.\n- OB-T0-3: the persona branch asking for a re-check when told a discount is lost for good was removed; the rate line now only says he wants what he is entitled to.\n- O12: order step 1 before step 2 is now policy-backed by a new sentence in auto_ext_autopay_cancel_rate ('When a borrower who is moving autopay to a different checking account also asks for a new due day, the due date change is recorded before the standing enrollment is cancelled ...'), cited in order_rationale; dataflow gained a 0->3 link and 'carries' notes on 0->1, 2->3 and 0->3 naming the value/state flows (days_past_due, next_payment_due_date, interest_rate/rate_discounts).\n- O8: the cancel rule now states rate_discounts is left as recorded when autopay_discount_removed_on_cancel is false, and that the APR written is the post-removal APR recorded with the cancellation (round 3 replaced this with two declared overwrites, see [17]).\n- O1, O2, O3, O4, O7, O11: documented limits of the compute language (single latest reversal, credit date = frozen date, first matching checking row, float rounding, any active account, no cross-category trigger write); none changes a value in this world (checked in the audit and re-verified by the gate re-run).\n\n[17] Round-3 rework (KB audit revision 1: both tasks PASS; source-side items handed back). Changes, by finding id:\n- P1: auto_ext_autopay_cancel_rate now declares an overwrite of auto_agg_relationship_discount 'When autopay is cancelled and autopay_discount_removed_on_cancel is true, the APR rises by the autopay discount actually applied', replaced by its rebuild sentence (rate before discounts less the discounts kept, relationship confirmed from checking records, floor, 2 decimals). The two readings coincide in this world (8.49) but can diverge (recorded list vs checking records; floor), so the deviation is now declared.\n- P3: the same policy declares an overwrite of auto_evt_autopay 'cancelling removes it on the same schedule when autopay_discount_removed_on_cancel is true', replaced by 'The APR written on the cancellation is the APR the loan carries once the autopay discount has left the rate, recorded with the cancellation itself and in force from the cancellation, not from a later installment.'\n- P2: the enrollment rule no longer carries a hard block; enrollment is legal on an active or delinquent loan (base sentence kept, so the round-2 overwrite of 'Enrolling or cancelling ... active or delinquent.' was withdrawn as no longer a deviation), a past-due enrollment carries no autopay discount, and the catch-up is ordered first by 'When the loan has an installment past due and the borrower brings it current in the same call, the scheduled payment is posted before the enrollment is recorded ...'. Edge E1 stays value_input on autopay_added, now consistent with the text; its condition and policy_source were updated in the charter and in prerequisite_closure.edges[0]. Catch-up remains required in this world by base auto_due_date_change ('The loan must be active with no installment past due') for the due-day change the customer asked for, and precedes the enrollment through the cancel rule's due-date ordering sentence and E2.\n- N2 / runtime O1: the task_tools.py format examples no longer equal task-0 argument values (2031-02-15, 2031-03-15, 2031-03-28 instead of 2026-08-05, 2026-09-05, 2026-09-20).\n- Runtime O2 = P1. N1 and runtime O3 need no change (rendering notes).\n- Persona trigger reworded to 'If the agent tells you an overdue payment on the loan has to be taken care of first' so it fits both the due-day gate and the discount rule; no other persona line or seed field changed. F1 remains closed: every remaining deviation from base on the enrolled and cancelled APR is declared, and no extended sentence contradicts the kept base legality sentence. Scored values unchanged: 272.98 / 8.49 / 8.24.\n\n[18] Round-4 propagation (policy-task audit revision 3: F2). The round-3 charter change had not been carried into every proof sentence of this file. Updated: [7] Edge 1 now quotes the charter's current condition and policy_source for E1 and describes it as a value edge with no hard block (F2-L1); [3] now states that auto_ext_autopay_cancel_rate carries two declared overwrites instead of 'overwrite []' (F2-L2); [1] and [10] no longer say the enrollment rule forbids enrolling while past due; evaluation_criteria[2].necessity (F2-L3), solvability_contract.gold_actions[0].request_binding.action_semantics (F2-L4) and prerequisite_closure.order_uniqueness (F2-L5) now state the round-3 semantics (the discount is withheld on a past-due enrollment; the order comes from the base due-day gate, the same-call ordering sentence, the cancel rule's due-date sentence and E2); [16]'s F1 bullet is marked as the round-2 state. A quotation sweep of both task files against the charter, the base charter and the personas followed (see the round-4 report). Charter, tools, seeds and scored values unchanged: 272.98 / 8.49 / 8.24.",
+    "user_scenario": "You are Marcus Whitlock, a 45-year-old construction cost estimator in Greensboro, North Carolina, calling Piedmont Crescent Bank on a Friday morning between site visits. You talk fast and plainly, you like to get things done in one call, and you do not pretend to know banking terms. Your only reason for calling: you switched checking accounts inside PCB this month. You opened a new Premier Checking account last week and you closed your old Private Client Checking account a few days ago, and you want the automatic payment on your car loan, the Honda Accord you refinanced with PCB, to come out of the new account from now on. Because your new job pays on the 20th, you also want the car payment to fall due on the 20th instead of the 5th. You open with exactly that: move your car loan autopay to the new checking account and have it come out on the 20th. You have been on the road and have not looked at your loan or your old account's mail lately, so you do not know whether anything happened with your August payment, and you never bring it up yourself.\nYou do not reel off your details up front. When the agent asks who you are, you give your mobile number, 3365550186. When the agent asks you to confirm your identity, you give your date of birth, March 22, 1981 (1981-03-22), and the last four of your Social Security number, 8417; if they want one more thing you give your ZIP code, 27408. If asked which account the payment should come from, you say the new Premier Checking, the one ending in 8561. You have only the one car loan with PCB; if asked for the loan number you only remember it ends in 8826.\nIf the agent tells you an overdue payment on the loan has to be taken care of first, you are surprised but reasonable: you ask what it is, and once it is explained you tell the agent to go ahead and pay whatever is needed from the new Premier Checking account ending in 8561 today. You do not name a figure yourself and you do not question the split the agent describes. You are happy for the agent to make the payment and the due date change for you. Anything about switching your autopay, though, you want to do yourself: when the agent hands you a step to turn off the autopay on the old account, you run it, and when the agent then hands you the step to sign up for autopay from the new account, you run that too, using the new Premier account ending in 8561. If the agent mentions your interest rate, you say you just want whatever discount you are entitled to and you leave the figures to them. Once the sign-up from the new account has gone through and the agent confirms the autopay is on the new account, you thank them and end the call.",
+    "initial_state": {
+        "customers": {
+            "682b7cc8-7e21-4857-abd8-09dfdcc24596": {
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "name": "Marcus Whitlock",
+                "phone_number": "3365550186",
+                "email": "marcus.whitlock@carolinamail.com",
+                "date_of_birth": "1981-03-22",
+                "ssn_last4": "8417",
+                "postal_code": "27408",
+                "mailing_address": "2214 Lawndale Drive, Greensboro, NC 27408",
+                "state_of_residence": "NC",
+                "customer_since": "2014-05-12",
+                "military_status": "none",
+                "employee_status": "none"
+            }
+        },
+        "checking_accounts": {
+            "af221038-7673-417b-8f9f-39f436443611": {
+                "checking_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "variant_name": "Private Client Checking",
+                "status": "closed",
+                "account_number_last4": "9034",
+                "opened_date": "2019-06-03",
+                "closed_date": "2026-08-10",
+                "ledger_balance": 0.0,
+                "debit_overdraft_election": "opted_out",
+                "overdraft_link_savings_account_id": "",
+                "statement_cycle_day": 12,
+                "statement_delivery": "electronic",
+                "last_customer_activity_date": "2026-08-10",
+                "negative_since_date": ""
+            },
+            "7d2ab1e4-5d2e-431a-997a-e3ae39b25812": {
+                "checking_account_id": "7d2ab1e4-5d2e-431a-997a-e3ae39b25812",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "variant_name": "Premier Checking",
+                "status": "active",
+                "account_number_last4": "8561",
+                "opened_date": "2026-08-07",
+                "closed_date": "",
+                "ledger_balance": 4382.16,
+                "debit_overdraft_election": "opted_out",
+                "overdraft_link_savings_account_id": "",
+                "statement_cycle_day": 7,
+                "statement_delivery": "electronic",
+                "last_customer_activity_date": "2026-08-13",
+                "negative_since_date": ""
+            }
+        },
+        "auto_loans": {
+            "93193f27-3757-4f6f-9967-3ee43320eeb3": {
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "variant_name": "Auto Refinance Loan",
+                "status": "active",
+                "loan_number_last4": "8826",
+                "opened_date": "2025-01-06",
+                "funded_date": "2025-01-10",
+                "closed_date": "",
+                "original_principal": 21480.0,
+                "principal_balance": 15904.08,
+                "fees_due": 25.0,
+                "credit_grade": "B",
+                "interest_rate": 8.24,
+                "rate_discounts": "autopay_and_relationship",
+                "term_months": 60,
+                "monthly_payment": 438.01,
+                "payment_due_day": 5,
+                "next_payment_due_date": "2026-08-05",
+                "maturity_date": "2030-01-05",
+                "last_payment_date": "2026-07-06",
+                "days_past_due": 9,
+                "vehicle_vin": "1HGCV1F34NA512873",
+                "vehicle_year": 2022,
+                "vehicle_make_model": "Honda Accord EX",
+                "autopay_enrolled": true,
+                "autopay_source_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "extensions_used_lifetime": 0,
+                "last_extension_date": "",
+                "last_due_date_change_date": "",
+                "gap_coverage": false,
+                "gap_premium": 0.0,
+                "gap_cancellation_date": "",
+                "lien_status": "perfected",
+                "lien_release_date": ""
+            }
+        },
+        "auto_transactions": {
+            "33f3c68a-65dd-4f7a-8d18-17d91101dd07": {
+                "auto_txn_id": "33f3c68a-65dd-4f7a-8d18-17d91101dd07",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_disbursement",
+                "amount": 21480.0,
+                "posted_date": "2025-01-10",
+                "payment_channel": "none",
+                "payment_type": "none",
+                "fees_portion": 0.0,
+                "interest_portion": 0.0,
+                "principal_portion": 0.0,
+                "installment_due_date": "",
+                "reference_number": "502611048337",
+                "counterparty_account_id": "",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "82831077-afdf-44e2-82db-824dfbb16c37": {
+                "auto_txn_id": "82831077-afdf-44e2-82db-824dfbb16c37",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2025-02-05",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 126.08,
+                "principal_portion": 311.93,
+                "installment_due_date": "2025-02-05",
+                "reference_number": "604418290117",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "eb4dd19d-f545-4468-98b4-33f8fa86ca58": {
+                "auto_txn_id": "eb4dd19d-f545-4468-98b4-33f8fa86ca58",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2025-03-05",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 133.81,
+                "principal_portion": 304.2,
+                "installment_due_date": "2025-03-05",
+                "reference_number": "604418298036",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "ebe5ca42-0c16-4596-8a6a-cee7189efc06": {
+                "auto_txn_id": "ebe5ca42-0c16-4596-8a6a-cee7189efc06",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2025-04-07",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 155.43,
+                "principal_portion": 282.58,
+                "installment_due_date": "2025-04-05",
+                "reference_number": "604418305955",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "69b63235-8ea3-4c70-bf35-2d425b743748": {
+                "auto_txn_id": "69b63235-8ea3-4c70-bf35-2d425b743748",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2025-05-05",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 130.1,
+                "principal_portion": 307.91,
+                "installment_due_date": "2025-05-05",
+                "reference_number": "604418313874",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "6bcfb825-e92b-4ea8-b385-786f837617cc": {
+                "auto_txn_id": "6bcfb825-e92b-4ea8-b385-786f837617cc",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2025-06-05",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 141.88,
+                "principal_portion": 296.13,
+                "installment_due_date": "2025-06-05",
+                "reference_number": "604418321793",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "bf7a4c89-e2c9-4a11-8f50-dffde880f7e5": {
+                "auto_txn_id": "bf7a4c89-e2c9-4a11-8f50-dffde880f7e5",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2025-07-07",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 144.32,
+                "principal_portion": 293.69,
+                "installment_due_date": "2025-07-05",
+                "reference_number": "604418329712",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "936b2475-6901-4f8e-9028-7cc66e46d737": {
+                "auto_txn_id": "936b2475-6901-4f8e-9028-7cc66e46d737",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2025-08-05",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 128.87,
+                "principal_portion": 309.14,
+                "installment_due_date": "2025-08-05",
+                "reference_number": "604418337631",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "76489da0-342b-4145-a850-6f8fc8263462": {
+                "auto_txn_id": "76489da0-342b-4145-a850-6f8fc8263462",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2025-09-05",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 135.59,
+                "principal_portion": 302.42,
+                "installment_due_date": "2025-09-05",
+                "reference_number": "604418345550",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "ad0823d5-eddd-4c4a-b8e5-c67c5ec3a4d7": {
+                "auto_txn_id": "ad0823d5-eddd-4c4a-b8e5-c67c5ec3a4d7",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2025-10-06",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 133.47,
+                "principal_portion": 304.54,
+                "installment_due_date": "2025-10-05",
+                "reference_number": "604418353469",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "48739ead-c64a-43dc-934f-ffedac6ac079": {
+                "auto_txn_id": "48739ead-c64a-43dc-934f-ffedac6ac079",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2025-11-05",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 127.1,
+                "principal_portion": 310.91,
+                "installment_due_date": "2025-11-05",
+                "reference_number": "604418361388",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "dedde845-a0bc-4469-9a1c-65d374504a23": {
+                "auto_txn_id": "dedde845-a0bc-4469-9a1c-65d374504a23",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2025-12-05",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 125.0,
+                "principal_portion": 313.01,
+                "installment_due_date": "2025-12-05",
+                "reference_number": "604418369307",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "e6505c02-708d-4c86-b511-39f8461755fa": {
+                "auto_txn_id": "e6505c02-708d-4c86-b511-39f8461755fa",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2026-01-05",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 126.97,
+                "principal_portion": 311.04,
+                "installment_due_date": "2026-01-05",
+                "reference_number": "604418377226",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "d9ffba29-c353-4ae8-91ce-4f6882b12c67": {
+                "auto_txn_id": "d9ffba29-c353-4ae8-91ce-4f6882b12c67",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2026-02-05",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 124.8,
+                "principal_portion": 313.21,
+                "installment_due_date": "2026-02-05",
+                "reference_number": "604418385145",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "94e3ea29-6b2a-4e5e-8e23-52ab3b4164e2": {
+                "auto_txn_id": "94e3ea29-6b2a-4e5e-8e23-52ab3b4164e2",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2026-03-05",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 110.74,
+                "principal_portion": 327.27,
+                "installment_due_date": "2026-03-05",
+                "reference_number": "604418393064",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "8be69367-4df0-42d3-8a97-0df69b606acc": {
+                "auto_txn_id": "8be69367-4df0-42d3-8a97-0df69b606acc",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2026-04-06",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 124.2,
+                "principal_portion": 313.81,
+                "installment_due_date": "2026-04-05",
+                "reference_number": "604418400983",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "5843e09a-baaf-481d-910f-1799300cf2e6": {
+                "auto_txn_id": "5843e09a-baaf-481d-910f-1799300cf2e6",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2026-05-05",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 110.5,
+                "principal_portion": 327.51,
+                "installment_due_date": "2026-05-05",
+                "reference_number": "604418408902",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "56b6ed76-c8b5-4b56-8431-8066f2c1cc59": {
+                "auto_txn_id": "56b6ed76-c8b5-4b56-8431-8066f2c1cc59",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2026-06-05",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 115.83,
+                "principal_portion": 322.18,
+                "installment_due_date": "2026-06-05",
+                "reference_number": "604418416821",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "c0b1ad35-fb24-442a-ba0c-cd09ec88a482": {
+                "auto_txn_id": "c0b1ad35-fb24-442a-ba0c-cd09ec88a482",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2026-07-06",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 113.57,
+                "principal_portion": 324.44,
+                "installment_due_date": "2026-07-05",
+                "reference_number": "604418424740",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "ea9422da-2e6e-4023-b7e7-de9cdff4f232": {
+                "auto_txn_id": "ea9422da-2e6e-4023-b7e7-de9cdff4f232",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2026-08-05",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 107.71,
+                "principal_portion": 330.3,
+                "installment_due_date": "2026-08-05",
+                "reference_number": "604418432659",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "1844e7fa-1aa5-46f3-b72f-427cd398a1c7": {
+                "auto_txn_id": "1844e7fa-1aa5-46f3-b72f-427cd398a1c7",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment_reversal",
+                "amount": 330.3,
+                "posted_date": "2026-08-06",
+                "payment_channel": "none",
+                "payment_type": "none",
+                "fees_portion": 0.0,
+                "interest_portion": 0.0,
+                "principal_portion": 0.0,
+                "installment_due_date": "",
+                "reference_number": "",
+                "counterparty_account_id": "",
+                "fee_code": "none",
+                "source_item_id": "ea9422da-2e6e-4023-b7e7-de9cdff4f232",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "24685022-6f32-4303-bfb3-422c4bba5382": {
+                "auto_txn_id": "24685022-6f32-4303-bfb3-422c4bba5382",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_fee",
+                "amount": 25.0,
+                "posted_date": "2026-08-06",
+                "payment_channel": "none",
+                "payment_type": "none",
+                "fees_portion": 0.0,
+                "interest_portion": 0.0,
+                "principal_portion": 0.0,
+                "installment_due_date": "",
+                "reference_number": "",
+                "counterparty_account_id": "",
+                "fee_code": "returned_payment",
+                "source_item_id": "ea9422da-2e6e-4023-b7e7-de9cdff4f232",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            }
+        }
+    },
+    "db_closure": {
+        "auto_transactions": {
+            "8be69367-4df0-42d3-8a97-0df69b606acc": {
+                "auto_txn_id": "8be69367-4df0-42d3-8a97-0df69b606acc",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2026-04-06",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 124.2,
+                "principal_portion": 313.81,
+                "installment_due_date": "2026-04-05",
+                "reference_number": "604418400983",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "94e3ea29-6b2a-4e5e-8e23-52ab3b4164e2": {
+                "auto_txn_id": "94e3ea29-6b2a-4e5e-8e23-52ab3b4164e2",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2026-03-05",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 110.74,
+                "principal_portion": 327.27,
+                "installment_due_date": "2026-03-05",
+                "reference_number": "604418393064",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "33f3c68a-65dd-4f7a-8d18-17d91101dd07": {
+                "auto_txn_id": "33f3c68a-65dd-4f7a-8d18-17d91101dd07",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_disbursement",
+                "amount": 21480.0,
+                "posted_date": "2025-01-10",
+                "payment_channel": "none",
+                "payment_type": "none",
+                "fees_portion": 0.0,
+                "interest_portion": 0.0,
+                "principal_portion": 0.0,
+                "installment_due_date": "",
+                "reference_number": "502611048337",
+                "counterparty_account_id": "",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "56b6ed76-c8b5-4b56-8431-8066f2c1cc59": {
+                "auto_txn_id": "56b6ed76-c8b5-4b56-8431-8066f2c1cc59",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2026-06-05",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 115.83,
+                "principal_portion": 322.18,
+                "installment_due_date": "2026-06-05",
+                "reference_number": "604418416821",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "ad0823d5-eddd-4c4a-b8e5-c67c5ec3a4d7": {
+                "auto_txn_id": "ad0823d5-eddd-4c4a-b8e5-c67c5ec3a4d7",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2025-10-06",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 133.47,
+                "principal_portion": 304.54,
+                "installment_due_date": "2025-10-05",
+                "reference_number": "604418353469",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "24685022-6f32-4303-bfb3-422c4bba5382": {
+                "auto_txn_id": "24685022-6f32-4303-bfb3-422c4bba5382",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_fee",
+                "amount": 25.0,
+                "posted_date": "2026-08-06",
+                "payment_channel": "none",
+                "payment_type": "none",
+                "fees_portion": 0.0,
+                "interest_portion": 0.0,
+                "principal_portion": 0.0,
+                "installment_due_date": "",
+                "reference_number": "",
+                "counterparty_account_id": "",
+                "fee_code": "returned_payment",
+                "source_item_id": "ea9422da-2e6e-4023-b7e7-de9cdff4f232",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "48739ead-c64a-43dc-934f-ffedac6ac079": {
+                "auto_txn_id": "48739ead-c64a-43dc-934f-ffedac6ac079",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2025-11-05",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 127.1,
+                "principal_portion": 310.91,
+                "installment_due_date": "2025-11-05",
+                "reference_number": "604418361388",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "c0b1ad35-fb24-442a-ba0c-cd09ec88a482": {
+                "auto_txn_id": "c0b1ad35-fb24-442a-ba0c-cd09ec88a482",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2026-07-06",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 113.57,
+                "principal_portion": 324.44,
+                "installment_due_date": "2026-07-05",
+                "reference_number": "604418424740",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "d9ffba29-c353-4ae8-91ce-4f6882b12c67": {
+                "auto_txn_id": "d9ffba29-c353-4ae8-91ce-4f6882b12c67",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2026-02-05",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 124.8,
+                "principal_portion": 313.21,
+                "installment_due_date": "2026-02-05",
+                "reference_number": "604418385145",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "ea9422da-2e6e-4023-b7e7-de9cdff4f232": {
+                "auto_txn_id": "ea9422da-2e6e-4023-b7e7-de9cdff4f232",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2026-08-05",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 107.71,
+                "principal_portion": 330.3,
+                "installment_due_date": "2026-08-05",
+                "reference_number": "604418432659",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "bf7a4c89-e2c9-4a11-8f50-dffde880f7e5": {
+                "auto_txn_id": "bf7a4c89-e2c9-4a11-8f50-dffde880f7e5",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2025-07-07",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 144.32,
+                "principal_portion": 293.69,
+                "installment_due_date": "2025-07-05",
+                "reference_number": "604418329712",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "1844e7fa-1aa5-46f3-b72f-427cd398a1c7": {
+                "auto_txn_id": "1844e7fa-1aa5-46f3-b72f-427cd398a1c7",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment_reversal",
+                "amount": 330.3,
+                "posted_date": "2026-08-06",
+                "payment_channel": "none",
+                "payment_type": "none",
+                "fees_portion": 0.0,
+                "interest_portion": 0.0,
+                "principal_portion": 0.0,
+                "installment_due_date": "",
+                "reference_number": "",
+                "counterparty_account_id": "",
+                "fee_code": "none",
+                "source_item_id": "ea9422da-2e6e-4023-b7e7-de9cdff4f232",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "eb4dd19d-f545-4468-98b4-33f8fa86ca58": {
+                "auto_txn_id": "eb4dd19d-f545-4468-98b4-33f8fa86ca58",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2025-03-05",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 133.81,
+                "principal_portion": 304.2,
+                "installment_due_date": "2025-03-05",
+                "reference_number": "604418298036",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "ebe5ca42-0c16-4596-8a6a-cee7189efc06": {
+                "auto_txn_id": "ebe5ca42-0c16-4596-8a6a-cee7189efc06",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2025-04-07",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 155.43,
+                "principal_portion": 282.58,
+                "installment_due_date": "2025-04-05",
+                "reference_number": "604418305955",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "e6505c02-708d-4c86-b511-39f8461755fa": {
+                "auto_txn_id": "e6505c02-708d-4c86-b511-39f8461755fa",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2026-01-05",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 126.97,
+                "principal_portion": 311.04,
+                "installment_due_date": "2026-01-05",
+                "reference_number": "604418377226",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "6bcfb825-e92b-4ea8-b385-786f837617cc": {
+                "auto_txn_id": "6bcfb825-e92b-4ea8-b385-786f837617cc",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2025-06-05",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 141.88,
+                "principal_portion": 296.13,
+                "installment_due_date": "2025-06-05",
+                "reference_number": "604418321793",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "5843e09a-baaf-481d-910f-1799300cf2e6": {
+                "auto_txn_id": "5843e09a-baaf-481d-910f-1799300cf2e6",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2026-05-05",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 110.5,
+                "principal_portion": 327.51,
+                "installment_due_date": "2026-05-05",
+                "reference_number": "604418408902",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "82831077-afdf-44e2-82db-824dfbb16c37": {
+                "auto_txn_id": "82831077-afdf-44e2-82db-824dfbb16c37",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2025-02-05",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 126.08,
+                "principal_portion": 311.93,
+                "installment_due_date": "2025-02-05",
+                "reference_number": "604418290117",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "69b63235-8ea3-4c70-bf35-2d425b743748": {
+                "auto_txn_id": "69b63235-8ea3-4c70-bf35-2d425b743748",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2025-05-05",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 130.1,
+                "principal_portion": 307.91,
+                "installment_due_date": "2025-05-05",
+                "reference_number": "604418313874",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "dedde845-a0bc-4469-9a1c-65d374504a23": {
+                "auto_txn_id": "dedde845-a0bc-4469-9a1c-65d374504a23",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2025-12-05",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 125.0,
+                "principal_portion": 313.01,
+                "installment_due_date": "2025-12-05",
+                "reference_number": "604418369307",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "76489da0-342b-4145-a850-6f8fc8263462": {
+                "auto_txn_id": "76489da0-342b-4145-a850-6f8fc8263462",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2025-09-05",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 135.59,
+                "principal_portion": 302.42,
+                "installment_due_date": "2025-09-05",
+                "reference_number": "604418345550",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            },
+            "936b2475-6901-4f8e-9028-7cc66e46d737": {
+                "auto_txn_id": "936b2475-6901-4f8e-9028-7cc66e46d737",
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "event_type": "auto_payment",
+                "amount": 438.01,
+                "posted_date": "2025-08-05",
+                "payment_channel": "autopay_pcb",
+                "payment_type": "scheduled",
+                "fees_portion": 0.0,
+                "interest_portion": 128.87,
+                "principal_portion": 309.14,
+                "installment_due_date": "2025-08-05",
+                "reference_number": "604418337631",
+                "counterparty_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "fee_code": "none",
+                "source_item_id": "",
+                "adjustment_reason": "none",
+                "refund_destination": "none"
+            }
+        },
+        "auto_loans": {
+            "93193f27-3757-4f6f-9967-3ee43320eeb3": {
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "variant_name": "Auto Refinance Loan",
+                "status": "active",
+                "loan_number_last4": "8826",
+                "opened_date": "2025-01-06",
+                "funded_date": "2025-01-10",
+                "closed_date": "",
+                "original_principal": 21480.0,
+                "principal_balance": 15904.08,
+                "fees_due": 25.0,
+                "credit_grade": "B",
+                "interest_rate": 8.24,
+                "rate_discounts": "autopay_and_relationship",
+                "term_months": 60,
+                "monthly_payment": 438.01,
+                "payment_due_day": 5,
+                "next_payment_due_date": "2026-08-05",
+                "maturity_date": "2030-01-05",
+                "last_payment_date": "2026-07-06",
+                "days_past_due": 9,
+                "vehicle_vin": "1HGCV1F34NA512873",
+                "vehicle_year": 2022,
+                "vehicle_make_model": "Honda Accord EX",
+                "autopay_enrolled": true,
+                "autopay_source_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "extensions_used_lifetime": 0,
+                "last_extension_date": "",
+                "last_due_date_change_date": "",
+                "gap_coverage": false,
+                "gap_premium": 0.0,
+                "gap_cancellation_date": "",
+                "lien_status": "perfected",
+                "lien_release_date": ""
+            }
+        },
+        "customers": {
+            "682b7cc8-7e21-4857-abd8-09dfdcc24596": {
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "name": "Marcus Whitlock",
+                "phone_number": "3365550186",
+                "email": "marcus.whitlock@carolinamail.com",
+                "date_of_birth": "1981-03-22",
+                "ssn_last4": "8417",
+                "postal_code": "27408",
+                "mailing_address": "2214 Lawndale Drive, Greensboro, NC 27408",
+                "state_of_residence": "NC",
+                "customer_since": "2014-05-12",
+                "military_status": "none",
+                "employee_status": "none"
+            }
+        },
+        "checking_accounts": {
+            "7d2ab1e4-5d2e-431a-997a-e3ae39b25812": {
+                "checking_account_id": "7d2ab1e4-5d2e-431a-997a-e3ae39b25812",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "variant_name": "Premier Checking",
+                "status": "active",
+                "account_number_last4": "8561",
+                "opened_date": "2026-08-07",
+                "closed_date": "",
+                "ledger_balance": 4382.16,
+                "debit_overdraft_election": "opted_out",
+                "overdraft_link_savings_account_id": "",
+                "statement_cycle_day": 7,
+                "statement_delivery": "electronic",
+                "last_customer_activity_date": "2026-08-13",
+                "negative_since_date": ""
+            },
+            "af221038-7673-417b-8f9f-39f436443611": {
+                "checking_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "variant_name": "Private Client Checking",
+                "status": "closed",
+                "account_number_last4": "9034",
+                "opened_date": "2019-06-03",
+                "closed_date": "2026-08-10",
+                "ledger_balance": 0.0,
+                "debit_overdraft_election": "opted_out",
+                "overdraft_link_savings_account_id": "",
+                "statement_cycle_day": 12,
+                "statement_delivery": "electronic",
+                "last_customer_activity_date": "2026-08-10",
+                "negative_since_date": ""
+            }
+        }
+    },
+    "db_closure_matches_initial_state": true,
+    "solvability_contract": {
+        "request_binding_version": 1,
+        "request_alignment": [
+            {
+                "claim": "The borrower wants his car loan autopay moved from the old checking account to the new Premier Checking account.",
+                "evidence": [
+                    "user_scenario:move your car loan autopay to the new checking account"
+                ]
+            },
+            {
+                "claim": "He wants the car payment to fall due on the 20th instead of the 5th.",
+                "evidence": [
+                    "user_scenario:have it come out on the 20th"
+                ]
+            },
+            {
+                "claim": "He lets the agent make any payment and the due date change for him but runs the autopay steps himself.",
+                "evidence": [
+                    "user_scenario:You are happy for the agent to make the payment and the due date change for you.",
+                    "user_scenario:Anything about switching your autopay, though, you want to do yourself"
+                ]
+            }
+        ],
+        "gold_actions": [
+            {
+                "step": 6,
+                "business_effect": "A scheduled payment of 438.01 drawn from the active Premier Checking posts toward the 2026-08-05 installment (25.00 fees, 140.03 interest, 272.98 principal), satisfying it; the loan's next due date becomes 2026-09-05 and days past due 0.",
+                "request_binding": {
+                    "action_semantics": "The borrower authorises paying whatever is needed from the new Premier Checking once the agent explains that the overdue installment has to be taken care of first (the due date change he asked for needs the loan current, and a same-call catch-up is posted before the enrollment so the enrollment carries the autopay discount); that selects a scheduled payment toward the earliest unsatisfied installment, not a principal-only payment (not allowed while an installment is past due) and not a payoff.",
+                    "intent_source": {
+                        "kind": "user_scenario",
+                        "evidence": [
+                            "user_scenario:pay whatever is needed from the new Premier Checking account ending in 8561 today"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "pay whatever is needed",
+                        "evidence": [
+                            "user_scenario:pay whatever is needed from the new Premier Checking account ending in 8561 today",
+                            "initial_state.auto_loans.93193f27-3757-4f6f-9967-3ee43320eeb3.next_payment_due_date"
+                        ],
+                        "action_arg": "installment_due_date",
+                        "value": "2026-08-05"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "performed_by_this_tool",
+                    "fact": "The payment is booked and the installment satisfied by this synchronous write.",
+                    "evidence": [
+                        "initial_state.auto_loans.93193f27-3757-4f6f-9967-3ee43320eeb3.next_payment_due_date",
+                        "initial_state.auto_transactions.1844e7fa-1aa5-46f3-b72f-427cd398a1c7"
+                    ]
+                },
+                "requires_external_wait": false,
+                "zero_wait_proof": "Workflow zero-wait card: step 0 consumes only initial_state_preexisting facts (loan active, next_payment_due_date 2026-08-05, the 2026-08-06 reversal of the only payment toward it, the active Premier balance 4382.16) and current_user_input (authorisation to pay from the account ending 8561). A PCB transfer between the borrower's own PCB accounts is booked synchronously; nothing waits on clearing, a mailing or a batch.",
+                "base_preconditions": [
+                    {
+                        "policy_id": "auto_evt_payment_allocation",
+                        "eligibility_id": "loan_open",
+                        "condition": "Payments post only to a loan whose status is active or delinquent.",
+                        "evidence": [
+                            "initial_state.auto_loans.93193f27-3757-4f6f-9967-3ee43320eeb3.auto_loan_id",
+                            "initial_state.auto_loans.93193f27-3757-4f6f-9967-3ee43320eeb3.status"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "auto_loans.auto_loan_id",
+                                "source": "initial_state.auto_loans.93193f27-3757-4f6f-9967-3ee43320eeb3.auto_loan_id",
+                                "action_arg": "auto_loan_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "auto_evt_payoff_and_lien",
+                        "eligibility_id": "policy_scope",
+                        "condition": "Governs payoff amounts and lien release; this scheduled payment is below the payoff amount, so it posts as a scheduled payment and the payoff and lien clauses do not apply.",
+                        "evidence": [
+                            "initial_state.auto_loans.93193f27-3757-4f6f-9967-3ee43320eeb3.principal_balance"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 8,
+                "business_effect": "The monthly due day moves from 5 to 20 and the next installment falls due 2026-09-20; today is recorded as the latest due date change.",
+                "request_binding": {
+                    "action_semantics": "The borrower asks for the car payment to fall due on the 20th, which is a due date change on this loan, not an extension (no installment is deferred) and not an autopay setting.",
+                    "intent_source": {
+                        "kind": "user_scenario",
+                        "evidence": [
+                            "user_scenario:have it come out on the 20th"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "come out on the 20th",
+                        "evidence": [
+                            "user_scenario:have it come out on the 20th",
+                            "initial_state.auto_loans.93193f27-3757-4f6f-9967-3ee43320eeb3.payment_due_day"
+                        ],
+                        "action_arg": "new_due_day",
+                        "value": 20
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "established_by_prior_tool",
+                    "fact": "The loan is active with no installment past due only because the payment at step 6 satisfied the 2026-08-05 installment.",
+                    "evidence": [
+                        "prior_step:6"
+                    ]
+                },
+                "requires_external_wait": false,
+                "zero_wait_proof": "Workflow zero-wait card: step 1 consumes prior_synchronous_tool_effect of step 0 (days_past_due 0, next_payment_due_date 2026-09-05 written on the loan), initial_state_preexisting last_due_date_change_date empty, and current_user_input due day 20. The change is a record update completed on the spot.",
+                "base_preconditions": [
+                    {
+                        "policy_id": "auto_due_date_change",
+                        "eligibility_id": "once_a_year",
+                        "condition": "A due date change is allowed only when due_date_change_window_days calendar days have passed since the last change.",
+                        "evidence": [
+                            "initial_state.auto_loans.93193f27-3757-4f6f-9967-3ee43320eeb3.auto_loan_id",
+                            "initial_state.auto_loans.93193f27-3757-4f6f-9967-3ee43320eeb3.last_due_date_change_date",
+                            "frozen_time"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "auto_loans.auto_loan_id",
+                                "source": "initial_state.auto_loans.93193f27-3757-4f6f-9967-3ee43320eeb3.auto_loan_id",
+                                "action_arg": "auto_loan_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "auto_due_date_change",
+                        "eligibility_id": "current_and_active",
+                        "condition": "The loan must be active with no installment past due.",
+                        "evidence": [
+                            "prior_step:6",
+                            "initial_state.auto_loans.93193f27-3757-4f6f-9967-3ee43320eeb3.auto_loan_id"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "auto_loans.auto_loan_id",
+                                "source": "prior_step:6",
+                                "source_table": "auto_loans",
+                                "source_field": "auto_loan_id",
+                                "action_arg": "auto_loan_id"
+                            }
+                        ],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 10,
+                "business_effect": "The borrower cancels the enrollment standing on the closed Private Client account; autopay is off, the APR is 8.49 with the relationship discount kept, and a completed autopay change request is recorded.",
+                "request_binding": {
+                    "action_semantics": "Moving autopay to a different account requires the standing enrollment to be cancelled first; the borrower runs the cancellation the agent hands him, which is an autopay cancellation, not an enrollment.",
+                    "intent_source": {
+                        "kind": "user_scenario",
+                        "evidence": [
+                            "user_scenario:when the agent hands you a step to turn off the autopay on the old account, you run it"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "turn off the autopay on the old account",
+                        "evidence": [
+                            "user_scenario:when the agent hands you a step to turn off the autopay on the old account, you run it",
+                            "initial_state.auto_loans.93193f27-3757-4f6f-9967-3ee43320eeb3.autopay_source_account_id"
+                        ],
+                        "action_arg": "autopay_source_account_id",
+                        "value": "af221038-7673-417b-8f9f-39f436443611"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "preexisting_before_conversation",
+                    "fact": "An autopay enrollment on the Private Client account stands on the loan at the opening.",
+                    "evidence": [
+                        "initial_state.auto_loans.93193f27-3757-4f6f-9967-3ee43320eeb3.autopay_enrolled",
+                        "initial_state.auto_loans.93193f27-3757-4f6f-9967-3ee43320eeb3.autopay_source_account_id"
+                    ]
+                },
+                "requires_external_wait": false,
+                "zero_wait_proof": "Workflow zero-wait card: step 2 consumes initial_state_preexisting facts (autopay_enrolled true on the Private Client account, rate 8.24 with autopay_and_relationship, the Private Client account opened 2019-06-03 and closed 2026-08-10) and current_user_input (the borrower running the handed-over tool). Cancelling is a record change completed on the spot.",
+                "base_preconditions": [
+                    {
+                        "policy_id": "auto_agg_relationship_discount",
+                        "eligibility_id": "policy_scope",
+                        "condition": "Governs how the relationship discount stacks with autopay and what happens to the APR when autopay is cancelled; its only structured gate applies to funding, not to this autopay change. Its cancellation clause is superseded by auto_ext_autopay_cancel_rate (declared overwrite).",
+                        "evidence": [
+                            "initial_state.auto_loans.93193f27-3757-4f6f-9967-3ee43320eeb3.rate_discounts",
+                            "initial_state.checking_accounts.af221038-7673-417b-8f9f-39f436443611.opened_date"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "auto_evt_autopay",
+                        "eligibility_id": "source_account",
+                        "condition": "The autopay source must be a checking account of the same customer in active status when autopay is enrolled.",
+                        "evidence": [
+                            "initial_state.checking_accounts.af221038-7673-417b-8f9f-39f436443611.checking_account_id",
+                            "initial_state.checking_accounts.af221038-7673-417b-8f9f-39f436443611.customer_id",
+                            "initial_state.checking_accounts.af221038-7673-417b-8f9f-39f436443611.status",
+                            "initial_state.auto_loans.93193f27-3757-4f6f-9967-3ee43320eeb3.autopay_source_account_id"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "checking_accounts.checking_account_id",
+                                "source": "initial_state.checking_accounts.af221038-7673-417b-8f9f-39f436443611.checking_account_id",
+                                "action_arg": "autopay_source_account_id"
+                            }
+                        ],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 12,
+                "business_effect": "The borrower enrolls the loan in autopay from the Premier Checking ending 8561; the APR becomes 8.24 with both discounts and a completed autopay change request is recorded.",
+                "request_binding": {
+                    "action_semantics": "The borrower's root request is autopay from the new account; this is an enrollment with a new paying account, run by the borrower himself.",
+                    "intent_source": {
+                        "kind": "user_scenario",
+                        "evidence": [
+                            "user_scenario:move your car loan autopay to the new checking account"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "sign up for autopay from the new account",
+                        "evidence": [
+                            "user_scenario:hands you the step to sign up for autopay from the new account",
+                            "initial_state.checking_accounts.7d2ab1e4-5d2e-431a-997a-e3ae39b25812.status"
+                        ],
+                        "action_arg": "autopay_source_account_id",
+                        "value": "7d2ab1e4-5d2e-431a-997a-e3ae39b25812"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "established_by_prior_tool",
+                    "fact": "No enrollment stands (cancelled at step 10) and the loan is current (payment at step 6).",
+                    "evidence": [
+                        "prior_step:6",
+                        "prior_step:10"
+                    ]
+                },
+                "requires_external_wait": false,
+                "zero_wait_proof": "Workflow zero-wait card: step 3 consumes prior_synchronous_tool_effect of step 0 (days_past_due 0) and of step 2 (autopay_enrolled false, rate 8.49 with relationship), initial_state_preexisting facts (Premier Checking ending 8561 active, Private Client held on funded_date) and current_user_input (the borrower running the enrollment). Enrollment is a record change completed on the spot; the first draw on 2026-09-20 is a future installment, not a prerequisite of anything in this workflow.",
+                "base_preconditions": [
+                    {
+                        "policy_id": "auto_agg_relationship_discount",
+                        "eligibility_id": "policy_scope",
+                        "condition": "Governs how the relationship discount stacks with the autopay discount under max_total_discount_pct and apr_floor; its only structured gate applies to funding, not to this enrollment. Its re-enrolment clause is superseded by auto_ext_autopay_enroll_rate (declared overwrite).",
+                        "evidence": [
+                            "initial_state.checking_accounts.af221038-7673-417b-8f9f-39f436443611.opened_date",
+                            "initial_state.checking_accounts.af221038-7673-417b-8f9f-39f436443611.closed_date"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "auto_evt_autopay",
+                        "eligibility_id": "source_account",
+                        "condition": "The autopay source must be a checking account of the same customer in active status when autopay is enrolled.",
+                        "evidence": [
+                            "initial_state.checking_accounts.7d2ab1e4-5d2e-431a-997a-e3ae39b25812.checking_account_id",
+                            "initial_state.checking_accounts.7d2ab1e4-5d2e-431a-997a-e3ae39b25812.customer_id",
+                            "initial_state.checking_accounts.7d2ab1e4-5d2e-431a-997a-e3ae39b25812.status"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "checking_accounts.checking_account_id",
+                                "source": "initial_state.checking_accounts.7d2ab1e4-5d2e-431a-997a-e3ae39b25812.checking_account_id",
+                                "action_arg": "autopay_source_account_id"
+                            }
+                        ],
+                        "satisfied": true
+                    }
+                ]
+            }
+        ],
+        "temporal_feasibility": [
+            {
+                "step": 8,
+                "policy_id": "auto_due_date_change",
+                "eligibility_id": "once_a_year",
+                "condition": "A due date change is allowed only when due_date_change_window_days calendar days have passed since the last change.",
+                "temporal_basis": {
+                    "clock": "frozen_time",
+                    "anchor_event": "since the last change",
+                    "anchor_source": "auto_loans.last_due_date_change_date",
+                    "relation": "not_before",
+                    "duration_source": "params.due_date_change_window_days",
+                    "unit": "calendar_days",
+                    "counting_rule": "Count calendar days with the day after last_due_date_change_date as day 1; a new change is allowed when the frozen date is on or after last_due_date_change_date plus due_date_change_window_days, or when there has been no earlier change.",
+                    "boundary": "inclusive"
+                },
+                "as_of": "frozen_time",
+                "evidence": [
+                    "frozen_time",
+                    "initial_state.auto_loans.93193f27-3757-4f6f-9967-3ee43320eeb3.last_due_date_change_date",
+                    "initial_state.auto_loans.93193f27-3757-4f6f-9967-3ee43320eeb3.auto_loan_id"
+                ],
+                "satisfied": true,
+                "boundary_check": {
+                    "just_before": "Had the last due date change been recorded on 2025-08-15, the frozen date 2026-08-14 would be 364 days after it, before last_due_date_change_date plus 365, and the change would have to wait.",
+                    "at_boundary": "With a last change on 2025-08-14 the frozen date equals last_due_date_change_date plus 365 and the change is allowed (inclusive); here last_due_date_change_date is empty, the 'no earlier change' branch, so it is allowed."
+                }
+            }
+        ],
+        "required_user_inputs": [
+            {
+                "information": "Locator: registered mobile number",
+                "source": "user_scenario:3365550186"
+            },
+            {
+                "information": "Verification: date of birth",
+                "source": "user_scenario:1981-03-22"
+            },
+            {
+                "information": "Verification: SSN last four",
+                "source": "user_scenario:8417"
+            },
+            {
+                "information": "Paying account for the catch-up payment and the new autopay",
+                "source": "user_scenario:the new Premier Checking, the one ending in 8561"
+            },
+            {
+                "information": "Requested due day",
+                "source": "user_scenario:have it come out on the 20th"
+            },
+            {
+                "information": "Which loan (must-ask, not a gold argument)",
+                "source": "user_scenario:if asked for the loan number you only remember it ends in 8826"
+            }
+        ],
+        "seed_consistency": [
+            {
+                "row": "initial_state.auto_loans.93193f27-3757-4f6f-9967-3ee43320eeb3",
+                "policy_id": "auto_evt_payment_allocation",
+                "check": "Auto Refinance Loan, 60 months, grade B: 7.49 + 1.25 - 0.50 (autopay and relationship) = 8.24 = interest_rate; monthly_payment 438.01 is the level installment on 21480.00; principal_balance 15904.08 equals disbursement - principal portions + reversal; fees_due 25.00 equals the unpaid returned payment fee; last_payment_date reverted to 2026-07-06 by the return; days_past_due 9 = 2026-08-14 minus 2026-08-05; status active below delinquency_status_days 30.",
+                "evidence": [
+                    "initial_state.auto_loans.93193f27-3757-4f6f-9967-3ee43320eeb3.principal_balance",
+                    "initial_state.auto_loans.93193f27-3757-4f6f-9967-3ee43320eeb3.fees_due",
+                    "initial_state.auto_loans.93193f27-3757-4f6f-9967-3ee43320eeb3.last_payment_date",
+                    "initial_state.auto_loans.93193f27-3757-4f6f-9967-3ee43320eeb3.days_past_due"
+                ]
+            },
+            {
+                "row": "initial_state.auto_transactions.33f3c68a-65dd-4f7a-8d18-17d91101dd07",
+                "policy_id": "auto_application_and_funding",
+                "check": "Funding disbursement of the full amount financed 21480.00 on funded_date 2025-01-10; no GAP charge.",
+                "evidence": [
+                    "initial_state.auto_transactions.33f3c68a-65dd-4f7a-8d18-17d91101dd07.amount",
+                    "initial_state.auto_loans.93193f27-3757-4f6f-9967-3ee43320eeb3.original_principal"
+                ]
+            },
+            {
+                "row": "initial_state.auto_transactions.82831077-afdf-44e2-82db-824dfbb16c37",
+                "policy_id": "auto_evt_payment_allocation",
+                "check": "Autopay scheduled payment of 438.01 toward 2025-02-05 credited 2025-02-05 from the Private Client account (active then): interest 126.08 is daily simple interest at 8.24 since the previous credit date, principal 311.93 is the rest; fees 0.00.",
+                "evidence": [
+                    "initial_state.auto_transactions.82831077-afdf-44e2-82db-824dfbb16c37.interest_portion",
+                    "initial_state.auto_transactions.82831077-afdf-44e2-82db-824dfbb16c37.counterparty_account_id"
+                ]
+            },
+            {
+                "row": "initial_state.auto_transactions.eb4dd19d-f545-4468-98b4-33f8fa86ca58",
+                "policy_id": "auto_evt_payment_allocation",
+                "check": "Autopay scheduled payment of 438.01 toward 2025-03-05 credited 2025-03-05 from the Private Client account (active then): interest 133.81 is daily simple interest at 8.24 since the previous credit date, principal 304.2 is the rest; fees 0.00.",
+                "evidence": [
+                    "initial_state.auto_transactions.eb4dd19d-f545-4468-98b4-33f8fa86ca58.interest_portion",
+                    "initial_state.auto_transactions.eb4dd19d-f545-4468-98b4-33f8fa86ca58.counterparty_account_id"
+                ]
+            },
+            {
+                "row": "initial_state.auto_transactions.ebe5ca42-0c16-4596-8a6a-cee7189efc06",
+                "policy_id": "auto_evt_payment_allocation",
+                "check": "Autopay scheduled payment of 438.01 toward 2025-04-05 credited 2025-04-07 from the Private Client account (active then): interest 155.43 is daily simple interest at 8.24 since the previous credit date, principal 282.58 is the rest; fees 0.00.",
+                "evidence": [
+                    "initial_state.auto_transactions.ebe5ca42-0c16-4596-8a6a-cee7189efc06.interest_portion",
+                    "initial_state.auto_transactions.ebe5ca42-0c16-4596-8a6a-cee7189efc06.counterparty_account_id"
+                ]
+            },
+            {
+                "row": "initial_state.auto_transactions.69b63235-8ea3-4c70-bf35-2d425b743748",
+                "policy_id": "auto_evt_payment_allocation",
+                "check": "Autopay scheduled payment of 438.01 toward 2025-05-05 credited 2025-05-05 from the Private Client account (active then): interest 130.1 is daily simple interest at 8.24 since the previous credit date, principal 307.91 is the rest; fees 0.00.",
+                "evidence": [
+                    "initial_state.auto_transactions.69b63235-8ea3-4c70-bf35-2d425b743748.interest_portion",
+                    "initial_state.auto_transactions.69b63235-8ea3-4c70-bf35-2d425b743748.counterparty_account_id"
+                ]
+            },
+            {
+                "row": "initial_state.auto_transactions.6bcfb825-e92b-4ea8-b385-786f837617cc",
+                "policy_id": "auto_evt_payment_allocation",
+                "check": "Autopay scheduled payment of 438.01 toward 2025-06-05 credited 2025-06-05 from the Private Client account (active then): interest 141.88 is daily simple interest at 8.24 since the previous credit date, principal 296.13 is the rest; fees 0.00.",
+                "evidence": [
+                    "initial_state.auto_transactions.6bcfb825-e92b-4ea8-b385-786f837617cc.interest_portion",
+                    "initial_state.auto_transactions.6bcfb825-e92b-4ea8-b385-786f837617cc.counterparty_account_id"
+                ]
+            },
+            {
+                "row": "initial_state.auto_transactions.bf7a4c89-e2c9-4a11-8f50-dffde880f7e5",
+                "policy_id": "auto_evt_payment_allocation",
+                "check": "Autopay scheduled payment of 438.01 toward 2025-07-05 credited 2025-07-07 from the Private Client account (active then): interest 144.32 is daily simple interest at 8.24 since the previous credit date, principal 293.69 is the rest; fees 0.00.",
+                "evidence": [
+                    "initial_state.auto_transactions.bf7a4c89-e2c9-4a11-8f50-dffde880f7e5.interest_portion",
+                    "initial_state.auto_transactions.bf7a4c89-e2c9-4a11-8f50-dffde880f7e5.counterparty_account_id"
+                ]
+            },
+            {
+                "row": "initial_state.auto_transactions.936b2475-6901-4f8e-9028-7cc66e46d737",
+                "policy_id": "auto_evt_payment_allocation",
+                "check": "Autopay scheduled payment of 438.01 toward 2025-08-05 credited 2025-08-05 from the Private Client account (active then): interest 128.87 is daily simple interest at 8.24 since the previous credit date, principal 309.14 is the rest; fees 0.00.",
+                "evidence": [
+                    "initial_state.auto_transactions.936b2475-6901-4f8e-9028-7cc66e46d737.interest_portion",
+                    "initial_state.auto_transactions.936b2475-6901-4f8e-9028-7cc66e46d737.counterparty_account_id"
+                ]
+            },
+            {
+                "row": "initial_state.auto_transactions.76489da0-342b-4145-a850-6f8fc8263462",
+                "policy_id": "auto_evt_payment_allocation",
+                "check": "Autopay scheduled payment of 438.01 toward 2025-09-05 credited 2025-09-05 from the Private Client account (active then): interest 135.59 is daily simple interest at 8.24 since the previous credit date, principal 302.42 is the rest; fees 0.00.",
+                "evidence": [
+                    "initial_state.auto_transactions.76489da0-342b-4145-a850-6f8fc8263462.interest_portion",
+                    "initial_state.auto_transactions.76489da0-342b-4145-a850-6f8fc8263462.counterparty_account_id"
+                ]
+            },
+            {
+                "row": "initial_state.auto_transactions.ad0823d5-eddd-4c4a-b8e5-c67c5ec3a4d7",
+                "policy_id": "auto_evt_payment_allocation",
+                "check": "Autopay scheduled payment of 438.01 toward 2025-10-05 credited 2025-10-06 from the Private Client account (active then): interest 133.47 is daily simple interest at 8.24 since the previous credit date, principal 304.54 is the rest; fees 0.00.",
+                "evidence": [
+                    "initial_state.auto_transactions.ad0823d5-eddd-4c4a-b8e5-c67c5ec3a4d7.interest_portion",
+                    "initial_state.auto_transactions.ad0823d5-eddd-4c4a-b8e5-c67c5ec3a4d7.counterparty_account_id"
+                ]
+            },
+            {
+                "row": "initial_state.auto_transactions.48739ead-c64a-43dc-934f-ffedac6ac079",
+                "policy_id": "auto_evt_payment_allocation",
+                "check": "Autopay scheduled payment of 438.01 toward 2025-11-05 credited 2025-11-05 from the Private Client account (active then): interest 127.1 is daily simple interest at 8.24 since the previous credit date, principal 310.91 is the rest; fees 0.00.",
+                "evidence": [
+                    "initial_state.auto_transactions.48739ead-c64a-43dc-934f-ffedac6ac079.interest_portion",
+                    "initial_state.auto_transactions.48739ead-c64a-43dc-934f-ffedac6ac079.counterparty_account_id"
+                ]
+            },
+            {
+                "row": "initial_state.auto_transactions.dedde845-a0bc-4469-9a1c-65d374504a23",
+                "policy_id": "auto_evt_payment_allocation",
+                "check": "Autopay scheduled payment of 438.01 toward 2025-12-05 credited 2025-12-05 from the Private Client account (active then): interest 125.0 is daily simple interest at 8.24 since the previous credit date, principal 313.01 is the rest; fees 0.00.",
+                "evidence": [
+                    "initial_state.auto_transactions.dedde845-a0bc-4469-9a1c-65d374504a23.interest_portion",
+                    "initial_state.auto_transactions.dedde845-a0bc-4469-9a1c-65d374504a23.counterparty_account_id"
+                ]
+            },
+            {
+                "row": "initial_state.auto_transactions.e6505c02-708d-4c86-b511-39f8461755fa",
+                "policy_id": "auto_evt_payment_allocation",
+                "check": "Autopay scheduled payment of 438.01 toward 2026-01-05 credited 2026-01-05 from the Private Client account (active then): interest 126.97 is daily simple interest at 8.24 since the previous credit date, principal 311.04 is the rest; fees 0.00.",
+                "evidence": [
+                    "initial_state.auto_transactions.e6505c02-708d-4c86-b511-39f8461755fa.interest_portion",
+                    "initial_state.auto_transactions.e6505c02-708d-4c86-b511-39f8461755fa.counterparty_account_id"
+                ]
+            },
+            {
+                "row": "initial_state.auto_transactions.d9ffba29-c353-4ae8-91ce-4f6882b12c67",
+                "policy_id": "auto_evt_payment_allocation",
+                "check": "Autopay scheduled payment of 438.01 toward 2026-02-05 credited 2026-02-05 from the Private Client account (active then): interest 124.8 is daily simple interest at 8.24 since the previous credit date, principal 313.21 is the rest; fees 0.00.",
+                "evidence": [
+                    "initial_state.auto_transactions.d9ffba29-c353-4ae8-91ce-4f6882b12c67.interest_portion",
+                    "initial_state.auto_transactions.d9ffba29-c353-4ae8-91ce-4f6882b12c67.counterparty_account_id"
+                ]
+            },
+            {
+                "row": "initial_state.auto_transactions.94e3ea29-6b2a-4e5e-8e23-52ab3b4164e2",
+                "policy_id": "auto_evt_payment_allocation",
+                "check": "Autopay scheduled payment of 438.01 toward 2026-03-05 credited 2026-03-05 from the Private Client account (active then): interest 110.74 is daily simple interest at 8.24 since the previous credit date, principal 327.27 is the rest; fees 0.00.",
+                "evidence": [
+                    "initial_state.auto_transactions.94e3ea29-6b2a-4e5e-8e23-52ab3b4164e2.interest_portion",
+                    "initial_state.auto_transactions.94e3ea29-6b2a-4e5e-8e23-52ab3b4164e2.counterparty_account_id"
+                ]
+            },
+            {
+                "row": "initial_state.auto_transactions.8be69367-4df0-42d3-8a97-0df69b606acc",
+                "policy_id": "auto_evt_payment_allocation",
+                "check": "Autopay scheduled payment of 438.01 toward 2026-04-05 credited 2026-04-06 from the Private Client account (active then): interest 124.2 is daily simple interest at 8.24 since the previous credit date, principal 313.81 is the rest; fees 0.00.",
+                "evidence": [
+                    "initial_state.auto_transactions.8be69367-4df0-42d3-8a97-0df69b606acc.interest_portion",
+                    "initial_state.auto_transactions.8be69367-4df0-42d3-8a97-0df69b606acc.counterparty_account_id"
+                ]
+            },
+            {
+                "row": "initial_state.auto_transactions.5843e09a-baaf-481d-910f-1799300cf2e6",
+                "policy_id": "auto_evt_payment_allocation",
+                "check": "Autopay scheduled payment of 438.01 toward 2026-05-05 credited 2026-05-05 from the Private Client account (active then): interest 110.5 is daily simple interest at 8.24 since the previous credit date, principal 327.51 is the rest; fees 0.00.",
+                "evidence": [
+                    "initial_state.auto_transactions.5843e09a-baaf-481d-910f-1799300cf2e6.interest_portion",
+                    "initial_state.auto_transactions.5843e09a-baaf-481d-910f-1799300cf2e6.counterparty_account_id"
+                ]
+            },
+            {
+                "row": "initial_state.auto_transactions.56b6ed76-c8b5-4b56-8431-8066f2c1cc59",
+                "policy_id": "auto_evt_payment_allocation",
+                "check": "Autopay scheduled payment of 438.01 toward 2026-06-05 credited 2026-06-05 from the Private Client account (active then): interest 115.83 is daily simple interest at 8.24 since the previous credit date, principal 322.18 is the rest; fees 0.00.",
+                "evidence": [
+                    "initial_state.auto_transactions.56b6ed76-c8b5-4b56-8431-8066f2c1cc59.interest_portion",
+                    "initial_state.auto_transactions.56b6ed76-c8b5-4b56-8431-8066f2c1cc59.counterparty_account_id"
+                ]
+            },
+            {
+                "row": "initial_state.auto_transactions.c0b1ad35-fb24-442a-ba0c-cd09ec88a482",
+                "policy_id": "auto_evt_payment_allocation",
+                "check": "Autopay scheduled payment of 438.01 toward 2026-07-05 credited 2026-07-06 from the Private Client account (active then): interest 113.57 is daily simple interest at 8.24 since the previous credit date, principal 324.44 is the rest; fees 0.00.",
+                "evidence": [
+                    "initial_state.auto_transactions.c0b1ad35-fb24-442a-ba0c-cd09ec88a482.interest_portion",
+                    "initial_state.auto_transactions.c0b1ad35-fb24-442a-ba0c-cd09ec88a482.counterparty_account_id"
+                ]
+            },
+            {
+                "row": "initial_state.auto_transactions.ea9422da-2e6e-4023-b7e7-de9cdff4f232",
+                "policy_id": "auto_evt_payment_allocation",
+                "check": "Autopay debit of 438.01 toward 2026-08-05 drawn on the Private Client account while it was still active (closed only on 2026-08-10), later returned unpaid; its split 107.71 interest / 330.30 principal follows the allocation order.",
+                "evidence": [
+                    "initial_state.auto_transactions.ea9422da-2e6e-4023-b7e7-de9cdff4f232.posted_date",
+                    "initial_state.checking_accounts.af221038-7673-417b-8f9f-39f436443611.closed_date"
+                ]
+            },
+            {
+                "row": "initial_state.auto_transactions.24685022-6f32-4303-bfb3-422c4bba5382",
+                "policy_id": "auto_evt_returned_payment",
+                "check": "One returned_payment fee of returned_payment_fee 25.00 for the returned payment (source_item_id); the account was active on the debit date, so the fee stands.",
+                "evidence": [
+                    "initial_state.auto_transactions.24685022-6f32-4303-bfb3-422c4bba5382.amount",
+                    "initial_state.auto_transactions.24685022-6f32-4303-bfb3-422c4bba5382.source_item_id"
+                ]
+            },
+            {
+                "row": "initial_state.auto_transactions.1844e7fa-1aa5-46f3-b72f-427cd398a1c7",
+                "policy_id": "auto_evt_returned_payment",
+                "check": "Reversal of the returned 2026-08-05 autopay payment restoring its principal_portion 330.30; source_item_id names that payment.",
+                "evidence": [
+                    "initial_state.auto_transactions.1844e7fa-1aa5-46f3-b72f-427cd398a1c7.source_item_id",
+                    "initial_state.auto_transactions.ea9422da-2e6e-4023-b7e7-de9cdff4f232.principal_portion"
+                ]
+            }
+        ]
+    },
+    "evaluation_criteria": [
+        {
+            "owner": "agent",
+            "tool": "find_customers",
+            "arguments": {
+                "phone_number": "3365550186"
+            },
+            "objective": "Locate Marcus Whitlock's profile from the mobile number he gives, returning his customer reference number, date of birth, SSN last four, ZIP and state of residence (NC).",
+            "necessity": "Every later lookup and write needs the customer reference number; the profile also carries the credentials the verification compares."
+        },
+        {
+            "owner": "agent",
+            "tool": "verify_customer_identity",
+            "arguments": {
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596",
+                "phone_number": "3365550186",
+                "date_of_birth": "1981-03-22",
+                "ssn_last4": "8417"
+            },
+            "objective": "Verify the caller with three stated credentials (mobile number, date of birth, SSN last four) before any account is discussed or money is moved.",
+            "necessity": "Identity must be verified before any account information is discussed or any payment or autopay change is made."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_auto_loans",
+            "arguments": {
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596"
+            },
+            "objective": "Read the Auto Refinance Loan ending 8826: status active, next_payment_due_date 2026-08-05, days_past_due 9, monthly_payment 438.01, interest_rate 8.24 with rate_discounts autopay_and_relationship, funded_date 2025-01-10, last_payment_date 2026-07-06, autopay enrolled on the old checking account, payment_due_day 5, no earlier due date change.",
+            "necessity": "Shows that an installment is past due, which blocks the due date change (auto_due_date_change) and would leave the enrollment without the autopay discount, and supplies the tier, rate, discount, funding date, due-date and payment inputs of all three computations."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_auto_transactions",
+            "arguments": {
+                "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3"
+            },
+            "objective": "Read the loan ledger: the disbursement, the 18 autopay payments from February 2025 to July 2026, the August 5 autopay payment, its auto_payment_reversal of 2026-08-06 and the returned_payment fee of 25.00.",
+            "necessity": "The ledger is where the agent discovers that the August installment has no standing credit (its only payment was returned), and it supplies the standing credit, fees due and ledger principal (15904.08) of the catch-up payment."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_checking_accounts",
+            "arguments": {
+                "customer_id": "682b7cc8-7e21-4857-abd8-09dfdcc24596"
+            },
+            "objective": "Read the two checking accounts: the Private Client Checking ending 9034 opened 2019-06-03 and closed 2026-08-10, and the Premier Checking ending 8561 opened 2026-08-07, active, ledger_balance 4382.16.",
+            "necessity": "The active account's ledger balance caps the catch-up payment and is the paying and autopay account; the Private Client account held on the funding date confirms the relationship discount that both rate computations keep, while the Premier account opened after funding does not qualify."
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "post_installment_payment_660c6229"
+            },
+            "objective": "Unlock the scheduled installment payment tool.",
+            "necessity": "First half of the unlock/call pair for the catch-up payment; no DB effect."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "post_installment_payment_660c6229",
+                "arguments": {
+                    "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                    "installment_due_date": "2026-08-05",
+                    "amount": 438.01,
+                    "fees_portion": 25.0,
+                    "interest_portion": 140.03,
+                    "principal_portion": 272.98,
+                    "counterparty_account_id": "7d2ab1e4-5d2e-431a-997a-e3ae39b25812",
+                    "next_payment_due_date": "2026-09-05",
+                    "days_past_due": 0
+                }
+            },
+            "objective": "Post the scheduled payment of 438.01 by PCB transfer from the Premier Checking ending 8561 toward the 2026-08-05 installment, split 25.00 fees, 140.03 interest, 272.98 principal, satisfying the installment so the next due date becomes 2026-09-05 and days past due return to 0.",
+            "necessity": "auto_ext_catchup_installment_payment uniquely produces principal_portion 272.98; the payment is the prerequisite that lets the due date move and lets the new enrollment carry the autopay discount.",
+            "argument_uniqueness_tracing": {
+                "auto_loan_id": "Value: the Auto Refinance Loan's reference number returned by find_auto_loans. Basis: the tool docstring 'the auto loan reference number of the loan being paid, taken from the auto loan lookup for this borrower'; the customer says he has only the one car loan, ending 8826. Uniqueness: find_auto_loans for this customer returns exactly one loan.",
+                "installment_due_date": "Value: 2026-08-05. Basis: catch-up rule 'whose installment_due_date is the loan's next_payment_due_date'; the loan record shows next_payment_due_date 2026-08-05. Uniqueness: the earliest unsatisfied installment is the only past-due one; 2026-09-05 is not yet due.",
+                "amount": "Value: 438.01. Basis: rule 'The installment shortfall is monthly_payment less that standing credit, never below zero' and 'when its ledger_balance is lower than the shortfall the payment amount is that ledger_balance; otherwise the payment amount is the shortfall'. Standing credit toward 2026-08-05 is 438.01 credited less the same 438.01 returned (the reversal of 2026-08-06 names that payment) = 0; shortfall 438.01; the active Premier balance 4382.16 is higher, so amount = 438.01.",
+                "fees_portion": "Value: 25.00. Basis: rule 'the fees portion is the lesser of the payment amount and those fees due'; ledger fees due = 25.00 returned_payment fee - 0 settled - 0 waived. Uniqueness: min(438.01, 25.00) = 25.00; fees are paid first in payment_allocation_order.",
+                "interest_portion": "Value: 140.03. Basis: rule 'Accrued interest is that principal times interest_rate divided by 100, divided by interest_day_count_basis, times the calendar days from last_payment_date (exclusive) through the credit date (inclusive), rounded half-up to the cent once'. Ledger principal 15904.08 x 8.24/100/365 x 39 days (2026-07-06 to 2026-08-14) = 140.0256 -> 140.03, less than the 413.01 left after fees.",
+                "principal_portion": "Value: 272.98 = 438.01 - 25.00 - 140.03 (computation auto_ext_catchup_installment_payment). Factors: tier monthly_payment 438.01; standing credit 0 from the returned 2026-08-05 autopay payment; funds cap 4382.16 from the active Premier Checking not binding; fees 25.00 from the ledger; ledger principal 15904.08 (21480.00 - 5906.22 + 330.30); rate 8.24; 39 days.",
+                "counterparty_account_id": "Value: the Premier Checking ending 8561 reference number from find_checking_accounts. Basis: rule 'the paying account is the borrower's checking account in active status' and the customer's line 'the new Premier Checking, the one ending in 8561'. Uniqueness: the Private Client account ending 9034 is closed and cannot be drawn on.",
+                "next_payment_due_date": "Value: 2026-09-05. Basis: base auto_evt_payment_allocation 'next_payment_due_date then advances one month to the payment_due_day' once scheduled payments toward the installment reach monthly_payment; the payment makes the 2026-08-05 installment total 438.01 standing, so the earliest unsatisfied installment is 2026-09-05 (due day still 5 at this moment). Uniqueness: the payment never satisfies a later installment early.",
+                "days_past_due": "Value: 0. Basis: base auto_evt_delinquency 'days_past_due counts calendar days since the earliest unsatisfied installment_due_date and returns to zero when every past-due installment is satisfied'; after the payment the earliest unsatisfied installment is 2026-09-05, in the future. Uniqueness: no other installment is past due."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "change_due_day_df9bec35"
+            },
+            "objective": "Unlock the due day change tool.",
+            "necessity": "First half of the unlock/call pair for the due date change; no DB effect."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "change_due_day_df9bec35",
+                "arguments": {
+                    "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                    "new_due_day": 20,
+                    "next_payment_due_date": "2026-09-20"
+                }
+            },
+            "objective": "Move the monthly due day from the 5th to the 20th the borrower asked for, with the next installment due 2026-09-20.",
+            "necessity": "The borrower asked for the 20th; auto_due_date_change allows it now that the loan is active with no installment past due, the shift of 15 days is within due_date_change_max_shift_days and there was no earlier change.",
+            "argument_uniqueness_tracing": {
+                "auto_loan_id": "Value: the same loan reference number (the loan the catch-up payment was just posted to, per the payment receipt). Basis: docstring 'the auto loan reference number of the loan whose due day moves'. Uniqueness: one loan.",
+                "new_due_day": "Value: 20. Basis: the customer's request 'have it come out on the 20th'; auto_due_date_change 'The new due day may differ from the current one by at most due_date_change_max_shift_days calendar days' - from 5 to 20 is 15 days, exactly the 15-day limit, allowed. Uniqueness: the customer names one day.",
+                "next_payment_due_date": "Value: 2026-09-20. Basis: auto_due_date_change 'The next due date moves to the new day in the month of the current next_payment_due_date'; the current next due date after the payment is 2026-09-05, so September 20, 2026. Uniqueness: the month is fixed by the current next due date and the day by the request."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "cancel_autopay_a2c51ad3"
+            },
+            "objective": "Hand the autopay cancellation tool to the borrower.",
+            "necessity": "Cancelling autopay is the borrower's own instruction; the tool must be unlocked for the user before he can run it; no DB effect."
+        },
+        {
+            "owner": "user",
+            "tool": "call_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "cancel_autopay_a2c51ad3",
+                "arguments": {
+                    "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                    "autopay_source_account_id": "af221038-7673-417b-8f9f-39f436443611",
+                    "interest_rate": 8.49,
+                    "rate_discounts": "relationship"
+                }
+            },
+            "objective": "The borrower cancels the enrollment standing on the closed Private Client account; the APR becomes 8.49 with only the relationship discount kept.",
+            "necessity": "auto_ext_autopay_enroll_rate records a new enrollment only when no enrollment stands; auto_ext_autopay_cancel_rate uniquely produces interest_rate 8.49.",
+            "argument_uniqueness_tracing": {
+                "auto_loan_id": "Value: the loan reference number. Basis: docstring 'the auto loan reference number of the loan whose enrollment ends'. Uniqueness: one loan.",
+                "autopay_source_account_id": "Value: the Private Client Checking ending 9034 reference number, shown as autopay_source_account_id on the loan. Basis: docstring 'the account the cancelled enrollment was drawing on, as shown as the autopay paying account in the auto loan lookup'. Uniqueness: the loan names exactly one paying account.",
+                "interest_rate": "Value: 8.49 (computation auto_ext_autopay_cancel_rate). Factors: recorded 8.24 with autopay_and_relationship -> rate before discounts 8.74; relationship confirmed because the Private Client Checking (a tier in relationship_qualifying_checking_tiers) was opened 2019-06-03 and closed 2026-08-10, i.e. held on funded_date 2025-01-10; the Premier opened 2026-08-07 does not count; autopay_discount_removed_on_cancel true; 8.74 - 0.25 = 8.49, above apr_floor 4.49.",
+                "rate_discounts": "Value: relationship. Basis: cancel rule 'rate_discounts is recorded as relationship when the relationship discount is kept and none otherwise'; the relationship discount is kept. Uniqueness: none would drop a discount the loan keeps; autopay and autopay_and_relationship would claim the autopay discount the cancellation removes."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "enroll_autopay_b9bffdb4"
+            },
+            "objective": "Hand the autopay enrollment tool to the borrower.",
+            "necessity": "Enrolling in autopay is the borrower's own instruction; unlock for the user, no DB effect."
+        },
+        {
+            "owner": "user",
+            "tool": "call_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "enroll_autopay_b9bffdb4",
+                "arguments": {
+                    "auto_loan_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+                    "autopay_source_account_id": "7d2ab1e4-5d2e-431a-997a-e3ae39b25812",
+                    "interest_rate": 8.24,
+                    "rate_discounts": "autopay_and_relationship"
+                }
+            },
+            "objective": "The borrower enrolls the loan in autopay from the Premier Checking ending 8561; the APR becomes 8.24 with both the autopay and relationship discounts.",
+            "necessity": "This is the root request; auto_ext_autopay_enroll_rate uniquely produces interest_rate 8.24 on the world where the loan is current and no enrollment stands.",
+            "argument_uniqueness_tracing": {
+                "auto_loan_id": "Value: the loan reference number. Basis: docstring 'the auto loan reference number of the loan being enrolled'. Uniqueness: one loan.",
+                "autopay_source_account_id": "Value: the Premier Checking ending 8561 reference number. Basis: the customer 'using the new Premier account ending in 8561'; enroll rule 'the paying account is a checking account of the borrower in active status' and base 'The autopay source must be a checking account of the same customer in active status when autopay is enrolled'. Uniqueness: the only active checking account.",
+                "interest_rate": "Value: 8.24 (computation auto_ext_autopay_enroll_rate). Factors: handling-time rate 8.49 with relationship -> rate before discounts 8.74; relationship discount 0.25 confirmed from the Private Client account held on funded_date; autopay discount 0.25 added because days_past_due is 0 after the catch-up payment and the paying account is active; total 0.50 capped at max_total_discount_pct 0.50; 8.74 - 0.50 = 8.24 above apr_floor.",
+                "rate_discounts": "Value: autopay_and_relationship. Basis: enroll rule 'rate_discounts is recorded as autopay_and_relationship, autopay, relationship or none according to the discounts included'; both discounts are included. Uniqueness: autopay alone would drop the confirmed relationship discount; relationship alone or none would omit the autopay discount this enrollment adds."
+            }
+        }
+    ],
+    "prerequisite_closure": {
+        "root_problem": "auto_ext_autopay_enroll_rate",
+        "edges": [
+            {
+                "from": "auto_ext_autopay_enroll_rate",
+                "to": "auto_ext_catchup_installment_payment",
+                "kind": "value_input",
+                "gate": "autopay_added",
+                "condition": "The loan has no installment past due when autopay is enrolled, so the enrollment carries the autopay discount.",
+                "policy_source": "When the loan has an installment past due and the borrower brings it current in the same call, the scheduled payment is posted before the enrollment is recorded, so that the enrollment is recorded on a loan with no installment past due and carries the autopay discount.",
+                "resolved_by": "post_installment_payment_660c6229",
+                "unresolved_at_frozen_time": {
+                    "why_false": "The only payment toward the 2026-08-05 installment was returned unpaid the next day, so that installment is unsatisfied and 9 days past due at frozen_time.",
+                    "evidence": [
+                        "initial_state.auto_loans.93193f27-3757-4f6f-9967-3ee43320eeb3.days_past_due = 9",
+                        "initial_state.auto_loans.93193f27-3757-4f6f-9967-3ee43320eeb3.next_payment_due_date = 2026-08-05",
+                        "initial_state.auto_transactions.1844e7fa-1aa5-46f3-b72f-427cd398a1c7.source_item_id = ea9422da-2e6e-4023-b7e7-de9cdff4f232"
+                    ],
+                    "flips_to_true_by": "The scheduled payment of 438.01 posted at step 6 satisfies the installment; the loan then shows days_past_due 0 and next_payment_due_date 2026-09-05, so autopay_added becomes 0.25."
+                }
+            },
+            {
+                "from": "auto_ext_autopay_enroll_rate",
+                "to": "auto_ext_autopay_cancel_rate",
+                "kind": "state_gate",
+                "gate": "auto_loans.autopay_enrolled",
+                "condition": "No autopay enrollment stands on the loan when a new enrollment is recorded.",
+                "policy_source": "A new enrollment is recorded only on a loan with no enrollment standing; when the borrower moves autopay to a different checking account, the standing enrollment is first cancelled under its own rule, and the enrollment is then recorded from the new account.",
+                "resolved_by": "cancel_autopay_a2c51ad3",
+                "unresolved_at_frozen_time": {
+                    "why_false": "An enrollment still stands on the loan, drawing on the Private Client account closed on 2026-08-10.",
+                    "evidence": [
+                        "initial_state.auto_loans.93193f27-3757-4f6f-9967-3ee43320eeb3.autopay_enrolled = true",
+                        "initial_state.auto_loans.93193f27-3757-4f6f-9967-3ee43320eeb3.autopay_source_account_id = af221038-7673-417b-8f9f-39f436443611",
+                        "initial_state.checking_accounts.af221038-7673-417b-8f9f-39f436443611.closed_date = 2026-08-10"
+                    ],
+                    "flips_to_true_by": "The borrower's cancellation at step 10 sets autopay_enrolled false and clears autopay_source_account_id (APR 8.49, relationship kept) and records a completed autopay_change request."
+                }
+            }
+        ],
+        "resolution_order": [
+            "auto_ext_catchup_installment_payment",
+            "auto_ext_autopay_cancel_rate",
+            "auto_ext_autopay_enroll_rate"
+        ],
+        "order_uniqueness": "The policy fixes the order of the whole tree: the catch-up comes first because the due-day change the borrower asked for needs the loan active with no installment past due (base auto_due_date_change) and because the enrollment rule posts a same-call catch-up before the enrollment; the cancel rule then records the due-date change before the standing enrollment is cancelled; E2 puts the cancellation before the enrollment. The two prerequisites of the enrollment also do not interact: the payment writes ledger rows and principal_balance, fees_due, last_payment_date, next_payment_due_date, days_past_due, while the cancellation writes autopay_enrolled, autopay_source_account_id, interest_rate, rate_discounts and an auto_requests row, and neither compute reads what the other writes. A replay with the cancellation moved before the payment gives the gold terminal hash (sens_t0.py 'cancel-first order same terminal: True'); this shows the edges are independent, not that cancel-first is permitted, so the gold order is the unique policy order.",
+        "edge_load_bearing": [
+            {
+                "edge": "auto_ext_autopay_enroll_rate -> auto_ext_catchup_installment_payment",
+                "skipped_effect": "Skipping the payment leaves days_past_due 9, so the enrollment APR recomputes to 8.49 instead of 8.24 (autopay_added 0 instead of 0.25); the terminal also lacks the payment and fee settlement rows, keeps fees_due 25.00, next_payment_due_date on the 5th and days_past_due 9 (terminal hash differs)."
+            },
+            {
+                "edge": "auto_ext_autopay_enroll_rate -> auto_ext_autopay_cancel_rate",
+                "skipped_effect": "State-gate edge, value-invariant by design: skipping the cancellation leaves the enrolled APR at 8.24 (the enrollment rebuilds 8.74 before discounts from either rate), but the rule 'A new enrollment is recorded only on a loan with no enrollment standing' forbids that enrollment, and the terminal loses the completed autopay_change request of the cancellation (terminal hash differs from gold)."
+            }
+        ],
+        "no_user_hint": "user_scenario asks only to move the autopay to the new account and to have it come out on the 20th; it never mentions a missed, bounced or past-due payment (the persona explicitly does not know and never brings it up), nor that the old enrollment has to be cancelled before a new one. Paying something and turning off the old autopay appear only as passive reactions after the agent explains them.",
+        "tools_do_not_block": "enroll_autopay_b9bffdb4 performs its ctx.update of autopay_enrolled, autopay_source_account_id, interest_rate and rate_discounts and creates the request row without reading days_past_due or autopay_enrolled; post_installment_payment_660c6229 and cancel_autopay_a2c51ad3 likewise write their arguments with no status check, so an agent that skips a prerequisite still gets a normal receipt and only the terminal state differs."
+    },
+    "charter_scope": {
+        "extended_policies": [
+            "auto_ext_catchup_installment_payment",
+            "auto_ext_autopay_cancel_rate",
+            "auto_ext_autopay_enroll_rate"
+        ],
+        "workflows": [
+            "auto_wf_autopay_source_change"
+        ],
+        "task_tools": [
+            "post_installment_payment_660c6229",
+            "change_due_day_df9bec35",
+            "cancel_autopay_a2c51ad3",
+            "enroll_autopay_b9bffdb4"
+        ]
+    },
+    "required_documents": [
+        "auto_ext_catchup_installment_payment",
+        "auto_ext_autopay_cancel_rate",
+        "auto_ext_autopay_enroll_rate"
+    ],
+    "computations": [
+        {
+            "policy_id": "auto_ext_catchup_installment_payment",
+            "target_holding_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+            "step": 6,
+            "arg": "principal_portion",
+            "expected": 272.98,
+            "factor_trace": [
+                "due = next_payment_due_date 2026-08-05 (F on auto_loans).",
+                "credited = 438.01: SUM of scheduled auto_payment amounts toward 2026-08-05 = the single autopay payment ea9422da-2e6e-4023-b7e7-de9cdff4f232 of 2026-08-05.",
+                "returned_id = ea9422da-2e6e-4023-b7e7-de9cdff4f232: LATEST auto_payment_reversal (posted 2026-08-06) names it as source_item_id.",
+                "returned_credit = 438.01: that returned payment was credited toward 2026-08-05, so it does not stand.",
+                "shortfall = max(0, 438.01 - (438.01 - 438.01)) = 438.01 (monthly_payment of the Auto Refinance Loan).",
+                "funds = 4382.16: CFIELD checking ledger_balance of the one active checking account (Premier Checking ending 8561); 4382.16 >= 438.01 so the cap branch is not taken.",
+                "amount = 438.01.",
+                "fees_due = 25.00: SUM auto_fee 25.00 (returned_payment fee of 2026-08-06) - settlements 0 - waivers 0.",
+                "fees_portion = min(438.01, 25.00) = 25.00.",
+                "principal = 21480.00 disbursement - 5906.22 principal portions of all 19 auto_payment rows + 330.30 reversal of the returned August payment = 15904.08.",
+                "accrued = round(15904.08 x 8.24 / 100 / 365 x DAYS(2026-07-06, 2026-08-14)=39, 2) = round(140.0256, 2) = 140.03.",
+                "interest_portion = min(438.01 - 25.00 = 413.01, 140.03) = 140.03.",
+                "result = 438.01 - 25.00 - 140.03 = 272.98."
+            ]
+        },
+        {
+            "policy_id": "auto_ext_autopay_cancel_rate",
+            "target_holding_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+            "step": 10,
+            "arg": "interest_rate",
+            "expected": 8.49,
+            "factor_trace": [
+                "rec_auto = 0.25 (rate_discounts autopay_and_relationship names autopay; autopay_discount_pct 0.25).",
+                "rec_rel = 0.25 (names relationship; relationship_discount_pct 0.25).",
+                "pre_rate = 8.24 + min(0.50, 0.50) = 8.74.",
+                "held_premier = False: the Premier Checking was opened 2026-08-07, after funded_date 2025-01-10.",
+                "held_private = True: Private Client Checking opened 2019-06-03 <= 2025-01-10 and closed 2026-08-10 > 2025-01-10.",
+                "rel_kept = 0.25; kept = min(0.50, 0.25) = 0.25.",
+                "raw_rate = 8.74 - 0.25 = 8.49 (autopay_discount_removed_on_cancel is true).",
+                "result = 8.49 (not below apr_floor 4.49; floor branch untriggered)."
+            ]
+        },
+        {
+            "policy_id": "auto_ext_autopay_enroll_rate",
+            "target_holding_id": "93193f27-3757-4f6f-9967-3ee43320eeb3",
+            "step": 12,
+            "arg": "interest_rate",
+            "expected": 8.24,
+            "factor_trace": [
+                "Handling-time world: after the catch-up payment (days_past_due 0), the due day change and the cancellation (interest_rate 8.49, rate_discounts relationship, autopay not enrolled).",
+                "rec_auto = 0 (relationship does not name autopay); rec_rel = 0.25.",
+                "pre_rate = 8.49 + min(0.50, 0.25) = 8.74.",
+                "held_premier = False (opened 2026-08-07 after funding); held_private = True (held on 2025-01-10, closed later still counts).",
+                "rel_disc = 0.25.",
+                "source_active = True: an active checking account (Premier ending 8561) exists.",
+                "autopay_added = 0.25 because days_past_due is 0 after the catch-up payment (it was 9 at the opening, which would give 0).",
+                "total_disc = min(0.50, 0.25 + 0.25) = 0.50.",
+                "raw_rate = 8.74 - 0.50 = 8.24; result = 8.24 (floor 4.49 not reached)."
+            ]
+        }
+    ]
+}

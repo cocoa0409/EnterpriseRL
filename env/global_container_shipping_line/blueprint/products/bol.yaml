@@ -1,0 +1,1009 @@
+category: bol
+display_name: Bills of Lading and Transport Documents
+
+# Functional closure (real capabilities of a liner documentation desk, each carried below):
+#   draft from shipping instructions, approval or deemed approval, pre-issuance rounds (bol_draft_created, bol_draft_approved, bol_draft_reopened; bol_draft_and_approval)
+#   choice of document type and its admission (bol_draft_created; bol_document_type_eligibility, bol_agg_one_document_per_booking)
+#   issuance, shipped-on-board basis, prepaid freight hold, originals issued (bol_issued, bol_issuance_fee_charged, bol_originals_issued; bol_issuance)
+#   corrections before and after issuance / departure, consignee changes, originals return (bol_particulars_corrected, bol_correction_fee_charged; bol_correction)
+#   telex release against surrender of the full set at origin (bol_originals_surrender_completed, bol_originals_surrendered, bol_release_fee_charged; bol_telex_release)
+#   destination release against original, waybill identification, eBL surrender or letter of indemnity (bol_cargo_released, bol_delivery_release_recorded; bol_cargo_release)
+#   lost original reissue with bank guarantee (bol_set_replaced, bol_originals_voided, bol_reissue_fee_charged; bol_lost_original_reissue)
+#   switch bill issuance (bol_voided, bol_switch_fee_charged; bol_switch_bill)
+#   voiding on booking cancellation, accomplishment (bol_voided, bol_accomplished; bol_voiding_and_accomplishment)
+#   payments and goodwill waivers (bol_payment_received, bol_fee_waived; bol_payment, bol_fee_waiver)
+
+binding:
+  holding_table: bills_of_lading
+  event_tables: [bol_ledger]
+  intake_tables: [bol_service_requests]
+  status_field: status
+  variant_field: variant_name
+  quantity_fields: {charges_due_usd: documentation_charges, originals_outstanding: originals_outstanding}
+
+lifecycle:
+  states: [draft, approved, issued, surrendered, released, accomplished, voided]
+  transitions:
+    - {from: draft, to: approved, by: user, means: The shipper approves the draft document as the text to be issued.}
+    - {from: draft, to: approved, by: system, means: The draft is deemed approved when the shipper has not answered within the tier's deemed approval hours.}
+    - {from: approved, to: draft, by: agent, means: An approved draft is reopened to apply a pre-issuance correction.}
+    - {from: draft, to: voided, by: agent, means: The draft is voided because the booking was cancelled or the shipping instructions were withdrawn.}
+    - {from: approved, to: voided, by: agent, means: The approved draft is voided because the booking was cancelled.}
+    - {from: approved, to: issued, by: agent, means: The document is issued and any originals are released to the shipper or onto the eBL platform.}
+    - {from: issued, to: surrendered, by: user, means: The shipper surrenders the full set of originals at the origin office.}
+    - {from: issued, to: released, by: agent, means: Cargo is released at destination against an original, waybill identification, eBL surrender or a letter of indemnity.}
+    - {from: surrendered, to: released, by: agent, means: Cargo is released at destination on the telex release.}
+    - {from: surrendered, to: voided, by: agent, means: The surrendered first document is voided because a switch bill replaces it.}
+    - {from: released, to: accomplished, by: system, means: The cargo is delivered and the document is accomplished.}
+
+accounts:
+  - key: documentation_charges
+    unit: USD
+    meaning: Documentation fees owed on one transport document — issuance, correction, release, switch and reissue fees in, payments and waivers out.
+  - key: originals_outstanding
+    unit: original documents
+    meaning: Original documents of title issued and still in circulation — originals issued in, originals surrendered to the line or declared void out.
+
+parameter_schema:
+  originals_issued_count: Originals issued per set; 0 for a waybill, 1 for the single electronic record of an eBL (integer originals).
+  negotiable: Whether the document is a negotiable document of title transferable by endorsement (boolean).
+  to_order_consignee_allowed: Whether the consignee may be printed TO ORDER or TO ORDER OF a bank (boolean).
+  eligible_customer_roles: Customer roles that may hold the document type (list of customers.customer_role values).
+  ebl_platform_enrollment_required: Whether the documentation party must be enrolled on the eBL platform (boolean).
+  inland_place_of_receipt_allowed: Whether the document may name an inland place of receipt and place of delivery different from the ports (boolean).
+  freight_collect_allowed: Whether the document may be issued for a booking with collect freight (boolean).
+  issuance_fee_usd: Fee per set issued (USD per set).
+  draft_issue_hours_after_si: Service standard for sending the draft after shipping instructions are received (integer hours).
+  deemed_approval_hours: Hours after the draft is sent after which an unanswered draft is deemed approved (integer hours).
+  pre_issuance_draft_rounds_limit: Maximum pre-issuance corrections (draft reopenings) per document (integer rounds).
+  received_for_shipment_allowed: Whether the document may be issued once the cargo is gated in, before loading (boolean).
+  issuance_hours_after_departure_max: Service standard by which a shipped-on-board document is issued after departure (integer hours).
+  prepaid_freight_settled_before_issuance: Whether prepaid freight must be settled on the booking before issuance (boolean).
+  credit_customer_issuance_without_payment: Whether a credit_approved customer is exempt from the prepaid settlement requirement (boolean).
+  free_corrections_after_issuance: Corrections after issuance without a correction fee (integer).
+  correction_fee_after_issuance_usd: Fee per correction after issuance and before departure (USD per correction).
+  correction_fee_after_departure_usd: Fee per correction after the vessel departed, covering the manifest amendment (USD per correction).
+  consignee_change_fee_usd: Fee per change of the named consignee after issuance, in place of the correction fee (USD per change).
+  max_corrections_after_issuance: Maximum corrections after issuance per document (integer).
+  correction_window_days_after_departure: Latest a correction may be requested, in calendar days after departure (integer days).
+  originals_return_required_for_correction: Whether all outstanding originals must be returned before an issued document is corrected (boolean).
+  originals_return_deadline_days: Calendar days from a correction request within which required originals must be returned, else the request lapses (integer days).
+  correctable_fields_after_issuance: Particulars that may be corrected after issuance and before departure (list of bol_service_requests.corrected_field values).
+  correctable_fields_after_departure: Particulars that may be corrected after departure (list of bol_service_requests.corrected_field values).
+  max_consignee_changes_after_issuance: Maximum changes of the named consignee after issuance (integer).
+  weight_correction_tolerance_pct: Largest change of gross weight accepted after departure, as percent of the printed weight (integer percent).
+  standard_release_method: Normal basis of cargo release at destination (bol_ledger.release_method value).
+  originals_required_for_destination_release: Originals that must be surrendered at destination for a normal release (integer originals).
+  endorsement_required_for_release: Whether the surrendered original or eBL must carry an unbroken endorsement chain to the releasing party (boolean).
+  telex_release_available: Whether release on surrender of the full set at origin is offered (boolean).
+  telex_release_fee_usd: Fee per telex release (USD per release).
+  telex_fee_waiver_min_contract_rank: Lowest service contract tier rank whose holder is not charged the telex release fee; 0 means no waiver (integer rank).
+  loi_release_available: Whether cargo may be released without originals against a letter of indemnity (boolean).
+  loi_signatory: Who must sign the letter of indemnity — not_applicable, consignee, or consignee_and_bank (enum string).
+  loi_bank_guarantee_pct_of_cargo_value: Bank guarantee backing the letter of indemnity, as percent of declared_cargo_value_usd; 0 when no bank guarantee is required (integer percent).
+  loi_release_fee_usd: Fee per release against a letter of indemnity (USD per release).
+  loi_release_earliest_days_after_discharge: Earliest a release against a letter of indemnity may be granted, in calendar days after discharge (integer days).
+  lost_original_reissue_available: Whether a replacement set may be issued for lost originals (boolean).
+  reissue_waiting_days_after_loss_report: Calendar days after the loss report before a replacement set may be issued (integer days).
+  reissue_bank_guarantee_pct_of_cargo_value: Bank guarantee required for a replacement set, as percent of declared_cargo_value_usd (integer percent).
+  reissue_fee_usd: Fee per replacement set (USD per set).
+  switch_bill_available: Whether a switch bill may be issued in exchange for this document (boolean).
+  max_switches_per_shipment: Maximum switch bills issued for one booking (integer).
+  switch_bill_fee_usd: Fee per switch bill, charged on the document exchanged (USD per switch).
+  goodwill_waiver_authority_usd: Largest single fee row the desk may waive as goodwill (USD per fee row).
+  goodwill_waivers_per_365d: Goodwill documentation waivers per customer per trailing 365 days (integer).
+  waiver_request_window_days: Calendar days after a fee was booked within which a goodwill waiver may be requested (integer days).
+
+variants:
+  - name: AHL Sea Waybill
+    rank: 1
+    entry_gate: {customer_roles: [beneficial_cargo_owner, freight_forwarder, nvocc], consignee: named_only, place_of_receipt: port_only}
+    parameters: {originals_issued_count: 0, negotiable: false, to_order_consignee_allowed: false, eligible_customer_roles: [beneficial_cargo_owner, freight_forwarder, nvocc], ebl_platform_enrollment_required: false, inland_place_of_receipt_allowed: false, freight_collect_allowed: true, issuance_fee_usd: 45.00, draft_issue_hours_after_si: 12, deemed_approval_hours: 48, pre_issuance_draft_rounds_limit: 5, received_for_shipment_allowed: false, issuance_hours_after_departure_max: 24, prepaid_freight_settled_before_issuance: false, credit_customer_issuance_without_payment: true, free_corrections_after_issuance: 1, correction_fee_after_issuance_usd: 50.00, correction_fee_after_departure_usd: 100.00, consignee_change_fee_usd: 100.00, max_corrections_after_issuance: 3, correction_window_days_after_departure: 14, originals_return_required_for_correction: false, originals_return_deadline_days: 0, correctable_fields_after_issuance: [consignee_name, notify_party_name, cargo_description, package_count, gross_weight_kg, port_of_discharge], correctable_fields_after_departure: [consignee_name, notify_party_name, cargo_description, gross_weight_kg], max_consignee_changes_after_issuance: 2, weight_correction_tolerance_pct: 5, standard_release_method: waybill_identification, originals_required_for_destination_release: 0, endorsement_required_for_release: false, telex_release_available: false, telex_release_fee_usd: 0.00, telex_fee_waiver_min_contract_rank: 0, loi_release_available: false, loi_signatory: not_applicable, loi_bank_guarantee_pct_of_cargo_value: 0, loi_release_fee_usd: 0.00, loi_release_earliest_days_after_discharge: 0, lost_original_reissue_available: false, reissue_waiting_days_after_loss_report: 0, reissue_bank_guarantee_pct_of_cargo_value: 0, reissue_fee_usd: 0.00, switch_bill_available: false, max_switches_per_shipment: 0, switch_bill_fee_usd: 0.00, goodwill_waiver_authority_usd: 50.00, goodwill_waivers_per_365d: 1, waiver_request_window_days: 30}
+  - name: AHL Electronic Bill of Lading
+    rank: 2
+    entry_gate: {customer_roles: [beneficial_cargo_owner, freight_forwarder, nvocc], ebl_platform_enrolled: true, place_of_receipt: port_only}
+    parameters: {originals_issued_count: 1, negotiable: true, to_order_consignee_allowed: true, eligible_customer_roles: [beneficial_cargo_owner, freight_forwarder, nvocc], ebl_platform_enrollment_required: true, inland_place_of_receipt_allowed: false, freight_collect_allowed: true, issuance_fee_usd: 35.00, draft_issue_hours_after_si: 6, deemed_approval_hours: 48, pre_issuance_draft_rounds_limit: 5, received_for_shipment_allowed: false, issuance_hours_after_departure_max: 4, prepaid_freight_settled_before_issuance: false, credit_customer_issuance_without_payment: true, free_corrections_after_issuance: 1, correction_fee_after_issuance_usd: 40.00, correction_fee_after_departure_usd: 75.00, consignee_change_fee_usd: 75.00, max_corrections_after_issuance: 5, correction_window_days_after_departure: 21, originals_return_required_for_correction: false, originals_return_deadline_days: 0, correctable_fields_after_issuance: [consignee_name, notify_party_name, cargo_description, package_count, gross_weight_kg, port_of_discharge], correctable_fields_after_departure: [consignee_name, notify_party_name, cargo_description, gross_weight_kg], max_consignee_changes_after_issuance: 3, weight_correction_tolerance_pct: 5, standard_release_method: ebl_surrender, originals_required_for_destination_release: 1, endorsement_required_for_release: true, telex_release_available: false, telex_release_fee_usd: 0.00, telex_fee_waiver_min_contract_rank: 0, loi_release_available: false, loi_signatory: not_applicable, loi_bank_guarantee_pct_of_cargo_value: 0, loi_release_fee_usd: 0.00, loi_release_earliest_days_after_discharge: 0, lost_original_reissue_available: false, reissue_waiting_days_after_loss_report: 0, reissue_bank_guarantee_pct_of_cargo_value: 0, reissue_fee_usd: 0.00, switch_bill_available: false, max_switches_per_shipment: 0, switch_bill_fee_usd: 0.00, goodwill_waiver_authority_usd: 50.00, goodwill_waivers_per_365d: 1, waiver_request_window_days: 30}
+  - name: AHL Straight Bill of Lading
+    rank: 3
+    entry_gate: {customer_roles: [beneficial_cargo_owner, freight_forwarder, nvocc], consignee: named_only, place_of_receipt: port_only}
+    parameters: {originals_issued_count: 3, negotiable: false, to_order_consignee_allowed: false, eligible_customer_roles: [beneficial_cargo_owner, freight_forwarder, nvocc], ebl_platform_enrollment_required: false, inland_place_of_receipt_allowed: false, freight_collect_allowed: true, issuance_fee_usd: 65.00, draft_issue_hours_after_si: 12, deemed_approval_hours: 24, pre_issuance_draft_rounds_limit: 4, received_for_shipment_allowed: false, issuance_hours_after_departure_max: 24, prepaid_freight_settled_before_issuance: true, credit_customer_issuance_without_payment: true, free_corrections_after_issuance: 0, correction_fee_after_issuance_usd: 75.00, correction_fee_after_departure_usd: 150.00, consignee_change_fee_usd: 0.00, max_corrections_after_issuance: 2, correction_window_days_after_departure: 10, originals_return_required_for_correction: true, originals_return_deadline_days: 14, correctable_fields_after_issuance: [notify_party_name, cargo_description, package_count, gross_weight_kg], correctable_fields_after_departure: [notify_party_name, gross_weight_kg], max_consignee_changes_after_issuance: 0, weight_correction_tolerance_pct: 3, standard_release_method: original_surrender, originals_required_for_destination_release: 1, endorsement_required_for_release: false, telex_release_available: true, telex_release_fee_usd: 40.00, telex_fee_waiver_min_contract_rank: 5, loi_release_available: true, loi_signatory: consignee, loi_bank_guarantee_pct_of_cargo_value: 0, loi_release_fee_usd: 150.00, loi_release_earliest_days_after_discharge: 1, lost_original_reissue_available: true, reissue_waiting_days_after_loss_report: 7, reissue_bank_guarantee_pct_of_cargo_value: 150, reissue_fee_usd: 250.00, switch_bill_available: false, max_switches_per_shipment: 0, switch_bill_fee_usd: 0.00, goodwill_waiver_authority_usd: 75.00, goodwill_waivers_per_365d: 1, waiver_request_window_days: 30}
+  - name: AHL Negotiable Bill of Lading
+    rank: 4
+    entry_gate: {customer_roles: [beneficial_cargo_owner, freight_forwarder, nvocc], consignee: named_or_to_order, place_of_receipt: port_only}
+    parameters: {originals_issued_count: 3, negotiable: true, to_order_consignee_allowed: true, eligible_customer_roles: [beneficial_cargo_owner, freight_forwarder, nvocc], ebl_platform_enrollment_required: false, inland_place_of_receipt_allowed: false, freight_collect_allowed: true, issuance_fee_usd: 75.00, draft_issue_hours_after_si: 12, deemed_approval_hours: 24, pre_issuance_draft_rounds_limit: 4, received_for_shipment_allowed: false, issuance_hours_after_departure_max: 24, prepaid_freight_settled_before_issuance: true, credit_customer_issuance_without_payment: true, free_corrections_after_issuance: 0, correction_fee_after_issuance_usd: 95.00, correction_fee_after_departure_usd: 175.00, consignee_change_fee_usd: 0.00, max_corrections_after_issuance: 2, correction_window_days_after_departure: 7, originals_return_required_for_correction: true, originals_return_deadline_days: 14, correctable_fields_after_issuance: [notify_party_name, cargo_description, package_count, gross_weight_kg, port_of_discharge], correctable_fields_after_departure: [notify_party_name, gross_weight_kg], max_consignee_changes_after_issuance: 0, weight_correction_tolerance_pct: 3, standard_release_method: original_surrender, originals_required_for_destination_release: 1, endorsement_required_for_release: true, telex_release_available: true, telex_release_fee_usd: 55.00, telex_fee_waiver_min_contract_rank: 5, loi_release_available: true, loi_signatory: consignee_and_bank, loi_bank_guarantee_pct_of_cargo_value: 200, loi_release_fee_usd: 200.00, loi_release_earliest_days_after_discharge: 3, lost_original_reissue_available: true, reissue_waiting_days_after_loss_report: 14, reissue_bank_guarantee_pct_of_cargo_value: 200, reissue_fee_usd: 350.00, switch_bill_available: true, max_switches_per_shipment: 1, switch_bill_fee_usd: 185.00, goodwill_waiver_authority_usd: 75.00, goodwill_waivers_per_365d: 1, waiver_request_window_days: 30}
+  - name: AHL Combined Transport Bill of Lading
+    rank: 5
+    entry_gate: {customer_roles: [beneficial_cargo_owner, freight_forwarder, nvocc], consignee: named_or_to_order, place_of_receipt: port_or_inland}
+    parameters: {originals_issued_count: 3, negotiable: true, to_order_consignee_allowed: true, eligible_customer_roles: [beneficial_cargo_owner, freight_forwarder, nvocc], ebl_platform_enrollment_required: false, inland_place_of_receipt_allowed: true, freight_collect_allowed: true, issuance_fee_usd: 95.00, draft_issue_hours_after_si: 24, deemed_approval_hours: 24, pre_issuance_draft_rounds_limit: 4, received_for_shipment_allowed: true, issuance_hours_after_departure_max: 48, prepaid_freight_settled_before_issuance: true, credit_customer_issuance_without_payment: true, free_corrections_after_issuance: 0, correction_fee_after_issuance_usd: 110.00, correction_fee_after_departure_usd: 200.00, consignee_change_fee_usd: 0.00, max_corrections_after_issuance: 2, correction_window_days_after_departure: 10, originals_return_required_for_correction: true, originals_return_deadline_days: 14, correctable_fields_after_issuance: [notify_party_name, cargo_description, package_count, gross_weight_kg, port_of_discharge], correctable_fields_after_departure: [notify_party_name, gross_weight_kg], max_consignee_changes_after_issuance: 0, weight_correction_tolerance_pct: 3, standard_release_method: original_surrender, originals_required_for_destination_release: 1, endorsement_required_for_release: true, telex_release_available: true, telex_release_fee_usd: 60.00, telex_fee_waiver_min_contract_rank: 4, loi_release_available: true, loi_signatory: consignee_and_bank, loi_bank_guarantee_pct_of_cargo_value: 200, loi_release_fee_usd: 200.00, loi_release_earliest_days_after_discharge: 3, lost_original_reissue_available: true, reissue_waiting_days_after_loss_report: 14, reissue_bank_guarantee_pct_of_cargo_value: 200, reissue_fee_usd: 350.00, switch_bill_available: true, max_switches_per_shipment: 1, switch_bill_fee_usd: 210.00, goodwill_waiver_authority_usd: 100.00, goodwill_waivers_per_365d: 2, waiver_request_window_days: 45}
+  - name: AHL Switch Bill of Lading
+    rank: 6
+    entry_gate: {customer_roles: [freight_forwarder, nvocc], exchanged_document: full set of an AHL Negotiable or AHL Combined Transport Bill of Lading surrendered, freight_terms: prepaid}
+    parameters: {originals_issued_count: 3, negotiable: true, to_order_consignee_allowed: true, eligible_customer_roles: [freight_forwarder, nvocc], ebl_platform_enrollment_required: false, inland_place_of_receipt_allowed: false, freight_collect_allowed: false, issuance_fee_usd: 75.00, draft_issue_hours_after_si: 24, deemed_approval_hours: 24, pre_issuance_draft_rounds_limit: 3, received_for_shipment_allowed: false, issuance_hours_after_departure_max: 72, prepaid_freight_settled_before_issuance: true, credit_customer_issuance_without_payment: false, free_corrections_after_issuance: 0, correction_fee_after_issuance_usd: 150.00, correction_fee_after_departure_usd: 250.00, consignee_change_fee_usd: 0.00, max_corrections_after_issuance: 1, correction_window_days_after_departure: 5, originals_return_required_for_correction: true, originals_return_deadline_days: 10, correctable_fields_after_issuance: [notify_party_name, cargo_description], correctable_fields_after_departure: [notify_party_name], max_consignee_changes_after_issuance: 0, weight_correction_tolerance_pct: 2, standard_release_method: original_surrender, originals_required_for_destination_release: 1, endorsement_required_for_release: true, telex_release_available: true, telex_release_fee_usd: 75.00, telex_fee_waiver_min_contract_rank: 6, loi_release_available: false, loi_signatory: not_applicable, loi_bank_guarantee_pct_of_cargo_value: 0, loi_release_fee_usd: 0.00, loi_release_earliest_days_after_discharge: 0, lost_original_reissue_available: false, reissue_waiting_days_after_loss_report: 0, reissue_bank_guarantee_pct_of_cargo_value: 0, reissue_fee_usd: 0.00, switch_bill_available: false, max_switches_per_shipment: 0, switch_bill_fee_usd: 0.00, goodwill_waiver_authority_usd: 0.00, goodwill_waivers_per_365d: 0, waiver_request_window_days: 15}
+
+events:
+  # ---- holding (bills_of_lading) ----
+  - type: bol_draft_created
+    target: bills_of_lading
+    mutation: create
+    meaning: A draft transport document is generated from shipping instructions, or a switch bill draft is prepared in exchange for a surrendered set.
+    grain: One row per transport document.
+    fields: {bl_id: new document reference, customer_id: documentation party, variant_name: document type, bl_number: document number, booking_id: booking covered, shipper_name: shipper printed, consignee_name: consignee printed, notify_party_name: notify party printed, cargo_description: goods description, package_count: packages, gross_weight_kg: gross weight, declared_cargo_value_usd: declared cargo value, port_of_loading: port of loading, port_of_discharge: port of discharge, place_of_delivery: place of delivery, draft_created_date: draft date, bl_set_sequence: 1 for a new document}
+    triggers: []
+  - type: bol_draft_approved
+    target: bills_of_lading
+    mutation: {transition: {from: draft, to: approved}}
+    meaning: The shipper approves the draft, or the draft is deemed approved.
+    grain: One row per approval.
+    fields: {status: becomes approved}
+    triggers: []
+  - type: bol_draft_reopened
+    target: bills_of_lading
+    mutation: {transition: {from: approved, to: draft}}
+    meaning: An approved draft is reopened for a pre-issuance correction.
+    grain: One row per reopening.
+    fields: {status: becomes draft}
+    triggers: []
+  - type: bol_issued
+    target: bills_of_lading
+    mutation: {transition: {from: approved, to: issued}}
+    meaning: The document is issued with its date of issue and, where applicable, its originals.
+    grain: One row per issuance.
+    fields: {status: becomes issued, issued_date: date of issue, variant_name: document type issued, bl_set_sequence: set issued}
+    triggers:
+      - event: bol:bol_issuance_fee_charged
+        map: {bl_id: bl_id, customer_id: customer_id, charge_code: document_issuance_fee, bl_set_sequence: bl_set_sequence}
+      - event: bol:bol_originals_issued
+        when: {variant_name: {not: AHL Sea Waybill}}
+        map: {bl_id: bl_id, customer_id: customer_id, bl_set_sequence: bl_set_sequence}
+  - type: bol_voided
+    target: bills_of_lading
+    mutation: {transition: [{from: draft, to: voided}, {from: approved, to: voided}, {from: surrendered, to: voided}]}
+    meaning: The document is voided because its booking was cancelled or a switch bill replaced it.
+    grain: One row per voided document.
+    fields: {status: becomes voided, booking_id: booking of the voided document}
+    triggers: []
+  - type: bol_originals_surrender_completed
+    target: bills_of_lading
+    mutation: {transition: {from: issued, to: surrendered}}
+    meaning: The shipper surrenders the full set of originals at the origin office.
+    grain: One row per full-set surrender.
+    fields: {status: becomes surrendered, bl_set_sequence: set surrendered}
+    triggers:
+      - event: bol:bol_originals_surrendered
+        map: {bl_id: bl_id, customer_id: customer_id, bl_set_sequence: bl_set_sequence, surrender_location: origin_office}
+  - type: bol_cargo_released
+    target: bills_of_lading
+    mutation: {transition: [{from: issued, to: released}, {from: surrendered, to: released}]}
+    meaning: The cargo is released at destination.
+    grain: One row per release.
+    fields: {status: becomes released, released_date: release date, booking_id: booking released}
+    triggers:
+      - event: bol:bol_delivery_release_recorded
+        map: {bl_id: bl_id, customer_id: customer_id}
+      - event: claims:claims_cargo_delivered
+        map: {booking_id: booking_id}
+  - type: bol_accomplished
+    target: bills_of_lading
+    mutation: {transition: {from: released, to: accomplished}}
+    meaning: Delivery is completed and the document is accomplished.
+    grain: One row per accomplished document.
+    fields: {status: becomes accomplished}
+    triggers: []
+  - type: bol_particulars_corrected
+    target: bills_of_lading
+    mutation: update
+    meaning: A printed particular of the document is corrected.
+    grain: One row per correction applied.
+    fields: {consignee_name: corrected consignee, notify_party_name: corrected notify party, cargo_description: corrected description, package_count: corrected packages, gross_weight_kg: corrected weight, shipper_name: corrected shipper, port_of_discharge: corrected port of discharge}
+    triggers: []
+  - type: bol_set_replaced
+    target: bills_of_lading
+    mutation: update
+    meaning: A replacement set of originals takes the place of the set in force, after lost originals or a correction that required the originals back.
+    grain: One row per replacement set.
+    fields: {bl_set_sequence: new set number, issued_date: date of issue of the replacement set}
+    triggers:
+      - event: bol:bol_originals_issued
+        map: {bl_id: bl_id, customer_id: customer_id, bl_set_sequence: bl_set_sequence}
+  # ---- ledger (bol_ledger) ----
+  - type: bol_issuance_fee_charged
+    target: bol_ledger
+    meaning: The issuance fee for a set is charged.
+    grain: One row per set issued.
+    distinguish_by: [bl_set_sequence]
+    fields: {bl_id: document, customer_id: documentation party, event_date: issue date, charge_code: document_issuance_fee, amount_usd: fee, bl_set_sequence: set issued}
+    account: documentation_charges
+    direction: in
+    triggers: []
+  - type: bol_correction_fee_charged
+    target: bol_ledger
+    meaning: A correction or consignee change after issuance is charged.
+    grain: One row per chargeable correction request.
+    distinguish_by: [request_id]
+    fields: {bl_id: document, customer_id: documentation party, event_date: correction date, charge_code: correction_fee or consignee_change_fee, amount_usd: fee, request_id: the correction request executed}
+    account: documentation_charges
+    direction: in
+    triggers: []
+  - type: bol_release_fee_charged
+    target: bol_ledger
+    meaning: A telex release or a release against a letter of indemnity is charged.
+    grain: One row per release request charged.
+    distinguish_by: [request_id]
+    fields: {bl_id: document, customer_id: party charged, event_date: release date, charge_code: telex_release_fee or loi_release_fee, amount_usd: fee, request_id: the release request executed}
+    account: documentation_charges
+    direction: in
+    triggers: []
+  - type: bol_switch_fee_charged
+    target: bol_ledger
+    meaning: The switch bill fee is charged on the document exchanged.
+    grain: One row per switch request executed.
+    distinguish_by: [request_id]
+    fields: {bl_id: document exchanged, customer_id: documentation party, event_date: switch date, charge_code: switch_bill_fee, amount_usd: fee, request_id: the switch request executed}
+    account: documentation_charges
+    direction: in
+    triggers: []
+  - type: bol_reissue_fee_charged
+    target: bol_ledger
+    meaning: The fee for a replacement set after lost originals is charged.
+    grain: One row per reissue request executed.
+    distinguish_by: [request_id]
+    fields: {bl_id: document, customer_id: documentation party, event_date: reissue date, charge_code: reissue_fee, amount_usd: fee, request_id: the reissue request executed}
+    account: documentation_charges
+    direction: in
+    triggers: []
+  - type: bol_originals_issued
+    target: bol_ledger
+    meaning: Originals of a set are put into circulation.
+    grain: One row per set of originals issued.
+    distinguish_by: [bl_set_sequence]
+    fields: {bl_id: document, customer_id: documentation party, event_date: issue date, charge_code: none, amount_usd: 0.00, bl_set_sequence: set issued, originals_count: originals in the set}
+    account: originals_outstanding
+    direction: in
+    triggers: []
+  - type: bol_originals_surrendered
+    target: bol_ledger
+    meaning: Originals are surrendered to the line at origin or destination.
+    grain: One row per surrender of originals of one set at one office on one date.
+    distinguish_by: [bl_set_sequence, surrender_location, event_date]
+    fields: {bl_id: document, customer_id: surrendering party, event_date: surrender date, charge_code: none, amount_usd: 0.00, bl_set_sequence: set surrendered, originals_count: originals surrendered, surrender_location: office of surrender}
+    account: originals_outstanding
+    direction: out
+    triggers: []
+  - type: bol_originals_voided
+    target: bol_ledger
+    meaning: Originals still in circulation are declared void, because a replacement set is issued after loss or because another original of the set accomplished it at destination release.
+    grain: One row per set voided.
+    distinguish_by: [bl_set_sequence]
+    fields: {bl_id: document, customer_id: documentation party, event_date: void date, charge_code: none, amount_usd: 0.00, bl_set_sequence: set voided, originals_count: originals declared void, request_id: the reissue request (empty when voided by a destination release)}
+    account: originals_outstanding
+    direction: out
+    triggers: []
+  - type: bol_delivery_release_recorded
+    target: bol_ledger
+    meaning: The basis on which cargo was released at destination is recorded.
+    grain: One row per release.
+    distinguish_by: [release_method]
+    fields: {bl_id: document, customer_id: releasing party, event_date: release date, charge_code: none, amount_usd: 0.00, release_method: basis of release, request_id: release request where one exists}
+    triggers: []
+  - type: bol_payment_received
+    target: bol_ledger
+    meaning: A remittance is applied to the document's fees.
+    grain: One row per remittance per document.
+    distinguish_by: [payment_reference]
+    fields: {bl_id: document, customer_id: paying party, event_date: value date, charge_code: payment, amount_usd: amount remitted, payment_reference: remittance reference quoted by the customer}
+    account: documentation_charges
+    direction: out
+    triggers: []
+  - type: bol_fee_waived
+    target: bol_ledger
+    meaning: A documentation fee row is waived as goodwill.
+    grain: One row per fee row waived.
+    distinguish_by: [reference_event_id]
+    fields: {bl_id: document, customer_id: documentation party, event_date: waiver date, charge_code: waiver, amount_usd: full amount of the referenced row, reference_event_id: the fee row waived}
+    account: documentation_charges
+    direction: out
+    triggers: []
+
+measures:
+  - id: bol_msr_draft_rounds
+    window: Life of the document before issuance.
+    measure: Count of bol_service_requests rows on the bl_id with request_type correction and outcome completed whose created_at falls before the document's issued_date (or all, while not yet issued).
+  - id: bol_msr_corrections_after_issuance
+    window: Life of the document from its issued_date, excluding the request being handled.
+    measure: Count of bol_service_requests rows on the bl_id with request_type correction and outcome completed whose created_at falls on or after the issued_date.
+  - id: bol_msr_consignee_changes
+    window: Life of the document from its issued_date, excluding the request being handled.
+    measure: Count of bol_service_requests rows on the bl_id with request_type correction, corrected_field consignee_name and outcome completed.
+  - id: bol_msr_switches_on_booking
+    window: Life of the booking, across every document of the booking_id.
+    measure: Count of bol_switch_fee_charged rows on documents whose booking_id is the booking of the document being exchanged.
+  - id: bol_msr_goodwill_waivers_365d
+    window: Trailing 365 calendar days ending on the waiver date, inclusive, across all documents of the customer.
+    measure: Count of bol_fee_waived rows for the customer_id with event_date inside the window.
+
+policies:
+  - id: bol_agg_multi_holding
+    subject: [bol_draft_created]
+    rule: >-
+      A customer may hold any number of transport documents at once; there is no cap per customer. Each document covers exactly one booking,
+      and how documents combine on one booking is governed by bol_agg_one_document_per_booking.
+    eligibility: []
+    params: {max_per_customer: null}
+
+  - id: bol_agg_one_document_per_booking
+    subject: [bol_draft_created, bol_voided]
+    rule: >-
+      Documents are aggregated per booking. A booking has at most one transport document in force, where in force means any status other
+      than voided; a new draft for a booking may be created only when every earlier document of that booking is voided. A switch bill is the
+      one case in which a second document is prepared for the same booking: its draft may be created while the exchanged document is
+      surrendered, and the exchanged document is voided when the switch bill is issued, so the one-in-force rule holds again from that
+      moment. When a booking is cancelled, its document is voided if it is still draft or approved; an issued document of a cancelled booking
+      cannot occur, because cargo is never shipped on a cancelled booking.
+    eligibility:
+      - id: one_in_force_per_booking
+        applies_to: [bol_draft_created]
+        kind: dedup
+        condition: A booking has at most one transport document in force, where in force means any status other than voided; a new draft for a booking may be created only when every earlier document of that booking is voided.
+        evidence_fields: [bills_of_lading.booking_id, bills_of_lading.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bills_of_lading.booking_id]
+          action_bindings: {bills_of_lading.booking_id: booking_id}
+        dedup_contract:
+          table: bills_of_lading
+          mode: separate_record
+          object_bindings: {booking_id: booking_id}
+          duplicate_filters: {status: [draft, approved, issued, released, accomplished]}
+          distinct_fields: [bl_set_sequence]
+
+  - id: bol_document_type_eligibility
+    subject: [bol_draft_created]
+    rule: >-
+      The document type is chosen by the documentation party in the shipping instructions and must fit the booking and the party. The
+      documentation party's customer_role must be one of the tier's eligible_customer_roles. For an AHL Electronic Bill of Lading the
+      documentation party must be enrolled on the eBL platform. A consignee printed as TO ORDER or TO ORDER OF a bank is allowed only on a tier
+      whose to_order_consignee_allowed is true; on other tiers the consignee must be a named company. A place of receipt or place of delivery
+      different from the ports is allowed only when inland_place_of_receipt_allowed is true. A booking with collect freight may be documented
+      only on a tier whose freight_collect_allowed is true, so an AHL Switch Bill of Lading always covers prepaid freight. The draft is sent
+      within draft_issue_hours_after_si hours of receiving the shipping instructions. A draft for an AHL Switch Bill of Lading is prepared only
+      under bol_switch_bill. The document type cannot be changed on an existing document; a different type requires voiding the draft before
+      issuance and creating a new draft, subject to bol_agg_one_document_per_booking.
+    eligibility:
+      - id: role_fits_tier
+        applies_to: [bol_draft_created]
+        kind: authorization
+        condition: The documentation party's customer_role must be one of the tier's eligible_customer_roles.
+        evidence_fields: [customers.customer_id, customers.customer_role]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [customers.customer_id]
+          action_bindings: {customers.customer_id: customer_id}
+      - id: ebl_enrolled
+        applies_to: [bol_draft_created]
+        kind: state
+        condition: For an AHL Electronic Bill of Lading the documentation party must be enrolled on the eBL platform.
+        evidence_fields: [customers.customer_id, customers.ebl_platform_enrolled]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [customers.customer_id]
+          action_bindings: {customers.customer_id: customer_id}
+        state_contract:
+          field: customers.ebl_platform_enrolled
+          allowed: [true]
+      - id: collect_fits_tier
+        applies_to: [bol_draft_created]
+        kind: authorization
+        condition: A booking with collect freight may be documented only on a tier whose freight_collect_allowed is true, so an AHL Switch Bill of Lading always covers prepaid freight.
+        evidence_fields: [bookings.booking_id, bookings.freight_terms]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bookings.booking_id]
+          action_bindings: {bookings.booking_id: booking_id}
+    params:
+      per_tier:
+        AHL Sea Waybill: {eligible_customer_roles: "=eligible_customer_roles", ebl_platform_enrollment_required: "=ebl_platform_enrollment_required", to_order_consignee_allowed: "=to_order_consignee_allowed", inland_place_of_receipt_allowed: "=inland_place_of_receipt_allowed", freight_collect_allowed: "=freight_collect_allowed", draft_issue_hours_after_si: "=draft_issue_hours_after_si"}
+        AHL Electronic Bill of Lading: {eligible_customer_roles: "=eligible_customer_roles", ebl_platform_enrollment_required: "=ebl_platform_enrollment_required", to_order_consignee_allowed: "=to_order_consignee_allowed", inland_place_of_receipt_allowed: "=inland_place_of_receipt_allowed", freight_collect_allowed: "=freight_collect_allowed", draft_issue_hours_after_si: "=draft_issue_hours_after_si"}
+        AHL Straight Bill of Lading: {eligible_customer_roles: "=eligible_customer_roles", ebl_platform_enrollment_required: "=ebl_platform_enrollment_required", to_order_consignee_allowed: "=to_order_consignee_allowed", inland_place_of_receipt_allowed: "=inland_place_of_receipt_allowed", freight_collect_allowed: "=freight_collect_allowed", draft_issue_hours_after_si: "=draft_issue_hours_after_si"}
+        AHL Negotiable Bill of Lading: {eligible_customer_roles: "=eligible_customer_roles", ebl_platform_enrollment_required: "=ebl_platform_enrollment_required", to_order_consignee_allowed: "=to_order_consignee_allowed", inland_place_of_receipt_allowed: "=inland_place_of_receipt_allowed", freight_collect_allowed: "=freight_collect_allowed", draft_issue_hours_after_si: "=draft_issue_hours_after_si"}
+        AHL Combined Transport Bill of Lading: {eligible_customer_roles: "=eligible_customer_roles", ebl_platform_enrollment_required: "=ebl_platform_enrollment_required", to_order_consignee_allowed: "=to_order_consignee_allowed", inland_place_of_receipt_allowed: "=inland_place_of_receipt_allowed", freight_collect_allowed: "=freight_collect_allowed", draft_issue_hours_after_si: "=draft_issue_hours_after_si"}
+        AHL Switch Bill of Lading: {eligible_customer_roles: "=eligible_customer_roles", ebl_platform_enrollment_required: "=ebl_platform_enrollment_required", to_order_consignee_allowed: "=to_order_consignee_allowed", inland_place_of_receipt_allowed: "=inland_place_of_receipt_allowed", freight_collect_allowed: "=freight_collect_allowed", draft_issue_hours_after_si: "=draft_issue_hours_after_si"}
+
+  - id: bol_draft_and_approval
+    subject: [bol_draft_approved, bol_draft_reopened]
+    rule: >-
+      A draft is approved by the shipper, which only the shipper can do; when the shipper has not answered within deemed_approval_hours of
+      the draft being sent, the system records the draft as deemed approved and it is issued as drafted. Before issuance, the documentation
+      party may have the draft corrected free of charge: an approved draft is reopened to draft, corrected under bol_correction, and sent
+      again for approval. A draft may be reopened only while bol_msr_draft_rounds is below the tier's pre_issuance_draft_rounds_limit. Once the
+      limit is reached, further changes are made only after issuance, at the fees of bol_correction. Pre-issuance corrections never carry a
+      fee and never count toward max_corrections_after_issuance.
+    eligibility:
+      - id: rounds_below_limit
+        applies_to: [bol_draft_reopened]
+        kind: authorization
+        condition: A draft may be reopened only while bol_msr_draft_rounds is below the tier's pre_issuance_draft_rounds_limit.
+        evidence_fields: [bol_service_requests.bl_id, bol_service_requests.request_type, bol_service_requests.outcome]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bol_service_requests.bl_id]
+          action_bindings: {bol_service_requests.bl_id: bl_id}
+    measures: [bol_msr_draft_rounds]
+
+  - id: bol_issuance
+    subject: [bol_issued, bol_issuance_fee_charged, bol_originals_issued]
+    rule: >-
+      An approved document is issued once the cargo has been shipped on board. The document is issued only after the booking's containers
+      are loaded, or already gated in when the tier's received_for_shipment_allowed is true. The line issues within
+      issuance_hours_after_departure_max hours of departure as a service standard. On a tier whose prepaid_freight_settled_before_issuance is
+      true, a booking with prepaid freight must show charges_due_usd of 0.00 before issuance, unless the documentation party is
+      credit_approved and the tier's credit_customer_issuance_without_payment is true. Collect-freight bookings are never held at issuance for
+      freight. Issuance charges issuance_fee_usd once for the set and, on every tier except AHL Sea Waybill, puts originals_issued_count
+      originals of the set into circulation. The issuance fee may be booked only on a document whose status is issued. A set is charged at
+      most once.
+    eligibility:
+      - id: shipped_on_board
+        applies_to: [bol_issued]
+        kind: state
+        condition: The document is issued only after the booking's containers are loaded, or already gated in when the tier's received_for_shipment_allowed is true.
+        evidence_fields: [bookings.booking_id, bookings.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bookings.booking_id]
+          action_bindings: {bookings.booking_id: booking_id}
+        state_contract:
+          field: bookings.status
+          allowed: [gated_in, loaded, departed, closed]
+      - id: prepaid_settled
+        applies_to: [bol_issued]
+        kind: authorization
+        condition: On a tier whose prepaid_freight_settled_before_issuance is true, a booking with prepaid freight must show charges_due_usd of 0.00 before issuance, unless the documentation party is credit_approved and the tier's credit_customer_issuance_without_payment is true.
+        evidence_fields: [bookings.booking_id, bookings.freight_terms, bookings.charges_due_usd, customers.credit_status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bookings.booking_id]
+          action_bindings: {bookings.booking_id: booking_id}
+      - id: fee_on_issued_document
+        applies_to: [bol_issuance_fee_charged, bol_originals_issued]
+        kind: state
+        condition: The issuance fee may be booked only on a document whose status is issued.
+        evidence_fields: [bills_of_lading.bl_id, bills_of_lading.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bills_of_lading.bl_id]
+          action_bindings: {bills_of_lading.bl_id: bl_id}
+        state_contract:
+          field: bills_of_lading.status
+          allowed: [issued]
+      - id: set_charged_once
+        applies_to: [bol_issuance_fee_charged]
+        kind: dedup
+        condition: A set is charged at most once.
+        evidence_fields: [bol_ledger.bl_id, bol_ledger.event_type, bol_ledger.bl_set_sequence]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bol_ledger.bl_id, bol_ledger.bl_set_sequence]
+          action_bindings: {bol_ledger.bl_id: bl_id, bol_ledger.bl_set_sequence: bl_set_sequence}
+        dedup_contract:
+          table: bol_ledger
+          mode: separate_record
+          object_bindings: {bl_id: bl_id, bl_set_sequence: bl_set_sequence}
+          duplicate_filters: {event_type: [bol_issuance_fee_charged]}
+          distinct_fields: []
+    params:
+      per_tier:
+        AHL Sea Waybill: {issuance_fee_usd: "=issuance_fee_usd", originals_issued_count: "=originals_issued_count"}
+        AHL Electronic Bill of Lading: {issuance_fee_usd: "=issuance_fee_usd", originals_issued_count: "=originals_issued_count"}
+        AHL Straight Bill of Lading: {issuance_fee_usd: "=issuance_fee_usd", originals_issued_count: "=originals_issued_count"}
+        AHL Negotiable Bill of Lading: {issuance_fee_usd: "=issuance_fee_usd", originals_issued_count: "=originals_issued_count"}
+        AHL Combined Transport Bill of Lading: {issuance_fee_usd: "=issuance_fee_usd", originals_issued_count: "=originals_issued_count"}
+        AHL Switch Bill of Lading: {issuance_fee_usd: "=issuance_fee_usd", originals_issued_count: "=originals_issued_count"}
+    formula:
+      amount_usd: issuance_fee_usd
+      originals_count: originals_issued_count
+
+  - id: bol_correction
+    subject: [bol_particulars_corrected, bol_correction_fee_charged, bol_set_replaced, bol_originals_surrendered]
+    rule: >-
+      A printed particular is corrected on the documentation party's request, recorded as one correction request per particular. Before
+      issuance any particular may be corrected free under bol_draft_and_approval. After issuance, only the particulars in the tier's
+      correctable_fields_after_issuance may be corrected while the vessel has not departed, and only those in
+      correctable_fields_after_departure once it has departed. A correction after vessel departure is accepted only when it is requested no
+      later than the tier's correction_window_days_after_departure calendar days after the carrying vessel departed. The window ends on the
+      booking's departed_date plus the tier's window days counted on calendar dates, and a request on the last day is accepted. The shipper
+      named on a document is never corrected; a change of shipper is possible only through bol_switch_bill. A document may take at most
+      max_corrections_after_issuance corrections after issuance, counted by bol_msr_corrections_after_issuance, and the named consignee may be
+      changed at most max_consignee_changes_after_issuance times, counted by bol_msr_consignee_changes. A gross weight corrected after
+      departure may differ from the printed weight by no more than weight_correction_tolerance_pct percent of it; a larger difference needs a
+      new verified gross mass and is not a documentation correction. Fees after issuance: a consignee change is charged consignee_change_fee_usd;
+      any other correction is free while bol_msr_corrections_after_issuance is below free_corrections_after_issuance and otherwise costs
+      correction_fee_after_issuance_usd before departure or correction_fee_after_departure_usd after departure. A correction caused by the
+      line's own keying error against the shipping instructions is never charged. When the tier's originals_return_required_for_correction is
+      true, the correction is applied only after every outstanding original has been returned to the line, so that originals_outstanding is 0.
+      The returned originals are recorded as surrendered at the origin office and the corrected document is issued as the next set,
+      bl_set_sequence plus 1, carrying no issuance fee; a request whose originals are not returned within originals_return_deadline_days of
+      the request lapses and is withdrawn. A correction fee is booked only on a document whose status is issued. Each correction request is
+      charged at most once.
+    eligibility:
+      - id: within_departure_window
+        applies_to: [bol_particulars_corrected, bol_correction_fee_charged]
+        kind: time
+        condition: A correction after vessel departure is accepted only when it is requested no later than the tier's correction_window_days_after_departure calendar days after the carrying vessel departed.
+        evidence_fields: [bookings.booking_id, bookings.departed_date]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bookings.booking_id]
+          action_bindings: {bookings.booking_id: booking_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the carrying vessel departed
+          anchor_source: bookings.departed_date
+          relation: not_after
+          duration_source: variants.correction_window_days_after_departure
+          unit: calendar_days
+          counting_rule: The window ends on the booking's departed_date plus the tier's window days counted on calendar dates, and a request on the last day is accepted.
+          boundary: inclusive
+      - id: originals_back_first
+        applies_to: [bol_particulars_corrected, bol_set_replaced]
+        kind: authorization
+        condition: When the tier's originals_return_required_for_correction is true, the correction is applied only after every outstanding original has been returned to the line, so that originals_outstanding is 0.
+        evidence_fields: [bills_of_lading.bl_id, bills_of_lading.originals_outstanding]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bills_of_lading.bl_id]
+          action_bindings: {bills_of_lading.bl_id: bl_id}
+      - id: fee_on_issued
+        applies_to: [bol_correction_fee_charged]
+        kind: state
+        condition: A correction fee is booked only on a document whose status is issued.
+        evidence_fields: [bills_of_lading.bl_id, bills_of_lading.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bills_of_lading.bl_id]
+          action_bindings: {bills_of_lading.bl_id: bl_id}
+        state_contract:
+          field: bills_of_lading.status
+          allowed: [issued]
+      - id: charge_request_once
+        applies_to: [bol_correction_fee_charged]
+        kind: dedup
+        condition: Each correction request is charged at most once.
+        evidence_fields: [bol_ledger.request_id, bol_ledger.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bol_ledger.request_id]
+          action_bindings: {bol_ledger.request_id: request_id}
+        dedup_contract:
+          table: bol_ledger
+          mode: separate_record
+          object_bindings: {request_id: request_id}
+          duplicate_filters: {event_type: [bol_correction_fee_charged]}
+          distinct_fields: []
+    params:
+      per_tier:
+        AHL Sea Waybill: {free_corrections_after_issuance: "=free_corrections_after_issuance", correction_fee_after_issuance_usd: "=correction_fee_after_issuance_usd", correction_fee_after_departure_usd: "=correction_fee_after_departure_usd", consignee_change_fee_usd: "=consignee_change_fee_usd", max_corrections_after_issuance: "=max_corrections_after_issuance", max_consignee_changes_after_issuance: "=max_consignee_changes_after_issuance", weight_correction_tolerance_pct: "=weight_correction_tolerance_pct", originals_return_deadline_days: "=originals_return_deadline_days"}
+        AHL Electronic Bill of Lading: {free_corrections_after_issuance: "=free_corrections_after_issuance", correction_fee_after_issuance_usd: "=correction_fee_after_issuance_usd", correction_fee_after_departure_usd: "=correction_fee_after_departure_usd", consignee_change_fee_usd: "=consignee_change_fee_usd", max_corrections_after_issuance: "=max_corrections_after_issuance", max_consignee_changes_after_issuance: "=max_consignee_changes_after_issuance", weight_correction_tolerance_pct: "=weight_correction_tolerance_pct", originals_return_deadline_days: "=originals_return_deadline_days"}
+        AHL Straight Bill of Lading: {free_corrections_after_issuance: "=free_corrections_after_issuance", correction_fee_after_issuance_usd: "=correction_fee_after_issuance_usd", correction_fee_after_departure_usd: "=correction_fee_after_departure_usd", consignee_change_fee_usd: "=consignee_change_fee_usd", max_corrections_after_issuance: "=max_corrections_after_issuance", max_consignee_changes_after_issuance: "=max_consignee_changes_after_issuance", weight_correction_tolerance_pct: "=weight_correction_tolerance_pct", originals_return_deadline_days: "=originals_return_deadline_days"}
+        AHL Negotiable Bill of Lading: {free_corrections_after_issuance: "=free_corrections_after_issuance", correction_fee_after_issuance_usd: "=correction_fee_after_issuance_usd", correction_fee_after_departure_usd: "=correction_fee_after_departure_usd", consignee_change_fee_usd: "=consignee_change_fee_usd", max_corrections_after_issuance: "=max_corrections_after_issuance", max_consignee_changes_after_issuance: "=max_consignee_changes_after_issuance", weight_correction_tolerance_pct: "=weight_correction_tolerance_pct", originals_return_deadline_days: "=originals_return_deadline_days"}
+        AHL Combined Transport Bill of Lading: {free_corrections_after_issuance: "=free_corrections_after_issuance", correction_fee_after_issuance_usd: "=correction_fee_after_issuance_usd", correction_fee_after_departure_usd: "=correction_fee_after_departure_usd", consignee_change_fee_usd: "=consignee_change_fee_usd", max_corrections_after_issuance: "=max_corrections_after_issuance", max_consignee_changes_after_issuance: "=max_consignee_changes_after_issuance", weight_correction_tolerance_pct: "=weight_correction_tolerance_pct", originals_return_deadline_days: "=originals_return_deadline_days"}
+        AHL Switch Bill of Lading: {free_corrections_after_issuance: "=free_corrections_after_issuance", correction_fee_after_issuance_usd: "=correction_fee_after_issuance_usd", correction_fee_after_departure_usd: "=correction_fee_after_departure_usd", consignee_change_fee_usd: "=consignee_change_fee_usd", max_corrections_after_issuance: "=max_corrections_after_issuance", max_consignee_changes_after_issuance: "=max_consignee_changes_after_issuance", weight_correction_tolerance_pct: "=weight_correction_tolerance_pct", originals_return_deadline_days: "=originals_return_deadline_days"}
+    formula:
+      consignee_change_amount: consignee_change_fee_usd
+      pre_departure_amount: 0 if bol_msr_corrections_after_issuance < free_corrections_after_issuance else correction_fee_after_issuance_usd
+      post_departure_amount: 0 if bol_msr_corrections_after_issuance < free_corrections_after_issuance else correction_fee_after_departure_usd
+    measures: [bol_msr_corrections_after_issuance, bol_msr_consignee_changes]
+
+  - id: bol_telex_release
+    subject: [bol_originals_surrender_completed, bol_originals_surrendered, bol_release_fee_charged]
+    rule: >-
+      A telex release lets the consignee take delivery without presenting an original, because the shipper has surrendered the originals at
+      origin. It is offered only on tiers whose telex_release_available is true. Only the documentation party holding the record may request
+      a telex release, a correction or a switch bill. The request is registered first and waits for the shipper, who alone can hand in the
+      originals. A telex release is effected only after the full set of originals has been surrendered at the origin office, so that
+      originals_outstanding is 0. The surrender is recorded as originals surrendered at origin_office for the set in force, and the document
+      moves to surrendered; destination release then follows under bol_cargo_release. A telex release fee of telex_release_fee_usd is charged
+      to the documentation party, except when the documentation party holds an active service contract whose tier rank is at least the
+      tier's telex_fee_waiver_min_contract_rank, a value of 0 meaning that no contract exempts the fee. A telex release fee is booked only on
+      a document whose status is surrendered. A release request is charged at most once. A telex release cannot be revoked once the document
+      is surrendered.
+    eligibility:
+      - id: documentation_party_only
+        applies_to: [bol_originals_surrender_completed, bol_release_fee_charged]
+        kind: authorization
+        condition: Only the documentation party holding the record may request a telex release, a correction or a switch bill.
+        evidence_fields: [bills_of_lading.bl_id, bills_of_lading.customer_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bills_of_lading.bl_id]
+          action_bindings: {bills_of_lading.bl_id: bl_id}
+      - id: full_set_surrendered
+        applies_to: [bol_release_fee_charged]
+        kind: authorization
+        condition: A telex release is effected only after the full set of originals has been surrendered at the origin office, so that originals_outstanding is 0.
+        evidence_fields: [bills_of_lading.bl_id, bills_of_lading.originals_outstanding]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bills_of_lading.bl_id]
+          action_bindings: {bills_of_lading.bl_id: bl_id}
+      - id: telex_fee_on_surrendered
+        applies_to: [bol_release_fee_charged]
+        kind: state
+        condition: A telex release fee is booked only on a document whose status is surrendered.
+        evidence_fields: [bills_of_lading.bl_id, bills_of_lading.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bills_of_lading.bl_id]
+          action_bindings: {bills_of_lading.bl_id: bl_id}
+        state_contract:
+          field: bills_of_lading.status
+          allowed: [surrendered]
+      - id: release_request_charged_once
+        applies_to: [bol_release_fee_charged]
+        kind: dedup
+        condition: A release request is charged at most once.
+        evidence_fields: [bol_ledger.request_id, bol_ledger.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bol_ledger.request_id]
+          action_bindings: {bol_ledger.request_id: request_id}
+        dedup_contract:
+          table: bol_ledger
+          mode: separate_record
+          object_bindings: {request_id: request_id}
+          duplicate_filters: {event_type: [bol_release_fee_charged]}
+          distinct_fields: []
+    params:
+      per_tier:
+        AHL Sea Waybill: {telex_release_available: "=telex_release_available", telex_release_fee_usd: "=telex_release_fee_usd", telex_fee_waiver_min_contract_rank: "=telex_fee_waiver_min_contract_rank"}
+        AHL Electronic Bill of Lading: {telex_release_available: "=telex_release_available", telex_release_fee_usd: "=telex_release_fee_usd", telex_fee_waiver_min_contract_rank: "=telex_fee_waiver_min_contract_rank"}
+        AHL Straight Bill of Lading: {telex_release_available: "=telex_release_available", telex_release_fee_usd: "=telex_release_fee_usd", telex_fee_waiver_min_contract_rank: "=telex_fee_waiver_min_contract_rank"}
+        AHL Negotiable Bill of Lading: {telex_release_available: "=telex_release_available", telex_release_fee_usd: "=telex_release_fee_usd", telex_fee_waiver_min_contract_rank: "=telex_fee_waiver_min_contract_rank"}
+        AHL Combined Transport Bill of Lading: {telex_release_available: "=telex_release_available", telex_release_fee_usd: "=telex_release_fee_usd", telex_fee_waiver_min_contract_rank: "=telex_fee_waiver_min_contract_rank"}
+        AHL Switch Bill of Lading: {telex_release_available: "=telex_release_available", telex_release_fee_usd: "=telex_release_fee_usd", telex_fee_waiver_min_contract_rank: "=telex_fee_waiver_min_contract_rank"}
+
+  - id: bol_cargo_release
+    subject: [bol_cargo_released, bol_delivery_release_recorded, bol_release_fee_charged, bol_originals_surrendered, bol_originals_voided]
+    rule: >-
+      Cargo is released at destination once, on one basis. On the tier's standard_release_method: an AHL Sea Waybill releases to the named
+      consignee on identification; an AHL Electronic Bill of Lading releases when the current eBL holder surrenders the record on the platform;
+      paper documents release when originals_required_for_destination_release original is surrendered at the destination office, which
+      accomplishes the whole set, and the other originals of the set still outstanding are recorded as void by that surrender, so that
+      originals_outstanding returns to 0. For an AHL Sea Waybill or AHL
+      Straight Bill of Lading, cargo is released only to the customer whose registered company_name matches the printed consignee_name exactly.
+      When endorsement_required_for_release is true, the releasing party must be the last endorsee of an unbroken endorsement chain on the
+      surrendered original or eBL. A surrendered document releases on the telex release without further originals. Collect freight on the
+      booking must be paid before release, so the booking's charges_due_usd must be 0.00 when freight_terms is collect. When originals cannot
+      be presented, a tier whose loi_release_available is true may release against a letter of indemnity signed by the loi_signatory. The
+      letter of indemnity is signed by the consignee, who alone can give it, and on tiers whose loi_signatory is consignee_and_bank it is
+      countersigned by a bank guarantee of loi_bank_guarantee_pct_of_cargo_value percent of the declared_cargo_value_usd, rounded to the
+      cent. Release against a letter of indemnity is allowed only from the tier's loi_release_earliest_days_after_discharge calendar days
+      after the discharge of the cargo at the port of discharge. The earliest date is the container's discharge_date plus the tier's days
+      counted on calendar dates, and release on that date is allowed. Such a release is charged loi_release_fee_usd to the consignee and is
+      recorded with release_method bank_guarantee_loi. A document is released only once.
+    eligibility:
+      - id: named_consignee_only
+        applies_to: [bol_cargo_released]
+        kind: authorization
+        condition: For an AHL Sea Waybill or AHL Straight Bill of Lading, cargo is released only to the customer whose registered company_name matches the printed consignee_name exactly.
+        evidence_fields: [bills_of_lading.bl_id, bills_of_lading.consignee_name, customers.company_name]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bills_of_lading.bl_id]
+          action_bindings: {bills_of_lading.bl_id: bl_id}
+      - id: collect_paid
+        applies_to: [bol_cargo_released]
+        kind: authorization
+        condition: Collect freight on the booking must be paid before release, so the booking's charges_due_usd must be 0.00 when freight_terms is collect.
+        evidence_fields: [bookings.booking_id, bookings.freight_terms, bookings.charges_due_usd]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bookings.booking_id]
+          action_bindings: {bookings.booking_id: booking_id}
+      - id: loi_after_discharge
+        applies_to: [bol_release_fee_charged]
+        kind: time
+        condition: Release against a letter of indemnity is allowed only from the tier's loi_release_earliest_days_after_discharge calendar days after the discharge of the cargo at the port of discharge.
+        evidence_fields: [dnd_free_time.booking_id, dnd_free_time.discharge_date]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [dnd_free_time.booking_id]
+          action_bindings: {dnd_free_time.booking_id: booking_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the discharge of the cargo at the port of discharge
+          anchor_source: dnd_free_time.discharge_date
+          relation: not_before
+          duration_source: variants.loi_release_earliest_days_after_discharge
+          unit: calendar_days
+          counting_rule: The earliest date is the container's discharge_date plus the tier's days counted on calendar dates, and release on that date is allowed.
+          boundary: inclusive
+      - id: release_once
+        applies_to: [bol_delivery_release_recorded]
+        kind: dedup
+        condition: A document is released only once.
+        evidence_fields: [bol_ledger.bl_id, bol_ledger.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bol_ledger.bl_id]
+          action_bindings: {bol_ledger.bl_id: bl_id}
+        dedup_contract:
+          table: bol_ledger
+          mode: separate_record
+          object_bindings: {bl_id: bl_id}
+          duplicate_filters: {event_type: [bol_delivery_release_recorded]}
+          distinct_fields: []
+    params:
+      per_tier:
+        AHL Sea Waybill: {standard_release_method: "=standard_release_method", originals_required_for_destination_release: "=originals_required_for_destination_release", endorsement_required_for_release: "=endorsement_required_for_release", loi_release_available: "=loi_release_available", loi_signatory: "=loi_signatory", loi_bank_guarantee_pct_of_cargo_value: "=loi_bank_guarantee_pct_of_cargo_value", loi_release_fee_usd: "=loi_release_fee_usd"}
+        AHL Electronic Bill of Lading: {standard_release_method: "=standard_release_method", originals_required_for_destination_release: "=originals_required_for_destination_release", endorsement_required_for_release: "=endorsement_required_for_release", loi_release_available: "=loi_release_available", loi_signatory: "=loi_signatory", loi_bank_guarantee_pct_of_cargo_value: "=loi_bank_guarantee_pct_of_cargo_value", loi_release_fee_usd: "=loi_release_fee_usd"}
+        AHL Straight Bill of Lading: {standard_release_method: "=standard_release_method", originals_required_for_destination_release: "=originals_required_for_destination_release", endorsement_required_for_release: "=endorsement_required_for_release", loi_release_available: "=loi_release_available", loi_signatory: "=loi_signatory", loi_bank_guarantee_pct_of_cargo_value: "=loi_bank_guarantee_pct_of_cargo_value", loi_release_fee_usd: "=loi_release_fee_usd"}
+        AHL Negotiable Bill of Lading: {standard_release_method: "=standard_release_method", originals_required_for_destination_release: "=originals_required_for_destination_release", endorsement_required_for_release: "=endorsement_required_for_release", loi_release_available: "=loi_release_available", loi_signatory: "=loi_signatory", loi_bank_guarantee_pct_of_cargo_value: "=loi_bank_guarantee_pct_of_cargo_value", loi_release_fee_usd: "=loi_release_fee_usd"}
+        AHL Combined Transport Bill of Lading: {standard_release_method: "=standard_release_method", originals_required_for_destination_release: "=originals_required_for_destination_release", endorsement_required_for_release: "=endorsement_required_for_release", loi_release_available: "=loi_release_available", loi_signatory: "=loi_signatory", loi_bank_guarantee_pct_of_cargo_value: "=loi_bank_guarantee_pct_of_cargo_value", loi_release_fee_usd: "=loi_release_fee_usd"}
+        AHL Switch Bill of Lading: {standard_release_method: "=standard_release_method", originals_required_for_destination_release: "=originals_required_for_destination_release", endorsement_required_for_release: "=endorsement_required_for_release", loi_release_available: "=loi_release_available", loi_signatory: "=loi_signatory", loi_bank_guarantee_pct_of_cargo_value: "=loi_bank_guarantee_pct_of_cargo_value", loi_release_fee_usd: "=loi_release_fee_usd"}
+    formula:
+      bank_guarantee_amount_usd: round(declared_cargo_value_usd * loi_bank_guarantee_pct_of_cargo_value / 100, 2)
+      loi_fee_amount: loi_release_fee_usd
+
+  - id: bol_lost_original_reissue
+    subject: [bol_set_replaced, bol_originals_voided, bol_reissue_fee_charged, bol_originals_issued]
+    rule: >-
+      When originals in circulation are lost, the documentation party may ask for a replacement set on a tier whose
+      lost_original_reissue_available is true. The request is registered and waits for the documentation party, who alone can sign the letter
+      of indemnity and deliver a bank guarantee of reissue_bank_guarantee_pct_of_cargo_value percent of the declared_cargo_value_usd, rounded
+      to the cent. A replacement set is issued only from the tier's reissue_waiting_days_after_loss_report calendar days after the loss of the
+      originals was reported. The earliest reissue date is the date part of the loss request's created_at plus the tier's waiting days
+      counted on calendar dates, and reissue on that date is allowed. A replacement set is issued only while the document is still issued,
+      never after surrender or release. On reissue, the originals still outstanding of the set in force are declared void, the replacement is
+      issued as bl_set_sequence plus 1 with originals_issued_count originals, and reissue_fee_usd is charged; the issuance fee is not charged
+      again. Originals found after reissue are void and release nothing.
+    eligibility:
+      - id: waiting_period
+        applies_to: [bol_set_replaced, bol_reissue_fee_charged]
+        kind: time
+        condition: A replacement set is issued only from the tier's reissue_waiting_days_after_loss_report calendar days after the loss of the originals was reported.
+        evidence_fields: [bol_service_requests.request_id, bol_service_requests.created_at]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bol_service_requests.request_id]
+          action_bindings: {bol_service_requests.request_id: request_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the loss of the originals was reported
+          anchor_source: bol_service_requests.created_at
+          relation: not_before
+          duration_source: variants.reissue_waiting_days_after_loss_report
+          unit: calendar_days
+          counting_rule: The earliest reissue date is the date part of the loss request's created_at plus the tier's waiting days counted on calendar dates, and reissue on that date is allowed.
+          boundary: inclusive
+      - id: reissue_while_issued
+        applies_to: [bol_reissue_fee_charged]
+        kind: state
+        condition: A replacement set is issued only while the document is still issued, never after surrender or release.
+        evidence_fields: [bills_of_lading.bl_id, bills_of_lading.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bills_of_lading.bl_id]
+          action_bindings: {bills_of_lading.bl_id: bl_id}
+        state_contract:
+          field: bills_of_lading.status
+          allowed: [issued]
+    formula:
+      bank_guarantee_amount_usd: round(declared_cargo_value_usd * reissue_bank_guarantee_pct_of_cargo_value / 100, 2)
+      reissue_amount: reissue_fee_usd
+
+  - id: bol_switch_bill
+    subject: [bol_draft_created, bol_voided, bol_switch_fee_charged]
+    rule: >-
+      A switch bill replaces a negotiable set with a new set naming different parties, typically so an intermediary can conceal its supplier.
+      A switch bill may be requested only for a document whose tier has switch_bill_available true, and only while bol_msr_switches_on_booking
+      for the booking is below the tier's max_switches_per_shipment. The requesting documentation party must hold a customer_role allowed by
+      the AHL Switch Bill of Lading tier. The first set is exchanged only after its full set of originals has been surrendered at the origin
+      office. The switch bill is drafted as a new AHL Switch Bill of Lading document for the same booking, with the new parties exactly as the
+      documentation party supplies them and the cargo particulars, ports and weights of the exchanged document unchanged; it is approved and
+      issued under bol_draft_and_approval and bol_issuance, and at its issuance the exchanged document is voided and charged
+      switch_bill_fee_usd. A switch fee is booked only on the exchanged document while it is surrendered. Each switch request is charged at
+      most once. A switch bill itself can never be switched again.
+    eligibility:
+      - id: exchanged_set_surrendered
+        applies_to: [bol_draft_created, bol_voided, bol_switch_fee_charged]
+        kind: authorization
+        condition: The first set is exchanged only after its full set of originals has been surrendered at the origin office.
+        evidence_fields: [bills_of_lading.bl_id, bills_of_lading.originals_outstanding, bills_of_lading.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bills_of_lading.bl_id]
+          action_bindings: {bills_of_lading.bl_id: bl_id}
+      - id: switch_fee_on_surrendered
+        applies_to: [bol_switch_fee_charged]
+        kind: state
+        condition: A switch fee is booked only on the exchanged document while it is surrendered.
+        evidence_fields: [bills_of_lading.bl_id, bills_of_lading.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bills_of_lading.bl_id]
+          action_bindings: {bills_of_lading.bl_id: bl_id}
+        state_contract:
+          field: bills_of_lading.status
+          allowed: [surrendered]
+      - id: switch_charged_once
+        applies_to: [bol_switch_fee_charged]
+        kind: dedup
+        condition: Each switch request is charged at most once.
+        evidence_fields: [bol_ledger.request_id, bol_ledger.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bol_ledger.request_id]
+          action_bindings: {bol_ledger.request_id: request_id}
+        dedup_contract:
+          table: bol_ledger
+          mode: separate_record
+          object_bindings: {request_id: request_id}
+          duplicate_filters: {event_type: [bol_switch_fee_charged]}
+          distinct_fields: []
+    measures: [bol_msr_switches_on_booking]
+    formula:
+      switch_amount: switch_bill_fee_usd
+
+  - id: bol_voiding_and_accomplishment
+    subject: [bol_voided, bol_accomplished]
+    rule: >-
+      A draft or approved document is voided when its booking is cancelled or the documentation party withdraws the shipping instructions,
+      and no fee is charged for a document that was never issued. A surrendered document is voided only when a switch bill replaces it under
+      bol_switch_bill. An issued document is never voided by the desk; lost originals are replaced within the same document under
+      bol_lost_original_reissue. A released document is accomplished by the system when delivery is completed, and nothing further may be
+      recorded against it except payments of fees already booked.
+    eligibility: []
+
+  - id: bol_fee_waiver
+    subject: [bol_fee_waived]
+    rule: >-
+      The desk may waive one documentation fee row as goodwill at the documentation party's request. Any fee row may be waived except the
+      bank-guarantee-backed release and reissue fees (loi_release_fee and reissue_fee), which are never waived. A waiver cancels the whole
+      referenced row and is written with its full amount. The fee row's amount_usd must not exceed the tier's goodwill_waiver_authority_usd.
+      The customer's documentation goodwill waivers in the trailing 365 days must be fewer than the tier's goodwill_waivers_per_365d. The
+      waiver must be requested no later than the tier's waiver_request_window_days calendar days after the fee being waived was booked. The
+      window ends on the fee's event_date plus the tier's window days counted on calendar dates, and a request on the last day is inside it.
+      Each fee row is waived at most once. A correction fee charged for the line's own keying error is not waived but reversed as a goodwill
+      waiver outside the quota only when the draft on file proves the error; the customer's statement alone never proves it.
+    eligibility:
+      - id: within_authority
+        applies_to: [bol_fee_waived]
+        kind: authorization
+        condition: The fee row's amount_usd must not exceed the tier's goodwill_waiver_authority_usd.
+        evidence_fields: [bol_ledger.bol_event_id, bol_ledger.amount_usd, bol_ledger.charge_code]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bol_ledger.bol_event_id]
+          action_bindings: {bol_ledger.bol_event_id: reference_event_id}
+      - id: within_quota
+        applies_to: [bol_fee_waived]
+        kind: authorization
+        condition: The customer's documentation goodwill waivers in the trailing 365 days must be fewer than the tier's goodwill_waivers_per_365d.
+        evidence_fields: [bol_ledger.customer_id, bol_ledger.event_type, bol_ledger.event_date]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bol_ledger.customer_id]
+          action_bindings: {bol_ledger.customer_id: customer_id}
+      - id: within_window
+        applies_to: [bol_fee_waived]
+        kind: time
+        condition: The waiver must be requested no later than the tier's waiver_request_window_days calendar days after the fee being waived was booked.
+        evidence_fields: [bol_ledger.bol_event_id, bol_ledger.event_date]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bol_ledger.bol_event_id]
+          action_bindings: {bol_ledger.bol_event_id: reference_event_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the fee being waived was booked
+          anchor_source: bol_ledger.event_date
+          relation: not_after
+          duration_source: variants.waiver_request_window_days
+          unit: calendar_days
+          counting_rule: The window ends on the fee's event_date plus the tier's window days counted on calendar dates, and a request on the last day is inside it.
+          boundary: inclusive
+      - id: waive_once
+        applies_to: [bol_fee_waived]
+        kind: dedup
+        condition: Each fee row is waived at most once.
+        evidence_fields: [bol_ledger.reference_event_id, bol_ledger.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bol_ledger.reference_event_id]
+          action_bindings: {bol_ledger.reference_event_id: reference_event_id}
+        dedup_contract:
+          table: bol_ledger
+          mode: separate_record
+          object_bindings: {reference_event_id: reference_event_id}
+          duplicate_filters: {event_type: [bol_fee_waived]}
+          distinct_fields: []
+    measures: [bol_msr_goodwill_waivers_365d]
+    formula:
+      when_not: amount_usd > goodwill_waiver_authority_usd or bol_msr_goodwill_waivers_365d >= goodwill_waivers_per_365d
+
+  - id: bol_payment
+    subject: [bol_payment_received]
+    rule: >-
+      A remittance is applied to one document's fees, written with the remittance reference exactly as quoted and the amount remitted; it may
+      not exceed the document's charges_due_usd, and any excess is returned by finance and not booked. A remittance reference is recorded only
+      once per document. Documentation fees are separate from the booking's freight: a payment made against the booking never settles
+      documentation fees, and the reverse.
+    eligibility:
+      - id: reference_once
+        applies_to: [bol_payment_received]
+        kind: dedup
+        condition: A remittance reference is recorded only once per document.
+        evidence_fields: [bol_ledger.bl_id, bol_ledger.payment_reference, bol_ledger.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bol_ledger.bl_id, bol_ledger.payment_reference]
+          action_bindings: {bol_ledger.bl_id: bl_id, bol_ledger.payment_reference: payment_reference}
+        dedup_contract:
+          table: bol_ledger
+          mode: separate_record
+          object_bindings: {bl_id: bl_id, payment_reference: payment_reference}
+          duplicate_filters: {event_type: [bol_payment_received]}
+          distinct_fields: []
+    formula:
+      applied_amount: min(amount_usd, documentation_charges)

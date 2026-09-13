@@ -1,0 +1,1666 @@
+{
+    "frozen_time": "2026-09-14 10:05:00 CEST",
+    "design_rationale": "WORKLOG task 0 (cargo_claims_desk, claims category, workflow task). Frozen 2026-09-14 10:05:00 CEST.\n\n[1 Why this is a good test] The caller asks for one thing: to have the thawed cartons in reefer container AHLU5412312 added to the claim running on the shipment and to know today whether the line pays for them (round 2 wording; she never asks to lodge). The scored writes are three policy-computed values plus two closures: (a) the settlement of a DIFFERENT, already-documented claim (container AHLU5412230) that the caller never mentions, 22704.00; (b) the notice amount the line puts on the new notice, 103200.00; (c) the controlled rejection reason of the new notice, notice_out_of_time. The agent must discover from the published rules that the loss cannot be added to an existing file and needs a notice of its own ('Each notice names one container and one loss; a loss found in another container of the same shipment is never added to a claim file already on the cover and needs a notice of its own.'), that a notice is decided only once registered, and from claims_ext_notice_container_value ('A further notice can be lodged on a cover only when no claim is open on it: a claim still open on the cover whose documents are complete is decided by the desk before the further notice is lodged.') that the cover's open claim blocks the request, decide that claim by settlement (reconciling claim files, the waybill's declared value, tier parameters and the 12-month approvals on the cover), close it, hand the lodging to the caller at the policy notice value, and then decide the registered notice on grounds that turn on dates, the tier and the reefer service of the claimed container. Difficulty comes from reading policy, querying the world and calculating; every tool is a plain CRUD write.\n\n[2 Scope snapshot] Occupied before this task: nothing (task 0). Claimed here: claims_ext_settlement_invoice_share (approve_claim_settlement_060ed8c3), claims_ext_notice_container_value (lodge_cargo_claim_268664bf, user), claims_ext_lodging_rejection_grounds (reject_cargo_claim_5f9631bd), workflow claims_wf_further_notice_on_open_cover, and close_cargo_claim_a3572c28 as the workflow's non-computing closure step. Left for task 1 (independent, load-bearing): the pre-departure side of the product - binding a quoted cover (claims_cover_bound), charging its premium (claims_premium_charged, contract-rank discount) and the cover holder's own premium remittance (claims_premium_paid) - none of which this task touches. The single workflow is claimed here, so task 1 is a non-workflow task.\n\n[3 Policies, lineage, triggers, overrides] claims_ext_settlement_invoice_share: subject claims_settlement_approved, base_policy_refs = claims_agg_annual_aggregate, claims_coverage_and_exclusions, claims_settlement_calculation (every base policy on that subject), trigger state_due (a documented open claim is owed a decision whoever calls). Overrides, declared in overwrite: (i) claims_settlement_calculation 'Under hague_visby_limitation the line pays the proven loss, the claimed_amount_usd once documents are complete' -> 'The proven loss is the claimed_amount_usd, but never more than the commercial invoice value of the affected packages' (new factor from the transport document, a base asset); (ii) claims_agg_annual_aggregate's holder-wide trailing-365-day aggregate -> the aggregate still available on the same cover over the last 12 whole calendar months; (iii, round 2) its headline 'CargoCare products carry an annual aggregate per cover holder.' -> 'The annual aggregate is kept per cover, not per cover holder, and settlements approved on the holder's other covers of the product do not reduce it.' Everything else of base (Hague-Visby limit, declared value share, uplift, single higher deductible, per-container cap, never negative, desk authority, liability_basis recording) is inherited and restated with the order pinned: uplift acts on the proven loss, the one deductible acts on the uplifted loss basis, the cap acts after the deductible, the aggregate acts last, only the final figure (plus the three named sub-figures) is rounded. claims_ext_notice_container_value: subject claims_claim_lodged, refs claims_notice_and_time_bar, trigger on_request, overwrite [] (base never fixes the amount on a notice). claims_ext_lodging_rejection_grounds: subject claims_claim_rejected, refs claims_coverage_and_exclusions, claims_notice_and_time_bar, trigger state_due, overwrite [] (base lists the reasons; this policy pins their precedence: below_minimum_claim, not_covered_by_tier, claim_time_barred, notice_out_of_time, before the excursion / misdeclaration / peril / documents reasons). Cross-category numeric reads: bol declared_cargo_value_usd and package_count (settlement, notice), booking container_count (notice), reefer variant_name -> rank (rejection); each is exercised by a seeded row of this customer.\n\n[4 Forward and reverse basis sweep] Every world-reading or choosing binding in each compute quotes its rule sentence in compute_basis (e.g. invoice_share <- 'divided by that document's package_count and multiplied by the affected_package_count, rounded to the cent; when that transport document carries no declared cargo value, the proven loss is the claimed_amount_usd'; approved_12m <- 'whose approval date lies fewer than 12 whole calendar months before the approval date' = within_months=12; within_bar <- the same-day / last-day-of-month sentence; within_window <- 'a notice dated on that last day is in time' = DAYS(...) <= window_days). Reverse: every load-bearing rule sentence is claimed - the Hague-Visby and declared-value branches (hv_limit, dv_share, pre_aggregate), the deductible choice (kind_deductible, deductible), the cap moment (cargocare_amount after the deductible), the aggregate (approved_12m, aggregate_left, result), the fallback notice value (container_value else-branch), the cap on a notice (capped_value), the four ground tests and their order (result). The liability_basis recording sentence governs the enum argument, not a compute binding.\n\n[5 Base-invariant card] Step approve (claims_settlement_approved): open_and_documented - cover ed9e8fb4-...status = claim_open and the AHLU5412230 file outcome = documents_complete (system records, pre-action); approved_once - no claims_ledger row carries claim 6d48f2e5-... (A1/A2 approvals and the R1 rejection belong to other files); reefer_rank_for_temperature - reefer service 3d111de7-... on booking e7dc7167-... container AHLU5412230 is AHL Reefer Monitored, rank 2 >= Total's 1; within_desk_authority - 22704.00 <= 50000.00; claims_agg_annual_aggregate has no gate (policy_scope). Step close: claims_settlement_payment has no gate on claims_claim_closed (policy_scope). Step lodge (claims_claim_lodged): claimant_entitled - the claimant is the cover holder Havbris Seafood Export AS (cargo_covers.customer_id = the caller), so the consignee-name test (printed consignee 'Lingang Polar Cold Chain Trading Co., Ltd.') is not needed; claim_cap - non-withdrawn files A1, A2, R1, AHLU5412230 = 4 < 5 (Total), and after steps 9/11 no claim is open. Step reject (claims_claim_rejected): notice_window time gate - anchor cargo_covers.delivery_date 2026-07-30, duration variants.notice_days_non_apparent_damage 30 calendar days, last in-time day 2026-08-29 inclusive; boundary cases: notice 2026-08-29 in time, 2026-08-30 late; the notice 2026-09-14 is late, which is the rejection ground itself; time_bar - 24 months, bar 2028-07-30 inclusive, 2028-07-31 barred; documents_deadline - notice 2026-09-14 + 120 days = 2027-01-12, a documents rejection possible only from 2027-01-13 (exclusive), not the reason used; reject_open_claim - cover claim_open after the lodging (prior step 13); decided_once - no ledger row for ccl_6c9158c0b2c9. The anchors and counting rules are the base temporal_basis copied verbatim into temporal_feasibility.\n\n[6 Business-object card] Target of the settlement: claim 6d48f2e5-604b-433b-8e70-9b61f12a0d74 (container AHLU5412230, 240 cartons, 4800.0 kg, temperature damage, notice 2026-08-14) - the only documents_complete file, correlated by claim_id and cover_id. Included in the aggregate: approvals 9da55da4-... (3784.00, 2026-08-11) and 0a365071-... (6622.00, 2026-08-20) on the same cover; excluded: the paid rows (they settle those approvals, reference_event_id), the premium rows, the R1 rejection (0.00). Target of the notice and rejection: container AHLU5412312 (reefer service 86939aa8-..., AHL Reefer Standard). The earlier withdrawn shortage file cc3e611f-... on the same container is excluded from the claim count and is not the decided notice (outcome withdrawn, earlier notice date).\n\n[7 Problem-tree card] Root: claims_ext_lodging_rejection_grounds (what happens to the claim the caller asks about). Edge 1 (value_input, gate notice_amount): root <- claims_ext_notice_container_value, condition 'The notice being decided is registered on the cover, carrying its amount, container, kind of loss, apparent-at-delivery flag and notice date.', policy_source 'A notice can be decided here only once it has been registered on the cover.', resolved_by lodge_cargo_claim_268664bf; false at frozen_time because no notice_registered file exists (outcomes approved, approved, rejected, withdrawn, documents_complete). Edge 2 (state_gate, gate claims_notice_and_time_bar.claim_cap): notice <- claims_ext_settlement_invoice_share, policy_source 'A further notice can be lodged on a cover only when no claim is open on it: a claim still open on the cover whose documents are complete is decided by the desk before the further notice is lodged.', resolved_by approve_claim_settlement_060ed8c3; false at frozen_time because cargo_covers.status = claim_open and the AHLU5412230 file is documents_complete. Topological order: settlement -> (closure) -> notice -> rejection -> (closure); a chain, so no parallel ambiguity. Deletion sensitivity (verify.py output): skip step 13 -> the rejection recomputes below_minimum_claim instead of notice_out_of_time and claim file ccl_6c9158c0b2c9 is missing; skip step 9 -> notice and reason unchanged but the approval row, the approved outcome and settlement_payable 22704.00 are missing (terminal hash differs). user_scenario never asks to lodge and never names the AHLU5412230 claim's documents, a settlement, the notice amount or any ground (since round 3 it no longer states any assumption about a running claim); tools check no prerequisite (lodge writes over any cover status, reject/approve/close read no status).\n\n[8 World rows and why each exists] customers (1): the caller's profile, credentials +4755527390 / AHL-NO-541208, credit_approved (no premium blocker). bookings (1): AHLU26BGO527604, 4 x 40RH, closed, departed 2026-06-22; container_count 4 is the notice divisor - remove it and the notice falls back to 454080.00/4 = 113520.00. bills_of_lading (1): waybill AHLU2605518342, declared value 412800.00, 4800 cartons, released 2026-07-30; it caps the proven loss at 20640.00 (remove it and the settlement becomes 103200.00 x 1.10 = 113520.00) and fixes the notice at 103200.00. reefer_services (4): one per container; the AHLU5412312 service is AHL Reefer Standard (rank 1) - it keeps temperature damage covered under Total (min rank 1) while being the trap that a reader applying a higher tier's threshold would reject as not_covered_by_tier; without the row the rank is 0 and the reason would flip to not_covered_by_tier. cargo_covers (1): AHL CargoCare Total, claim_open, delivery 2026-07-30, premium clear, settlement_payable 0.00 consistent with the ledger. cargo_claims (5): A1/A2 approved (history the settlement rule reproduces: 40 and 70 cartons x 86.00 x 1.10 = 3784.00 and 6622.00), R1 rejected (excluded peril), W1 withdrawn (excluded from the cap), and the open documents_complete AHLU5412230 file; all carry the notice amount 103200.00 the notice policy fixes, so history teaches the charter. claims_ledger (7): premium charged/paid 1748.21 (454080.00 x 0.35% x 1.10), two approvals and their payments (the 12-month aggregate 10406.00), the R1 rejection. No automatic clause fires: the cover cannot expire while a claim is open; the time bar is 2028-07-30. No stale cache is used (settlement_payable and premium_due equal the ledger).\n\n[9 Persona design] (round 2) Ingrid Solheim-Aas: short, exact, tired; volunteers only the goal in a layperson's terms - the thawed cartons in container AHLU5412312 'added to your claim on this shipment' and an answer today on whether the line pays -. She never asks to lodge a notice. On request: phone, then customer code, then tax number or email; 36 cartons, 720 kilograms, thawed and refrozen, nothing seen at delivery on 30 July; she cannot state a notice value and defers to the line's rule. Passive reactions, each firing only after the agent says so: if told the loss needs a notice of its own, she wants it put in today in any case and submits it herself when handed the tool; if told something else on the shipment must be decided or closed first, she says go ahead; she notes an approval amount without dispute; on a rejection she asks once for the reason, accepts, ends; if told it waits for documents, she will send them and ends. Her last reaction answers the last gold action and asks for nothing more. She never states policy, amounts, grounds or ordering.\n\n[10 Zero-wait causal card] Step 0 approve: cover claim_open, file documents_complete, figures, waybill value (all initial_state_preexisting). Step 1 close: decision = approval row of step 0 (prior_synchronous_tool_effect). Step 2 lodge (owner user, genuinely the claimant's act): cover claim_closed from step 1 (prior_synchronous_tool_effect) + the caller's container, cartons, weight, kind, not-apparent flag (current_user_input). Step 3 reject: registered notice from step 2 (prior_synchronous_tool_effect), delivery date (initial_state_preexisting), frozen_time; the ground is date arithmetic, so no document or survey is awaited. Step 4 close: decision = rejection row of step 3. No survey, payment, document or passage of time is a precondition anywhere; the survey of the AHLU5412230 claim was recorded before the call (documents_complete).\n\n[11 Where a careless agent goes wrong] Lodging over the open claim without deciding it (edge 2); settling at the claimed 103200.00 x 1.10 = 113520.00 instead of capping at the waybill invoice value 20640.00; applying a deductible (Total has none) or the Plus/Premium temperature deductibles; forgetting the 10% uplift (20640.00); using the insured value share (identical 22704.00 here only because insured = CIF x 1.1, but that is the declared_value branch and not the basis); recording liability_basis cover_limit; putting the caller's cartons x 86.00 = 3096.00 on the notice instead of the container value 103200.00; rejecting the notice as not_covered_by_tier by reading the reefer Standard tier against Plus's rank 2; counting 30 days from the notice rather than from delivery; leaving the new notice open for documents although the date ground already applies; skipping either closure.\n\n[12 Standard solution] find_customers(+4755527390) -> verify_customer_identity(phone, customer code) -> find_bookings(AHLU26BGO527604) -> find_cargo_covers(booking) -> find_cargo_claims(cover) -> find_claims_ledger(cover) -> find_bills_of_lading(booking) -> find_reefer_services(booking) -> approve_claim_settlement_060ed8c3(cover, claim 6d48f2e5-..., booking, AHLU5412230, 22704.00, proven_loss) -> close_cargo_claim_a3572c28(cover) -> [caller] lodge_cargo_claim_268664bf(cover, customer, AHLU5412312, temperature_damage, false, 103200.00, 36, 720.0) -> reject_cargo_claim_5f9631bd(cover, ccl_6c9158c0b2c9, notice_out_of_time) -> close_cargo_claim_a3572c28(cover). Workflow closure: steps (tool, owner) = approve/agent, close/agent, lodge/user, reject/agent, close/agent; set(computed_by) = set(computations.policy_id) = set(charter_scope.extended_policies) = the three policies; required_documents in the same order.\n\n[13 Verification actually executed] Script verify.py 0 (verify.py was a temporary authoring script, removed after use; the same handling-time recompute and value_input skip test are re-runnable with: .venv/bin/python skills/erl-task-instantiate/scripts/check_compute.py env/global_container_shipping_line/tasks/cargo_claims_desk --task N) (replays gold with the real share and task tools, evaluates each compute with check_compute.build_env/eval_compute on the handling-time world, then skips each edge's resolving write): 'RECOMPUTE claims_ext_settlement_invoice_share step 9 -> 22704.0 | expected 22704.0 | touched 7'; 'RECOMPUTE claims_ext_notice_container_value step 13 -> 103200.0 | expected 103200.0'; 'RECOMPUTE claims_ext_lodging_rejection_grounds step 15 -> notice_out_of_time | touched 6'; 'SKIP ...rejection_grounds <- ...notice_container_value skipped [13] | rejection -> below_minimum_claim | terminal hash differs: True'; 'SKIP ...notice_container_value <- ...settlement_invoice_share skipped [9] | notice 103200.0, rejection notice_out_of_time | terminal hash differs: True'. Gate commands run (all green): check_extended --task 0 (EXTENDED OK), check_task_tools --task 0 (TASK TOOL CONTRACT OK), replay_tasks --task 0 (REPLAY OK, closure 20 = init 20), check_solvability --task 0 (SOLVABILITY OK, 15 base gates), check_compute --task 0 (COMPUTE OK: 3 comps, 39 factors, 13 history rows, 35 branches), check_grounding --task 0 (GROUNDING OK), check_cross_fire --task 0 (SCOPE OK), check_cache_diff (info only).\n\n[14 Solvability vs GT, and a visible-context draft recompute] Each call's base_preconditions cite pre-action rows correlated by cover_id / claim_id / booking_id+container_number, or the producing prior step (dataflow 2->3 state_effect on cargo_covers.status establishes reject_open_claim). Draft recompute from what a rollout sees (policy prose, tool schemas, finder returns, the caller's lines), with compute/expected masked: the lodge rule says an open documented claim is decided first -> the AHLU5412230 file has no ground (covered temperature damage, rank 2, notice day 15 of 30, within authority) -> approve: proven = min(103200.00, 412800/4800 x 240 = 20640.00) = 20640.00, x1.10 = 22704.00, no deductible, cap and aggregate far away, basis proven_loss -> close -> caller lodges at 412800/4 = 103200.00 -> grounds in order: 103200 >= 50; temperature covered, Standard rank 1 >= 1; 1 month < 24; 46 days > 30 -> notice_out_of_time -> close. Same objects, order and values as gold; no second reading found.\n\n[15 Manual values gates] Long: request -> notice rule -> open-claim gate -> settlement (invoice share, uplift, deductible, cap, aggregate) -> lodging -> ground order -> closure. Broad: tier parameters, 12-month ledger, waybill, booking, reefer tier, dates. Owner=user step is the claimant's own notice. Request boundary: an answer today on the container AHLU5412312 loss, agent may act on the account, the claimant submits any notice herself. Chronology: every volunteered fact (booking, container, 13 September discovery, 30 July delivery) is in initial_state; nothing she says foresees a write. Authority: documents_complete, approvals and statuses come from records only. Revision log: (r1) claims_ledger/booking empty FKs '' -> null and the unread reefer_ledger rows dropped (replay closure); (r2) the helper _money in task_tools.py was counted as a tool -> inlined; (r3) solvability required every gate's action binding as a tool argument -> approve tool gained booking_id and container_number (reefer_rank_for_temperature correlation), gold, tracing and docstring updated and all gates re-run; (r4) workflow scenario narrowed to notices that fail a registration-time ground.\n\n[Round 2 rework - audit policy_task/cargo_claims_desk] F-T0-1 (SOURCE-CHAIN RED): the persona no longer names the lodging. She asks for the loss to be 'added to your claim on this shipment' and for an answer today; the need for a separate notice now comes from the new E2 sentence 'Each notice names one container and one loss; a loss found in another container of the same shipment is never added to a claim file already on the cover and needs a notice of its own.', and the root decision's dependence on a registered notice from E3 'A notice can be decided here only once it has been registered on the cover.' Both prerequisites (E2 value_input, E1 state_gate) are therefore conveyed by policy text; request_alignment, gold_actions[13] intent/discriminator, required_user_inputs and no_user_hint rewritten; lodge necessity updated; the workflow scenario now reads 'A claimant reports a further loss ... needs a notice of its own'. O-T0-2: 'even if it turns out to be small or late' removed. F-2: E2 now registers a notice only when the lodging conditions of claims_notice_and_time_bar hold (claimant admitted, below max_claims_per_cover, no claim open) and states that a claim still awaiting documents keeps the cover closed to further notices; in this world all hold for the fifth claim (4 non-withdrawn < 5). F-3: overwrite now also names 'CargoCare products carry an annual aggregate per cover holder.' and the rule says the aggregate is kept per cover; the holder has one cover here. F-6: E3's zero-day apparent branch is now the delivery-receipt notation (never notice_out_of_time), compute within_window gained that branch; this notice is not apparent, so nothing moves. O-1: E1/E2/E3 read the waybill, booking and reefer service 'recorded for the cover holder' and E2 names the fallback when the booking count is missing (O-14). O-4: 'of which a cover carries at most one'. O-7: approve tool enum gloss for proven_loss now matches E1. O-11/O-T0-5: E2 says the notice amount 'is not the proven loss, which is fixed only when the claim is settled'; the schema gloss itself is frozen blueprint. O-2/O-3: unchanged (Total deductibles are 0.00; delay loss is scoped out by the rule) - retained as observations. O-9: kept (resolved_by must be the depended-on problem's own action; the close is the W step 1 lifecycle transition). O-12/O-T0-3: a lodge -> reject claim_id dataflow cannot be declared because check_extended requires source_table to equal the producer step's base event target (cargo_covers for claims_claim_lodged); the claim_id reaches the reject through the lodge receipt (shared runtime output), and the cover-status state effect 2 -> 3 is declared. O-T0-4: the first close stays - base 'A decided claim closes the open claim on the cover' and the lifecycle lodging edge claim_closed -> claim_open require it; it is scored through the action order. Re-run after the rework: verify (private scratch script) RECOMPUTE 22704.0 / 103200.0 / notice_out_of_time unchanged; SKIP lodge -> below_minimum_claim; SKIP approve -> terminal differs; full gate block green.\n\n[Round 3 rework - audit revision_2] R2-O-T0-1: removed the persona sentence 'You assume the shipment already has a claim running with the line's claims people and that this can simply go with it.'; the request line 'added to your claim on this shipment' is kept because it is the caller's layperson framing of the goal and the request evidence. R2-O1: the approve tool's aggregate_limit gloss now reads 'the annual aggregate still available on the cover reduced the amount', matching E1's per-cover aggregate. O-2, O-3, O-9, O-12/O-T0-3, O-13, O-T0-4 kept as recorded in round 2. Values unchanged (22704.00, 103200.00, notice_out_of_time).\n\n[Round 4 rework - traceability] check_traceability flagged the rejection's claim_id ccl_6c9158c0b2c9: it is minted by the claimant's own (owner=user) lodging call, and a user-owned tool's return reaches the agent only when the simulator relays it. The base eligibility of claims_claim_rejected binds claim_id as an action argument (documents_deadline, decided_once), so the id cannot be removed from the rejection call, and no policy value moved into a tool. Fix at the source: the persona now states that she knows no claim reference before submitting, and that once submitted, her confirmation shows ccl_6c9158c0b2c9, which she reads out straight away, exactly as shown. The value is the lodge tool's deterministic return for exactly the gold arguments (cover, customer, AHLU5412312, temperature_damage, false, 103200.00, 36, 720.0). The step-15 tracing and required_user_inputs now cite that line. Persona, tree and values are otherwise unchanged; no prerequisite is named (the line fires only after the lodging the agent itself hands over).",
+    "user_scenario": "You are Ingrid Solheim-Aas, who coordinates logistics and cargo claims for Havbris Seafood Export AS in Bergen. You are calm, exact and a little tired; you speak in short, complete sentences and you do not like repeating yourself. You are calling Aurelia Hanse Line about the reefer shipment of frozen mackerel that went to your buyer in Shanghai on booking AHLU26BGO527604. You open by saying that your buyer's cold store opened the last pallets of container AHLU5412312 yesterday, on 13 September, and found cartons that had thawed and refrozen, that you would like the thawed cartons in container AHLU5412312 added to your claim on this shipment, and that you want to know today whether the line will pay for them. You are happy for the agent to look up and handle whatever is needed on your account. You do not give your identity details all at once. When the agent asks who is calling or how to find your account, you give your registered phone number, +4755527390. When asked for a second detail you give your customer code, AHL-NO-541208, and only if a further detail is needed you give your tax registration number, NO915305512, or your email, ingrid.solheim@havbris-seafood.no. When the agent asks about the damage, you explain that 36 cartons were affected, 720 kilograms in all, and that it is temperature damage: the fish had thawed and refrozen. Nobody saw anything wrong when the cargo was delivered on 30 July; the affected cartons were at the back of the stow and were only found when the buyer reached them. If the agent explains that this loss cannot go onto an existing claim and needs a notice of its own from you, you say you want that notice put in today in any case, so that the line's answer is on record, and when the agent sets it up and hands it over you submit it yourself with the details the agent reads back to you. You do not know any claim reference before you have submitted that notice; once you have submitted it, the confirmation you see gives the claim reference ccl_6c9158c0b2c9, and you read that reference out to the agent straight away, exactly as shown. You do not know the value of one container of the shipment by heart; if the agent asks what amount to put on the notice you say you will go with whatever figure the line's rules put on a notice. If the agent tells you that something else on the shipment has to be decided or closed first, you say you had thought the line's claims people were still working on that and that the agent should go ahead. If the agent tells you an amount approved on another claim, you note it and do not argue with it. If the agent tells you the line will not pay for the thawed cartons, or that the notice has been rejected, you ask once, briefly, for the reason; when you hear it you accept it with some disappointment, say you will let your buyer know, thank the agent and end the call. If the agent tells you the notice is registered and simply waiting for documents, you say you will send the survey and invoice and end the call. You never tell the agent how a claim should be calculated or decided.",
+    "initial_state": {
+        "customers": {
+            "3c1abb85-e4cb-490b-95cb-53c40fe37687": {
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "company_name": "Havbris Seafood Export AS",
+                "contact_name": "Ingrid Solheim-Aas",
+                "phone_number": "+4755527390",
+                "email": "ingrid.solheim@havbris-seafood.no",
+                "customer_code": "AHL-NO-541208",
+                "tax_registration_number": "NO915305512",
+                "profile_opened_date": "2019-03-11",
+                "customer_role": "beneficial_cargo_owner",
+                "country_code": "NO",
+                "credit_status": "credit_approved",
+                "credit_days": 30,
+                "ebl_platform_enrolled": false
+            }
+        },
+        "bookings": {
+            "e7dc7167-8b89-4e65-b861-d9164194383b": {
+                "booking_id": "e7dc7167-8b89-4e65-b861-d9164194383b",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "variant_name": "AHL Spot Flex",
+                "status": "closed",
+                "booking_number": "AHLU26BGO527604",
+                "contract_id": null,
+                "trade_lane": "asia_north_europe",
+                "pol_code": "NOBGO",
+                "pod_code": "CNSHA",
+                "vessel_voyage": "AHL NORDKAPP 626E",
+                "equipment_type": "40RH",
+                "container_count": 4,
+                "cargo_type": "reefer",
+                "freight_terms": "prepaid",
+                "channel": "online_portal",
+                "requested_date": "2026-05-28",
+                "confirmed_date": "2026-05-29",
+                "etd_date": "2026-06-22",
+                "cargo_cutoff": "2026-06-20T18:00",
+                "si_cutoff": "2026-06-19T12:00",
+                "vgm_cutoff": "2026-06-20T12:00",
+                "si_submitted_at": "2026-06-11T09:40",
+                "vgm_submitted_at": "2026-06-19T15:10",
+                "cancelled_date": "",
+                "departed_date": "2026-06-22",
+                "charges_due_usd": 0.0
+            }
+        },
+        "bills_of_lading": {
+            "441da2dd-ca8d-4d5f-b77b-e7d0d7f06742": {
+                "bl_id": "441da2dd-ca8d-4d5f-b77b-e7d0d7f06742",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "variant_name": "AHL Sea Waybill",
+                "status": "released",
+                "bl_number": "AHLU2605518342",
+                "booking_id": "e7dc7167-8b89-4e65-b861-d9164194383b",
+                "shipper_name": "Havbris Seafood Export AS",
+                "consignee_name": "Lingang Polar Cold Chain Trading Co., Ltd.",
+                "notify_party_name": "Lingang Polar Cold Chain Trading Co., Ltd.",
+                "cargo_description": "4800 CARTONS FROZEN ATLANTIC MACKEREL WHOLE ROUND, CARRIED AT -18.0 C",
+                "package_count": 4800,
+                "gross_weight_kg": 96000.0,
+                "declared_cargo_value_usd": 412800.0,
+                "port_of_loading": "NOBGO",
+                "port_of_discharge": "CNSHA",
+                "place_of_delivery": "CNSHA",
+                "draft_created_date": "2026-06-12",
+                "issued_date": "2026-06-23",
+                "released_date": "2026-07-30",
+                "bl_set_sequence": 1,
+                "originals_outstanding": 0,
+                "charges_due_usd": 0.0
+            }
+        },
+        "reefer_services": {
+            "b5f64a3b-859f-4bd0-8fb8-c8c8fffbb88e": {
+                "reefer_id": "b5f64a3b-859f-4bd0-8fb8-c8c8fffbb88e",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "variant_name": "AHL Reefer Monitored",
+                "status": "closed",
+                "booking_id": "e7dc7167-8b89-4e65-b861-d9164194383b",
+                "container_number": "AHLU5412077",
+                "commodity": "frozen Atlantic mackerel",
+                "setpoint_celsius": -18.0,
+                "ventilation_cbm_h": 0,
+                "humidity_pct": 0,
+                "atmosphere_o2_pct": 21.0,
+                "atmosphere_co2_pct": 0.0,
+                "requested_date": "2026-05-29",
+                "plugged_in_date": "2026-06-19",
+                "delivered_date": "2026-07-30",
+                "charges_due_usd": 0.0
+            },
+            "0400d97d-af42-40cf-a8e6-4c7d03a59c3c": {
+                "reefer_id": "0400d97d-af42-40cf-a8e6-4c7d03a59c3c",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "variant_name": "AHL Reefer Monitored",
+                "status": "closed",
+                "booking_id": "e7dc7167-8b89-4e65-b861-d9164194383b",
+                "container_number": "AHLU5412159",
+                "commodity": "frozen Atlantic mackerel",
+                "setpoint_celsius": -18.0,
+                "ventilation_cbm_h": 0,
+                "humidity_pct": 0,
+                "atmosphere_o2_pct": 21.0,
+                "atmosphere_co2_pct": 0.0,
+                "requested_date": "2026-05-29",
+                "plugged_in_date": "2026-06-19",
+                "delivered_date": "2026-07-30",
+                "charges_due_usd": 0.0
+            },
+            "3d111de7-4a99-4410-b0a5-90f48166132b": {
+                "reefer_id": "3d111de7-4a99-4410-b0a5-90f48166132b",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "variant_name": "AHL Reefer Monitored",
+                "status": "closed",
+                "booking_id": "e7dc7167-8b89-4e65-b861-d9164194383b",
+                "container_number": "AHLU5412230",
+                "commodity": "frozen Atlantic mackerel",
+                "setpoint_celsius": -18.0,
+                "ventilation_cbm_h": 0,
+                "humidity_pct": 0,
+                "atmosphere_o2_pct": 21.0,
+                "atmosphere_co2_pct": 0.0,
+                "requested_date": "2026-05-29",
+                "plugged_in_date": "2026-06-19",
+                "delivered_date": "2026-07-30",
+                "charges_due_usd": 0.0
+            },
+            "86939aa8-16cd-4e89-bd73-d62a6d4261df": {
+                "reefer_id": "86939aa8-16cd-4e89-bd73-d62a6d4261df",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "variant_name": "AHL Reefer Standard",
+                "status": "closed",
+                "booking_id": "e7dc7167-8b89-4e65-b861-d9164194383b",
+                "container_number": "AHLU5412312",
+                "commodity": "frozen Atlantic mackerel",
+                "setpoint_celsius": -18.0,
+                "ventilation_cbm_h": 0,
+                "humidity_pct": 0,
+                "atmosphere_o2_pct": 21.0,
+                "atmosphere_co2_pct": 0.0,
+                "requested_date": "2026-05-29",
+                "plugged_in_date": "2026-06-19",
+                "delivered_date": "2026-07-30",
+                "charges_due_usd": 0.0
+            }
+        },
+        "cargo_covers": {
+            "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a": {
+                "cover_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "variant_name": "AHL CargoCare Total",
+                "status": "claim_open",
+                "bl_id": "441da2dd-ca8d-4d5f-b77b-e7d0d7f06742",
+                "booking_id": "e7dc7167-8b89-4e65-b861-d9164194383b",
+                "cargo_type": "reefer",
+                "insured_value_usd": 454080.0,
+                "package_count": 4800,
+                "gross_weight_kg": 96000.0,
+                "container_count": 4,
+                "bound_date": "2026-06-15",
+                "delivery_date": "2026-07-30",
+                "premium_due_usd": 0.0,
+                "settlement_payable_usd": 0.0
+            }
+        },
+        "claims_ledger": {
+            "e3e85ab5-f0c6-4edc-a635-98c954d7d0f0": {
+                "claims_event_id": "e3e85ab5-f0c6-4edc-a635-98c954d7d0f0",
+                "cover_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "event_type": "claims_premium_charged",
+                "event_date": "2026-06-15",
+                "amount_usd": 1748.21,
+                "claim_id": null,
+                "liability_basis": "not_applicable",
+                "rejection_reason": "not_applicable",
+                "payment_reference": "",
+                "reference_event_id": null
+            },
+            "96dd91ce-f476-4dce-adfe-d01130b196de": {
+                "claims_event_id": "96dd91ce-f476-4dce-adfe-d01130b196de",
+                "cover_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "event_type": "claims_premium_paid",
+                "event_date": "2026-07-10",
+                "amount_usd": 1748.21,
+                "claim_id": null,
+                "liability_basis": "not_applicable",
+                "rejection_reason": "not_applicable",
+                "payment_reference": "HSE-PREM-561730",
+                "reference_event_id": "e3e85ab5-f0c6-4edc-a635-98c954d7d0f0"
+            },
+            "9da55da4-f1f0-4e88-a0a9-971a5582dab6": {
+                "claims_event_id": "9da55da4-f1f0-4e88-a0a9-971a5582dab6",
+                "cover_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "event_type": "claims_settlement_approved",
+                "event_date": "2026-08-11",
+                "amount_usd": 3784.0,
+                "claim_id": "a7683976-170a-4404-a0be-68e78377edaf",
+                "liability_basis": "proven_loss",
+                "rejection_reason": "not_applicable",
+                "payment_reference": "",
+                "reference_event_id": null
+            },
+            "d099b0e5-d515-4b7f-aeb8-dc96327141a1": {
+                "claims_event_id": "d099b0e5-d515-4b7f-aeb8-dc96327141a1",
+                "cover_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "event_type": "claims_settlement_paid",
+                "event_date": "2026-08-17",
+                "amount_usd": 3784.0,
+                "claim_id": "a7683976-170a-4404-a0be-68e78377edaf",
+                "liability_basis": "not_applicable",
+                "rejection_reason": "not_applicable",
+                "payment_reference": "",
+                "reference_event_id": "9da55da4-f1f0-4e88-a0a9-971a5582dab6"
+            },
+            "0a365071-ba7c-478b-9617-2580ed25a248": {
+                "claims_event_id": "0a365071-ba7c-478b-9617-2580ed25a248",
+                "cover_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "event_type": "claims_settlement_approved",
+                "event_date": "2026-08-20",
+                "amount_usd": 6622.0,
+                "claim_id": "1ac4119f-db6e-4367-a54d-c5e978c0a856",
+                "liability_basis": "proven_loss",
+                "rejection_reason": "not_applicable",
+                "payment_reference": "",
+                "reference_event_id": null
+            },
+            "ce9c3587-b9cf-4eec-928b-66ddc233fb4a": {
+                "claims_event_id": "ce9c3587-b9cf-4eec-928b-66ddc233fb4a",
+                "cover_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "event_type": "claims_settlement_paid",
+                "event_date": "2026-08-26",
+                "amount_usd": 6622.0,
+                "claim_id": "1ac4119f-db6e-4367-a54d-c5e978c0a856",
+                "liability_basis": "not_applicable",
+                "rejection_reason": "not_applicable",
+                "payment_reference": "",
+                "reference_event_id": "0a365071-ba7c-478b-9617-2580ed25a248"
+            },
+            "ad51833f-50d0-4d27-9fde-3d732a47541c": {
+                "claims_event_id": "ad51833f-50d0-4d27-9fde-3d732a47541c",
+                "cover_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "event_type": "claims_claim_rejected",
+                "event_date": "2026-08-28",
+                "amount_usd": 0.0,
+                "claim_id": "cb525968-f3a7-4fa6-979d-51f39117413d",
+                "liability_basis": "not_applicable",
+                "rejection_reason": "excluded_peril",
+                "payment_reference": "",
+                "reference_event_id": null
+            }
+        },
+        "cargo_claims": {
+            "a7683976-170a-4404-a0be-68e78377edaf": {
+                "claim_id": "a7683976-170a-4404-a0be-68e78377edaf",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "cover_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a",
+                "container_number": "AHLU5412077",
+                "damage_type": "physical_damage",
+                "damage_apparent_at_delivery": true,
+                "notice_date": "2026-07-30",
+                "claimed_amount_usd": 103200.0,
+                "affected_package_count": 40,
+                "affected_weight_kg": 800.0,
+                "outcome": "approved",
+                "created_at": "2026-07-30 16:12:00 CEST"
+            },
+            "1ac4119f-db6e-4367-a54d-c5e978c0a856": {
+                "claim_id": "1ac4119f-db6e-4367-a54d-c5e978c0a856",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "cover_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a",
+                "container_number": "AHLU5412159",
+                "damage_type": "temperature_damage",
+                "damage_apparent_at_delivery": false,
+                "notice_date": "2026-08-04",
+                "claimed_amount_usd": 103200.0,
+                "affected_package_count": 70,
+                "affected_weight_kg": 1400.0,
+                "outcome": "approved",
+                "created_at": "2026-08-04 09:31:00 CEST"
+            },
+            "cb525968-f3a7-4fa6-979d-51f39117413d": {
+                "claim_id": "cb525968-f3a7-4fa6-979d-51f39117413d",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "cover_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a",
+                "container_number": "AHLU5412077",
+                "damage_type": "physical_damage",
+                "damage_apparent_at_delivery": false,
+                "notice_date": "2026-08-07",
+                "claimed_amount_usd": 103200.0,
+                "affected_package_count": 12,
+                "affected_weight_kg": 240.0,
+                "outcome": "rejected",
+                "created_at": "2026-08-07 14:05:00 CEST"
+            },
+            "cc3e611f-9d97-4bd7-8827-2902fcdcc0cc": {
+                "claim_id": "cc3e611f-9d97-4bd7-8827-2902fcdcc0cc",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "cover_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a",
+                "container_number": "AHLU5412312",
+                "damage_type": "shortage",
+                "damage_apparent_at_delivery": false,
+                "notice_date": "2026-08-09",
+                "claimed_amount_usd": 103200.0,
+                "affected_package_count": 18,
+                "affected_weight_kg": 360.0,
+                "outcome": "withdrawn",
+                "created_at": "2026-08-09 11:47:00 CEST"
+            },
+            "6d48f2e5-604b-433b-8e70-9b61f12a0d74": {
+                "claim_id": "6d48f2e5-604b-433b-8e70-9b61f12a0d74",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "cover_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a",
+                "container_number": "AHLU5412230",
+                "damage_type": "temperature_damage",
+                "damage_apparent_at_delivery": false,
+                "notice_date": "2026-08-14",
+                "claimed_amount_usd": 103200.0,
+                "affected_package_count": 240,
+                "affected_weight_kg": 4800.0,
+                "outcome": "documents_complete",
+                "created_at": "2026-08-14 08:58:00 CEST"
+            }
+        }
+    },
+    "db_closure": {
+        "claims_ledger": {
+            "e3e85ab5-f0c6-4edc-a635-98c954d7d0f0": {
+                "claims_event_id": "e3e85ab5-f0c6-4edc-a635-98c954d7d0f0",
+                "cover_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "event_type": "claims_premium_charged",
+                "event_date": "2026-06-15",
+                "amount_usd": 1748.21,
+                "claim_id": null,
+                "liability_basis": "not_applicable",
+                "rejection_reason": "not_applicable",
+                "payment_reference": "",
+                "reference_event_id": null
+            },
+            "0a365071-ba7c-478b-9617-2580ed25a248": {
+                "claims_event_id": "0a365071-ba7c-478b-9617-2580ed25a248",
+                "cover_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "event_type": "claims_settlement_approved",
+                "event_date": "2026-08-20",
+                "amount_usd": 6622.0,
+                "claim_id": "1ac4119f-db6e-4367-a54d-c5e978c0a856",
+                "liability_basis": "proven_loss",
+                "rejection_reason": "not_applicable",
+                "payment_reference": "",
+                "reference_event_id": null
+            },
+            "9da55da4-f1f0-4e88-a0a9-971a5582dab6": {
+                "claims_event_id": "9da55da4-f1f0-4e88-a0a9-971a5582dab6",
+                "cover_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "event_type": "claims_settlement_approved",
+                "event_date": "2026-08-11",
+                "amount_usd": 3784.0,
+                "claim_id": "a7683976-170a-4404-a0be-68e78377edaf",
+                "liability_basis": "proven_loss",
+                "rejection_reason": "not_applicable",
+                "payment_reference": "",
+                "reference_event_id": null
+            },
+            "ad51833f-50d0-4d27-9fde-3d732a47541c": {
+                "claims_event_id": "ad51833f-50d0-4d27-9fde-3d732a47541c",
+                "cover_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "event_type": "claims_claim_rejected",
+                "event_date": "2026-08-28",
+                "amount_usd": 0.0,
+                "claim_id": "cb525968-f3a7-4fa6-979d-51f39117413d",
+                "liability_basis": "not_applicable",
+                "rejection_reason": "excluded_peril",
+                "payment_reference": "",
+                "reference_event_id": null
+            },
+            "96dd91ce-f476-4dce-adfe-d01130b196de": {
+                "claims_event_id": "96dd91ce-f476-4dce-adfe-d01130b196de",
+                "cover_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "event_type": "claims_premium_paid",
+                "event_date": "2026-07-10",
+                "amount_usd": 1748.21,
+                "claim_id": null,
+                "liability_basis": "not_applicable",
+                "rejection_reason": "not_applicable",
+                "payment_reference": "HSE-PREM-561730",
+                "reference_event_id": "e3e85ab5-f0c6-4edc-a635-98c954d7d0f0"
+            },
+            "ce9c3587-b9cf-4eec-928b-66ddc233fb4a": {
+                "claims_event_id": "ce9c3587-b9cf-4eec-928b-66ddc233fb4a",
+                "cover_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "event_type": "claims_settlement_paid",
+                "event_date": "2026-08-26",
+                "amount_usd": 6622.0,
+                "claim_id": "1ac4119f-db6e-4367-a54d-c5e978c0a856",
+                "liability_basis": "not_applicable",
+                "rejection_reason": "not_applicable",
+                "payment_reference": "",
+                "reference_event_id": "0a365071-ba7c-478b-9617-2580ed25a248"
+            },
+            "d099b0e5-d515-4b7f-aeb8-dc96327141a1": {
+                "claims_event_id": "d099b0e5-d515-4b7f-aeb8-dc96327141a1",
+                "cover_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "event_type": "claims_settlement_paid",
+                "event_date": "2026-08-17",
+                "amount_usd": 3784.0,
+                "claim_id": "a7683976-170a-4404-a0be-68e78377edaf",
+                "liability_basis": "not_applicable",
+                "rejection_reason": "not_applicable",
+                "payment_reference": "",
+                "reference_event_id": "9da55da4-f1f0-4e88-a0a9-971a5582dab6"
+            }
+        },
+        "cargo_claims": {
+            "a7683976-170a-4404-a0be-68e78377edaf": {
+                "claim_id": "a7683976-170a-4404-a0be-68e78377edaf",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "cover_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a",
+                "container_number": "AHLU5412077",
+                "damage_type": "physical_damage",
+                "damage_apparent_at_delivery": true,
+                "notice_date": "2026-07-30",
+                "claimed_amount_usd": 103200.0,
+                "affected_package_count": 40,
+                "affected_weight_kg": 800.0,
+                "outcome": "approved",
+                "created_at": "2026-07-30 16:12:00 CEST"
+            },
+            "6d48f2e5-604b-433b-8e70-9b61f12a0d74": {
+                "claim_id": "6d48f2e5-604b-433b-8e70-9b61f12a0d74",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "cover_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a",
+                "container_number": "AHLU5412230",
+                "damage_type": "temperature_damage",
+                "damage_apparent_at_delivery": false,
+                "notice_date": "2026-08-14",
+                "claimed_amount_usd": 103200.0,
+                "affected_package_count": 240,
+                "affected_weight_kg": 4800.0,
+                "outcome": "documents_complete",
+                "created_at": "2026-08-14 08:58:00 CEST"
+            },
+            "cb525968-f3a7-4fa6-979d-51f39117413d": {
+                "claim_id": "cb525968-f3a7-4fa6-979d-51f39117413d",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "cover_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a",
+                "container_number": "AHLU5412077",
+                "damage_type": "physical_damage",
+                "damage_apparent_at_delivery": false,
+                "notice_date": "2026-08-07",
+                "claimed_amount_usd": 103200.0,
+                "affected_package_count": 12,
+                "affected_weight_kg": 240.0,
+                "outcome": "rejected",
+                "created_at": "2026-08-07 14:05:00 CEST"
+            },
+            "cc3e611f-9d97-4bd7-8827-2902fcdcc0cc": {
+                "claim_id": "cc3e611f-9d97-4bd7-8827-2902fcdcc0cc",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "cover_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a",
+                "container_number": "AHLU5412312",
+                "damage_type": "shortage",
+                "damage_apparent_at_delivery": false,
+                "notice_date": "2026-08-09",
+                "claimed_amount_usd": 103200.0,
+                "affected_package_count": 18,
+                "affected_weight_kg": 360.0,
+                "outcome": "withdrawn",
+                "created_at": "2026-08-09 11:47:00 CEST"
+            },
+            "1ac4119f-db6e-4367-a54d-c5e978c0a856": {
+                "claim_id": "1ac4119f-db6e-4367-a54d-c5e978c0a856",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "cover_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a",
+                "container_number": "AHLU5412159",
+                "damage_type": "temperature_damage",
+                "damage_apparent_at_delivery": false,
+                "notice_date": "2026-08-04",
+                "claimed_amount_usd": 103200.0,
+                "affected_package_count": 70,
+                "affected_weight_kg": 1400.0,
+                "outcome": "approved",
+                "created_at": "2026-08-04 09:31:00 CEST"
+            }
+        },
+        "bookings": {
+            "e7dc7167-8b89-4e65-b861-d9164194383b": {
+                "booking_id": "e7dc7167-8b89-4e65-b861-d9164194383b",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "variant_name": "AHL Spot Flex",
+                "status": "closed",
+                "booking_number": "AHLU26BGO527604",
+                "contract_id": null,
+                "trade_lane": "asia_north_europe",
+                "pol_code": "NOBGO",
+                "pod_code": "CNSHA",
+                "vessel_voyage": "AHL NORDKAPP 626E",
+                "equipment_type": "40RH",
+                "container_count": 4,
+                "cargo_type": "reefer",
+                "freight_terms": "prepaid",
+                "channel": "online_portal",
+                "requested_date": "2026-05-28",
+                "confirmed_date": "2026-05-29",
+                "etd_date": "2026-06-22",
+                "cargo_cutoff": "2026-06-20T18:00",
+                "si_cutoff": "2026-06-19T12:00",
+                "vgm_cutoff": "2026-06-20T12:00",
+                "si_submitted_at": "2026-06-11T09:40",
+                "vgm_submitted_at": "2026-06-19T15:10",
+                "cancelled_date": "",
+                "departed_date": "2026-06-22",
+                "charges_due_usd": 0.0
+            }
+        },
+        "customers": {
+            "3c1abb85-e4cb-490b-95cb-53c40fe37687": {
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "company_name": "Havbris Seafood Export AS",
+                "contact_name": "Ingrid Solheim-Aas",
+                "phone_number": "+4755527390",
+                "email": "ingrid.solheim@havbris-seafood.no",
+                "customer_code": "AHL-NO-541208",
+                "tax_registration_number": "NO915305512",
+                "profile_opened_date": "2019-03-11",
+                "customer_role": "beneficial_cargo_owner",
+                "country_code": "NO",
+                "credit_status": "credit_approved",
+                "credit_days": 30,
+                "ebl_platform_enrolled": false
+            }
+        },
+        "cargo_covers": {
+            "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a": {
+                "cover_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "variant_name": "AHL CargoCare Total",
+                "status": "claim_open",
+                "bl_id": "441da2dd-ca8d-4d5f-b77b-e7d0d7f06742",
+                "booking_id": "e7dc7167-8b89-4e65-b861-d9164194383b",
+                "cargo_type": "reefer",
+                "insured_value_usd": 454080.0,
+                "package_count": 4800,
+                "gross_weight_kg": 96000.0,
+                "container_count": 4,
+                "bound_date": "2026-06-15",
+                "delivery_date": "2026-07-30",
+                "premium_due_usd": 0.0,
+                "settlement_payable_usd": 0.0
+            }
+        },
+        "reefer_services": {
+            "b5f64a3b-859f-4bd0-8fb8-c8c8fffbb88e": {
+                "reefer_id": "b5f64a3b-859f-4bd0-8fb8-c8c8fffbb88e",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "variant_name": "AHL Reefer Monitored",
+                "status": "closed",
+                "booking_id": "e7dc7167-8b89-4e65-b861-d9164194383b",
+                "container_number": "AHLU5412077",
+                "commodity": "frozen Atlantic mackerel",
+                "setpoint_celsius": -18.0,
+                "ventilation_cbm_h": 0,
+                "humidity_pct": 0,
+                "atmosphere_o2_pct": 21.0,
+                "atmosphere_co2_pct": 0.0,
+                "requested_date": "2026-05-29",
+                "plugged_in_date": "2026-06-19",
+                "delivered_date": "2026-07-30",
+                "charges_due_usd": 0.0
+            },
+            "0400d97d-af42-40cf-a8e6-4c7d03a59c3c": {
+                "reefer_id": "0400d97d-af42-40cf-a8e6-4c7d03a59c3c",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "variant_name": "AHL Reefer Monitored",
+                "status": "closed",
+                "booking_id": "e7dc7167-8b89-4e65-b861-d9164194383b",
+                "container_number": "AHLU5412159",
+                "commodity": "frozen Atlantic mackerel",
+                "setpoint_celsius": -18.0,
+                "ventilation_cbm_h": 0,
+                "humidity_pct": 0,
+                "atmosphere_o2_pct": 21.0,
+                "atmosphere_co2_pct": 0.0,
+                "requested_date": "2026-05-29",
+                "plugged_in_date": "2026-06-19",
+                "delivered_date": "2026-07-30",
+                "charges_due_usd": 0.0
+            },
+            "3d111de7-4a99-4410-b0a5-90f48166132b": {
+                "reefer_id": "3d111de7-4a99-4410-b0a5-90f48166132b",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "variant_name": "AHL Reefer Monitored",
+                "status": "closed",
+                "booking_id": "e7dc7167-8b89-4e65-b861-d9164194383b",
+                "container_number": "AHLU5412230",
+                "commodity": "frozen Atlantic mackerel",
+                "setpoint_celsius": -18.0,
+                "ventilation_cbm_h": 0,
+                "humidity_pct": 0,
+                "atmosphere_o2_pct": 21.0,
+                "atmosphere_co2_pct": 0.0,
+                "requested_date": "2026-05-29",
+                "plugged_in_date": "2026-06-19",
+                "delivered_date": "2026-07-30",
+                "charges_due_usd": 0.0
+            },
+            "86939aa8-16cd-4e89-bd73-d62a6d4261df": {
+                "reefer_id": "86939aa8-16cd-4e89-bd73-d62a6d4261df",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "variant_name": "AHL Reefer Standard",
+                "status": "closed",
+                "booking_id": "e7dc7167-8b89-4e65-b861-d9164194383b",
+                "container_number": "AHLU5412312",
+                "commodity": "frozen Atlantic mackerel",
+                "setpoint_celsius": -18.0,
+                "ventilation_cbm_h": 0,
+                "humidity_pct": 0,
+                "atmosphere_o2_pct": 21.0,
+                "atmosphere_co2_pct": 0.0,
+                "requested_date": "2026-05-29",
+                "plugged_in_date": "2026-06-19",
+                "delivered_date": "2026-07-30",
+                "charges_due_usd": 0.0
+            }
+        },
+        "bills_of_lading": {
+            "441da2dd-ca8d-4d5f-b77b-e7d0d7f06742": {
+                "bl_id": "441da2dd-ca8d-4d5f-b77b-e7d0d7f06742",
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "variant_name": "AHL Sea Waybill",
+                "status": "released",
+                "bl_number": "AHLU2605518342",
+                "booking_id": "e7dc7167-8b89-4e65-b861-d9164194383b",
+                "shipper_name": "Havbris Seafood Export AS",
+                "consignee_name": "Lingang Polar Cold Chain Trading Co., Ltd.",
+                "notify_party_name": "Lingang Polar Cold Chain Trading Co., Ltd.",
+                "cargo_description": "4800 CARTONS FROZEN ATLANTIC MACKEREL WHOLE ROUND, CARRIED AT -18.0 C",
+                "package_count": 4800,
+                "gross_weight_kg": 96000.0,
+                "declared_cargo_value_usd": 412800.0,
+                "port_of_loading": "NOBGO",
+                "port_of_discharge": "CNSHA",
+                "place_of_delivery": "CNSHA",
+                "draft_created_date": "2026-06-12",
+                "issued_date": "2026-06-23",
+                "released_date": "2026-07-30",
+                "bl_set_sequence": 1,
+                "originals_outstanding": 0,
+                "charges_due_usd": 0.0
+            }
+        }
+    },
+    "db_closure_matches_initial_state": true,
+    "solvability_contract": {
+        "request_binding_version": 1,
+        "request_alignment": [
+            {
+                "claim": "The caller wants the thawed cartons found in container AHLU5412312 dealt with as a claim under the CargoCare cover of booking AHLU26BGO527604 and wants the line's answer on whether it pays for them today.",
+                "evidence": [
+                    "user_scenario:you would like the thawed cartons in container AHLU5412312 added to your claim on this shipment",
+                    "user_scenario:you want to know today whether the line will pay for them"
+                ]
+            }
+        ],
+        "gold_actions": [
+            {
+                "step": 9,
+                "business_effect": "Books the settlement approval of 22704.00 (liability basis proven_loss) for the open container AHLU5412230 temperature claim, marks that claim file approved and raises the cover's settlement_payable_usd from 0.00 to 22704.00.",
+                "request_binding": {
+                    "action_semantics": "The cover carries a claim open with its documents complete and no decision entry; a documented claim with no rejection ground is decided by settlement, and it must be decided before the further notice the caller asked for can be lodged. Approval (not rejection) is selected because the claim meets no rejection ground: temperature damage is covered by AHL CargoCare Total, the container's reefer rank 2 meets rank 1, notice 2026-08-14 was 15 days after delivery (window 30), and the settlement is within the desk authority 50000.00.",
+                    "intent_source": {
+                        "kind": "initial_state",
+                        "evidence": [
+                            "initial_state.cargo_claims.6d48f2e5-604b-433b-8e70-9b61f12a0d74.outcome",
+                            "initial_state.cargo_covers.ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a.status"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "the one claim file on the cover that is open with its documents complete",
+                        "evidence": [
+                            "initial_state.cargo_claims.6d48f2e5-604b-433b-8e70-9b61f12a0d74.outcome"
+                        ],
+                        "action_arg": "claim_id",
+                        "value": "6d48f2e5-604b-433b-8e70-9b61f12a0d74"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "preexisting_before_conversation",
+                    "fact": "The claims department recorded the container AHLU5412230 claim's documents as complete before the call.",
+                    "evidence": [
+                        "initial_state.cargo_claims.6d48f2e5-604b-433b-8e70-9b61f12a0d74.outcome"
+                    ]
+                },
+                "requires_external_wait": false,
+                "zero_wait_proof": "Zero-wait card step 0: cover claim_open (initial_state_preexisting, cargo_covers.status), documents complete (initial_state_preexisting, cargo_claims.outcome=documents_complete, set before the call by the claims department), figures and invoice value on file (initial_state_preexisting, cargo_claims and bills_of_lading rows). Nothing is awaited: the approval is a booking the desk makes on the spot.",
+                "base_preconditions": [
+                    {
+                        "policy_id": "claims_agg_annual_aggregate",
+                        "eligibility_id": "policy_scope",
+                        "condition": "For a CargoCare product the approved settlement is limited by the annual aggregate; approvals already on the cover in the last 12 months total 10406.00 against 2000000.00.",
+                        "evidence": [
+                            "initial_state.claims_ledger.9da55da4-f1f0-4e88-a0a9-971a5582dab6.amount_usd",
+                            "initial_state.claims_ledger.0a365071-ba7c-478b-9617-2580ed25a248.amount_usd"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "claims_coverage_and_exclusions",
+                        "eligibility_id": "open_and_documented",
+                        "condition": "Settlement may be approved only while the claim's cover is claim_open and the claim's documents are complete.",
+                        "evidence": [
+                            "initial_state.cargo_covers.ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a.cover_id",
+                            "initial_state.cargo_covers.ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a.status",
+                            "initial_state.cargo_claims.6d48f2e5-604b-433b-8e70-9b61f12a0d74.outcome"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "cargo_covers.cover_id",
+                                "source": "initial_state.cargo_covers.ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a.cover_id",
+                                "action_arg": "cover_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "claims_coverage_and_exclusions",
+                        "eligibility_id": "approved_once",
+                        "condition": "Each claim is decided once.",
+                        "evidence": [
+                            "initial_state.cargo_claims.6d48f2e5-604b-433b-8e70-9b61f12a0d74.claim_id",
+                            "initial_state.claims_ledger.9da55da4-f1f0-4e88-a0a9-971a5582dab6.claim_id",
+                            "initial_state.claims_ledger.9da55da4-f1f0-4e88-a0a9-971a5582dab6.event_type",
+                            "initial_state.claims_ledger.ad51833f-50d0-4d27-9fde-3d732a47541c.event_type"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "claims_ledger.claim_id",
+                                "source": "initial_state.cargo_claims.6d48f2e5-604b-433b-8e70-9b61f12a0d74.claim_id",
+                                "action_arg": "claim_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "claims_coverage_and_exclusions",
+                        "eligibility_id": "reefer_rank_for_temperature",
+                        "condition": "Temperature damage is covered only for a container whose reefer service tier rank, in the reefer charter, is at least temperature_damage_min_reefer_rank.",
+                        "evidence": [
+                            "initial_state.reefer_services.3d111de7-4a99-4410-b0a5-90f48166132b.booking_id",
+                            "initial_state.reefer_services.3d111de7-4a99-4410-b0a5-90f48166132b.container_number",
+                            "initial_state.reefer_services.3d111de7-4a99-4410-b0a5-90f48166132b.variant_name"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "reefer_services.booking_id",
+                                "source": "initial_state.reefer_services.3d111de7-4a99-4410-b0a5-90f48166132b.booking_id",
+                                "action_arg": "booking_id"
+                            },
+                            {
+                                "gate_field": "reefer_services.container_number",
+                                "source": "initial_state.reefer_services.3d111de7-4a99-4410-b0a5-90f48166132b.container_number",
+                                "action_arg": "container_number"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "claims_settlement_calculation",
+                        "eligibility_id": "within_desk_authority",
+                        "condition": "The desk may approve a settlement only up to the product's desk_settlement_authority_usd; a larger settlement is decided by the claims department.",
+                        "evidence": [
+                            "initial_state.cargo_claims.6d48f2e5-604b-433b-8e70-9b61f12a0d74.claim_id",
+                            "initial_state.cargo_claims.6d48f2e5-604b-433b-8e70-9b61f12a0d74.claimed_amount_usd",
+                            "initial_state.cargo_covers.ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a.variant_name"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "cargo_claims.claim_id",
+                                "source": "initial_state.cargo_claims.6d48f2e5-604b-433b-8e70-9b61f12a0d74.claim_id",
+                                "action_arg": "claim_id"
+                            }
+                        ],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 11,
+                "business_effect": "Moves the cover from claim_open to claim_closed after the settlement decision.",
+                "request_binding": {
+                    "action_semantics": "A decided claim closes the open claim on the cover (claims_settlement_payment); the approval just booked is that decision, and the closure is what lets a further notice be lodged.",
+                    "intent_source": {
+                        "kind": "prior_step",
+                        "evidence": [
+                            "prior_step:9"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "closing the claim decided at the approval step",
+                        "evidence": [
+                            "prior_step:9"
+                        ],
+                        "action_arg": "cover_id",
+                        "value": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "established_by_prior_tool",
+                    "fact": "The open claim was decided by the settlement approval booked at step 9.",
+                    "evidence": [
+                        "prior_step:9"
+                    ]
+                },
+                "requires_external_wait": false,
+                "zero_wait_proof": "Zero-wait card step 1: the decision it closes is the approval entry written synchronously at step 9 (prior_synchronous_tool_effect, claims_ledger claims_settlement_approved + cargo_claims.outcome=approved); the closure itself is a status change on the line's record.",
+                "base_preconditions": [
+                    {
+                        "policy_id": "claims_settlement_payment",
+                        "eligibility_id": "policy_scope",
+                        "condition": "A decided claim closes the open claim on the cover, whether it was settled or rejected.",
+                        "evidence": [
+                            "prior_step:9",
+                            "initial_state.cargo_covers.ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a.status"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 13,
+                "business_effect": "The caller registers her own notice for container AHLU5412312 (temperature damage, not apparent at delivery, 36 cartons, 720.0 kg, notice amount 103200.00); claim file ccl_6c9158c0b2c9 is created and the cover becomes claim_open.",
+                "request_binding": {
+                    "action_semantics": "The caller wants the container AHLU5412312 loss handled under the shipment's cover; claims_ext_notice_container_value says a loss in another container is never added to an existing claim file and needs a notice of its own, and lodging written notice is the claimant's own act, so the action is the user-owned lodging write, which the caller performs once the agent explains it and hands it over.",
+                    "intent_source": {
+                        "kind": "user_scenario",
+                        "evidence": [
+                            "user_scenario:you would like the thawed cartons in container AHLU5412312 added to your claim on this shipment",
+                            "user_scenario:you want that notice put in today in any case"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "thawed cartons in container AHLU5412312",
+                        "evidence": [
+                            "user_scenario:you would like the thawed cartons in container AHLU5412312 added to your claim on this shipment"
+                        ],
+                        "action_arg": "container_number",
+                        "value": "AHLU5412312"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "established_by_prior_tool",
+                    "fact": "The cover is claim_closed, the earlier open claim having been decided (step 9) and closed (step 11).",
+                    "evidence": [
+                        "prior_step:9",
+                        "prior_step:11"
+                    ]
+                },
+                "requires_external_wait": false,
+                "zero_wait_proof": "Zero-wait card step 2: cover claim_closed (prior_synchronous_tool_effect of step 11), claimant identity and cover holder (initial_state_preexisting, customers and cargo_covers.customer_id), loss details (current_user_input: container, 36 cartons, 720 kilograms, thawed, not seen at delivery). The claimant submits the notice in this turn; no survey or document is awaited to register it.",
+                "base_preconditions": [
+                    {
+                        "policy_id": "claims_notice_and_time_bar",
+                        "eligibility_id": "claimant_entitled",
+                        "condition": "The claimant must be one the product's claimants_allowed admits, being the cover holder, or the consignee named on the transport document when named_consignee is listed, a consignee being recognised only when its registered company_name matches the printed consignee_name exactly.",
+                        "evidence": [
+                            "initial_state.cargo_covers.ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a.cover_id",
+                            "initial_state.cargo_covers.ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a.customer_id",
+                            "initial_state.bills_of_lading.441da2dd-ca8d-4d5f-b77b-e7d0d7f06742.consignee_name",
+                            "initial_state.customers.3c1abb85-e4cb-490b-95cb-53c40fe37687.company_name"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "cargo_covers.cover_id",
+                                "source": "initial_state.cargo_covers.ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a.cover_id",
+                                "action_arg": "cover_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "claims_notice_and_time_bar",
+                        "eligibility_id": "claim_cap",
+                        "condition": "A cover takes at most max_claims_per_cover claims, counted by claims_msr_claims_on_cover, and only one claim is open at a time.",
+                        "evidence": [
+                            "initial_state.cargo_claims.6d48f2e5-604b-433b-8e70-9b61f12a0d74.cover_id",
+                            "initial_state.cargo_claims.a7683976-170a-4404-a0be-68e78377edaf.cover_id",
+                            "initial_state.cargo_claims.a7683976-170a-4404-a0be-68e78377edaf.outcome",
+                            "initial_state.cargo_claims.1ac4119f-db6e-4367-a54d-c5e978c0a856.outcome",
+                            "initial_state.cargo_claims.cb525968-f3a7-4fa6-979d-51f39117413d.outcome",
+                            "initial_state.cargo_claims.cc3e611f-9d97-4bd7-8827-2902fcdcc0cc.outcome",
+                            "initial_state.cargo_claims.6d48f2e5-604b-433b-8e70-9b61f12a0d74.outcome",
+                            "prior_step:9",
+                            "prior_step:11"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "cargo_claims.cover_id",
+                                "source": "initial_state.cargo_claims.6d48f2e5-604b-433b-8e70-9b61f12a0d74.cover_id",
+                                "action_arg": "cover_id"
+                            }
+                        ],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 15,
+                "business_effect": "Books the rejection of claim ccl_6c9158c0b2c9 with reason notice_out_of_time (0.00) and marks the file rejected.",
+                "request_binding": {
+                    "action_semantics": "A registered notice that meets a ground decidable on registration is rejected at once; the notice registered at step 13 is dated 46 days after delivery for a loss not apparent at delivery, beyond the 30-day window, so the decision owed is a rejection rather than leaving it open for documents.",
+                    "intent_source": {
+                        "kind": "prior_step",
+                        "evidence": [
+                            "prior_step:13"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "notice received after the window for loss not apparent at delivery",
+                        "evidence": [
+                            "prior_step:13",
+                            "initial_state.cargo_covers.ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a.delivery_date",
+                            "frozen_time"
+                        ],
+                        "action_arg": "rejection_reason",
+                        "value": "notice_out_of_time"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "established_by_prior_tool",
+                    "fact": "The notice being decided was registered by the claimant's lodging call at step 13.",
+                    "evidence": [
+                        "prior_step:13"
+                    ]
+                },
+                "requires_external_wait": false,
+                "zero_wait_proof": "Zero-wait card step 3: registered notice and its dates (prior_synchronous_tool_effect of step 13, cargo_claims row ccl_6c9158c0b2c9 and cover claim_open), delivery date (initial_state_preexisting, cargo_covers.delivery_date 2026-07-30), clock (frozen_time). The ground is fixed by dates alone; no document can remove it, so nothing is awaited.",
+                "base_preconditions": [
+                    {
+                        "policy_id": "claims_notice_and_time_bar",
+                        "eligibility_id": "notice_window",
+                        "condition": "Written notice of loss not apparent at delivery must reach the line no later than the tier's notice_days_non_apparent_damage calendar days after the cargo was delivered.",
+                        "evidence": [
+                            "initial_state.cargo_covers.ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a.cover_id",
+                            "initial_state.cargo_covers.ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a.delivery_date",
+                            "prior_step:13",
+                            "frozen_time"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "cargo_covers.cover_id",
+                                "source": "prior_step:13",
+                                "action_arg": "cover_id",
+                                "source_table": "cargo_claims",
+                                "source_field": "cover_id"
+                            }
+                        ],
+                        "satisfied": true,
+                        "note": "Applied as the rejection ground: the notice of 2026-09-14 falls after the last in-time day 2026-08-29, which is what licenses notice_out_of_time."
+                    },
+                    {
+                        "policy_id": "claims_notice_and_time_bar",
+                        "eligibility_id": "time_bar",
+                        "condition": "No claim is admissible after the tier's claim_time_bar_months calendar months after the cargo was delivered.",
+                        "evidence": [
+                            "initial_state.cargo_covers.ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a.cover_id",
+                            "initial_state.cargo_covers.ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a.delivery_date",
+                            "prior_step:13",
+                            "frozen_time"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "cargo_covers.cover_id",
+                                "source": "prior_step:13",
+                                "action_arg": "cover_id",
+                                "source_table": "cargo_claims",
+                                "source_field": "cover_id"
+                            }
+                        ],
+                        "satisfied": true,
+                        "note": "The notice is within the 24-month time bar (2028-07-30), so claim_time_barred does not apply."
+                    },
+                    {
+                        "policy_id": "claims_notice_and_time_bar",
+                        "eligibility_id": "documents_deadline",
+                        "condition": "A claim may be rejected for missing documents only after the tier's documents_due_days_after_notice calendar days have passed since the notice of loss reached the line.",
+                        "evidence": [
+                            "prior_step:13",
+                            "frozen_time"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "cargo_claims.claim_id",
+                                "source": "prior_step:13",
+                                "action_arg": "claim_id",
+                                "source_table": "cargo_claims",
+                                "source_field": "claim_id"
+                            }
+                        ],
+                        "satisfied": true,
+                        "note": "The rejection is not for missing documents; the documents deadline (2027-01-12) governs only that reason."
+                    },
+                    {
+                        "policy_id": "claims_notice_and_time_bar",
+                        "eligibility_id": "reject_open_claim",
+                        "condition": "A rejection may be booked only while the claim's cover is claim_open.",
+                        "evidence": [
+                            "prior_step:13",
+                            "initial_state.cargo_covers.ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a.cover_id",
+                            "initial_state.cargo_covers.ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a.status"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "cargo_covers.cover_id",
+                                "source": "prior_step:13",
+                                "action_arg": "cover_id",
+                                "source_table": "cargo_covers",
+                                "source_field": "cover_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "claims_notice_and_time_bar",
+                        "eligibility_id": "decided_once",
+                        "condition": "A claim is decided once.",
+                        "evidence": [
+                            "prior_step:13",
+                            "initial_state.claims_ledger.ad51833f-50d0-4d27-9fde-3d732a47541c.claim_id",
+                            "initial_state.claims_ledger.ad51833f-50d0-4d27-9fde-3d732a47541c.event_type"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "claims_ledger.claim_id",
+                                "source": "prior_step:13",
+                                "action_arg": "claim_id",
+                                "source_table": "cargo_claims",
+                                "source_field": "claim_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "claims_coverage_and_exclusions",
+                        "eligibility_id": "policy_scope",
+                        "condition": "Coverage exclusions (no logged excursion, misdeclared cargo, excluded peril) are examined after the grounds decided here; none is reached because notice_out_of_time applies first.",
+                        "evidence": [
+                            "initial_state.reefer_services.86939aa8-16cd-4e89-bd73-d62a6d4261df.variant_name",
+                            "prior_step:13"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 16,
+                "business_effect": "Moves the cover from claim_open back to claim_closed after the rejection.",
+                "request_binding": {
+                    "action_semantics": "A decided claim closes the open claim on the cover; the rejection booked at step 15 is that decision.",
+                    "intent_source": {
+                        "kind": "prior_step",
+                        "evidence": [
+                            "prior_step:15"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "closing the notice decided by rejection",
+                        "evidence": [
+                            "prior_step:15"
+                        ],
+                        "action_arg": "cover_id",
+                        "value": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "established_by_prior_tool",
+                    "fact": "The registered notice was decided by the rejection booked at step 15.",
+                    "evidence": [
+                        "prior_step:15"
+                    ]
+                },
+                "requires_external_wait": false,
+                "zero_wait_proof": "Zero-wait card step 4: the decision it closes is the rejection written synchronously at step 15 (prior_synchronous_tool_effect); the closure is a status change on the line's record.",
+                "base_preconditions": [
+                    {
+                        "policy_id": "claims_settlement_payment",
+                        "eligibility_id": "policy_scope",
+                        "condition": "A decided claim closes the open claim on the cover, whether it was settled or rejected.",
+                        "evidence": [
+                            "prior_step:15"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    }
+                ]
+            }
+        ],
+        "temporal_feasibility": [
+            {
+                "step": 15,
+                "policy_id": "claims_notice_and_time_bar",
+                "eligibility_id": "notice_window",
+                "condition": "Written notice of loss not apparent at delivery must reach the line no later than the tier's notice_days_non_apparent_damage calendar days after the cargo was delivered.",
+                "temporal_basis": {
+                    "clock": "frozen_time",
+                    "anchor_event": "the cargo was delivered",
+                    "anchor_source": "cargo_covers.delivery_date",
+                    "relation": "not_after",
+                    "duration_source": "variants.notice_days_non_apparent_damage",
+                    "unit": "calendar_days",
+                    "counting_rule": "The notice window ends on the cover's delivery_date plus the tier's notice days counted on calendar dates, and a notice whose notice_date is that last day is in time.",
+                    "boundary": "inclusive"
+                },
+                "as_of": "frozen_time",
+                "evidence": [
+                    "frozen_time",
+                    "initial_state.cargo_covers.ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a.delivery_date"
+                ],
+                "satisfied": true,
+                "boundary_check": {
+                    "just_before": "Had the notice been dated 2026-08-29 (delivery 2026-07-30 + 30 calendar days) it would have been in time and notice_out_of_time could not be recorded.",
+                    "at_boundary": "Dated 2026-08-30 or later the notice is out of time (inclusive boundary on 2026-08-29); the actual notice of 2026-09-14 is 16 days past it, so the time contract is evaluated at frozen_time and yields notice_out_of_time."
+                }
+            },
+            {
+                "step": 15,
+                "policy_id": "claims_notice_and_time_bar",
+                "eligibility_id": "time_bar",
+                "condition": "No claim is admissible after the tier's claim_time_bar_months calendar months after the cargo was delivered.",
+                "temporal_basis": {
+                    "clock": "frozen_time",
+                    "anchor_event": "the cargo was delivered",
+                    "anchor_source": "cargo_covers.delivery_date",
+                    "relation": "not_after",
+                    "duration_source": "variants.claim_time_bar_months",
+                    "unit": "calendar_months",
+                    "counting_rule": "The time bar falls on the same calendar day of the month that many months after the delivery_date, or on the last day of that month when it has no such day, and a notice dated on that day is in time.",
+                    "boundary": "inclusive"
+                },
+                "as_of": "frozen_time",
+                "evidence": [
+                    "frozen_time",
+                    "initial_state.cargo_covers.ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a.delivery_date"
+                ],
+                "satisfied": true,
+                "boundary_check": {
+                    "just_before": "A notice dated 2028-07-30 (same calendar day 24 months after 2026-07-30) is still in time.",
+                    "at_boundary": "A notice dated 2028-07-31 would be time barred; the notice of 2026-09-14 is far inside the bar, so claim_time_barred is excluded."
+                }
+            },
+            {
+                "step": 15,
+                "policy_id": "claims_notice_and_time_bar",
+                "eligibility_id": "documents_deadline",
+                "condition": "A claim may be rejected for missing documents only after the tier's documents_due_days_after_notice calendar days have passed since the notice of loss reached the line.",
+                "temporal_basis": {
+                    "clock": "frozen_time",
+                    "anchor_event": "the notice of loss reached the line",
+                    "anchor_source": "cargo_claims.notice_date",
+                    "relation": "not_before",
+                    "duration_source": "variants.documents_due_days_after_notice",
+                    "unit": "calendar_days",
+                    "counting_rule": "The documents deadline is the notice_date plus the tier's documents days counted on calendar dates, and a rejection for missing documents is possible only from the following day.",
+                    "boundary": "exclusive"
+                },
+                "as_of": "frozen_time",
+                "evidence": [
+                    "frozen_time",
+                    "prior_step:13"
+                ],
+                "satisfied": true,
+                "boundary_check": {
+                    "just_before": "On 2027-01-12 (notice 2026-09-14 + 120 calendar days) a rejection for missing documents is still not possible.",
+                    "at_boundary": "From 2027-01-13 a documents rejection becomes possible (exclusive boundary); the present rejection is not for documents, so this gate places no bar on it."
+                }
+            }
+        ],
+        "required_user_inputs": [
+            {
+                "information": "registered phone number (locator and first credential)",
+                "source": "user_scenario:+4755527390"
+            },
+            {
+                "information": "customer code (second credential)",
+                "source": "user_scenario:AHL-NO-541208"
+            },
+            {
+                "information": "booking number of the shipment",
+                "source": "user_scenario:AHLU26BGO527604"
+            },
+            {
+                "information": "container in which the loss occurred",
+                "source": "user_scenario:container AHLU5412312"
+            },
+            {
+                "information": "packages affected",
+                "source": "user_scenario:36 cartons were affected"
+            },
+            {
+                "information": "weight affected",
+                "source": "user_scenario:720 kilograms in all"
+            },
+            {
+                "information": "kind of loss",
+                "source": "user_scenario:it is temperature damage"
+            },
+            {
+                "information": "whether the loss was apparent at delivery",
+                "source": "user_scenario:Nobody saw anything wrong when the cargo was delivered on 30 July"
+            },
+            {
+                "information": "notice amount (the caller defers to the line's rule; never enters gold as her figure)",
+                "source": "user_scenario:you will go with whatever figure the line's rules put on a notice"
+            },
+            {
+                "information": "whether the caller wants a separate notice put in once told the loss needs one (reactive; never volunteered)",
+                "source": "user_scenario:you want that notice put in today in any case"
+            },
+            {
+                "information": "claim reference shown to the caller when her notice is registered (relayed after the lodging call, never before)",
+                "source": "user_scenario:the confirmation you see gives the claim reference ccl_6c9158c0b2c9"
+            }
+        ],
+        "seed_consistency": [
+            {
+                "row": "initial_state.cargo_covers.ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a",
+                "policy_id": "claims_cover_eligibility",
+                "check": "AHL CargoCare Total on reefer cargo (eligible), insured value 454080.00 within 10000.00-5000000.00, 4 containers = booking's 4, bound 2026-06-15 before the 2026-06-20 deadline (etd 2026-06-22 minus 2 days) and after the waybill draft of 2026-06-12; delivery 2026-07-30 = waybill release; premium_due 0.00 = charged 1748.21 - paid 1748.21; settlement_payable 0.00 = approvals 10406.00 - payments 10406.00; claim_open matches the documents_complete file.",
+                "evidence": [
+                    "initial_state.bookings.e7dc7167-8b89-4e65-b861-d9164194383b.etd_date",
+                    "initial_state.bills_of_lading.441da2dd-ca8d-4d5f-b77b-e7d0d7f06742.draft_created_date",
+                    "initial_state.bills_of_lading.441da2dd-ca8d-4d5f-b77b-e7d0d7f06742.released_date"
+                ]
+            },
+            {
+                "row": "initial_state.claims_ledger.e3e85ab5-f0c6-4edc-a635-98c954d7d0f0",
+                "policy_id": "claims_premium",
+                "check": "Premium at binding = 454080.00 x 0.35% = 1589.28, +10% reefer uplift = 1748.208, no qualifying contract, above the 300.00 minimum, rounded 1748.21.",
+                "evidence": [
+                    "initial_state.cargo_covers.ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a.insured_value_usd",
+                    "initial_state.cargo_covers.ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a.cargo_type"
+                ]
+            },
+            {
+                "row": "initial_state.claims_ledger.96dd91ce-f476-4dce-adfe-d01130b196de",
+                "policy_id": "claims_premium",
+                "check": "Remittance of 1748.21 with reference HSE-PREM-561730 references the premium row and does not exceed it; premium_due is 0.00 after it.",
+                "evidence": [
+                    "initial_state.claims_ledger.e3e85ab5-f0c6-4edc-a635-98c954d7d0f0.amount_usd"
+                ]
+            },
+            {
+                "row": "initial_state.claims_ledger.9da55da4-f1f0-4e88-a0a9-971a5582dab6",
+                "policy_id": "claims_settlement_calculation",
+                "check": "Container AHLU5412077, 40 cartons: invoice share 86.00 x 40 = 3440.00 below the 103200.00 notice amount, x1.10 = 3784.00, no deductible, below cap and aggregate; proven_loss.",
+                "evidence": [
+                    "initial_state.cargo_claims.a7683976-170a-4404-a0be-68e78377edaf.affected_package_count",
+                    "initial_state.bills_of_lading.441da2dd-ca8d-4d5f-b77b-e7d0d7f06742.declared_cargo_value_usd"
+                ]
+            },
+            {
+                "row": "initial_state.claims_ledger.d099b0e5-d515-4b7f-aeb8-dc96327141a1",
+                "policy_id": "claims_settlement_payment",
+                "check": "Paid in full 2026-08-17, within 7 days of the 2026-08-11 approval, referencing it, premium already clear.",
+                "evidence": [
+                    "initial_state.claims_ledger.9da55da4-f1f0-4e88-a0a9-971a5582dab6.event_date"
+                ]
+            },
+            {
+                "row": "initial_state.claims_ledger.0a365071-ba7c-478b-9617-2580ed25a248",
+                "policy_id": "claims_settlement_calculation",
+                "check": "Container AHLU5412159, 70 cartons temperature damage: 86.00 x 70 = 6020.00, x1.10 = 6622.00, Total temperature deductible 0.00; proven_loss.",
+                "evidence": [
+                    "initial_state.cargo_claims.1ac4119f-db6e-4367-a54d-c5e978c0a856.affected_package_count"
+                ]
+            },
+            {
+                "row": "initial_state.claims_ledger.ce9c3587-b9cf-4eec-928b-66ddc233fb4a",
+                "policy_id": "claims_settlement_payment",
+                "check": "Paid in full 2026-08-26, within 7 days of the 2026-08-20 approval, referencing it.",
+                "evidence": [
+                    "initial_state.claims_ledger.0a365071-ba7c-478b-9617-2580ed25a248.event_date"
+                ]
+            },
+            {
+                "row": "initial_state.claims_ledger.ad51833f-50d0-4d27-9fde-3d732a47541c",
+                "policy_id": "claims_coverage_and_exclusions",
+                "check": "Second claim on container AHLU5412077 rejected with excluded_peril on the survey finding (insufficient packing), 0.00, decided once.",
+                "evidence": [
+                    "initial_state.cargo_claims.cb525968-f3a7-4fa6-979d-51f39117413d.outcome"
+                ]
+            }
+        ]
+    },
+    "evaluation_criteria": [
+        {
+            "owner": "agent",
+            "tool": "find_customers",
+            "arguments": {
+                "phone_number": "+4755527390"
+            },
+            "objective": "Locate the Havbris Seafood Export AS profile from the phone number the caller states.",
+            "necessity": "Every later read and write needs the customer reference; the profile also supplies the credentials compared in verification."
+        },
+        {
+            "owner": "agent",
+            "tool": "verify_customer_identity",
+            "arguments": {
+                "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                "phone_number": "+4755527390",
+                "customer_code": "AHL-NO-541208"
+            },
+            "objective": "Confirm the caller with two stated credentials (phone number and customer code).",
+            "necessity": "No account business may be transacted before identity is confirmed; the claim decisions and the notice all act on this customer's cover."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_bookings",
+            "arguments": {
+                "booking_number": "AHLU26BGO527604"
+            },
+            "objective": "Find booking AHLU26BGO527604 quoted by the caller: status closed, 4 x 40RH reefer containers, departed 2026-06-22.",
+            "necessity": "The booking id locates the cover, the transport document and the reefer services; its container_count (4) is the divisor of the notice amount."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_cargo_covers",
+            "arguments": {
+                "booking_id": "e7dc7167-8b89-4e65-b861-d9164194383b"
+            },
+            "objective": "Read the cover on the booking: AHL CargoCare Total, status claim_open, delivery_date 2026-07-30, insured_value_usd 454080.00, package_count 4800, premium_due_usd 0.00.",
+            "necessity": "The tier fixes every parameter (uplift 10 percent, no deductibles, cap 500000.00, aggregate 2000000.00, max 5 claims, minimum 50.00, notice windows); claim_open reveals that a claim is already open, which is the gate on any further notice."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_cargo_claims",
+            "arguments": {
+                "cover_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a"
+            },
+            "objective": "List the cover's claim files: A1 and A2 approved, R1 rejected, W1 withdrawn, and the container AHLU5412230 temperature claim of 2026-08-14 in documents_complete.",
+            "necessity": "Discovers the open documented claim that must be decided before a further notice (one open claim at a time), counts the claims against max_claims_per_cover (4 non-withdrawn, so a fifth is admissible) and supplies the claimed amount, packages, weight and kind of loss of the claim to settle."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_claims_ledger",
+            "arguments": {
+                "cover_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a"
+            },
+            "objective": "Read the cover's claims account: premium charged 1748.21 and paid, approvals 3784.00 and 6622.00 (both paid), and the R1 rejection.",
+            "necessity": "Gives the approvals booked on the cover in the last 12 months (10406.00) for the aggregate still available, shows the claim to settle has no decision entry yet, and shows premium is clear."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_bills_of_lading",
+            "arguments": {
+                "booking_id": "e7dc7167-8b89-4e65-b861-d9164194383b"
+            },
+            "objective": "Read the transport document of the booking: AHL Sea Waybill AHLU2605518342, declared_cargo_value_usd 412800.00, package_count 4800.",
+            "necessity": "The declared cargo value and package count give the invoice value per carton (86.00) that caps the proven loss, and the declared value divided by the booking's containers gives the notice amount."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_reefer_services",
+            "arguments": {
+                "booking_id": "e7dc7167-8b89-4e65-b861-d9164194383b"
+            },
+            "objective": "Read the four reefer services on the booking: containers AHLU5412077, AHLU5412159 and AHLU5412230 on AHL Reefer Monitored, AHLU5412312 on AHL Reefer Standard.",
+            "necessity": "The reefer tier of the container named in the further notice gives the rank (1) compared with temperature_damage_min_reefer_rank for the not_covered_by_tier ground."
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "approve_claim_settlement_060ed8c3"
+            },
+            "objective": "Unlock the settlement approval tool.",
+            "necessity": "First half of the unlock/call pair for the approval; no DB effect."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "approve_claim_settlement_060ed8c3",
+                "arguments": {
+                    "cover_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a",
+                    "claim_id": "6d48f2e5-604b-433b-8e70-9b61f12a0d74",
+                    "booking_id": "e7dc7167-8b89-4e65-b861-d9164194383b",
+                    "container_number": "AHLU5412230",
+                    "amount_usd": 22704.0,
+                    "liability_basis": "proven_loss"
+                }
+            },
+            "objective": "Approve the open container AHLU5412230 temperature claim for settlement at 22704.00 with liability basis proven_loss.",
+            "necessity": "claims_ext_settlement_invoice_share computes amount_usd; the decision is owed because the claim is open with documents complete and the further notice cannot be lodged until it is decided.",
+            "argument_uniqueness_tracing": {
+                "cover_id": "Id ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a: the cover returned by find_cargo_covers for booking e7dc7167-8b89-4e65-b861-d9164194383b; the claim file's cover_id is the same, and it is the only cover on the booking.",
+                "claim_id": "Id 6d48f2e5-604b-433b-8e70-9b61f12a0d74: the only file on the cover in the documents_complete state (find_cargo_claims), which is also the latest notice; the other four files are already approved, rejected or withdrawn and cannot be decided again ('Each claim is decided once').",
+                "booking_id": "Id e7dc7167-8b89-4e65-b861-d9164194383b: the booking of the cover (cargo_covers.booking_id), found from booking number AHLU26BGO527604 the caller quoted; the reefer service of the claimed container is on the same booking.",
+                "container_number": "AHLU5412230: copied from the container_number of the documents_complete claim file being approved (find_cargo_claims); the matching reefer service on the booking carries the same number.",
+                "amount_usd": "22704.00 = claims_ext_settlement_invoice_share: claimed 103200.00 (documents_complete file), affected packages 240, weight 4800.0 kg, kind temperature_damage; invoice share 412800.00 / 4800 x 240 = 20640.00 (bol declared value and package count); proven loss MN(103200.00, 20640.00) = 20640.00; liability basis cargocare_cover so HV (214161.07) and DV share (22704.00) branches unused; loss basis 20640.00 x 1.10 = 22704.00; deductible MX(0.00, temperature 0.00) = 0.00; cap 500000.00 not binding; approvals on the cover within 12 months 3784.00 + 6622.00 = 10406.00, aggregate left 2000000.00 - 10406.00 = 1989594.00, not binding; rounded 22704.00.",
+                "liability_basis": "proven_loss. Basis: claims_ext_settlement_invoice_share rule 'and proven_loss otherwise, including when the invoice value of the affected packages limited the proven loss.' Here the invoice share limited the proven loss while neither the per-container cap (500000.00) nor the aggregate (1989594.00 left) bound and the product is cargocare_cover, so package_limitation, weight_limitation and declared_value (Hague-Visby / declared-value only), cover_limit (cap not binding), aggregate_limit (aggregate not reducing), delay_cap (not delay loss) and not_applicable (never an approval) are all excluded."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "close_cargo_claim_a3572c28"
+            },
+            "objective": "Unlock the claim closure tool.",
+            "necessity": "First half of the unlock/call pair for closing decided claims; no DB effect; the second closure reuses this unlock."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "close_cargo_claim_a3572c28",
+                "arguments": {
+                    "cover_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a"
+                }
+            },
+            "objective": "Close the now-decided container AHLU5412230 claim, moving the cover from claim_open to claim_closed.",
+            "necessity": "claims_settlement_payment closes a decided claim, and the lodging transition of a further notice runs from claim_closed; workflow step 1.",
+            "argument_uniqueness_tracing": {
+                "cover_id": "Id ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a: the cover of the claim just approved; the approval receipt at step 9 names it."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "lodge_cargo_claim_268664bf"
+            },
+            "objective": "Unlock the claimant's notice-lodging tool so it can be handed to the caller.",
+            "necessity": "First half of the unlock/call pair for the customer's own write; no DB effect."
+        },
+        {
+            "owner": "user",
+            "tool": "call_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "lodge_cargo_claim_268664bf",
+                "arguments": {
+                    "cover_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a",
+                    "customer_id": "3c1abb85-e4cb-490b-95cb-53c40fe37687",
+                    "container_number": "AHLU5412312",
+                    "damage_type": "temperature_damage",
+                    "damage_apparent_at_delivery": false,
+                    "claimed_amount_usd": 103200.0,
+                    "affected_package_count": 36,
+                    "affected_weight_kg": 720.0
+                }
+            },
+            "objective": "The caller lodges her own notice for container AHLU5412312: temperature damage, not apparent at delivery, 36 cartons, 720.0 kg, at the notice amount 103200.00.",
+            "necessity": "A loss in another container is never added to an existing claim file and needs a notice of its own (claims_ext_notice_container_value), and lodging is the claimant's own act; claims_ext_notice_container_value computes claimed_amount_usd; the file created is the object the rejection decides.",
+            "argument_uniqueness_tracing": {
+                "cover_id": "Id ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a: the CargoCare cover on booking AHLU26BGO527604, read out to the caller by the agent from find_cargo_covers.",
+                "customer_id": "Id 3c1abb85-e4cb-490b-95cb-53c40fe37687: the caller's profile from find_customers; the caller is the cover holder, which claims_notice_and_time_bar admits as claimant.",
+                "container_number": "AHLU5412312, verbatim from the caller ('container AHLU5412312'); it is also the reefer service container on the booking.",
+                "damage_type": "temperature_damage. The caller says the fish 'had thawed and refrozen' and calls it temperature damage; the docstring maps temperature_damage to 'perishable goods damaged by the carrying temperature, such as thawed or warmed cargo'; physical, wet, contamination, shortage, total and delay loss do not describe thawed cartons.",
+                "damage_apparent_at_delivery": "false. The caller: 'Nobody saw anything wrong when the cargo was delivered on 30 July'; the docstring maps false to 'the loss was discovered only after delivery'.",
+                "claimed_amount_usd": "103200.00 = claims_ext_notice_container_value: bol declared_cargo_value_usd 412800.00 / booking container_count 4 = 103200.00; per-container cap 500000.00 not exceeded (capped_value branch untriggered); rounded 103200.00.",
+                "affected_package_count": "36, verbatim from the caller ('36 cartons were affected').",
+                "affected_weight_kg": "720.0, from the caller ('720 kilograms in all'), written with the tool's 1-decimal format."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "reject_cargo_claim_5f9631bd"
+            },
+            "objective": "Unlock the claim rejection tool.",
+            "necessity": "First half of the unlock/call pair for the rejection; no DB effect."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "reject_cargo_claim_5f9631bd",
+                "arguments": {
+                    "cover_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a",
+                    "claim_id": "ccl_6c9158c0b2c9",
+                    "rejection_reason": "notice_out_of_time"
+                }
+            },
+            "objective": "Reject the registered notice with reason notice_out_of_time.",
+            "necessity": "claims_ext_lodging_rejection_grounds computes rejection_reason; a notice meeting a ground is rejected as soon as it is registered.",
+            "argument_uniqueness_tracing": {
+                "cover_id": "Id ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a: the cover named in the lodging receipt of step 13.",
+                "claim_id": "Id ccl_6c9158c0b2c9: the claim reference the caller's own lodging call returns at step 13; the caller reads it out from her confirmation right after submitting ('the confirmation you see gives the claim reference ccl_6c9158c0b2c9, and you read that reference out to the agent straight away'), so it reaches the agent through the dialogue before the rejection. It is the only claim file in the notice_registered state on the cover.",
+                "rejection_reason": "notice_out_of_time = claims_ext_lodging_rejection_grounds: notice_amount 103200.00 >= minimum 50.00 (not below_minimum_claim); temperature_damage is in Total's covered_damage_types and the AHL Reefer Standard rank 1 >= temperature_damage_min_reefer_rank 1 (not not_covered_by_tier); MONTHS(2026-07-30, 2026-09-14) = 1 < 24 (not claim_time_barred); window for loss not apparent at delivery = notice_days_non_apparent_damage 30, last day 2026-08-29, DAYS(2026-07-30, 2026-09-14) = 46 > 30, so notice_out_of_time."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "close_cargo_claim_a3572c28",
+                "arguments": {
+                    "cover_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a"
+                }
+            },
+            "objective": "Close the rejected notice, returning the cover to claim_closed.",
+            "necessity": "claims_settlement_payment closes the decided claim; last workflow step.",
+            "argument_uniqueness_tracing": {
+                "cover_id": "Id ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a: the cover of the notice just rejected (rejection receipt at step 15)."
+            }
+        }
+    ],
+    "prerequisite_closure": {
+        "root_problem": "claims_ext_lodging_rejection_grounds",
+        "edges": [
+            {
+                "from": "claims_ext_lodging_rejection_grounds",
+                "to": "claims_ext_notice_container_value",
+                "kind": "value_input",
+                "gate": "notice_amount",
+                "condition": "The notice being decided is registered on the cover, carrying its amount, container, kind of loss, apparent-at-delivery flag and notice date.",
+                "policy_source": "A notice can be decided here only once it has been registered on the cover.",
+                "resolved_by": "lodge_cargo_claim_268664bf",
+                "unresolved_at_frozen_time": {
+                    "why_false": "At frozen_time the cover carries no claim file in the notice_registered state: its five files are approved (two), rejected, withdrawn and documents_complete, and the most recent notice is the container AHLU5412230 file of 2026-08-14, so there is no registered notice for container AHLU5412312 to decide.",
+                    "evidence": [
+                        "initial_state.cargo_claims.a7683976-170a-4404-a0be-68e78377edaf.outcome = approved",
+                        "initial_state.cargo_claims.1ac4119f-db6e-4367-a54d-c5e978c0a856.outcome = approved",
+                        "initial_state.cargo_claims.cb525968-f3a7-4fa6-979d-51f39117413d.outcome = rejected",
+                        "initial_state.cargo_claims.cc3e611f-9d97-4bd7-8827-2902fcdcc0cc.outcome = withdrawn",
+                        "initial_state.cargo_claims.6d48f2e5-604b-433b-8e70-9b61f12a0d74.outcome = documents_complete",
+                        "initial_state.cargo_claims.6d48f2e5-604b-433b-8e70-9b61f12a0d74.notice_date = 2026-08-14"
+                    ],
+                    "flips_to_true_by": "The claimant's lodging call (evaluation step 13) creates claim file ccl_6c9158c0b2c9 in the notice_registered state for container AHLU5412312 with claimed_amount_usd 103200.00 and notice_date 2026-09-14; notice_amount becomes 103200.00 and the most recent notice becomes that file (temperature_damage, not apparent, reefer tier AHL Reefer Standard)."
+                }
+            },
+            {
+                "from": "claims_ext_notice_container_value",
+                "to": "claims_ext_settlement_invoice_share",
+                "kind": "state_gate",
+                "gate": "claims_notice_and_time_bar.claim_cap",
+                "condition": "No claim is open on the cover when the further notice is lodged, the claim that was open with its documents complete having been decided.",
+                "policy_source": "A further notice can be lodged on a cover only when no claim is open on it: a claim still open on the cover whose documents are complete is decided by the desk before the further notice is lodged",
+                "resolved_by": "approve_claim_settlement_060ed8c3",
+                "unresolved_at_frozen_time": {
+                    "why_false": "At frozen_time the cover is claim_open on the container AHLU5412230 claim, whose file is documents_complete and has no settlement or rejection entry on the claims account, so a further notice would put a second open claim on the cover.",
+                    "evidence": [
+                        "initial_state.cargo_covers.ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a.status = claim_open",
+                        "initial_state.cargo_claims.6d48f2e5-604b-433b-8e70-9b61f12a0d74.outcome = documents_complete"
+                    ],
+                    "flips_to_true_by": "The settlement approval (evaluation step 9) books claims_settlement_approved for that claim at 22704.00 and turns its outcome to approved; the closure that follows (step 11) sets the cover to claim_closed, from which the lodging transition claim_closed -> claim_open is open."
+                }
+            }
+        ],
+        "resolution_order": [
+            "claims_ext_settlement_invoice_share",
+            "claims_ext_notice_container_value",
+            "claims_ext_lodging_rejection_grounds"
+        ],
+        "order_uniqueness": "The tree is a chain (rejection grounds <- notice <- settlement of the open claim), so there are no parallel prerequisites to reorder: the settlement must precede the notice because only one claim is open at a time and the lodging transition starts from claim_closed, and the notice must precede the rejection because the rejection decides the registered notice. Inside the workflow the two closures are fixed by claims_settlement_payment (a decided claim closes the open claim), so exactly one write order exists.",
+        "edge_load_bearing": [
+            {
+                "edge": "claims_ext_lodging_rejection_grounds -> claims_ext_notice_container_value",
+                "skipped_effect": "Skipping the claimant's lodging (step 13) and replaying the rest: the rejection-grounds recompute at step 15 reads notice_amount 0.00 (no notice_registered file) and falls on the older 2026-08-14 notice, giving below_minimum_claim instead of notice_out_of_time; the terminal DB also lacks claim file ccl_6c9158c0b2c9 and the cover ends claim_closed with no further notice (verify.py 0: terminal hash differs = True)."
+            },
+            {
+                "edge": "claims_ext_notice_container_value -> claims_ext_settlement_invoice_share",
+                "skipped_effect": "Skipping the settlement approval (step 9) and replaying the rest: the notice amount (103200.00) and the rejection reason (notice_out_of_time) recompute unchanged, but the terminal DB lacks the claims_settlement_approved entry of 22704.00, the container AHLU5412230 file stays documents_complete instead of approved, and the cover's settlement_payable_usd ends 0.00 instead of 22704.00, while a further notice has been lodged over an undecided claim (verify.py 0: terminal hash differs = True). The edge is a state_gate: its weight is the one-open-claim gate, not a compute binding."
+            }
+        ],
+        "no_user_hint": "user_scenario asks to have the thawed cartons in container AHLU5412312 'added to your claim on this shipment' and to know today whether the line pays for them. It never asks to lodge a notice, never mentions the container AHLU5412230 claim's documents, a settlement, an approval, a closure, the notice amount or any rejection ground, and contains no policy id. That a separate notice is needed comes only from claims_ext_notice_container_value ('Each notice names one container and one loss; a loss found in another container of the same shipment is never added to a claim file already on the cover and needs a notice of its own.') and that the root decision needs a registered notice comes from claims_ext_lodging_rejection_grounds ('A notice can be decided here only once it has been registered on the cover.'); the open documented claim that blocks the lodging comes from 'A further notice can be lodged on a cover only when no claim is open on it'. The persona's lines about a notice of its own and about something to be decided or closed first are passive reactions that fire only after the agent has explained them.",
+        "tools_do_not_block": "task_tools.py performs no check of any prerequisite: lodge_cargo_claim_268664bf creates the claim file and sets the cover to claim_open whatever the cover's current status or open claims are; reject_cargo_claim_5f9631bd books the rejection for whatever claim_id and reason it is given; approve_claim_settlement_060ed8c3 and close_cargo_claim_a3572c28 likewise write without reading any status. A skipped prerequisite therefore shows only as a different terminal DB."
+    },
+    "charter_scope": {
+        "extended_policies": [
+            "claims_ext_settlement_invoice_share",
+            "claims_ext_notice_container_value",
+            "claims_ext_lodging_rejection_grounds"
+        ],
+        "workflows": [
+            "claims_wf_further_notice_on_open_cover"
+        ],
+        "task_tools": [
+            "approve_claim_settlement_060ed8c3",
+            "close_cargo_claim_a3572c28",
+            "lodge_cargo_claim_268664bf",
+            "reject_cargo_claim_5f9631bd"
+        ]
+    },
+    "required_documents": [
+        "claims_ext_settlement_invoice_share",
+        "claims_ext_notice_container_value",
+        "claims_ext_lodging_rejection_grounds"
+    ],
+    "computations": [
+        {
+            "policy_id": "claims_ext_settlement_invoice_share",
+            "target_holding_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a",
+            "step": 9,
+            "arg": "amount_usd",
+            "expected": 22704.0,
+            "factor_trace": [
+                "basis = P('liability_basis') of AHL CargoCare Total = cargocare_cover (claims charter variants)",
+                "claimed = SUM(cargo_claims.claimed_amount_usd, outcome=documents_complete) = 103200.00 (the container AHLU5412230 file, the only documents_complete file)",
+                "affected_packages = SUM(affected_package_count, documents_complete) = 240; affected_weight = SUM(affected_weight_kg, documents_complete) = 4800.0",
+                "loss_kind = LATEST(cargo_claims.damage_type by notice_date) = temperature_damage (latest notice 2026-08-14 over A1 07-30, A2 08-04, R1 08-07, W1 08-09)",
+                "doc_value = CFIELD(bol.declared_cargo_value_usd, booking) = 412800.00; doc_packages = CFIELD(bol.package_count) = 4800 (cross-category read, transport document AHLU2605518342)",
+                "invoice_share = RND(412800.00 x 240 / 4800, 2) = 20640.00; proven = MN(103200.00, 20640.00) = 20640.00 (invoice value binds)",
+                "hv_limit = RND(MX(666.67 x 240, 2.00 x 4800.0) x 1.3385, 2) = 214161.07 and dv_share = RND(454080.00 x 240 / 4800, 2) = 22704.00, both computed but unused because basis is cargocare_cover (untriggered branches)",
+                "loss_basis = 20640.00 x (1 + 10/100) = 22704.00 (valuation_uplift_pct 10)",
+                "kind_deductible = temperature_damage_deductible_usd 0.00 (wet branch untriggered); deductible = MX(deductible_per_claim_usd 0.00, 0.00) = 0.00",
+                "cargocare_amount = MN(cover_cap_per_container_usd 500000.00, MX(0, 22704.00 - 0.00)) = 22704.00",
+                "approved_12m = SUM(claims_ledger.amount_usd, claims_settlement_approved, within 12 months) = 3784.00 + 6622.00 = 10406.00; aggregate_left = MX(0, 2000000.00 - 10406.00) = 1989594.00",
+                "result = RND(MN(22704.00, 1989594.00), 2) = 22704.00 (annual_aggregate_limit_usd 2000000.00 > 0, aggregate not binding)"
+            ]
+        },
+        {
+            "policy_id": "claims_ext_notice_container_value",
+            "target_holding_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a",
+            "step": 13,
+            "arg": "claimed_amount_usd",
+            "expected": 103200.0,
+            "factor_trace": [
+                "doc_value = CFIELD(bol.declared_cargo_value_usd, booking) = 412800.00 (cross-category, transport document AHLU2605518342)",
+                "booking_containers = CFIELD(booking.container_count, booking) = 4 (cross-category, booking AHLU26BGO527604)",
+                "container_value = RND(412800.00 / 4, 2) = 103200.00 (declared value present, so the insured-value fallback 454080.00 / 4 = 113520.00 is untriggered)",
+                "container_cap = P('cover_cap_per_container_usd') = 500000.00 (AHL CargoCare Total)",
+                "capped_value = 103200.00 (103200.00 does not exceed 500000.00, cap branch untriggered)",
+                "result = RND(103200.00, 2) = 103200.00"
+            ]
+        },
+        {
+            "policy_id": "claims_ext_lodging_rejection_grounds",
+            "target_holding_id": "ed9e8fb4-68b5-47ac-98ad-2e9aa1fe419a",
+            "step": 15,
+            "arg": "rejection_reason",
+            "expected": "notice_out_of_time",
+            "factor_trace": [
+                "notice_amount = SUM(cargo_claims.claimed_amount_usd, outcome=notice_registered) = 103200.00 (only the file lodged at step 13)",
+                "loss_kind = temperature_damage, apparent = False, notice_on = 2026-09-14, container = AHLU5412312 (LATEST by notice_date = the file lodged at step 13)",
+                "reefer_tier = CFIELD(reefer.variant_name, booking, container AHLU5412312) = AHL Reefer Standard -> reefer_rank = 1 (cross-category)",
+                "kind_covered = temperature_damage in Total covered_damage_types = True; tier_covers = 1 >= temperature_damage_min_reefer_rank 1 = True",
+                "bar_months = MONTHS(2026-07-30, 2026-09-14) = 1 < claim_time_bar_months 24 -> within_bar True",
+                "window_days = notice_days_non_apparent_damage 30 (not delay loss, not apparent); within_window = DAYS(2026-07-30, 2026-09-14) = 46 <= 30 -> False",
+                "result: 103200.00 >= minimum_claim_amount_usd 50.00 (not below_minimum_claim); tier covers (not not_covered_by_tier); within bar (not claim_time_barred); outside window -> notice_out_of_time"
+            ]
+        }
+    ]
+}

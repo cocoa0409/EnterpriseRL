@@ -1,0 +1,830 @@
+{
+    "frozen_time": "2026-09-10 15:30:00 UTC",
+    "design_rationale": "GOOD TEST: Marcus's surface goal ('add my usual top-up') never names a dollar figure, a policy id, or anything about his account's status. Between that single ask and the scored write (credited_amount on apply_credit_topup_b1893e39) sits a 2-hop chain the agent must read out of the policy text and the world alone, never out of anything Marcus says: (1) retail_ext_topup_credit.compute has exactly one prerequisite -- a value_input on its own `room` binding (room = maximum_balance_usd - current_balance), pointing at retail_ext_topup_refund; retail_ext_topup_credit's rule itself says nothing about suspension at all, and carries no gate of its own tied to account status -- the dependency on reinstatement is purely TRANSITIVE, routed through the refund. (2) retail_ext_topup_refund is itself state_due (fires automatically once a suspended account is reinstated, regardless of whether anyone asks), but its own rule requires 'A refund of a top-up may be recorded only while the account is active or in the same moment as its confirmed cancellation to closed' -- inherited from base retail_refund_policy's structured eligibility (allowed=[active, closed]) -- and the account's status is 'suspended' at the opening, so the refund itself cannot be recorded until retail_ext_reinstatement (itself state_due, since the account sits suspended regardless of whether Marcus calls at all) resolves that gate. The agent discovers both hops purely by reading retail_ext_topup_credit's rule (which names the room/cap dependency), then retail_ext_topup_refund's rule (which names the active-or-closed status requirement), then the account's own status=suspended row -- never from Marcus, who asks only for the top-up and reacts passively once the representative explains what else the account needs first. BREADTH: the bonus_pct branch (MX of two tier params), the membership good-standing branch (CFIELD on a different category), the cap branch (MN against maximum_balance_usd, which genuinely binds if the refund is skipped), and the reinstatement-fee corp surcharge branch (CPARAM on a THIRD category, corp) are four independent, parallel factors. SCOPE TAKEN: this is the first task instantiated for this difficulty; it claims retail_ext_topup_credit (root), retail_ext_topup_refund and retail_ext_reinstatement -- the whole chain behind an on-request top-up on a suspended account. It leaves retail_ext_auto_reload, retail_ext_redemption_settlement, retail_ext_closure_settlement and the difficulty's one workflow completely untouched for task 1, which never touches redemption, auto-reload or closure. BASE-INVARIANT CARD: retail_fraud_suspension_policy has eligibility=[] (policy_scope only) -- reinstatement has no structured gate to inherit beyond the tier's own reinstatement_fee_usd param, which this task carries via base_fee=P('reinstatement_fee_usd')=0.00 for the Standard Credit $100 Tier. retail_refund_policy's ONE structured eligibility (refund_requires_open_or_just_closed_account, state, allowed=[active,closed]) intersects retail_ext_topup_refund's subject (retail_credit_refund) and is inherited verbatim: at the OPENING world the account's status is 'suspended' (initial_state.retail_credit_accounts.<acct>.status='suspended'), so this gate is FALSE at frozen_time -- exactly why reinstatement is a genuine, unmet-at-opening prerequisite, not a decoration. After reinstate_suspended_credit_account_88623c40 runs (step index 7) the status flips to 'active', satisfying the gate for the refund call at step index 9. retail_tier_topup_pricing has eligibility=[] (policy_scope). BUSINESS-OBJECT CARD: the target object is the single store-credit account credit_account_id=77976684-a4a9-4996-8807-fba88f0eddee (retail_agg_multi_holding limits Marcus to exactly one non-closed account); the refund's source is every retail_credit_topup row within the calendar month preceding reinstatement (SUM's own within_months=1 date filter), which in this seed is exactly the single row c888bbe9-0605-4bbd-8626-8ac151cee60a -- the other 8 topup rows (all more than a month before frozen_time) and the 1 redemption row are excluded by that same date filter, not by any ad hoc rule. PROBLEM-TREE CARD: root=retail_ext_topup_credit. Edge1 (retail_ext_topup_credit -> retail_ext_topup_refund, value_input, gate=room): unresolved_at_frozen_time because credit_balance=360.00 still includes the un-refunded $20.00 top-up; skipping the refund leaves the post-fee balance at 310.00 instead of 290.00, so room=MX(400.00-310.00,0)=90.00 instead of MX(400.00-290.00,0)=110.00 -- since face+bonus=102.00 exceeds 90.00 but not 110.00, credited_amount would drop to 90.00 (capped) if the refund were skipped, versus the real 102.00 (uncapped) once it is resolved: a genuinely different terminal value, confirmed by check_compute.py's own value_input replay. Edge2 (retail_ext_topup_refund -> retail_ext_reinstatement, state_gate, gate=retail_credit_accounts.status): unresolved_at_frozen_time because initial_state.retail_credit_accounts.<acct>.status='suspended' (not in the refund eligibility's allowed=[active,closed]); resolved once reinstate_suspended_credit_account_88623c40 flips status to 'active'. Order: reinstatement, then refund, then topup -- a strict chain, no parallel-order ambiguity to resolve. TOPOLOGICAL/GT ORDER: GT calls land in exactly this order (steps 7, 9, 11), matching prerequisite_closure.resolution_order. user_scenario names neither the hold, the reinstatement, the refund, nor any order between them -- Marcus asks only to have his usual top-up added, and cooperates passively ('Oh, I had no idea -- that's fine, go ahead and take care of whatever needs to happen') only once the representative has already explained the hold and the fee, never before. Both retail_ext_reinstatement and retail_ext_topup_refund are classified state_due precisely so that neither prerequisite's discovery or handling time is anchored to a customer utterance: the agent finds them by reading the account's own status and the policy text, not by being told. tools_do_not_block: refund_topup_amount_847aef7e and apply_credit_topup_b1893e39 perform their ctx.create/ctx.update unconditionally on whatever arguments are passed -- neither checks account status, so calling either while suspended would still silently write (see task_tools.py, no status branch in either function body); the correctness of resolving reinstatement first shows up only in the terminal balance/eligibility-evidence match, never in a tool refusal. STANDARD SOLUTION: locate+verify Marcus, read the account and its ledger, read the membership holding (dues_balance=0.00, good standing) and the corp enrollment (Startup Partner, suspended, late_payment_fee_usd=50.00 from corp.yaml), compute reinstatement_fee_amount=0.00+50.00=50.00, call reinstate; recompute refund_amount=SUM(within_months=1 topups)=20.00, pct=100 -> RND(20.00*100/100,2)=20.00, call refund; recompute credited_amount=MN(100.00+RND(100*2/100,2), MX(400.00-(360.00-50.00-20.00),0))=MN(102.00,110.00)=102.00, call topup. VERIFICATION: hand-computed and cross-checked against build_env's own SUM/CPARAM/CFIELD semantics (SUM is holding-scoped and month-windowed; CPARAM looks up the matching cross-category holding's variant parameters in corp.yaml); recomputation performed a second time reading only the rendered-KB-equivalent prose (the rule paragraphs above) plus the ledger and tier table, with no reference to compute/expected, and reached the same three numbers. CLOSURE: charter_scope={retail_ext_topup_credit, retail_ext_topup_refund, retail_ext_reinstatement}=computations policy ids=required_documents; task_tools={reinstate_suspended_credit_account_88623c40, refund_topup_amount_847aef7e, apply_credit_topup_b1893e39} in first-use order, matching GT. REWORK NOTE (round 2): the earlier revision's rationale mistakenly quoted retail_ext_topup_credit.rule as containing 'no further top-up may be credited while suspended' -- that sentence never existed anywhere in the charter; the corrected account above states the true, sole mechanism (a value_input on `room`, transitively routed through retail_ext_topup_refund's own state_gate) and the persona was rewritten to remove the customer's outright naming of the reinstatement prerequisite and its order, replacing it with a root-only ask plus passive, post-explanation cooperation; retail_ext_reinstatement's trigger was reclassified on_request -> state_due (propagated to retail.extended.yaml and to this task's solvability_contract.gold_actions[step=7], whose intent_source now cites initial_state.retail_credit_accounts.<acct>.status instead of a user_scenario quotation) so that neither hidden prerequisite is anchored to anything the customer says.",
+    "user_scenario": "Marcus Yeboah is a member of Vantage Metro Fitness who keeps a pro-shop store-credit account for his gear purchases. He calls the contact center in a relaxed, everyday tone and opens with something like, 'Hi, this is Marcus Yeboah -- I'd like to add my usual top-up to my store-credit account, please.' That is the entire reason for his call; he has no other request in mind. He wants the representative to just handle it directly on his end -- he isn't planning to come into a club for it and isn't asking for anything to be mailed or emailed to him. If asked how he'd like to verify himself, he gives his phone number and email without hesitation: his number on file is 2125550500, and his email is marcus.yeboah@example.com; if pressed for a third detail he can also give his date of birth, 1989-03-14. He doesn't know his account reference number and has never seen the actual dollar figures the system will land on, so if asked what the top-up amount should come out to or what any fee might be, he says, 'Honestly I have no idea, whatever the standard amount and fees are is fine -- that's what I'm calling you for.' He has no idea his account carries any particular tier name either; if asked, he just says 'whatever tier I signed up with, I haven't changed it.' If the representative mentions that the account was found on a fraud-review hold and that it needs to be lifted before anything else can happen, he reacts with mild surprise but cooperates readily, saying something like 'Oh, I had no idea -- that's fine, go ahead and take care of whatever needs to happen.' If the representative goes on to explain that lifting the hold carries a fee, or that a recent top-up is being reversed as part of getting the account back in order, he doesn't ask for details or push back -- he just says 'Sure, whatever the process requires is fine by me' and waits for the top-up to go through. He never volunteers that anything might be wrong with his account and never suggests an order of operations himself -- he only reacts, calmly and cooperatively, to whatever the representative actually tells him. Once the representative confirms the top-up has been applied, he simply thanks them and says that's everything he needed, and ends the call there.",
+    "initial_state": {
+        "customers": {
+            "1715e632-0d50-49ea-a41f-af46b9651f9b": {
+                "customer_id": "1715e632-0d50-49ea-a41f-af46b9651f9b",
+                "full_name": "Marcus Yeboah",
+                "phone_number": "2125550500",
+                "email": "marcus.yeboah@example.com",
+                "date_of_birth": "1989-03-14",
+                "photo_id_last4": "4471",
+                "member_since_date": "2022-05-01",
+                "home_club_id": ""
+            }
+        },
+        "membership_holdings": {
+            "401706f0-7823-49e9-bc1e-d6391a0f5c40": {
+                "membership_id": "401706f0-7823-49e9-bc1e-d6391a0f5c40",
+                "customer_id": "1715e632-0d50-49ea-a41f-af46b9651f9b",
+                "variant_name": "Base Club Access",
+                "status": "active",
+                "home_club_id": "",
+                "opened_date": "2022-05-01",
+                "closed_date": "",
+                "dues_balance": 0.0,
+                "guest_passes_remaining": 0,
+                "freeze_start_date": "",
+                "freeze_end_date": "",
+                "past_due_since_date": ""
+            }
+        },
+        "corporate_wellness_enrollments": {
+            "4bba9416-fd73-4d05-8816-b733a66d8f85": {
+                "enrollment_id": "4bba9416-fd73-4d05-8816-b733a66d8f85",
+                "customer_id": "1715e632-0d50-49ea-a41f-af46b9651f9b",
+                "variant_name": "Startup Partner",
+                "status": "suspended",
+                "employer_name": "Brightline Analytics",
+                "employer_account_id": "366cc06c-834b-4c11-9962-7e1aac6650b9",
+                "opened_date": "2024-02-01",
+                "closed_date": "",
+                "corporate_dues_balance": 150.0
+            }
+        },
+        "retail_credit_accounts": {
+            "77976684-a4a9-4996-8807-fba88f0eddee": {
+                "credit_account_id": "77976684-a4a9-4996-8807-fba88f0eddee",
+                "customer_id": "1715e632-0d50-49ea-a41f-af46b9651f9b",
+                "variant_name": "Standard Credit $100 Tier",
+                "status": "suspended",
+                "opened_date": "2022-11-05",
+                "closed_date": "",
+                "credit_balance": 360.0
+            }
+        },
+        "retail_credit_events": {
+            "b3d1d1a5-466d-48fa-8a9e-4b867a700496": {
+                "event_id": "b3d1d1a5-466d-48fa-8a9e-4b867a700496",
+                "credit_account_id": "77976684-a4a9-4996-8807-fba88f0eddee",
+                "customer_id": "1715e632-0d50-49ea-a41f-af46b9651f9b",
+                "event_type": "retail_credit_topup",
+                "event_timestamp": "2022-11-05 09:15:00",
+                "amount_usd": 45.0,
+                "purchase_item": "",
+                "channel": "app"
+            },
+            "b6d0a5c4-5a7f-453a-98f0-5acfc2f2c4c0": {
+                "event_id": "b6d0a5c4-5a7f-453a-98f0-5acfc2f2c4c0",
+                "credit_account_id": "77976684-a4a9-4996-8807-fba88f0eddee",
+                "customer_id": "1715e632-0d50-49ea-a41f-af46b9651f9b",
+                "event_type": "retail_credit_topup",
+                "event_timestamp": "2023-02-10 10:00:00",
+                "amount_usd": 45.0,
+                "purchase_item": "",
+                "channel": "web"
+            },
+            "fc72d0a3-bd3b-4ed5-9158-11be0958e667": {
+                "event_id": "fc72d0a3-bd3b-4ed5-9158-11be0958e667",
+                "credit_account_id": "77976684-a4a9-4996-8807-fba88f0eddee",
+                "customer_id": "1715e632-0d50-49ea-a41f-af46b9651f9b",
+                "event_type": "retail_credit_topup",
+                "event_timestamp": "2023-07-18 11:30:00",
+                "amount_usd": 45.0,
+                "purchase_item": "",
+                "channel": "app"
+            },
+            "5dca1605-3b25-4571-8056-76ab8d7d39b9": {
+                "event_id": "5dca1605-3b25-4571-8056-76ab8d7d39b9",
+                "credit_account_id": "77976684-a4a9-4996-8807-fba88f0eddee",
+                "customer_id": "1715e632-0d50-49ea-a41f-af46b9651f9b",
+                "event_type": "retail_credit_redeemed",
+                "event_timestamp": "2023-09-02 16:45:00",
+                "amount_usd": -20.0,
+                "purchase_item": "Water bottle",
+                "channel": "front_desk"
+            },
+            "6dbe0269-caf9-4cc4-8ae9-ea38eb33adbf": {
+                "event_id": "6dbe0269-caf9-4cc4-8ae9-ea38eb33adbf",
+                "credit_account_id": "77976684-a4a9-4996-8807-fba88f0eddee",
+                "customer_id": "1715e632-0d50-49ea-a41f-af46b9651f9b",
+                "event_type": "retail_credit_topup",
+                "event_timestamp": "2023-12-14 09:00:00",
+                "amount_usd": 45.0,
+                "purchase_item": "",
+                "channel": "phone"
+            },
+            "974b8e0d-6828-46e7-8fd3-2fa50e7b83d3": {
+                "event_id": "974b8e0d-6828-46e7-8fd3-2fa50e7b83d3",
+                "credit_account_id": "77976684-a4a9-4996-8807-fba88f0eddee",
+                "customer_id": "1715e632-0d50-49ea-a41f-af46b9651f9b",
+                "event_type": "retail_credit_topup",
+                "event_timestamp": "2024-05-20 14:00:00",
+                "amount_usd": 45.0,
+                "purchase_item": "",
+                "channel": "web"
+            },
+            "7e784ddb-0d1c-44bc-8ed8-63d4f8adff82": {
+                "event_id": "7e784ddb-0d1c-44bc-8ed8-63d4f8adff82",
+                "credit_account_id": "77976684-a4a9-4996-8807-fba88f0eddee",
+                "customer_id": "1715e632-0d50-49ea-a41f-af46b9651f9b",
+                "event_type": "retail_credit_topup",
+                "event_timestamp": "2024-11-03 12:00:00",
+                "amount_usd": 45.0,
+                "purchase_item": "",
+                "channel": "app"
+            },
+            "1a6429b7-de3e-4c63-aeac-caeecb05135c": {
+                "event_id": "1a6429b7-de3e-4c63-aeac-caeecb05135c",
+                "credit_account_id": "77976684-a4a9-4996-8807-fba88f0eddee",
+                "customer_id": "1715e632-0d50-49ea-a41f-af46b9651f9b",
+                "event_type": "retail_credit_topup",
+                "event_timestamp": "2025-04-09 08:30:00",
+                "amount_usd": 45.0,
+                "purchase_item": "",
+                "channel": "app"
+            },
+            "bd4bd86b-41db-4628-bea2-ecfd27b59a8f": {
+                "event_id": "bd4bd86b-41db-4628-bea2-ecfd27b59a8f",
+                "credit_account_id": "77976684-a4a9-4996-8807-fba88f0eddee",
+                "customer_id": "1715e632-0d50-49ea-a41f-af46b9651f9b",
+                "event_type": "retail_credit_topup",
+                "event_timestamp": "2025-10-22 17:00:00",
+                "amount_usd": 45.0,
+                "purchase_item": "",
+                "channel": "web"
+            },
+            "c888bbe9-0605-4bbd-8626-8ac151cee60a": {
+                "event_id": "c888bbe9-0605-4bbd-8626-8ac151cee60a",
+                "credit_account_id": "77976684-a4a9-4996-8807-fba88f0eddee",
+                "customer_id": "1715e632-0d50-49ea-a41f-af46b9651f9b",
+                "event_type": "retail_credit_topup",
+                "event_timestamp": "2026-09-08 13:10:00",
+                "amount_usd": 20.0,
+                "purchase_item": "",
+                "channel": "phone"
+            }
+        }
+    },
+    "db_closure": {
+        "retail_credit_events": {
+            "6dbe0269-caf9-4cc4-8ae9-ea38eb33adbf": {
+                "event_id": "6dbe0269-caf9-4cc4-8ae9-ea38eb33adbf",
+                "credit_account_id": "77976684-a4a9-4996-8807-fba88f0eddee",
+                "customer_id": "1715e632-0d50-49ea-a41f-af46b9651f9b",
+                "event_type": "retail_credit_topup",
+                "event_timestamp": "2023-12-14 09:00:00",
+                "amount_usd": 45.0,
+                "purchase_item": "",
+                "channel": "phone"
+            },
+            "1a6429b7-de3e-4c63-aeac-caeecb05135c": {
+                "event_id": "1a6429b7-de3e-4c63-aeac-caeecb05135c",
+                "credit_account_id": "77976684-a4a9-4996-8807-fba88f0eddee",
+                "customer_id": "1715e632-0d50-49ea-a41f-af46b9651f9b",
+                "event_type": "retail_credit_topup",
+                "event_timestamp": "2025-04-09 08:30:00",
+                "amount_usd": 45.0,
+                "purchase_item": "",
+                "channel": "app"
+            },
+            "5dca1605-3b25-4571-8056-76ab8d7d39b9": {
+                "event_id": "5dca1605-3b25-4571-8056-76ab8d7d39b9",
+                "credit_account_id": "77976684-a4a9-4996-8807-fba88f0eddee",
+                "customer_id": "1715e632-0d50-49ea-a41f-af46b9651f9b",
+                "event_type": "retail_credit_redeemed",
+                "event_timestamp": "2023-09-02 16:45:00",
+                "amount_usd": -20.0,
+                "purchase_item": "Water bottle",
+                "channel": "front_desk"
+            },
+            "b3d1d1a5-466d-48fa-8a9e-4b867a700496": {
+                "event_id": "b3d1d1a5-466d-48fa-8a9e-4b867a700496",
+                "credit_account_id": "77976684-a4a9-4996-8807-fba88f0eddee",
+                "customer_id": "1715e632-0d50-49ea-a41f-af46b9651f9b",
+                "event_type": "retail_credit_topup",
+                "event_timestamp": "2022-11-05 09:15:00",
+                "amount_usd": 45.0,
+                "purchase_item": "",
+                "channel": "app"
+            },
+            "7e784ddb-0d1c-44bc-8ed8-63d4f8adff82": {
+                "event_id": "7e784ddb-0d1c-44bc-8ed8-63d4f8adff82",
+                "credit_account_id": "77976684-a4a9-4996-8807-fba88f0eddee",
+                "customer_id": "1715e632-0d50-49ea-a41f-af46b9651f9b",
+                "event_type": "retail_credit_topup",
+                "event_timestamp": "2024-11-03 12:00:00",
+                "amount_usd": 45.0,
+                "purchase_item": "",
+                "channel": "app"
+            },
+            "bd4bd86b-41db-4628-bea2-ecfd27b59a8f": {
+                "event_id": "bd4bd86b-41db-4628-bea2-ecfd27b59a8f",
+                "credit_account_id": "77976684-a4a9-4996-8807-fba88f0eddee",
+                "customer_id": "1715e632-0d50-49ea-a41f-af46b9651f9b",
+                "event_type": "retail_credit_topup",
+                "event_timestamp": "2025-10-22 17:00:00",
+                "amount_usd": 45.0,
+                "purchase_item": "",
+                "channel": "web"
+            },
+            "b6d0a5c4-5a7f-453a-98f0-5acfc2f2c4c0": {
+                "event_id": "b6d0a5c4-5a7f-453a-98f0-5acfc2f2c4c0",
+                "credit_account_id": "77976684-a4a9-4996-8807-fba88f0eddee",
+                "customer_id": "1715e632-0d50-49ea-a41f-af46b9651f9b",
+                "event_type": "retail_credit_topup",
+                "event_timestamp": "2023-02-10 10:00:00",
+                "amount_usd": 45.0,
+                "purchase_item": "",
+                "channel": "web"
+            },
+            "fc72d0a3-bd3b-4ed5-9158-11be0958e667": {
+                "event_id": "fc72d0a3-bd3b-4ed5-9158-11be0958e667",
+                "credit_account_id": "77976684-a4a9-4996-8807-fba88f0eddee",
+                "customer_id": "1715e632-0d50-49ea-a41f-af46b9651f9b",
+                "event_type": "retail_credit_topup",
+                "event_timestamp": "2023-07-18 11:30:00",
+                "amount_usd": 45.0,
+                "purchase_item": "",
+                "channel": "app"
+            },
+            "974b8e0d-6828-46e7-8fd3-2fa50e7b83d3": {
+                "event_id": "974b8e0d-6828-46e7-8fd3-2fa50e7b83d3",
+                "credit_account_id": "77976684-a4a9-4996-8807-fba88f0eddee",
+                "customer_id": "1715e632-0d50-49ea-a41f-af46b9651f9b",
+                "event_type": "retail_credit_topup",
+                "event_timestamp": "2024-05-20 14:00:00",
+                "amount_usd": 45.0,
+                "purchase_item": "",
+                "channel": "web"
+            },
+            "c888bbe9-0605-4bbd-8626-8ac151cee60a": {
+                "event_id": "c888bbe9-0605-4bbd-8626-8ac151cee60a",
+                "credit_account_id": "77976684-a4a9-4996-8807-fba88f0eddee",
+                "customer_id": "1715e632-0d50-49ea-a41f-af46b9651f9b",
+                "event_type": "retail_credit_topup",
+                "event_timestamp": "2026-09-08 13:10:00",
+                "amount_usd": 20.0,
+                "purchase_item": "",
+                "channel": "phone"
+            }
+        },
+        "retail_credit_accounts": {
+            "77976684-a4a9-4996-8807-fba88f0eddee": {
+                "credit_account_id": "77976684-a4a9-4996-8807-fba88f0eddee",
+                "customer_id": "1715e632-0d50-49ea-a41f-af46b9651f9b",
+                "variant_name": "Standard Credit $100 Tier",
+                "status": "suspended",
+                "opened_date": "2022-11-05",
+                "closed_date": "",
+                "credit_balance": 360.0
+            }
+        },
+        "membership_holdings": {
+            "401706f0-7823-49e9-bc1e-d6391a0f5c40": {
+                "membership_id": "401706f0-7823-49e9-bc1e-d6391a0f5c40",
+                "customer_id": "1715e632-0d50-49ea-a41f-af46b9651f9b",
+                "variant_name": "Base Club Access",
+                "status": "active",
+                "home_club_id": "",
+                "opened_date": "2022-05-01",
+                "closed_date": "",
+                "dues_balance": 0.0,
+                "guest_passes_remaining": 0,
+                "freeze_start_date": "",
+                "freeze_end_date": "",
+                "past_due_since_date": ""
+            }
+        },
+        "customers": {
+            "1715e632-0d50-49ea-a41f-af46b9651f9b": {
+                "customer_id": "1715e632-0d50-49ea-a41f-af46b9651f9b",
+                "full_name": "Marcus Yeboah",
+                "phone_number": "2125550500",
+                "email": "marcus.yeboah@example.com",
+                "date_of_birth": "1989-03-14",
+                "photo_id_last4": "4471",
+                "member_since_date": "2022-05-01",
+                "home_club_id": ""
+            }
+        },
+        "corporate_wellness_enrollments": {
+            "4bba9416-fd73-4d05-8816-b733a66d8f85": {
+                "enrollment_id": "4bba9416-fd73-4d05-8816-b733a66d8f85",
+                "customer_id": "1715e632-0d50-49ea-a41f-af46b9651f9b",
+                "variant_name": "Startup Partner",
+                "status": "suspended",
+                "employer_name": "Brightline Analytics",
+                "employer_account_id": "366cc06c-834b-4c11-9962-7e1aac6650b9",
+                "opened_date": "2024-02-01",
+                "closed_date": "",
+                "corporate_dues_balance": 150.0
+            }
+        }
+    },
+    "db_closure_matches_initial_state": true,
+    "solvability_contract": {
+        "request_binding_version": 1,
+        "request_alignment": [
+            {
+                "claim": "Marcus wants his usual top-up processed on his store-credit account.",
+                "evidence": [
+                    "user_scenario:I'd like to add my usual top-up to my store-credit account, please."
+                ]
+            }
+        ],
+        "gold_actions": [
+            {
+                "step": 7,
+                "business_effect": "Lifts the fraud-review hold on credit_account_id 77976684-a4a9-4996-8807-fba88f0eddee, flipping its status from suspended to active, and charges the reinstatement fee (base tier fee plus the corp risk surcharge) off the account's balance.",
+                "request_binding": {
+                    "action_semantics": "The account's suspended status is an existing system fact, not something Marcus asks for; retail_fraud_suspension_policy's reinstatement transition is the only action that lifts a fraud-review hold, and per retail_ext_topup_refund's own state_gate it must resolve before the automatic refund (and, transitively, before the top-up Marcus does ask for) can be correctly priced.",
+                    "intent_source": {
+                        "kind": "initial_state",
+                        "evidence": [
+                            "initial_state.retail_credit_accounts.77976684-a4a9-4996-8807-fba88f0eddee.status"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "the account's status is suspended, the sole condition retail_fraud_suspension_policy's reinstatement transition applies to",
+                        "evidence": [
+                            "initial_state.retail_credit_accounts.77976684-a4a9-4996-8807-fba88f0eddee.status"
+                        ],
+                        "action_arg": "credit_account_id",
+                        "value": "77976684-a4a9-4996-8807-fba88f0eddee"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "performed_by_this_tool",
+                    "fact": "the suspended-to-active status transition and the fee charge both complete synchronously inside reinstate_suspended_credit_account_88623c40",
+                    "evidence": [
+                        "initial_state.retail_credit_accounts.77976684-a4a9-4996-8807-fba88f0eddee.status"
+                    ]
+                },
+                "requires_external_wait": false,
+                "zero_wait_proof": "The suspension is an existing system status (initial_state_preexisting); no external review, payment or third-party event is awaited -- the representative simply records the lift and its fee within the same call.",
+                "base_preconditions": [
+                    {
+                        "policy_id": "retail_fraud_suspension_policy",
+                        "eligibility_id": "policy_scope",
+                        "condition": "reinstatement requires a documented review when suspension_review_required applies; reinstatement_fee_usd, if any, is charged on reinstatement",
+                        "evidence": [
+                            "initial_state.retail_credit_accounts.77976684-a4a9-4996-8807-fba88f0eddee.status"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 9,
+                "business_effect": "Refunds event c888bbe9-0605-4bbd-8626-8ac151cee60a (the most recent $20.00 top-up, dated 2026-09-08) off credit_account_id 77976684-a4a9-4996-8807-fba88f0eddee at refund_pct, reducing the account's balance by 20.00.",
+                "request_binding": {
+                    "action_semantics": "As a fraud-prevention safeguard, once a suspended account is reinstated retail_ext_topup_refund reverses any still-in-window top-up automatically, regardless of whether the member asks -- the agent reads this from the ledger and the rendered policy, not from anything Marcus said.",
+                    "intent_source": {
+                        "kind": "prior_step",
+                        "evidence": [
+                            "prior_step:7"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "event c888bbe9-0605-4bbd-8626-8ac151cee60a is the only retail_credit_topup row within the calendar month preceding reinstatement, as of frozen_time",
+                        "evidence": [
+                            "initial_state.retail_credit_events.c888bbe9-0605-4bbd-8626-8ac151cee60a.event_timestamp"
+                        ],
+                        "value": "c888bbe9-0605-4bbd-8626-8ac151cee60a"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "performed_by_this_tool",
+                    "fact": "the refund transaction and balance decrement both complete synchronously inside refund_topup_amount_847aef7e",
+                    "evidence": [
+                        "initial_state.retail_credit_events.c888bbe9-0605-4bbd-8626-8ac151cee60a.amount_usd"
+                    ]
+                },
+                "requires_external_wait": false,
+                "zero_wait_proof": "The top-up being refunded already exists in initial_state (initial_state_preexisting) and the account's status was just made active by the immediately preceding synchronous call (prior_synchronous_tool_effect, step 7); nothing further needs to occur outside this call.",
+                "base_preconditions": [
+                    {
+                        "policy_id": "retail_refund_policy",
+                        "eligibility_id": "refund_requires_open_or_just_closed_account",
+                        "condition": "A refund of a top-up may be recorded only while the account is active or in the same moment as its confirmed cancellation to closed",
+                        "evidence": [
+                            "prior_step:7"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "retail_credit_accounts.credit_account_id",
+                                "source": "prior_step:7",
+                                "source_table": "retail_credit_accounts",
+                                "source_field": "credit_account_id",
+                                "action_arg": "credit_account_id"
+                            }
+                        ],
+                        "satisfied": true
+                    }
+                ],
+                "discriminator": {
+                    "business_meaning": "event c888bbe9-0605-4bbd-8626-8ac151cee60a is the only retail_credit_topup row within the calendar month preceding reinstatement, as of frozen_time",
+                    "evidence": [
+                        "initial_state.retail_credit_events.c888bbe9-0605-4bbd-8626-8ac151cee60a.event_timestamp"
+                    ],
+                    "value": "c888bbe9-0605-4bbd-8626-8ac151cee60a"
+                }
+            },
+            {
+                "step": 11,
+                "business_effect": "Credits credit_account_id 77976684-a4a9-4996-8807-fba88f0eddee for a standard top-up: face value 100.00 plus a 2.00 bonus, for 102.00 added to the balance.",
+                "request_binding": {
+                    "action_semantics": "Marcus's request to add his usual top-up names exactly a standard tier top-up; no other retail action adds the tier's own face value plus bonus.",
+                    "intent_source": {
+                        "kind": "user_scenario",
+                        "evidence": [
+                            "user_scenario:I'd like to add my usual top-up to my store-credit account, please."
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "add my usual top-up to my store-credit account",
+                        "evidence": [
+                            "user_scenario:I'd like to add my usual top-up to my store-credit account, please."
+                        ],
+                        "action_arg": "credit_account_id",
+                        "value": "77976684-a4a9-4996-8807-fba88f0eddee"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "performed_by_this_tool",
+                    "fact": "the top-up transaction and balance increase both complete synchronously inside apply_credit_topup_b1893e39",
+                    "evidence": [
+                        "initial_state.retail_credit_accounts.77976684-a4a9-4996-8807-fba88f0eddee.variant_name"
+                    ]
+                },
+                "requires_external_wait": false,
+                "zero_wait_proof": "The account is active as of the immediately preceding synchronous calls (prior_synchronous_tool_effect, steps 7 and 9); the top-up is an ordinary representative-initiated action needing no external event.",
+                "base_preconditions": [
+                    {
+                        "policy_id": "retail_tier_topup_pricing",
+                        "eligibility_id": "policy_scope",
+                        "condition": "A top-up is credited at face value plus bonus_credit_pct bonus credit (or seasonal_promo_bonus_pct if that promotional rate is higher, never both at once), subject to minimum_topup_usd as the smallest accepted amount and maximum_balance_usd as the cap the resulting balance may not exceed.",
+                        "evidence": [
+                            "prior_step:9"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    }
+                ]
+            }
+        ],
+        "temporal_feasibility": [],
+        "required_user_inputs": [
+            {
+                "information": "phone number on file",
+                "source": "user_scenario:his number on file is 2125550500"
+            },
+            {
+                "information": "email on file",
+                "source": "user_scenario:his email is marcus.yeboah@example.com"
+            }
+        ],
+        "seed_consistency": [
+            {
+                "row": "initial_state.retail_credit_accounts.77976684-a4a9-4996-8807-fba88f0eddee",
+                "policy_id": "retail_agg_multi_holding",
+                "check": "this is the only non-closed store-credit account on file for this customer, consistent with retail_agg_multi_holding's single-account rule; opened_date (2023-11-05) is not later than any event_timestamp on the account, and closed_date is empty because the account is not closed.",
+                "evidence": [
+                    "initial_state.retail_credit_accounts.77976684-a4a9-4996-8807-fba88f0eddee.opened_date"
+                ]
+            },
+            {
+                "row": "initial_state.retail_credit_events.b3d1d1a5-466d-48fa-8a9e-4b867a700496",
+                "policy_id": "retail_tier_topup_pricing",
+                "check": "a positive top-up amount recorded before frozen_time, consistent with retail_tier_topup_pricing.",
+                "evidence": [
+                    "initial_state.retail_credit_events.b3d1d1a5-466d-48fa-8a9e-4b867a700496.amount_usd"
+                ]
+            },
+            {
+                "row": "initial_state.retail_credit_events.b6d0a5c4-5a7f-453a-98f0-5acfc2f2c4c0",
+                "policy_id": "retail_tier_topup_pricing",
+                "check": "a positive top-up amount recorded before frozen_time, consistent with retail_tier_topup_pricing.",
+                "evidence": [
+                    "initial_state.retail_credit_events.b6d0a5c4-5a7f-453a-98f0-5acfc2f2c4c0.amount_usd"
+                ]
+            },
+            {
+                "row": "initial_state.retail_credit_events.fc72d0a3-bd3b-4ed5-9158-11be0958e667",
+                "policy_id": "retail_tier_topup_pricing",
+                "check": "a positive top-up amount recorded before frozen_time, consistent with retail_tier_topup_pricing.",
+                "evidence": [
+                    "initial_state.retail_credit_events.fc72d0a3-bd3b-4ed5-9158-11be0958e667.amount_usd"
+                ]
+            },
+            {
+                "row": "initial_state.retail_credit_events.5dca1605-3b25-4571-8056-76ab8d7d39b9",
+                "policy_id": "retail_redemption_eligibility",
+                "check": "a negative redemption amount recorded while the account held a positive balance, consistent with retail_redemption_eligibility.",
+                "evidence": [
+                    "initial_state.retail_credit_events.5dca1605-3b25-4571-8056-76ab8d7d39b9.amount_usd"
+                ]
+            },
+            {
+                "row": "initial_state.retail_credit_events.6dbe0269-caf9-4cc4-8ae9-ea38eb33adbf",
+                "policy_id": "retail_tier_topup_pricing",
+                "check": "a positive top-up amount recorded before frozen_time, consistent with retail_tier_topup_pricing.",
+                "evidence": [
+                    "initial_state.retail_credit_events.6dbe0269-caf9-4cc4-8ae9-ea38eb33adbf.amount_usd"
+                ]
+            },
+            {
+                "row": "initial_state.retail_credit_events.974b8e0d-6828-46e7-8fd3-2fa50e7b83d3",
+                "policy_id": "retail_tier_topup_pricing",
+                "check": "a positive top-up amount recorded before frozen_time, consistent with retail_tier_topup_pricing.",
+                "evidence": [
+                    "initial_state.retail_credit_events.974b8e0d-6828-46e7-8fd3-2fa50e7b83d3.amount_usd"
+                ]
+            },
+            {
+                "row": "initial_state.retail_credit_events.7e784ddb-0d1c-44bc-8ed8-63d4f8adff82",
+                "policy_id": "retail_tier_topup_pricing",
+                "check": "a positive top-up amount recorded before frozen_time, consistent with retail_tier_topup_pricing.",
+                "evidence": [
+                    "initial_state.retail_credit_events.7e784ddb-0d1c-44bc-8ed8-63d4f8adff82.amount_usd"
+                ]
+            },
+            {
+                "row": "initial_state.retail_credit_events.1a6429b7-de3e-4c63-aeac-caeecb05135c",
+                "policy_id": "retail_tier_topup_pricing",
+                "check": "a positive top-up amount recorded before frozen_time, consistent with retail_tier_topup_pricing.",
+                "evidence": [
+                    "initial_state.retail_credit_events.1a6429b7-de3e-4c63-aeac-caeecb05135c.amount_usd"
+                ]
+            },
+            {
+                "row": "initial_state.retail_credit_events.bd4bd86b-41db-4628-bea2-ecfd27b59a8f",
+                "policy_id": "retail_tier_topup_pricing",
+                "check": "a positive top-up amount recorded before frozen_time, consistent with retail_tier_topup_pricing.",
+                "evidence": [
+                    "initial_state.retail_credit_events.bd4bd86b-41db-4628-bea2-ecfd27b59a8f.amount_usd"
+                ]
+            },
+            {
+                "row": "initial_state.retail_credit_events.c888bbe9-0605-4bbd-8626-8ac151cee60a",
+                "policy_id": "retail_refund_policy",
+                "check": "this top-up's event_timestamp (2026-09-08) is 2 days before frozen_time (2026-09-10), inside refund_window_days=7 for the Standard Credit $100 Tier, and is the most recent retail_credit_topup row on this account (LATEST by event_timestamp among 8 topup rows).",
+                "evidence": [
+                    "initial_state.retail_credit_events.c888bbe9-0605-4bbd-8626-8ac151cee60a.event_timestamp"
+                ]
+            }
+        ]
+    },
+    "evaluation_criteria": [
+        {
+            "owner": "agent",
+            "tool": "find_customers",
+            "arguments": {
+                "phone_number": "2125550500"
+            },
+            "objective": "Locate Marcus's member profile from the phone number he states.",
+            "necessity": "Establishes customer_id, the locator every later read and write needs."
+        },
+        {
+            "owner": "agent",
+            "tool": "verify_member_identity",
+            "arguments": {
+                "customer_id": "1715e632-0d50-49ea-a41f-af46b9651f9b",
+                "phone_number": "2125550500",
+                "email": "marcus.yeboah@example.com"
+            },
+            "objective": "Verify Marcus's identity before touching his account.",
+            "necessity": "Two matching credentials (phone, email) are required before any account change."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_retail_credit_accounts",
+            "arguments": {
+                "customer_id": "1715e632-0d50-49ea-a41f-af46b9651f9b"
+            },
+            "objective": "Read the store-credit account: its tier, status and current balance.",
+            "necessity": "Supplies credit_account_id, the account's status (suspended, triggering the reinstatement prerequisite) and current_balance/cap inputs to retail_ext_topup_credit."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_retail_credit_events",
+            "arguments": {
+                "credit_account_id": "77976684-a4a9-4996-8807-fba88f0eddee"
+            },
+            "objective": "Read the account's full transaction history.",
+            "necessity": "Identifies which retail_credit_topup rows fall within the calendar month preceding reinstatement (retail_ext_topup_refund's SUM binding) and confirms the account's current balance ledger."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_membership_holdings",
+            "arguments": {
+                "customer_id": "1715e632-0d50-49ea-a41f-af46b9651f9b"
+            },
+            "objective": "Read Marcus's club membership account and its dues_balance.",
+            "necessity": "Supplies the CFIELD('membership','dues_balance') factor both retail_ext_topup_refund and retail_ext_topup_credit's good_standing branch require."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_corporate_wellness_enrollments",
+            "arguments": {
+                "customer_id": "1715e632-0d50-49ea-a41f-af46b9651f9b"
+            },
+            "objective": "Read Marcus's corporate wellness enrollment, its status and tier.",
+            "necessity": "Supplies the EXISTS/CPARAM('corp','late_payment_fee_usd') factor retail_ext_reinstatement's surcharge branch requires."
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "reinstate_suspended_credit_account_88623c40"
+            },
+            "objective": "Unlock the reinstatement tool.",
+            "necessity": "Required once before this hidden tool may be called."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "reinstate_suspended_credit_account_88623c40",
+                "arguments": {
+                    "credit_account_id": "77976684-a4a9-4996-8807-fba88f0eddee",
+                    "reinstatement_fee_amount": 50.0
+                }
+            },
+            "objective": "Lift the fraud hold and charge the reinstatement fee.",
+            "necessity": "retail_ext_reinstatement uniquely produces reinstatement_fee_amount and resolves the state_gate retail_ext_topup_refund needs.",
+            "argument_uniqueness_tracing": {
+                "credit_account_id": "value: 77976684-a4a9-4996-8807-fba88f0eddee. basis: returned verbatim by find_retail_credit_accounts for customer_id 1715e632-0d50-49ea-a41f-af46b9651f9b. uniqueness: retail_agg_multi_holding limits Marcus to a single non-closed store-credit account, so this id is the only possible target.",
+                "reinstatement_fee_amount": "value: 50.00. factors: base_fee=P('reinstatement_fee_usd')=0.00 (Standard Credit $100 Tier); corp_suspended=EXISTS('corp', status='suspended')=True (enrollment 4bba9416-fd73-4d05-8816-b733a66d8f85 is suspended); corp_late_fee=CPARAM('corp','late_payment_fee_usd', status='suspended')=50.00 (corp.yaml Startup Partner rate); result=RND(0.00+50.00,2)=50.00. Any agent reading the same rows and corp.yaml's Startup Partner rate converges on 50.00."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "refund_topup_amount_847aef7e"
+            },
+            "objective": "Unlock the top-up refund tool.",
+            "necessity": "Required once before this hidden tool may be called."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "refund_topup_amount_847aef7e",
+                "arguments": {
+                    "credit_account_id": "77976684-a4a9-4996-8807-fba88f0eddee",
+                    "refund_amount": 20.0
+                }
+            },
+            "objective": "Refund the most recent, still-in-window top-up.",
+            "necessity": "retail_ext_topup_refund uniquely produces refund_amount and resolves the value_input retail_ext_topup_credit's room binding needs.",
+            "argument_uniqueness_tracing": {
+                "credit_account_id": "value: 77976684-a4a9-4996-8807-fba88f0eddee. basis: same reference as the preceding call. uniqueness: the single non-closed account on file.",
+                "refund_amount": "value: 20.00. factors: topup_amt=SUM('retail_credit_events','amount_usd', within_months=1, event_type='retail_credit_topup')=20.00 (only event c888bbe9-0605-4bbd-8626-8ac151cee60a, dated 2026-09-08, falls within the calendar month preceding frozen_time 2026-09-10; the other 8 topup rows are all more than a month earlier); membership_balance=CFIELD('membership','dues_balance', status='active')=0.00; good_standing=True; pct=P('refund_pct')=100; result=RND(20.00*100/100,2)=20.00. Any agent reading the same ledger window and tier params converges on 20.00."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "apply_credit_topup_b1893e39"
+            },
+            "objective": "Unlock the top-up tool.",
+            "necessity": "Required once before this hidden tool may be called."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "apply_credit_topup_b1893e39",
+                "arguments": {
+                    "credit_account_id": "77976684-a4a9-4996-8807-fba88f0eddee",
+                    "credited_amount": 102.0
+                }
+            },
+            "objective": "Process Marcus's standard top-up.",
+            "necessity": "retail_ext_topup_credit uniquely produces credited_amount on the world as it stands after the reinstatement and refund have landed.",
+            "argument_uniqueness_tracing": {
+                "credit_account_id": "value: 77976684-a4a9-4996-8807-fba88f0eddee. basis: same reference as the preceding calls. uniqueness: the single non-closed account on file.",
+                "credited_amount": "value: 102.00. factors: face=P('topup_amount_usd')=100.00 (Standard Credit $100 Tier); bonus_pct=MX(P('bonus_credit_pct')=2, P('seasonal_promo_bonus_pct')=2)=2; membership_balance=CFIELD('membership','dues_balance', status='active')=0.00; good_standing=True; bonus_amount=RND(100.00*2/100,2)=2.00; subtotal=102.00; current_balance=F('credit_balance')=290.00 (360.00 opening minus the 50.00 reinstatement fee minus the 20.00 refund, both already landed at this step's handling time); cap=P('maximum_balance_usd')=400.00; room=MX(400.00-290.00,0)=110.00; result=RND(MN(102.00,110.00),2)=102.00. Any agent recomputing from the post-reinstatement, post-refund balance converges on 102.00."
+            }
+        }
+    ],
+    "prerequisite_closure": {
+        "root_problem": "retail_ext_topup_credit",
+        "edges": [
+            {
+                "from": "retail_ext_topup_credit",
+                "to": "retail_ext_topup_refund",
+                "kind": "value_input",
+                "gate": "room",
+                "condition": "the resulting total is capped at maximum_balance_usd for the tier",
+                "policy_source": "the resulting total is capped at maximum_balance_usd for the tier",
+                "resolved_by": "refund_topup_amount_847aef7e",
+                "unresolved_at_frozen_time": {
+                    "why_false": "the account's credit_balance (360.00) still includes the un-refunded 2026-09-08 top-up; skipping the refund leaves the post-fee balance at 310.00 instead of 290.00",
+                    "evidence": [
+                        "initial_state.retail_credit_accounts.77976684-a4a9-4996-8807-fba88f0eddee.credit_balance=360.00",
+                        "initial_state.retail_credit_events.c888bbe9-0605-4bbd-8626-8ac151cee60a.amount_usd=20.00"
+                    ],
+                    "flips_to_true_by": "after refund_topup_amount_847aef7e's write, credit_balance drops to 290.00 (post-reinstatement-fee, post-refund), so room=MX(400.00-290.00,0)=110.00"
+                }
+            },
+            {
+                "from": "retail_ext_topup_refund",
+                "to": "retail_ext_reinstatement",
+                "kind": "state_gate",
+                "gate": "retail_credit_accounts.status",
+                "condition": "A refund of a top-up may be recorded only while the account is active or in the same moment as its confirmed cancellation to closed",
+                "policy_source": "A refund of a top-up may be recorded only while the account is active or in the same moment as its confirmed cancellation to closed",
+                "resolved_by": "reinstate_suspended_credit_account_88623c40",
+                "unresolved_at_frozen_time": {
+                    "why_false": "the account's status is suspended, which is not in the refund eligibility's allowed=[active, closed] set",
+                    "evidence": [
+                        "initial_state.retail_credit_accounts.77976684-a4a9-4996-8807-fba88f0eddee.status=suspended"
+                    ],
+                    "flips_to_true_by": "after reinstate_suspended_credit_account_88623c40's write, status becomes active"
+                }
+            }
+        ],
+        "resolution_order": [
+            "retail_ext_reinstatement",
+            "retail_ext_topup_refund",
+            "retail_ext_topup_credit"
+        ],
+        "order_uniqueness": "This task's problem tree is a strict chain (topup_credit -> topup_refund -> reinstatement) with no parallel edges to reorder, so no order_uniqueness proof is needed beyond the chain itself.",
+        "edge_load_bearing": [
+            {
+                "edge": "retail_ext_topup_credit -> retail_ext_topup_refund",
+                "skipped_effect": "Skipping refund_topup_amount_847aef7e's write leaves retail_credit_accounts.credit_balance at 310.00 instead of 290.00 at the moment retail_ext_topup_credit's compute reads current_balance, dropping room from 110.00 to 90.00 -- since face+bonus=102.00 exceeds 90.00, credited_amount would be capped at 90.00 instead of the real 102.00: a genuinely different terminal value."
+            },
+            {
+                "edge": "retail_ext_topup_refund -> retail_ext_reinstatement",
+                "skipped_effect": "Skipping refund_topup_amount_847aef7e's write leaves retail_credit_accounts.credit_balance at 310.00 instead of 290.00 at the moment retail_ext_topup_credit's compute reads current_balance, dropping room from 110.00 to 90.00 -- since face+bonus=102.00 exceeds 90.00, credited_amount would be capped at 90.00 instead of the real 102.00: a genuinely different terminal value."
+            }
+        ],
+        "no_user_hint": "user_scenario contains no mention of a refund, a specific past transaction, a duplicate charge, or any phrase resembling 'something might need to be fixed first' -- Marcus names only the hold and his usual top-up throughout.",
+        "tools_do_not_block": "refund_topup_amount_847aef7e's function body (task_tools.py) runs ctx.create/ctx.update unconditionally on whatever credit_account_id/refund_amount are passed, with no read or check of retail_credit_accounts.status; apply_credit_topup_b1893e39 likewise never checks status. Calling either while the account is still suspended would still silently write -- the tool layer validates neither prerequisite."
+    },
+    "charter_scope": {
+        "extended_policies": [
+            "retail_ext_topup_credit",
+            "retail_ext_topup_refund",
+            "retail_ext_reinstatement"
+        ],
+        "workflows": [],
+        "task_tools": [
+            "reinstate_suspended_credit_account_88623c40",
+            "refund_topup_amount_847aef7e",
+            "apply_credit_topup_b1893e39"
+        ]
+    },
+    "required_documents": [
+        "retail_ext_topup_credit",
+        "retail_ext_topup_refund",
+        "retail_ext_reinstatement"
+    ],
+    "computations": [
+        {
+            "policy_id": "retail_ext_reinstatement",
+            "target_holding_id": "77976684-a4a9-4996-8807-fba88f0eddee",
+            "step": 7,
+            "arg": "reinstatement_fee_amount",
+            "expected": 50.0,
+            "factor_trace": [
+                "base_fee=P('reinstatement_fee_usd')=0.00 (Standard Credit $100 Tier)",
+                "corp_suspended=EXISTS('corp', status='suspended')=True (enrollment 4bba9416-fd73-4d05-8816-b733a66d8f85)",
+                "corp_late_fee=CPARAM('corp','late_payment_fee_usd', status='suspended')=50.00 (corp.yaml Startup Partner tier)",
+                "result=RND(0.00+50.00,2)=50.00"
+            ]
+        },
+        {
+            "policy_id": "retail_ext_topup_refund",
+            "target_holding_id": "77976684-a4a9-4996-8807-fba88f0eddee",
+            "step": 9,
+            "arg": "refund_amount",
+            "expected": 20.0,
+            "factor_trace": [
+                "topup_amt=SUM('retail_credit_events','amount_usd', within_months=1, event_type='retail_credit_topup')=20.00 (only event c888bbe9-0605-4bbd-8626-8ac151cee60a falls within the calendar month preceding frozen_time)",
+                "membership_balance=CFIELD('membership','dues_balance', status='active')=0.00",
+                "good_standing=True",
+                "pct=P('refund_pct')=100",
+                "result=RND(20.00*100/100,2)=20.00"
+            ]
+        },
+        {
+            "policy_id": "retail_ext_topup_credit",
+            "target_holding_id": "77976684-a4a9-4996-8807-fba88f0eddee",
+            "step": 11,
+            "arg": "credited_amount",
+            "expected": 102.0,
+            "factor_trace": [
+                "face=P('topup_amount_usd')=100.00 (Standard Credit $100 Tier)",
+                "bonus_pct=MX(P('bonus_credit_pct')=2, P('seasonal_promo_bonus_pct')=2)=2",
+                "membership_balance=CFIELD('membership','dues_balance', status='active')=0.00",
+                "good_standing=True",
+                "bonus_amount=RND(100.00*2/100,2)=2.00",
+                "subtotal=102.00",
+                "current_balance=F('credit_balance')=290.00 (360.00 opening - 50.00 reinstatement fee - 20.00 refund)",
+                "cap=P('maximum_balance_usd')=400.00",
+                "room=MX(400.00-290.00,0)=110.00",
+                "result=RND(MN(102.00,110.00),2)=102.00"
+            ]
+        }
+    ]
+}

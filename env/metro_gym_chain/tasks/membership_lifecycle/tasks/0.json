@@ -1,0 +1,879 @@
+{
+    "frozen_time": "2025-03-10 15:00:00 UTC",
+    "design_rationale": "STEP 0 -- asset ledger & claim. This is task 0 of 2 for membership_lifecycle; no other task exists\nyet, so nothing is occupied. Claiming: root membership_ext_dues_waiver_medical_hold (on_request,\nsubject=membership_dues_waived, base_policy_refs=[membership_tier_dues_billing]) plus its two\nvalue_input prerequisites membership_ext_enrollment_fee and membership_ext_recurring_dues (both\nstate_due, subject=membership_dues_charge, base_policy_refs=[membership_tier_dues_billing,\nmembership_corporate_bundling, membership_early_termination_fee]). Reserved for task 1 (the\nworkflow task): membership_ext_late_fee, membership_ext_reactivation_settlement,\nmembership_ext_early_termination_fee, and the single workflow -- all disjoint tools/policies, no\noverlap. This leaves task 1 an independent problem tree of >=4 write steps rooted at the\npast-due-cancellation-settlement workflow.\n\nDesign thesis: the customer volunteers only \"please apply my medical-hold dues waiver\" -- she never\nnames the enrollment-fee gap or this cycle's uncharged dues (both are read out of the ledger and\nthe published rule by the agent, per the problem-tree card below). Core scored parameter: the club's\nown waiver amount (amount_usd of waive_dues_medical_hold). Depth: surface goal -> \"is\ndues_waiver_medical_hold_allowed available\" -> \"what IS the outstanding balance right now\" ->\ndiscover the enrollment_fee row is missing and this cycle's recurring_dues is unbilled -> compute\neach, in either order (parallel, proven commutative below) -> recompute the true outstanding\nbalance -> apply the employer-funded offset -> waive the remainder. Breadth: student-tier discount\nbranch (untriggered here, Metro Multi-Club is not Student Metro Access), corporate employer_pct +\nmulti_location_discount_pct cross-category factors (multi_location_discount_pct=0 for Startup\nPartner -- a real, untriggered branch), 3 rolling months of settled history that must be\ndistinguished from the two new unbilled charges.\n\nBase-invariant card: membership_tier_dues_billing.dues_charge_requires_open_contract (state) --\nallowed=[applied,active,frozen,past_due,cancel_pending]; membership_holdings.status='frozen' here,\nin the allowed set, satisfied. membership_corporate_bundling.corporate_discount_requires_active_enrollment\n(state) -- corporate_wellness_enrollments[corp0].status='active', customer_id=cust0, satisfied.\nmembership_early_termination_fee.within_minimum_term (time) -- anchor=opened_date=2024-12-05,\nduration=minimum_term_months=12 (Metro Multi-Club), relation=not_after, boundary=exclusive;\nfrozen_time=2025-03-10 is only ~3 months after opened_date, well inside the 12-month window, so\nsatisfied; boundary case: at 2025-12-05 the window closes (exclusive), and any date on/after that\nwould fail. membership_tier_dues_billing has no gate applicable to membership_dues_waived subject\n(policy_scope only).\n\nBusiness-object card: target object = membership_holdings[memb0] for cust0. Correlation key =\nmembership_id. Rows entering the waiver's SUM aggregates: e1..e3 (settled Dec/Jan/Feb recurring_dues,\neach with a matching payment p1..p3, net zero) plus the two NEW rows this call posts (enrollment_fee\nand March recurring_dues, both unpaid) -- those two unpaid rows are exactly and only the outstanding\nbalance the waiver clears. No other holding/customer is seeded, so no cross-object leakage is\npossible.\n\nProblem-tree card: root=membership_ext_dues_waiver_medical_hold. Edge 1 (value_input) ->\nmembership_ext_enrollment_fee: condition \"the one-time enrollment_fee_usd charge for this contract\nmust already be posted to the ledger before the outstanding balance available to waive is\ncomputed\"; policy_source quoted verbatim from the root's own rule; unresolved at frozen_time because\ninitial_state.membership_events contains no row with membership_id=memb0 and charge_type=\nenrollment_fee (checked row by row above: e1,e2,e3 are all charge_type=recurring_dues); resolved_by\ncharge_enrollment_fee_91320c6d. Edge 2 (value_input) -> membership_ext_recurring_dues: condition\n\"this billing cycle's recurring_dues charge for this contract must already be posted...\"; unresolved\nbecause no membership_events row exists with billing_cycle_month=2025-03 (or any March charge) at the\nopening; resolved_by charge_recurring_dues_93751e4d. Both edges are value_input because enrollment_\nposted / recurring_posted are compute bindings of the root directly summed into outstanding_balance\n(deletion-sensitivity run below). Order between the two prerequisites is unconstrained (parallel,\nfan-out from the root): total_charges = enrollment_posted + recurring_posted is a commutative sum,\nso charging enrollment_fee then recurring_dues, or the reverse, produces the identical\noutstanding_balance, employer_funded, and result -- verified: charging in either order yields\nenrollment_posted=44.10 and recurring_posted=40.49 regardless of which lands first, since neither\nformula reads the other's posted row. no_user_hint: user_scenario (below) never mentions an\nenrollment fee, a billing gap, or \"check something else first\" -- Priya only asks for the medical\nwaiver and answers identity/verification questions. tools_do_not_block: waive_dues_medical_hold_\n6b86f7b6's implementation performs no read of membership_events at all and no eligibility check; it\nblindly posts whatever amount_usd it is given and decrements dues_balance -- calling it before the\ntwo charges are posted would simply waive $0.00 or whatever stale balance existed, silently\nunderstating the waiver rather than refusing.\n\nDeletion sensitivity (Step 5 prerequisite-sensitivity run, executed by hand against the compute\nabove and re-verified by check_compute.py's own value_input replay): skipping\ncharge_enrollment_fee_91320c6d leaves enrollment_posted=0.00 (vs 44.10 with it landed), dropping\noutstanding_balance from 84.59 to 40.49 and the final waiver from 76.13 to 36.44 -- edge 1 is\nload-bearing. Skipping charge_recurring_dues_93751e4d leaves recurring_posted=0.00 (vs 40.49),\ndropping outstanding_balance to 44.10 and the final waiver to 39.69 -- edge 2 is load-bearing.\n\nStandard solution / verification: locate & verify Priya, read membership_holdings[memb0] (status=\nfrozen, dues_balance=0.00 at open) and membership_events (3 settled recurring_dues+payment pairs,\nno enrollment_fee row, no March charge) and corporate_wellness_enrollments[corp0] (Startup Partner,\nactive). Compute membership_ext_enrollment_fee: base_fee=P('enrollment_fee_usd')=49.00,\ncorp_active=True, employer_pct=CPARAM('corp','employer_discount_pct')=10,\nmulti_loc_pct=CPARAM('corp','multi_location_discount_pct')=0 (untriggered -- Startup Partner does\nnot offer a multi-location discount), result=RND(49.00*(1-10/100),2)=44.10. Compute\nmembership_ext_recurring_dues: base_amt=P('monthly_dues_usd')=44.99, employer_pct=10, student_pct=\nP('student_discount_pct')=0, discount_pct=MX(10,0)=10, result=RND(44.99*0.90,2)=40.49. Compute\nmembership_ext_dues_waiver_medical_hold at handling time (after both charges land):\nenrollment_posted=SUM(charge_type=enrollment_fee)=44.10, recurring_posted=SUM(charge_type=\nrecurring_dues)=44.99*3(settled)+40.49(new)=175.46, total_charges=219.56, payments_received=\nSUM(membership_payment_received)=44.99*3=134.97, prior_waivers=0, outstanding_balance=219.56-\n134.97-0=84.59, employer_pct=10, multi_loc_pct=0, employer_funded=RND(84.59*10/100,2)=8.46,\nresult=RND(84.59-8.46,2)=76.13. This has been executed as plain Python (see the design-note\ncomputation trail above and re-run against check_compute.py) and matches computations[].expected\nand the gold arguments exactly.\n\nDraft recomputation from the visible context alone (masking compute/expected/GT): a rollout agent\nreading only the published KB, the tool schemas and Priya's own words would: verify identity (2 of\nphone/DOB/photo-id-last4/member-since all match); read the membership holding and its full event\nhistory; notice the enrollment_fee charge_type never appears and the current billing cycle's\nrecurring_dues charge_type never appears either, while the rule for membership_ext_dues_waiver_\nmedical_hold requires \"the sum of every membership_dues_charge amount ever billed to the contract\nwith billing subtype enrollment_fee or recurring_dues\" as the waiver's base -- so both catch-up\ncharges must be posted first; read the corporate wellness enrollment,\napply the documented per-policy formulas for each of the three writes, and post them in the fixed\ntopological order (either catch-up charge first, then the waiver last). This agrees with gold.\n\nRework round 2 (policy-task audit response, revision 2 of this task file): closed the charter-global rule/compute mismatch (_difficulty.md Check-2 finding; observation in this file's prior revision) in membership_ext_dues_waiver_medical_hold by narrowing the rule's \"every membership_dues_charge amount ever billed\" clause to the two charge_types the compute actually sums (enrollment_fee, recurring_dues), matching compute exactly and excluding late_fee/early_termination_fee explicitly rather than by silent omission; mirrored the new rule wording into this task's own prerequisite_closure.edges[0].policy_source and the corresponding design-note sentence above. This does not change this task's scored value (this contract's membership_events history has no late_fee/early_termination_fee row either before or after this fix, so the sum is identical), and does not affect task 1 (a disjoint policy, never claimed there). Re-run against check_extended/replay_tasks/check_solvability/check_compute/check_grounding/check_cross_fire, all green.\n\nMerge-fix round 4 (cross-difficulty merge-acceptance response): Priya Anand's email priya.anand@example.com collided with the same address on distinct customers in group_fitness_classes and personal_training_packages (group_fitness owns it, verifying by email); changed to priya.anand.ml@example.com, verified unique across every task file under env/metro_gym_chain/ by direct grep. This difficulty verifies identity by phone_number + date_of_birth only (email is never a verification discriminator, never appears in user_scenario, and is never read by any tool call in evaluation_criteria), so this is a value-only, GT-inert change: no computation, base_precondition, argument, terminal state, or scored value depends on this field. Re-run against check_extended/check_task_tools/replay_tasks/check_solvability/check_compute/check_grounding/check_cross_fire, all green.",
+    "user_scenario": "Priya Anand calls the club's contact center sounding a little apologetic about bothering them. She explains that she's currently on a medical freeze from her membership -- she had a minor procedure and her doctor's office already sent over the documentation to the front desk a couple of weeks ago -- and the club had told her at the time that her dues would be waived for as long as she's on this hold. She just wants to make sure that waiver actually gets applied to her account and to hear what her balance looks like once it's done. She doesn't know or care about the mechanics of how the number is calculated; she just wants it handled and to be told the final number. If asked to confirm her identity, she gives her phone number as 2125550101 and, if asked for a second detail, her date of birth, 1994-06-18; if asked further she can also give the last four digits of her photo ID, 4821, or say she's been a member since December 5th of last year. She knows her membership is the Metro Multi-Club Access plan and that she also gets a discount through her employer, Bright Peak Studios, which offers some kind of corporate wellness partnership with the club, though she has no idea what percentage that actually comes out to or how it interacts with anything else on her bill -- if asked, she just says 'I think it's through my work, Bright Peak Studios, but I don't know the details, you'd have to look that up.' She never mentions an enrollment fee, never says anything about this month's dues, and never suggests that anything besides the waiver itself needs attention -- as far as she's concerned, the only open item on her account is the medical-hold waiver she was promised. If the representative reports back that some other charge had to be sorted out first, she just says 'Oh, okay, whatever you need to do -- as long as it ends with that waiver applied,' without asking for specifics. Once the representative tells her the waiver has been posted and states her account's new balance, she thanks them and says that's all she needed; she does not ask for anything further and does not request any document be sent or any address be updated.",
+    "initial_state": {
+        "customers": {
+            "06f75f73-2530-4dbc-bf13-6a541141655e": {
+                "customer_id": "06f75f73-2530-4dbc-bf13-6a541141655e",
+                "full_name": "Priya Anand",
+                "phone_number": "2125550101",
+                "email": "priya.anand.ml@example.com",
+                "date_of_birth": "1994-06-18",
+                "photo_id_last4": "4821",
+                "member_since_date": "2024-12-05",
+                "home_club_id": null
+            }
+        },
+        "membership_holdings": {
+            "cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6": {
+                "membership_id": "cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6",
+                "customer_id": "06f75f73-2530-4dbc-bf13-6a541141655e",
+                "variant_name": "Metro Multi-Club Access",
+                "status": "frozen",
+                "home_club_id": null,
+                "opened_date": "2024-12-05",
+                "closed_date": "",
+                "dues_balance": 0.0,
+                "guest_passes_remaining": 1,
+                "freeze_start_date": "2025-03-01",
+                "freeze_end_date": "2025-05-30",
+                "past_due_since_date": ""
+            }
+        },
+        "membership_events": {
+            "65df3c67-b682-456e-adde-6509d7c1d9f8": {
+                "event_id": "65df3c67-b682-456e-adde-6509d7c1d9f8",
+                "membership_id": "cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6",
+                "customer_id": "06f75f73-2530-4dbc-bf13-6a541141655e",
+                "event_type": "membership_dues_charge",
+                "event_timestamp": "2024-12-05 09:00:00 UTC",
+                "amount_usd": 44.99,
+                "charge_type": "recurring_dues",
+                "billing_cycle_month": "2024-12",
+                "channel": "app",
+                "club_id": null,
+                "guest_name": ""
+            },
+            "60be65ee-b678-4132-b5c6-c52442ee1e44": {
+                "event_id": "60be65ee-b678-4132-b5c6-c52442ee1e44",
+                "membership_id": "cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6",
+                "customer_id": "06f75f73-2530-4dbc-bf13-6a541141655e",
+                "event_type": "membership_payment_received",
+                "event_timestamp": "2024-12-06 10:00:00 UTC",
+                "amount_usd": 44.99,
+                "charge_type": "",
+                "billing_cycle_month": "",
+                "channel": "app",
+                "club_id": null,
+                "guest_name": ""
+            },
+            "cd196661-06f7-4f71-9642-60dd24ae4bc6": {
+                "event_id": "cd196661-06f7-4f71-9642-60dd24ae4bc6",
+                "membership_id": "cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6",
+                "customer_id": "06f75f73-2530-4dbc-bf13-6a541141655e",
+                "event_type": "membership_dues_charge",
+                "event_timestamp": "2025-01-05 09:00:00 UTC",
+                "amount_usd": 44.99,
+                "charge_type": "recurring_dues",
+                "billing_cycle_month": "2025-01",
+                "channel": "app",
+                "club_id": null,
+                "guest_name": ""
+            },
+            "64527f82-5d8b-454f-9c6c-9f3b758ccd1c": {
+                "event_id": "64527f82-5d8b-454f-9c6c-9f3b758ccd1c",
+                "membership_id": "cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6",
+                "customer_id": "06f75f73-2530-4dbc-bf13-6a541141655e",
+                "event_type": "membership_payment_received",
+                "event_timestamp": "2025-01-06 10:00:00 UTC",
+                "amount_usd": 44.99,
+                "charge_type": "",
+                "billing_cycle_month": "",
+                "channel": "app",
+                "club_id": null,
+                "guest_name": ""
+            },
+            "3351f06c-2fd2-4b43-b7b4-19ca48468cc6": {
+                "event_id": "3351f06c-2fd2-4b43-b7b4-19ca48468cc6",
+                "membership_id": "cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6",
+                "customer_id": "06f75f73-2530-4dbc-bf13-6a541141655e",
+                "event_type": "membership_dues_charge",
+                "event_timestamp": "2025-02-05 09:00:00 UTC",
+                "amount_usd": 44.99,
+                "charge_type": "recurring_dues",
+                "billing_cycle_month": "2025-02",
+                "channel": "app",
+                "club_id": null,
+                "guest_name": ""
+            },
+            "46801f14-5f7f-4cf2-90af-2c5133368856": {
+                "event_id": "46801f14-5f7f-4cf2-90af-2c5133368856",
+                "membership_id": "cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6",
+                "customer_id": "06f75f73-2530-4dbc-bf13-6a541141655e",
+                "event_type": "membership_payment_received",
+                "event_timestamp": "2025-02-06 10:00:00 UTC",
+                "amount_usd": 44.99,
+                "charge_type": "",
+                "billing_cycle_month": "",
+                "channel": "app",
+                "club_id": null,
+                "guest_name": ""
+            }
+        },
+        "corporate_wellness_enrollments": {
+            "49cd05b0-1352-4763-9917-db8351061244": {
+                "enrollment_id": "49cd05b0-1352-4763-9917-db8351061244",
+                "customer_id": "06f75f73-2530-4dbc-bf13-6a541141655e",
+                "variant_name": "Startup Partner",
+                "status": "active",
+                "employer_name": "Bright Peak Studios",
+                "employer_account_id": "54a186dc-bf60-4e8e-b72a-f7a105d3f92e",
+                "opened_date": "2024-11-01",
+                "closed_date": "",
+                "corporate_dues_balance": 0.0
+            }
+        }
+    },
+    "db_closure": {
+        "corporate_wellness_enrollments": {
+            "49cd05b0-1352-4763-9917-db8351061244": {
+                "enrollment_id": "49cd05b0-1352-4763-9917-db8351061244",
+                "customer_id": "06f75f73-2530-4dbc-bf13-6a541141655e",
+                "variant_name": "Startup Partner",
+                "status": "active",
+                "employer_name": "Bright Peak Studios",
+                "employer_account_id": "54a186dc-bf60-4e8e-b72a-f7a105d3f92e",
+                "opened_date": "2024-11-01",
+                "closed_date": "",
+                "corporate_dues_balance": 0.0
+            }
+        },
+        "membership_events": {
+            "60be65ee-b678-4132-b5c6-c52442ee1e44": {
+                "event_id": "60be65ee-b678-4132-b5c6-c52442ee1e44",
+                "membership_id": "cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6",
+                "customer_id": "06f75f73-2530-4dbc-bf13-6a541141655e",
+                "event_type": "membership_payment_received",
+                "event_timestamp": "2024-12-06 10:00:00 UTC",
+                "amount_usd": 44.99,
+                "charge_type": "",
+                "billing_cycle_month": "",
+                "channel": "app",
+                "club_id": null,
+                "guest_name": ""
+            },
+            "64527f82-5d8b-454f-9c6c-9f3b758ccd1c": {
+                "event_id": "64527f82-5d8b-454f-9c6c-9f3b758ccd1c",
+                "membership_id": "cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6",
+                "customer_id": "06f75f73-2530-4dbc-bf13-6a541141655e",
+                "event_type": "membership_payment_received",
+                "event_timestamp": "2025-01-06 10:00:00 UTC",
+                "amount_usd": 44.99,
+                "charge_type": "",
+                "billing_cycle_month": "",
+                "channel": "app",
+                "club_id": null,
+                "guest_name": ""
+            },
+            "cd196661-06f7-4f71-9642-60dd24ae4bc6": {
+                "event_id": "cd196661-06f7-4f71-9642-60dd24ae4bc6",
+                "membership_id": "cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6",
+                "customer_id": "06f75f73-2530-4dbc-bf13-6a541141655e",
+                "event_type": "membership_dues_charge",
+                "event_timestamp": "2025-01-05 09:00:00 UTC",
+                "amount_usd": 44.99,
+                "charge_type": "recurring_dues",
+                "billing_cycle_month": "2025-01",
+                "channel": "app",
+                "club_id": null,
+                "guest_name": ""
+            },
+            "65df3c67-b682-456e-adde-6509d7c1d9f8": {
+                "event_id": "65df3c67-b682-456e-adde-6509d7c1d9f8",
+                "membership_id": "cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6",
+                "customer_id": "06f75f73-2530-4dbc-bf13-6a541141655e",
+                "event_type": "membership_dues_charge",
+                "event_timestamp": "2024-12-05 09:00:00 UTC",
+                "amount_usd": 44.99,
+                "charge_type": "recurring_dues",
+                "billing_cycle_month": "2024-12",
+                "channel": "app",
+                "club_id": null,
+                "guest_name": ""
+            },
+            "46801f14-5f7f-4cf2-90af-2c5133368856": {
+                "event_id": "46801f14-5f7f-4cf2-90af-2c5133368856",
+                "membership_id": "cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6",
+                "customer_id": "06f75f73-2530-4dbc-bf13-6a541141655e",
+                "event_type": "membership_payment_received",
+                "event_timestamp": "2025-02-06 10:00:00 UTC",
+                "amount_usd": 44.99,
+                "charge_type": "",
+                "billing_cycle_month": "",
+                "channel": "app",
+                "club_id": null,
+                "guest_name": ""
+            },
+            "3351f06c-2fd2-4b43-b7b4-19ca48468cc6": {
+                "event_id": "3351f06c-2fd2-4b43-b7b4-19ca48468cc6",
+                "membership_id": "cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6",
+                "customer_id": "06f75f73-2530-4dbc-bf13-6a541141655e",
+                "event_type": "membership_dues_charge",
+                "event_timestamp": "2025-02-05 09:00:00 UTC",
+                "amount_usd": 44.99,
+                "charge_type": "recurring_dues",
+                "billing_cycle_month": "2025-02",
+                "channel": "app",
+                "club_id": null,
+                "guest_name": ""
+            }
+        },
+        "membership_holdings": {
+            "cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6": {
+                "membership_id": "cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6",
+                "customer_id": "06f75f73-2530-4dbc-bf13-6a541141655e",
+                "variant_name": "Metro Multi-Club Access",
+                "status": "frozen",
+                "home_club_id": null,
+                "opened_date": "2024-12-05",
+                "closed_date": "",
+                "dues_balance": 0.0,
+                "guest_passes_remaining": 1,
+                "freeze_start_date": "2025-03-01",
+                "freeze_end_date": "2025-05-30",
+                "past_due_since_date": ""
+            }
+        },
+        "customers": {
+            "06f75f73-2530-4dbc-bf13-6a541141655e": {
+                "customer_id": "06f75f73-2530-4dbc-bf13-6a541141655e",
+                "full_name": "Priya Anand",
+                "phone_number": "2125550101",
+                "email": "priya.anand.ml@example.com",
+                "date_of_birth": "1994-06-18",
+                "photo_id_last4": "4821",
+                "member_since_date": "2024-12-05",
+                "home_club_id": null
+            }
+        }
+    },
+    "db_closure_matches_initial_state": true,
+    "solvability_contract": {
+        "request_binding_version": 1,
+        "request_alignment": [
+            {
+                "claim": "Priya wants the medical-hold dues waiver she was promised applied to her frozen membership, and wants to know her resulting balance.",
+                "evidence": [
+                    "user_scenario:She just wants to make sure that waiver actually gets applied to her account and to hear what her balance looks like once it's done"
+                ]
+            }
+        ],
+        "gold_actions": [
+            {
+                "step": 6,
+                "business_effect": "Posts the enrollment_fee catch-up charge to membership_events and increases membership_holdings.dues_balance.",
+                "request_binding": {
+                    "action_semantics": "membership_ext_dues_waiver_medical_hold's own rule requires the outstanding balance to include every membership_dues_charge ever billed; the ledger shows no enrollment_fee row for this open contract at all, so this charge must be posted before the waiver can be correctly sized.",
+                    "intent_source": {
+                        "kind": "initial_state",
+                        "evidence": [
+                            "initial_state.membership_holdings.cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6.status"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "the missing enrollment fee belongs to this specific membership contract",
+                        "evidence": [
+                            "initial_state.membership_holdings.cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6.membership_id"
+                        ],
+                        "action_arg": "membership_id",
+                        "value": "cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "performed_by_this_tool",
+                    "fact": "the one-time enrollment fee for this contract has never been billed",
+                    "evidence": [
+                        "initial_state.membership_holdings.cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6.membership_id"
+                    ]
+                },
+                "requires_external_wait": false,
+                "zero_wait_proof": "Posting a missing one-time fee is an ordinary atomic ledger write the representative performs on the spot from information already on file (the tier's enrollment_fee_usd and the linked corporate enrollment); nothing outside the environment need occur.",
+                "base_preconditions": [
+                    {
+                        "policy_id": "membership_tier_dues_billing",
+                        "eligibility_id": "dues_charge_requires_open_contract",
+                        "condition": "A membership_dues_charge may be written only while the membership contract exists and has not yet closed, covering the applied state at signup through active, frozen, past_due and cancel_pending, since a final prorated charge may still be billed while a cancellation notice is pending.",
+                        "evidence": [
+                            "initial_state.membership_holdings.cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6.membership_id",
+                            "initial_state.membership_holdings.cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6.status"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "membership_holdings.membership_id",
+                                "source": "initial_state.membership_holdings.cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6.membership_id",
+                                "source_table": "membership_holdings",
+                                "source_field": "membership_id",
+                                "action_arg": "membership_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "membership_corporate_bundling",
+                        "eligibility_id": "corporate_discount_requires_active_enrollment",
+                        "condition": "The discount applies only while the linked corporate wellness enrollment is active.",
+                        "evidence": [
+                            "initial_state.corporate_wellness_enrollments.49cd05b0-1352-4763-9917-db8351061244.status",
+                            "initial_state.corporate_wellness_enrollments.49cd05b0-1352-4763-9917-db8351061244.customer_id"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "corporate_wellness_enrollments.customer_id",
+                                "source": "initial_state.corporate_wellness_enrollments.49cd05b0-1352-4763-9917-db8351061244.customer_id",
+                                "source_table": "corporate_wellness_enrollments",
+                                "source_field": "customer_id",
+                                "action_arg": "customer_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "membership_early_termination_fee",
+                        "eligibility_id": "within_minimum_term",
+                        "condition": "An early_termination_fee charge is billed only when the customer gives notice of this cancellation before minimum_term_months have elapsed since the membership was opened, minimum_term_months counted as full calendar months from opened_date completing on the same day-of-month (or the last day of that month if opened_date's day does not exist in it)",
+                        "evidence": [
+                            "initial_state.membership_holdings.cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6.membership_id",
+                            "initial_state.membership_holdings.cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6.opened_date",
+                            "frozen_time"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "membership_holdings.membership_id",
+                                "source": "initial_state.membership_holdings.cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6.membership_id",
+                                "source_table": "membership_holdings",
+                                "source_field": "membership_id",
+                                "action_arg": "membership_id"
+                            }
+                        ],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 8,
+                "business_effect": "Posts this billing cycle's recurring_dues charge to membership_events and increases membership_holdings.dues_balance.",
+                "request_binding": {
+                    "action_semantics": "The membership is frozen but membership_tier_dues_billing's own rule states dues continue to accrue during a freeze unless the medical-hold waiver applies; this billing cycle's recurring_dues charge is due and unbilled, so it must be posted before the outstanding balance can be correctly sized for the waiver.",
+                    "intent_source": {
+                        "kind": "initial_state",
+                        "evidence": [
+                            "initial_state.membership_holdings.cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6.status"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "the unbilled cycle's recurring dues belongs to this specific membership contract",
+                        "evidence": [
+                            "initial_state.membership_holdings.cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6.membership_id"
+                        ],
+                        "action_arg": "membership_id",
+                        "value": "cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "performed_by_this_tool",
+                    "fact": "this billing cycle's recurring dues charge has never been billed",
+                    "evidence": [
+                        "initial_state.membership_holdings.cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6.membership_id"
+                    ]
+                },
+                "requires_external_wait": false,
+                "zero_wait_proof": "Posting the current cycle's recurring dues is an ordinary atomic ledger write performed on the spot from the tier's own monthly_dues_usd and the linked corporate enrollment's discount; nothing outside the environment need occur.",
+                "base_preconditions": [
+                    {
+                        "policy_id": "membership_tier_dues_billing",
+                        "eligibility_id": "dues_charge_requires_open_contract",
+                        "condition": "A membership_dues_charge may be written only while the membership contract exists and has not yet closed, covering the applied state at signup through active, frozen, past_due and cancel_pending, since a final prorated charge may still be billed while a cancellation notice is pending.",
+                        "evidence": [
+                            "initial_state.membership_holdings.cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6.membership_id",
+                            "initial_state.membership_holdings.cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6.status"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "membership_holdings.membership_id",
+                                "source": "initial_state.membership_holdings.cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6.membership_id",
+                                "source_table": "membership_holdings",
+                                "source_field": "membership_id",
+                                "action_arg": "membership_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "membership_corporate_bundling",
+                        "eligibility_id": "corporate_discount_requires_active_enrollment",
+                        "condition": "The discount applies only while the linked corporate wellness enrollment is active.",
+                        "evidence": [
+                            "initial_state.corporate_wellness_enrollments.49cd05b0-1352-4763-9917-db8351061244.status",
+                            "initial_state.corporate_wellness_enrollments.49cd05b0-1352-4763-9917-db8351061244.customer_id"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "corporate_wellness_enrollments.customer_id",
+                                "source": "initial_state.corporate_wellness_enrollments.49cd05b0-1352-4763-9917-db8351061244.customer_id",
+                                "source_table": "corporate_wellness_enrollments",
+                                "source_field": "customer_id",
+                                "action_arg": "customer_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "membership_early_termination_fee",
+                        "eligibility_id": "within_minimum_term",
+                        "condition": "An early_termination_fee charge is billed only when the customer gives notice of this cancellation before minimum_term_months have elapsed since the membership was opened, minimum_term_months counted as full calendar months from opened_date completing on the same day-of-month (or the last day of that month if opened_date's day does not exist in it)",
+                        "evidence": [
+                            "initial_state.membership_holdings.cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6.membership_id",
+                            "initial_state.membership_holdings.cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6.opened_date",
+                            "frozen_time"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "membership_holdings.membership_id",
+                                "source": "initial_state.membership_holdings.cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6.membership_id",
+                                "source_table": "membership_holdings",
+                                "source_field": "membership_id",
+                                "action_arg": "membership_id"
+                            }
+                        ],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 10,
+                "business_effect": "Posts the medical-hold dues waiver to membership_events and decreases membership_holdings.dues_balance.",
+                "request_binding": {
+                    "action_semantics": "Priya explicitly asks for the medical-hold waiver she was promised; dues_waiver_medical_hold_allowed is true for her tier and her membership is frozen, so the club's own rule permits waiving the full outstanding balance net of the employer-funded share.",
+                    "intent_source": {
+                        "kind": "user_scenario",
+                        "evidence": [
+                            "user_scenario:She just wants to make sure that waiver actually gets applied to her account and to hear what her balance looks like once it's done"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "the club had told her at the time that her dues would be waived for as long as she's on this hold",
+                        "evidence": [
+                            "user_scenario:the club had told her at the time that her dues would be waived for as long as she's on this hold"
+                        ],
+                        "action_arg": "membership_id",
+                        "value": "cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "performed_by_this_tool",
+                    "fact": "the medical-hold waiver is granted on the spot once the full outstanding balance is known",
+                    "evidence": [
+                        "prior_step:6",
+                        "prior_step:8"
+                    ]
+                },
+                "requires_external_wait": false,
+                "zero_wait_proof": "The waiver is an ordinary atomic ledger write the representative performs on the spot once the full outstanding balance (both catch-up charges already posted this same call) and the corporate offset are known; nothing outside the environment need occur.",
+                "base_preconditions": [
+                    {
+                        "policy_id": "membership_tier_dues_billing",
+                        "eligibility_id": "policy_scope",
+                        "condition": "membership_tier_dues_billing governs dues billing generally; it has no eligibility gate scoped to membership_dues_waived.",
+                        "evidence": [
+                            "initial_state.membership_holdings.cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6.membership_id"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    }
+                ]
+            }
+        ],
+        "temporal_feasibility": [
+            {
+                "step": 6,
+                "policy_id": "membership_early_termination_fee",
+                "eligibility_id": "within_minimum_term",
+                "condition": "An early_termination_fee charge is billed only when the customer gives notice of this cancellation before minimum_term_months have elapsed since the membership was opened, minimum_term_months counted as full calendar months from opened_date completing on the same day-of-month (or the last day of that month if opened_date's day does not exist in it)",
+                "temporal_basis": {
+                    "clock": "frozen_time",
+                    "anchor_event": "the membership was opened",
+                    "anchor_source": "membership_holdings.opened_date",
+                    "relation": "not_after",
+                    "duration_source": "variants.minimum_term_months",
+                    "unit": "calendar_months",
+                    "counting_rule": "minimum_term_months counted as full calendar months from opened_date completing on the same day-of-month (or the last day of that month if opened_date's day does not exist in it)",
+                    "boundary": "exclusive"
+                },
+                "as_of": "frozen_time",
+                "evidence": [
+                    "frozen_time",
+                    "initial_state.membership_holdings.cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6.opened_date"
+                ],
+                "satisfied": true,
+                "boundary_check": {
+                    "just_before": "At 2025-12-04, one day short of the boundary, frozen_time would still be not_after opened_date+12mo, so the condition would still hold.",
+                    "at_boundary": "At 2025-12-05, exactly opened_date+12mo, the boundary is exclusive so the condition would no longer hold."
+                }
+            },
+            {
+                "step": 8,
+                "policy_id": "membership_early_termination_fee",
+                "eligibility_id": "within_minimum_term",
+                "condition": "An early_termination_fee charge is billed only when the customer gives notice of this cancellation before minimum_term_months have elapsed since the membership was opened, minimum_term_months counted as full calendar months from opened_date completing on the same day-of-month (or the last day of that month if opened_date's day does not exist in it)",
+                "temporal_basis": {
+                    "clock": "frozen_time",
+                    "anchor_event": "the membership was opened",
+                    "anchor_source": "membership_holdings.opened_date",
+                    "relation": "not_after",
+                    "duration_source": "variants.minimum_term_months",
+                    "unit": "calendar_months",
+                    "counting_rule": "minimum_term_months counted as full calendar months from opened_date completing on the same day-of-month (or the last day of that month if opened_date's day does not exist in it)",
+                    "boundary": "exclusive"
+                },
+                "as_of": "frozen_time",
+                "evidence": [
+                    "frozen_time",
+                    "initial_state.membership_holdings.cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6.opened_date"
+                ],
+                "satisfied": true,
+                "boundary_check": {
+                    "just_before": "At 2025-12-04, one day short of the boundary, frozen_time would still be not_after opened_date+12mo, so the condition would still hold.",
+                    "at_boundary": "At 2025-12-05, exactly opened_date+12mo, the boundary is exclusive so the condition would no longer hold."
+                }
+            }
+        ],
+        "required_user_inputs": [
+            {
+                "information": "phone number",
+                "source": "user_scenario:she gives her phone number as 2125550101"
+            },
+            {
+                "information": "date of birth",
+                "source": "user_scenario:her date of birth, 1994-06-18"
+            }
+        ],
+        "seed_consistency": [
+            {
+                "row": "initial_state.membership_holdings.cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6",
+                "policy_id": "membership_tier_dues_billing",
+                "check": "tier=Metro Multi-Club Access; status=frozen is within the allowed dues_charge states; opened_date 2024-12-05 is within the 12-month minimum term at frozen_time 2025-03-10; dues_balance=0.00 at open matches the settled history below.",
+                "evidence": [
+                    "initial_state.membership_holdings.cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6"
+                ]
+            },
+            {
+                "row": "initial_state.membership_events.65df3c67-b682-456e-adde-6509d7c1d9f8",
+                "policy_id": "membership_tier_dues_billing",
+                "check": "Dec-2024 recurring_dues charge of 44.99 matches the tier's monthly_dues_usd and is settled by payment p1 of the same amount the next day.",
+                "evidence": [
+                    "initial_state.membership_events.65df3c67-b682-456e-adde-6509d7c1d9f8",
+                    "initial_state.membership_events.60be65ee-b678-4132-b5c6-c52442ee1e44"
+                ]
+            },
+            {
+                "row": "initial_state.membership_events.cd196661-06f7-4f71-9642-60dd24ae4bc6",
+                "policy_id": "membership_tier_dues_billing",
+                "check": "Jan-2025 recurring_dues charge of 44.99 matches the tier's monthly_dues_usd and is settled by payment p2 of the same amount the next day.",
+                "evidence": [
+                    "initial_state.membership_events.cd196661-06f7-4f71-9642-60dd24ae4bc6",
+                    "initial_state.membership_events.64527f82-5d8b-454f-9c6c-9f3b758ccd1c"
+                ]
+            },
+            {
+                "row": "initial_state.membership_events.3351f06c-2fd2-4b43-b7b4-19ca48468cc6",
+                "policy_id": "membership_tier_dues_billing",
+                "check": "Feb-2025 recurring_dues charge of 44.99 matches the tier's monthly_dues_usd and is settled by payment p3 of the same amount the next day.",
+                "evidence": [
+                    "initial_state.membership_events.3351f06c-2fd2-4b43-b7b4-19ca48468cc6",
+                    "initial_state.membership_events.46801f14-5f7f-4cf2-90af-2c5133368856"
+                ]
+            },
+            {
+                "row": "initial_state.membership_events.60be65ee-b678-4132-b5c6-c52442ee1e44",
+                "policy_id": "membership_payment_application",
+                "check": "Payment of 44.99 recorded the day after the Dec-2024 recurring_dues charge e1, settling it in full with no duplicate posting at the same moment.",
+                "evidence": [
+                    "initial_state.membership_events.60be65ee-b678-4132-b5c6-c52442ee1e44",
+                    "initial_state.membership_events.65df3c67-b682-456e-adde-6509d7c1d9f8"
+                ]
+            },
+            {
+                "row": "initial_state.membership_events.64527f82-5d8b-454f-9c6c-9f3b758ccd1c",
+                "policy_id": "membership_payment_application",
+                "check": "Payment of 44.99 recorded the day after the Jan-2025 recurring_dues charge e2, settling it in full with no duplicate posting at the same moment.",
+                "evidence": [
+                    "initial_state.membership_events.64527f82-5d8b-454f-9c6c-9f3b758ccd1c",
+                    "initial_state.membership_events.cd196661-06f7-4f71-9642-60dd24ae4bc6"
+                ]
+            },
+            {
+                "row": "initial_state.membership_events.46801f14-5f7f-4cf2-90af-2c5133368856",
+                "policy_id": "membership_payment_application",
+                "check": "Payment of 44.99 recorded the day after the Feb-2025 recurring_dues charge e3, settling it in full with no duplicate posting at the same moment.",
+                "evidence": [
+                    "initial_state.membership_events.46801f14-5f7f-4cf2-90af-2c5133368856",
+                    "initial_state.membership_events.3351f06c-2fd2-4b43-b7b4-19ca48468cc6"
+                ]
+            },
+            {
+                "row": "initial_state.corporate_wellness_enrollments.49cd05b0-1352-4763-9917-db8351061244",
+                "policy_id": "membership_corporate_bundling",
+                "check": "Startup Partner tier, status=active, customer_id=cust0 matches the member being billed; employer_discount_pct=10 and multi_location_discount_pct=0 are the tier's own listed values.",
+                "evidence": [
+                    "initial_state.corporate_wellness_enrollments.49cd05b0-1352-4763-9917-db8351061244"
+                ]
+            }
+        ]
+    },
+    "evaluation_criteria": [
+        {
+            "owner": "agent",
+            "tool": "find_customers",
+            "arguments": {
+                "phone_number": "2125550101"
+            },
+            "objective": "Locate Priya's member profile from her stated phone number.",
+            "necessity": "Provides customer_id, needed to look up her membership and to verify her identity."
+        },
+        {
+            "owner": "agent",
+            "tool": "verify_member_identity",
+            "arguments": {
+                "customer_id": "06f75f73-2530-4dbc-bf13-6a541141655e",
+                "phone_number": "2125550101",
+                "date_of_birth": "1994-06-18"
+            },
+            "objective": "Verify Priya's identity against 2 stated attributes before touching her account.",
+            "necessity": "No account read or write may proceed without a passing identity verification."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_membership_holdings",
+            "arguments": {
+                "customer_id": "06f75f73-2530-4dbc-bf13-6a541141655e"
+            },
+            "objective": "Read the membership contract's tier, status, opened_date and current dues_balance.",
+            "necessity": "Supplies membership_id, variant_name (for P('...') lookups), status and opened_date needed by every downstream computation and eligibility check."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_membership_events",
+            "arguments": {
+                "membership_id": "cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6"
+            },
+            "objective": "Read the complete billing ledger for this membership.",
+            "necessity": "Shows that no enrollment_fee row and no current-cycle recurring_dues row exist yet (the two unmet prerequisites), and supplies the settled history the waiver's SUM aggregates reconcile."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_corporate_wellness_enrollments",
+            "arguments": {
+                "customer_id": "06f75f73-2530-4dbc-bf13-6a541141655e"
+            },
+            "objective": "Read Priya's linked corporate wellness enrollment, its tier and status.",
+            "necessity": "Supplies corp_active, employer_discount_pct and multi_location_discount_pct for all three downstream computations."
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "charge_enrollment_fee_91320c6d"
+            },
+            "objective": "Unlock the tool that posts the missing one-time enrollment fee.",
+            "necessity": "The tool must be unlocked before it can be called."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "charge_enrollment_fee_91320c6d",
+                "arguments": {
+                    "membership_id": "cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6",
+                    "customer_id": "06f75f73-2530-4dbc-bf13-6a541141655e",
+                    "amount_usd": 44.1
+                }
+            },
+            "objective": "Post the never-billed enrollment_fee charge, reduced by the active corporate partnership's discount.",
+            "necessity": "membership_ext_enrollment_fee uniquely produces this amount; it is a value_input prerequisite of the root waiver.",
+            "argument_uniqueness_tracing": {
+                "membership_id": "the target membership contract's own reference number; id class, read verbatim from the find_membership_holdings return, reachable at this point in the conversation, and unique to this customer since only one membership contract exists for her.",
+                "customer_id": "Priya's own reference number, read verbatim from find_customers'/find_membership_holdings' return; unique because it is the same value that already passed identity verification.",
+                "amount_usd": "44.10 -- factor trace: base_fee=P('enrollment_fee_usd')=49.00 (Metro Multi-Club Access tier parameter); corp_active=EXISTS('corp',status='active')=True (corporate_wellness_enrollments row corp0, status=active); employer_pct=CPARAM('corp','employer_discount_pct')=10 (Startup Partner tier parameter); multi_loc_pct=CPARAM('corp','multi_location_discount_pct')=0 (Startup Partner tier parameter, untriggered -- this employer tier offers no multi-location discount); result=RND(49.00*(1-(10+0)/100),2)=44.10. Any agent reading the published rule and this world converges on the same figure: the rule pins the base, the single combined percentage, and the rounding moment exclusively."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "charge_recurring_dues_93751e4d"
+            },
+            "objective": "Unlock the tool that posts this billing cycle's recurring dues charge.",
+            "necessity": "The tool must be unlocked before it can be called."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "charge_recurring_dues_93751e4d",
+                "arguments": {
+                    "membership_id": "cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6",
+                    "customer_id": "06f75f73-2530-4dbc-bf13-6a541141655e",
+                    "amount_usd": 40.49
+                }
+            },
+            "objective": "Post this billing cycle's recurring_dues charge, reduced by the higher of the corporate and student discounts.",
+            "necessity": "membership_ext_recurring_dues uniquely produces this amount; it is a value_input prerequisite of the root waiver.",
+            "argument_uniqueness_tracing": {
+                "membership_id": "the target membership contract's own reference number; id class, read verbatim from the find_membership_holdings return.",
+                "customer_id": "Priya's own reference number, read verbatim from find_customers'/find_membership_holdings' return.",
+                "amount_usd": "40.49 -- factor trace: base_amt=P('monthly_dues_usd')=44.99 (Metro Multi-Club Access tier parameter); corp_active=EXISTS('corp',status='active')=True; employer_pct=CPARAM('corp','employer_discount_pct')=10; student_pct=P('student_discount_pct')=0 (Metro Multi-Club Access is not Student Metro Access); discount_pct=MX(10,0)=10; result=RND(44.99*(1-10/100),2)=40.49. Any agent reading the published rule converges on the same figure: the rule states the discount is the higher of the two candidates, applied once to the original base, with rounding only at the end."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "waive_dues_medical_hold_6b86f7b6"
+            },
+            "objective": "Unlock the tool that posts the medical-hold dues waiver.",
+            "necessity": "The tool must be unlocked before it can be called."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "waive_dues_medical_hold_6b86f7b6",
+                "arguments": {
+                    "membership_id": "cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6",
+                    "amount_usd": 76.13
+                }
+            },
+            "objective": "Post the club-funded portion of the medical-hold waiver against the now-complete outstanding balance.",
+            "necessity": "membership_ext_dues_waiver_medical_hold uniquely produces this amount, and only after both prerequisite charges have landed.",
+            "argument_uniqueness_tracing": {
+                "membership_id": "the target membership contract's own reference number; id class, read verbatim from the find_membership_holdings return.",
+                "amount_usd": "76.13 -- factor trace: enrollment_posted=SUM(membership_dues_charge,charge_type=enrollment_fee)=44.10 (the row just posted at step 6); recurring_posted=SUM(membership_dues_charge,charge_type=recurring_dues)=44.99+44.99+44.99+40.49=175.46 (3 settled cycles plus the row just posted at step 8); total_charges=219.56; payments_received=SUM(membership_payment_received)=44.99*3=134.97; prior_waivers=SUM(membership_dues_waived)=0; outstanding_balance=219.56-134.97-0=84.59; corp_active=True; employer_pct=10; multi_loc_pct=0; employer_funded=RND(84.59*(10+0)/100,2)=8.46; result=RND(84.59-8.46,2)=76.13. Any agent who has correctly posted both prerequisite charges and read the full ledger converges on the same figure; the rule pins the aggregation basis, the employer-funded share and the rounding moment exclusively."
+            }
+        }
+    ],
+    "prerequisite_closure": {
+        "root_problem": "membership_ext_dues_waiver_medical_hold",
+        "edges": [
+            {
+                "from": "membership_ext_dues_waiver_medical_hold",
+                "to": "membership_ext_enrollment_fee",
+                "kind": "value_input",
+                "gate": "enrollment_posted",
+                "condition": "the one-time enrollment_fee_usd charge for this contract must already be posted to the ledger before the outstanding balance available to waive is computed",
+                "policy_source": "The outstanding dues_balance to be waived is computed as the sum of every membership_dues_charge amount ever billed to the contract with billing subtype enrollment_fee or recurring_dues",
+                "resolved_by": "charge_enrollment_fee_91320c6d",
+                "unresolved_at_frozen_time": {
+                    "why_false": "No membership_events row for this membership has charge_type=enrollment_fee at the opening.",
+                    "evidence": [
+                        "initial_state.membership_events.65df3c67-b682-456e-adde-6509d7c1d9f8.charge_type = recurring_dues",
+                        "initial_state.membership_events.cd196661-06f7-4f71-9642-60dd24ae4bc6.charge_type = recurring_dues",
+                        "initial_state.membership_events.3351f06c-2fd2-4b43-b7b4-19ca48468cc6.charge_type = recurring_dues"
+                    ],
+                    "flips_to_true_by": "enrollment_posted becomes 44.10 once charge_enrollment_fee_91320c6d lands."
+                }
+            },
+            {
+                "from": "membership_ext_dues_waiver_medical_hold",
+                "to": "membership_ext_recurring_dues",
+                "kind": "value_input",
+                "gate": "recurring_posted",
+                "condition": "this billing cycle's recurring_dues charge for this contract must already be posted to the ledger before the outstanding balance available to waive is computed",
+                "policy_source": "evaluated at the moment the waiver is processed so that any catch-up charge posted earlier in the same consultation is included",
+                "resolved_by": "charge_recurring_dues_93751e4d",
+                "unresolved_at_frozen_time": {
+                    "why_false": "No membership_events row for this membership carries billing_cycle_month=2025-03 at the opening; the latest posted cycle is 2025-02.",
+                    "evidence": [
+                        "initial_state.membership_events.3351f06c-2fd2-4b43-b7b4-19ca48468cc6.billing_cycle_month = 2025-02"
+                    ],
+                    "flips_to_true_by": "recurring_posted increases from 134.97 to 175.46 once charge_recurring_dues_93751e4d lands."
+                }
+            }
+        ],
+        "resolution_order": [
+            "membership_ext_enrollment_fee",
+            "membership_ext_recurring_dues",
+            "membership_ext_dues_waiver_medical_hold"
+        ],
+        "order_uniqueness": "membership_ext_enrollment_fee and membership_ext_recurring_dues are parallel prerequisites of the root (fan-out A->B, A->C): each posts its own charge additively into total_charges = enrollment_posted + recurring_posted, a commutative sum that neither formula reads back from the other, so charging enrollment_fee before recurring_dues or the reverse yields the identical enrollment_posted=44.10, recurring_posted=175.46, outstanding_balance=84.59 and final waiver=76.13 either way.",
+        "edge_load_bearing": [
+            {
+                "edge": "membership_ext_dues_waiver_medical_hold -> membership_ext_enrollment_fee",
+                "skipped_effect": "Skipping charge_enrollment_fee_91320c6d leaves enrollment_posted at 0.00 (instead of 44.10), dropping outstanding_balance from 84.59 to 40.49 and the waiver result from 76.13 to 36.44."
+            },
+            {
+                "edge": "membership_ext_dues_waiver_medical_hold -> membership_ext_recurring_dues",
+                "skipped_effect": "Skipping charge_recurring_dues_93751e4d leaves recurring_posted at 134.97 (instead of 175.46), dropping outstanding_balance from 84.59 to 44.10 and the waiver result from 76.13 to 39.69."
+            }
+        ],
+        "no_user_hint": "user_scenario never names membership_ext_enrollment_fee, membership_ext_recurring_dues, an enrollment fee, a billing gap, or this month's dues; Priya raises only the medical-hold waiver and, if told something else must be sorted out first, responds only with a generic 'whatever you need to do' without naming or guessing at what that is.",
+        "tools_do_not_block": "charge_enrollment_fee_91320c6d and charge_recurring_dues_93751e4d perform no read of prior charges and no eligibility check at all before writing (see task_tools.py: each looks up only the membership_holdings row to confirm it exists, then unconditionally creates the event and updates dues_balance); calling waive_dues_medical_hold_6b86f7b6 before either lands would not error, it would simply waive whatever balance already existed."
+    },
+    "charter_scope": {
+        "extended_policies": [
+            "membership_ext_dues_waiver_medical_hold",
+            "membership_ext_enrollment_fee",
+            "membership_ext_recurring_dues"
+        ],
+        "workflows": [],
+        "task_tools": [
+            "charge_enrollment_fee_91320c6d",
+            "charge_recurring_dues_93751e4d",
+            "waive_dues_medical_hold_6b86f7b6"
+        ]
+    },
+    "required_documents": [
+        "membership_ext_dues_waiver_medical_hold",
+        "membership_ext_enrollment_fee",
+        "membership_ext_recurring_dues"
+    ],
+    "computations": [
+        {
+            "policy_id": "membership_ext_enrollment_fee",
+            "target_holding_id": "cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6",
+            "step": 6,
+            "arg": "amount_usd",
+            "expected": 44.1,
+            "factor_trace": [
+                "base_fee=P('enrollment_fee_usd')=49.00 (Metro Multi-Club Access)",
+                "corp_active=EXISTS('corp',status='active')=True (corporate_wellness_enrollments.49cd05b0-1352-4763-9917-db8351061244)",
+                "employer_pct=CPARAM('corp','employer_discount_pct')=10 (Startup Partner)",
+                "multi_loc_pct=CPARAM('corp','multi_location_discount_pct')=0 (Startup Partner, untriggered)",
+                "result=RND(49.00*(1-(10+0)/100),2)=44.10"
+            ]
+        },
+        {
+            "policy_id": "membership_ext_recurring_dues",
+            "target_holding_id": "cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6",
+            "step": 8,
+            "arg": "amount_usd",
+            "expected": 40.49,
+            "factor_trace": [
+                "base_amt=P('monthly_dues_usd')=44.99 (Metro Multi-Club Access)",
+                "corp_active=EXISTS('corp',status='active')=True",
+                "employer_pct=CPARAM('corp','employer_discount_pct')=10",
+                "student_pct=P('student_discount_pct')=0 (not Student Metro Access)",
+                "discount_pct=MX(10,0)=10",
+                "result=RND(44.99*(1-10/100),2)=40.49"
+            ]
+        },
+        {
+            "policy_id": "membership_ext_dues_waiver_medical_hold",
+            "target_holding_id": "cd4fd9ef-8a77-4ca4-bd66-ddef18b801a6",
+            "step": 10,
+            "arg": "amount_usd",
+            "expected": 76.13,
+            "factor_trace": [
+                "enrollment_posted=SUM(charge_type=enrollment_fee)=44.10 (posted at step 6)",
+                "recurring_posted=SUM(charge_type=recurring_dues)=44.99+44.99+44.99+40.49=175.46 (3 settled cycles + step 8)",
+                "total_charges=219.56",
+                "payments_received=SUM(membership_payment_received)=134.97 (3 settled payments)",
+                "prior_waivers=0",
+                "outstanding_balance=219.56-134.97-0=84.59",
+                "employer_pct=10, multi_loc_pct=0",
+                "employer_funded=RND(84.59*10/100,2)=8.46",
+                "result=RND(84.59-8.46,2)=76.13"
+            ]
+        }
+    ]
+}

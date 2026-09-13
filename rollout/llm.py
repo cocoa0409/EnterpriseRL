@@ -196,6 +196,13 @@ class LLMClient:
                 for tc in raw_tcs]
         if reasoning:
             raw_message["reasoning_content"] = reasoning
+        # The model's reasoning, carried back verbatim with the turn so it persists across
+        # tool calls: Anthropic's signed thinking blocks, and the Responses API's reasoning
+        # items (id + encrypted content), which litellm turns back into input items.
+        for key in ("thinking_blocks", "reasoning_items"):
+            items = getattr(msg, key, None)
+            if items:
+                raw_message[key] = [dict(b) for b in items]
 
         usage: Dict[str, int] = {}
         u = getattr(resp, "usage", None)

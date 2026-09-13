@@ -87,7 +87,7 @@ def build_agent_prompt(company: str, background: Optional[str] = None,
         prompt += (
             "\n\n<company_background>\n"
             + background.strip()
-            + "\n</company_background>\n"
+            + "\n</company_background>\n\n"
             "The background above is context only. Every specific rule, number, "
             "procedure, and tool name must still be confirmed from the knowledge base."
         )

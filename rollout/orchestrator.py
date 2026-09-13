@@ -23,12 +23,13 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
-
-from erlbench.engine import Engine
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from .llm import LLMClient, LLMError, ToolCall
 from .prompts import AGENT_GREETING, detect_stop
+
+if TYPE_CHECKING:  # annotation only: any object with tool_list(owner) and call(owner, name, args)
+    from erlbench.engine import Engine
 
 # Terminations that count as a "normal" completion for reward gating.
 NORMAL_TERMINATIONS = {"USER_STOP", "USER_TRANSFER"}

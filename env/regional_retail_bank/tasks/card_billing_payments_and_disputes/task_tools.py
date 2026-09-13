@@ -92,7 +92,7 @@ def restore_overdrawn_checking_with_points_4e4b44ef(ctx: ToolContext, card_accou
         amount: Fixed-format class — the cash value delivered to the checking account; unit USD, written as USD, 2 decimal places, or empty string, never empty for this call, a positive number rounded half-up to 2 decimal places (for example 65.00).
 
     Returns:
-        A text rendering of a dictionary with these keys: status (always "redeemed" when the posting succeeded), card_txn_id (text reference number of the new redemption entry), card_account_id (text reference number of the card account), redemption_type (text, always "deposit_to_checking"), receiving_account_id (text reference number of the checking account credited), reward_points (integer, points redeemed), amount (number, USD with 2 decimal places, cash value delivered), posted_date (text in YYYY-MM-DD form, today's date), new_rewards_balance (integer, the card's unredeemed points after the redemption).
+        A text rendering of a dictionary with these keys: status (always "redeemed" when the posting succeeded), card_txn_id (text reference number of the new redemption entry), card_account_id (text reference number of the card account), redemption_type (text, always "deposit_to_checking"), receiving_account_id (text reference number of the checking account the redemption entry names as receiving the deposit), reward_points (integer, points redeemed), amount (number, USD with 2 decimal places, cash value delivered), posted_date (text in YYYY-MM-DD form, today's date), new_rewards_balance (integer, the card's unredeemed points after the redemption).
     """
     account = ctx.find("card_accounts", card_account_id=card_account_id)[0]
     points = int(reward_points)
@@ -228,22 +228,23 @@ def cash_out_closing_card_points_6700a44f(ctx: ToolContext, card_account_id: str
                                           reward_points: int, amount: float) -> str:
     """Cash out rewards points from a credit card the cardholder is closing, as a deposit into the cardholder's PCB checking account.
 
-    The cardholder uses this before a card closes so its points are not lost. One call posts one
-    redemption entry on the card for the number of points given, records the receiving checking
-    account and the cash value delivered, and lowers the card's unredeemed points balance by those
-    points at once. The redemption entry on the card, naming the receiving checking account, is the
-    record of the cash-out; this tool does not itself post an entry on the checking account's own
-    ledger. The cardholder sees the points leave the card immediately. The call is complete when the
-    receipt below comes back with status "cashed_out".
+    The cardholder uses this to take the rewards points of a card they are closing as cash in a
+    checking account. One call posts one redemption entry on the card for the number of points
+    given, records the receiving checking account and the cash value delivered, and lowers the
+    card's unredeemed points balance by those points at once. The redemption entry on the card,
+    naming the receiving checking account, is the record of the cash-out; this tool does not itself
+    post an entry on the checking account's own ledger. The cardholder sees the points leave the
+    card immediately. The call is complete when the receipt below comes back with status
+    "cashed_out".
 
     Args:
         card_account_id: Id class — the reference number of the credit card account whose points are cashed out, as returned by the card account lookup.
-        checking_account_id: Id class — the reference number of the cardholder's checking account that receives the cash, as returned by the checking account lookup or shown on the card's autopay instruction.
+        checking_account_id: Id class — the reference number of the cardholder's checking account that receives the cash, as returned by the checking account lookup.
         reward_points: Fixed-format class — how many points are cashed out; unit rewards points, written as a non-negative integer, or empty string, never empty for this call, a whole positive integer with no decimal part (for example 12000).
         amount: Fixed-format class — the cash value deposited; unit USD, written as USD, 2 decimal places, or empty string, never empty for this call, a positive number rounded half-up to 2 decimal places (for example 120.00).
 
     Returns:
-        A text rendering of a dictionary with these keys: status (always "cashed_out" when the posting succeeded), card_txn_id (text reference number of the new redemption entry), card_account_id (text reference number of the card account), receiving_account_id (text reference number of the checking account credited), reward_points (integer, points cashed out), amount (number, USD with 2 decimal places, cash value deposited), posted_date (text in YYYY-MM-DD form, today's date), new_rewards_balance (integer, the card's unredeemed points afterwards).
+        A text rendering of a dictionary with these keys: status (always "cashed_out" when the posting succeeded), card_txn_id (text reference number of the new redemption entry), card_account_id (text reference number of the card account), receiving_account_id (text reference number of the checking account the redemption entry names as receiving the cash), reward_points (integer, points cashed out), amount (number, USD with 2 decimal places, cash value deposited), posted_date (text in YYYY-MM-DD form, today's date), new_rewards_balance (integer, the card's unredeemed points afterwards).
     """
     account = ctx.find("card_accounts", card_account_id=card_account_id)[0]
     points = int(reward_points)

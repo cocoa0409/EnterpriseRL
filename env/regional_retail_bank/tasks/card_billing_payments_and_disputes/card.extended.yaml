@@ -1737,7 +1737,7 @@ extended_policies:
 
 
   - id: card_ext_closing_balance_autopay
-    base_policy_refs: [card_evt_payments, card_closure]
+    base_policy_refs: [card_evt_payments, card_closure, card_evt_annual_fee]
     overwrite: []
     trigger: on_request
     subject: [card_set_autopay]
@@ -1745,7 +1745,11 @@ extended_policies:
     target_tool: set_closing_card_autopay_dbe1c3a9
     rule: >-
       When a cardholder closes a card that will still carry a balance, the closing autopay instruction is a
-      fixed_amount instruction drawn on a PCB checking account of the cardholder whose status is active. Its fixed amount is the balance owed on the card at handling time, counted from the
+      fixed_amount instruction drawn on a PCB checking account of the cardholder whose status is active. The
+      instruction collects only what the cardholder still owes once the closing is settled, and an annual fee that
+      card_evt_annual_fee reverses because the card is closed within the refund window is not owed; that reversal is
+      therefore posted before the fixed amount is counted. Its fixed amount is the balance owed on the card at
+      handling time, after any such reversal, counted from the
       ledger as the sum of card_purchase, card_cash_advance, card_balance_transfer, card_fee, card_interest_charge,
       card_payment_return and card_dispute_rebill amounts minus the sum of card_payment, card_merchant_credit,
       card_fee_reversal, card_interest_reversal, card_dispute_credit and card_rewards_credit amounts, so any fee
@@ -1794,7 +1798,7 @@ extended_policies:
       interest_reversal_total: "counted from the ledger as the sum of card_purchase, card_cash_advance, card_balance_transfer, card_fee, card_interest_charge, card_payment_return and card_dispute_rebill amounts minus the sum of card_payment, card_merchant_credit, card_fee_reversal, card_interest_reversal, card_dispute_credit and card_rewards_credit amounts"
       dispute_credit_total: "counted from the ledger as the sum of card_purchase, card_cash_advance, card_balance_transfer, card_fee, card_interest_charge, card_payment_return and card_dispute_rebill amounts minus the sum of card_payment, card_merchant_credit, card_fee_reversal, card_interest_reversal, card_dispute_credit and card_rewards_credit amounts"
       rewards_credit_total: "counted from the ledger as the sum of card_purchase, card_cash_advance, card_balance_transfer, card_fee, card_interest_charge, card_payment_return and card_dispute_rebill amounts minus the sum of card_payment, card_merchant_credit, card_fee_reversal, card_interest_reversal, card_dispute_credit and card_rewards_credit amounts"
-      balance_owed: "Its fixed amount is the balance owed on the card at handling time"
+      balance_owed: "Its fixed amount is the balance owed on the card at handling time, after any such reversal"
       statement_cap: "The fixed amount is never more than the card's last_statement_balance"
       capped_balance: "when the ledger balance is above the last statement balance, the last statement balance is used instead"
       active_checking: "when the cardholder holds no PCB checking account whose status is active, no closing autopay can be recorded and the amount is 0.00"
@@ -1825,7 +1829,9 @@ extended_policies:
         replaced_by: >-
           Outside a closing, points may still be redeemed as a deposit to a PCB checking or savings account of the
           same customer at rewards_point_value_cash per point; a closing cash-out, however, is made only as a deposit
-          to a PCB checking account of the cardholder whose status is active, the account the cardholder names
+          to a PCB checking account of the cardholder whose status is active, and while a balance will remain owed on
+          the closed card that account is the one the card's closing autopay instruction draws on, so that the value
+          of the points lands in the account from which the remaining balance is collected
     trigger: on_request
     subject: [card_rewards_redeem]
     computes: reward_points
@@ -1835,27 +1841,53 @@ extended_policies:
       redeemed as one deposit_to_checking redemption. Outside a closing, points may still be redeemed as a deposit to
       a PCB checking or savings account of the same customer at rewards_point_value_cash per point; a closing
       cash-out, however, is made only as a deposit to a PCB checking account of the cardholder whose status is
-      active, the account the cardholder names; a savings deposit, a statement credit, a gift card or travel is not a
-      closing cash-out under this policy. This card policy records the cash-out on the card only, as a
-      card_rewards_redeem entry that names the receiving checking account and carries the cash value; the matching
-      entry on the checking account's own ledger is not posted by this card policy, and nothing in this policy reads
-      or waits for it.
+      active, and while a balance will remain owed on the closed card that account is the one the card's closing
+      autopay instruction draws on, so that the value of the points lands in the account from which the remaining
+      balance is collected; a savings deposit, a statement credit, a gift card or travel is not a closing cash-out
+      under this policy. When a balance will remain owed, the closing autopay instruction under
+      card_ext_closing_balance_autopay must already be in force before the closing cash-out is made, since it names
+      the receiving account; when no balance will remain owed, the receiving account is an active PCB checking
+      account of the cardholder that the cardholder names. The balance that will remain owed is the card's
+      current_balance at handling time, which the cash-out itself does not change. This card policy records the
+      cash-out on the card only, as a card_rewards_redeem entry that names the receiving checking account and
+      carries the cash value; the matching entry on the checking account's own ledger is not posted by this card
+      policy, and nothing in this policy reads or waits for it.
       The unredeemed points are counted from the card's ledger at handling time as all card_rewards_earn points minus
       all card_rewards_redeem points minus all card_rewards_forfeit points. When the cardholder holds no PCB checking
-      account whose status is active, no closing cash-out can be made and the result is 0. When the unredeemed points
+      account whose status is active, no closing cash-out can be made and the result is 0; likewise, while a balance
+      will remain owed, a card whose autopay source is not a PCB checking account of the cardholder whose status is
+      active has no receiving account for the cash-out, and the result is 0. When the unredeemed points
       are below the tier's rewards_redemption_minimum_points, no deposit is made either and the result is 0. The cash
       value is the points times the tier's rewards_point_value_cash, rounded half-up to the cent;
       rewards_point_value_travel never applies to a deposit.
-    prerequisite: []
+    prerequisite:
+      - problem: card_ext_closing_balance_autopay
+        kind: value_input
+        gate: receiver_active
+        condition: >-
+          Where a balance will remain owed, the closing autopay instruction that names the receiving account is in
+          force before the closing cash-out is made.
+        policy_source: >-
+          When a balance will remain owed, the closing autopay instruction under card_ext_closing_balance_autopay must
+          already be in force before the closing cash-out is made, since it names the receiving account
+        resolved_by: set_closing_card_autopay_dbe1c3a9
+        effect: >-
+          The closing autopay writes an active PCB checking account of the cardholder as the card's autopay source, so
+          source_status and receiver_active read that account, and the closing cash-out is paid into the account from
+          which the remaining balance is collected.
     cross_category:
       - category: checking
         as: branch
         reads: [status]
-        note: "An active PCB checking account of the cardholder must exist to receive the closing cash-out; without one the result is 0 points."
+        note: "The status of the checking account that receives the closing cash-out (the closing autopay source while a balance remains, otherwise an active checking account the cardholder names) decides whether any points are cashed out; without an active receiving account the result is 0 points."
     params: {}
     compute:
+      - balance: "float(F('current_balance'))"
+      - balance_remains: "balance > 0"
+      - source_held: "EXISTS('checking', checking_account_id=F('autopay_source_account_id'))"
+      - source_status: "CFIELD('checking', 'status', checking_account_id=F('autopay_source_account_id')) if source_held else 'none'"
       - active_checking: "CFIELD('checking', 'status', status='active')"
-      - receiver_active: "active_checking == 'active'"
+      - receiver_active: "(source_status == 'active') if balance_remains else (active_checking == 'active')"
       - earned: "SUM('card_transactions', 'reward_points', event_type='card_rewards_earn')"
       - redeemed: "SUM('card_transactions', 'reward_points', event_type='card_rewards_redeem')"
       - forfeited: "SUM('card_transactions', 'reward_points', event_type='card_rewards_forfeit')"
@@ -1864,7 +1896,11 @@ extended_policies:
       - below_minimum: "unredeemed < minimum_points"
       - result: "0 if (below_minimum or not receiver_active) else unredeemed"
     compute_basis:
-      active_checking: "a closing cash-out, however, is made only as a deposit to a PCB checking account of the cardholder whose status is active, the account the cardholder names"
+      balance: "The balance that will remain owed is the card's current_balance at handling time, which the cash-out itself does not change"
+      balance_remains: "while a balance will remain owed on the closed card that account is the one the card's closing autopay instruction draws on"
+      source_held: "while a balance will remain owed, a card whose autopay source is not a PCB checking account of the cardholder whose status is active has no receiving account for the cash-out, and the result is 0"
+      source_status: "while a balance will remain owed on the closed card that account is the one the card's closing autopay instruction draws on, so that the value of the points lands in the account from which the remaining balance is collected"
+      active_checking: "when no balance will remain owed, the receiving account is an active PCB checking account of the cardholder that the cardholder names"
       receiver_active: "When the cardholder holds no PCB checking account whose status is active, no closing cash-out can be made and the result is 0"
       earned: "The unredeemed points are counted from the card's ledger at handling time as all card_rewards_earn points minus all card_rewards_redeem points minus all card_rewards_forfeit points"
       redeemed: "minus all card_rewards_redeem points"
@@ -1899,7 +1935,14 @@ extended_policies:
       before. Before the closure is confirmed, two matters must be settled: the card's unredeemed
       points must already be cashed out under card_ext_closing_points_cashout, since points are forfeited at closure;
       and when a balance will remain owed, a closing autopay instruction under card_ext_closing_balance_autopay must
-      already be in force, so the remaining balance is collected. The option left on the closed card is decided from
+      already be in force, so the remaining balance is collected. Each of these two requirements reaches only what
+      its own policy can make, and neither keeps the cardholder from closing: when card_ext_closing_points_cashout
+      yields 0 points because the unredeemed points are below the tier's rewards_redemption_minimum_points or the
+      cardholder holds no PCB checking account whose status is active, nothing is cashed out, the closure is
+      confirmed all the same, and the points left on the card are forfeited at closure; when
+      card_ext_closing_balance_autopay yields 0.00 because the cardholder holds no PCB checking account whose status
+      is active, no closing autopay is put in force, the closure is confirmed all the same, and the balance stays
+      payable under the existing terms and minimum payments. The option left on the closed card is decided from
       the card's current_balance at handling time and its autopay instruction at that moment. When the balance is zero
       or below, the option is none, because autopay continues only until the balance reaches zero. When a balance
       remains and the card's autopay source is a PCB checking account of the cardholder whose status is active, the
@@ -1910,7 +1953,8 @@ extended_policies:
         kind: state_gate
         gate: card_transactions.redemption_type
         condition: >-
-          All of the card's unredeemed points have been cashed out before the closure is confirmed.
+          Every closing cash-out that card_ext_closing_points_cashout can make for the card's unredeemed points has
+          been made before the closure is confirmed.
         policy_source: >-
           the card's unredeemed points must already be cashed out under card_ext_closing_points_cashout, since points
           are forfeited at closure
@@ -1922,8 +1966,8 @@ extended_policies:
         kind: value_input
         gate: option
         condition: >-
-          A closing autopay instruction sits on an active checking account before a card that still owes a balance
-          is closed.
+          When the cardholder holds an active checking account, a closing autopay instruction sits on it before a
+          card that still owes a balance is closed.
         policy_source: >-
           when a balance will remain owed, a closing autopay instruction under card_ext_closing_balance_autopay must
           already be in force, so the remaining balance is collected
@@ -1966,16 +2010,23 @@ workflows:
       balance, still holds unredeemed points, and carries an annual fee that posted within the annual fee refund
       window. Everything is settled synchronously in the same consultation: the refundable annual fee is taken back
       off the card, a closing autopay on the cardholder's active PCB checking account is left in force for the balance
-      that remains, the points are cashed out on the card to an active PCB checking account the cardholder names, and the
-      cardholder's own confirmation closes the card, with no separate closure request registered. Once done, the card
+      that remains, the points are cashed out on the card into the checking account that closing autopay draws on, and
+      the cardholder's own confirmation closes the card, with no separate closure request registered. Once done, the card
       is closed, holds no unredeemed points, owes only its remaining balance, and keeps an automatic payment that will
       collect that balance.
     steps:
       - {tool: refund_closing_annual_fee_cfb04f99, owner: agent, writes: card_transactions, subject: card_fee_reversal, base_policy_refs: [card_evt_fee_reversal], role: settle the refundable annual fee, computed_by: []}
       - {tool: set_closing_card_autopay_dbe1c3a9, owner: user, writes: card_accounts, subject: card_set_autopay, base_policy_refs: [card_evt_payments], role: cardholder records the closing autopay for the remaining balance, computed_by: [card_ext_closing_balance_autopay]}
-      - {tool: cash_out_closing_card_points_6700a44f, owner: user, writes: card_transactions, subject: card_rewards_redeem, base_policy_refs: [card_evt_rewards], role: cardholder cashes out every point into an active checking account they name, computed_by: [card_ext_closing_points_cashout]}
+      - {tool: cash_out_closing_card_points_6700a44f, owner: user, writes: card_transactions, subject: card_rewards_redeem, base_policy_refs: [card_evt_rewards], role: cardholder cashes out every point into the checking account the closing autopay draws on, computed_by: [card_ext_closing_points_cashout]}
       - {tool: confirm_card_closure_806ea607, owner: user, writes: card_accounts, subject: card_close, base_policy_refs: [card_closure], role: cardholder confirms the closure and the option left on the card, computed_by: [card_ext_closure_autopay_carryover]}
     dataflow:
+      - from_step: 1
+        to_step: 2
+        kind: object_binding
+        source_table: card_accounts
+        source_field: autopay_source_account_id
+        consumer_bindings:
+          - {action_arg: checking_account_id, role: direct}
       - from_step: 1
         to_step: 3
         kind: object_binding
@@ -1984,14 +2035,16 @@ workflows:
         consumer_bindings:
           - {action_arg: autopay_option, role: direct}
     order_rationale: >-
-      Step 0 (annual fee refund) comes before step 1 (closing autopay) because card_ext_closing_balance_autopay sizes
-      the fixed amount on the ledger balance at handling time, so that any fee already refunded as part of the closing
-      is out of it; posting the autopay first would lock in a fixed amount that still contains the fee refunded moments
-      later. Step 1 comes before step 2 (points cash-out) by this SOP's sequencing: everything that bears on the balance
-      still owed, the refund and then the instruction that collects the rest, is settled before the cardholder
-      disposes of the rewards. The two steps write disjoint data, the card's autopay instruction on one side and a
-      redemption entry with the points balance on the other, and neither step's value depends on the other, so a swap
-      would reach the same terminal state; the order is fixed so that every correct handling follows one procedure.
+      Step 0 (annual fee refund) comes before step 1 (closing autopay) because card_ext_closing_balance_autopay has the
+      instruction collect only what the cardholder still owes once the closing is settled: an annual fee that
+      card_evt_annual_fee reverses on a closing inside the refund window is not owed, and the fixed amount is counted
+      from the ledger at handling time after that reversal; posting the autopay first would fix an amount counted on a
+      ledger that still carries a fee the closing takes back. Step 1 comes before step 2 (points cash-out) because
+      card_ext_closing_points_cashout pays a closing cash-out, while a balance will remain owed, into the checking
+      account that the closing autopay instruction draws on, so that the value of the points lands in the account
+      from which the remaining balance is collected; the instruction recorded in step 1 is what names that receiving
+      account, and a cash-out made before it would be paid into whatever account the card named earlier, or into no
+      account at all, rather than the one that collects the remaining balance.
       Step 2 comes before step 3 (closure) because card_evt_rewards and card_closure forfeit unredeemed points when the
       card closes and card_ext_closure_autopay_carryover requires the points to be cashed out first; closing first
       would forfeit them. Step 1 also precedes step 3 because the option left on the closed card is the autopay
@@ -2003,7 +2056,8 @@ workflows:
       Step 0 needs only the annual fee entry already on the ledger and the closure request made in the call. Step 1
       needs the ledger balance as the step 0 credit leaves it, the last statement balance and an active checking
       account already on record, and the cardholder's consent given in the call. Step 2 needs the points already on the
-      ledger, an active checking account already on record and the cardholder's choice of cash. Step 3 needs the
+      ledger, the receiving checking account that the step 1 instruction names, and the cardholder's choice of cash.
+      Step 3 needs the
       redemption posted by step 2 and the instruction recorded by step 1. Every input is an opening record, the
       synchronous effect of an earlier step, or something the cardholder says in the call; no step depends on a
       payment clearing, a statement closing, a review or the passage of time.

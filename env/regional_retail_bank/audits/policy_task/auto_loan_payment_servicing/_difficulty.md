@@ -434,3 +434,151 @@ Observations carried (none has a demonstrated consequence in either task world):
 Per-task verdicts, revision 4:
 - Task 0: **PASS**.
 - Task 1: **PASS**.
+
+## revision_5
+
+Re-audit round 5, by a new, independent auditor (clean session; not the author of the artifacts and not the auditor of revisions 1-4, whose session cannot be resumed). The text of revisions 1-4 above is left untouched. Everything under `### charter_global_frozen` was written and appended to this file **before** any masked task field, any earlier revision of this file and any KB-audit report were read. The material under `### post_reveal_revision_5`, further down, was appended only after the freeze.
+
+### charter_global_frozen
+
+- Auditor: policy-task auditor, round 5 (independent session). Freeze time: 2026-09-13T17:46Z (UTC). Commands were run from `/home/ubuntu/github/enterprise_rl`.
+- Frozen inputs and hashes (verified against `MANIFEST.sha256` in the orchestrator's masked-view directory):
+  - `env/regional_retail_bank/tasks/auto_loan_payment_servicing/auto.extended.yaml`: sha256 `223a222a1058942cc40e0e0beea372b1f19681b46bc14b7bebe2a596de471e91`
+  - `env/regional_retail_bank/tasks/auto_loan_payment_servicing/task_tools.py`: sha256 `51e8146c035283d4f893ebd79a0c6a70d4a009fe3be50d5092e279fc54708ce6`
+  - `task_0.masked.json` `ab09fad5…c361` (cut from `tasks/0.json` sha256 `d5b79a8b…5ddd`), `task_1.masked.json` `c08f3a4a…0c33` (cut from `tasks/1.json` sha256 `0cb44e8f…ec84`). Each view holds only `frozen_time`, `user_scenario` and `initial_state`.
+- Why this is a full re-derivation: `git diff --stat HEAD` shows the extended charter changed in the rework (26 lines) and `task_tools.py` did not. I have not read revision 4, so I cannot carry anything forward by reference. Every section below is derived from scratch.
+- Base copy: lines 1-1364 of the extended charter are **byte-identical** to `blueprint/products/auto.yaml` (`diff` is empty). A yaml-level comparison of all 10 base keys (category … policies) also finds no difference.
+- Permitted and read before the freeze: the blueprint (`blueprint.yaml`, `products/auto.yaml`, `share_tools.py`, with `db_schema.json` consulted through the finders), the extended charter, `task_tools.py`, `erlbench/{tools,scoring}.py`, and the DSL evaluator `skills/erl-task-instantiate/scripts/check_compute.py`, read for the semantics of `CFIELD`/`LATEST`/`RND`/`DAYS` only, with no task run through it. I also read the two masked views and ran runtime share queries through `audit_kit/rq.py` to confirm reachability. Its outputs were the runtime rows only: 2 checking accounts, 1 loan and 22/31 loan entries per task, identical to the masked `initial_state`.
+- Masked and unread at freeze: `evaluation_criteria`, `computations`, `charter_scope`, `required_documents`, `design_rationale`, `solvability_contract`, `prerequisite_closure`, all of `audits/` (including revisions 1-4 of these files and `audits/policy_kb/…`), `docs/`, and the other agents' files in the shared scratchpad. I ran no recursive search under `env/`. The only contact with `audits/` was a file listing plus `grep -c "^## revision_"` to find where to append.
+- Entry conditions (Step 0): the orchestrator re-ran the instantiation gates on the current tree and supplied the snapshot in the brief. Cited, not re-run: EXTENDED OK (extended_policies=6, workflows=1, task_tools=7, tasks=2, workflow_guided_tasks=1); TASK TOOL CONTRACT OK; REPLAY OK (0.json 13/26/26, 1.json 11/35/35); SOLVABILITY OK; COMPUTE OK (suite means factors=30.50 branches=18.00 steps=12.00); GROUNDING OK; TRACEABILITY OK (it reads the published KB, which predates this rework); SCOPE OK. The masked views and their hashes were supplied. Input complete.
+
+#### policy_conflict_scan
+
+The structured policy is 13 base policies plus 6 extended policies plus 1 workflow.
+
+| Subject (event) | Policies acting on it | Conclusion |
+| --- | --- | --- |
+| `auto_payment` (scheduled) | base `auto_evt_payment_allocation`; ext `auto_ext_catchup_installment_payment` (`post_installment_payment_660c6229`) | Compatible. The ext policy fixes the payment amount (shortfall capped by the paying account's posted funds) and splits it in the base allocation order. Base inherited: cutoff/credit date, active/delinquent status, satisfaction at ≥ monthly_payment, no early satisfaction of later installments. |
+| `auto_payment` (payoff) | base `auto_evt_payoff_and_lien`; ext `auto_ext_payoff_settlement` (`post_payoff_payment_63569e96`) | Compatible. Payoff = principal + accrued + fees due (+ penalty 0). The ext policy recomputes principal and fees due from the ledger (see O3) and posts nothing when funds are short (base "a shortfall leaves the loan open with the payment applied normally" describes a payment that was posted, so the two do not collide). |
+| `auto_set_autopay` (cancel / enroll) | base `auto_evt_autopay`, `auto_agg_relationship_discount`; ext `auto_ext_autopay_cancel_rate`, `auto_ext_autopay_enroll_rate` | Every base clause these two policies replace is named in `overwrite` (see override_declarations). The two ext policies bind distinct tools. The cancel/enroll pair is ordered by the enroll rule ("recorded only on a loan with no enrollment standing"). |
+| `auto_change_due_date` | base `auto_due_date_change` only (tool `change_due_day_df9bec35`, `computed_by: []`) | No extended policy touches it. Its gate "The loan must be active with no installment past due" is what orders the workflow's step 0 before step 1. The cancel rule's ordering sentence puts the due date change before the cancellation. The two orderings are compatible. |
+| `auto_fee_waiver` | base `auto_evt_fee_waiver`; ext `auto_ext_closed_source_returned_fee_waiver`, `auto_ext_closed_source_late_charge_waiver` | Compatible. Both ext policies use the base bank_error ground ("any fee assessed contrary to this charter … no limit") and the base once-only dedup. They are disjoint by fee_code (returned_payment vs late_charge) and by tool. |
+| triggers | `on_request` (catchup, cancel, enroll, payoff); `state_due` (both waivers) | The `state_due` waivers are evaluated whenever the state is due. They fire only when the returned or late-charged debit was presented to an account whose `closed_date` precedes the debit's `posted_date`. |
+| time anchors | credit date = frozen date (business day, before 17:00 ET); accrued interest from `last_payment_date` exclusive to credit date inclusive; due-change window 365 days from `last_due_date_change_date`; grace days by state | No two policies anchor the same quantity differently. |
+| cross-category reads | checking only: `status`, `ledger_balance` (catchup, payoff); `variant_name`, `opened_date`, `closed_date` (cancel, enroll); `closed_date` by `checking_account_id` (waivers) | Each ext policy declares its checking reads in `cross_category`, and those reads match the `CFIELD` calls. Account selection is the subject of R5-G1/R5-G2. |
+
+**Scope partition (to be checked against `charter_scope` at reveal).** From the charter and the two worlds I expect this partition:
+- Task 0 claims the workflow `auto_wf_autopay_source_change` with catchup, cancel_rate and enroll_rate, plus the base due date change as a workflow step.
+- Task 1 claims payoff_settlement with its two waiver prerequisites.
+
+The two scopes are pairwise disjoint, jointly cover all 6 extended policies, and give exactly one workflow task.
+
+#### rule_compute_equivalence
+
+Check 2, run over all six extended policies. Each binding's `compute_basis` quotation was located verbatim in its rule. Items not listed below map one-to-one.
+
+- **catchup.** `due`, `credited`, `returned_id` (most recent reversal, `LATEST … date_field='posted_date'`), `returned_credit`, `shortfall` (`MX(0, …)` = "never below zero"), `amount` (lesser of ledger_balance and shortfall), `fees_due` (auto_fee − settlement − waiver), `fees_portion` (`MN`), `principal` (disbursement − Σprincipal_portion + Σreversal), `accrued` (single `RND` on the final figure, `DAYS(last_payment_date, NOW)` = exclusive/inclusive), `interest_portion` (`MN`) and `result` all correspond. The exception is **`funds = CFIELD('checking','ledger_balance', status='active') or 0`** (→ R5-G2).
+- **cancel_rate / enroll_rate.** `rec_auto`/`rec_rel` read the name in `rate_discounts`. `pre_rate` caps the recorded discounts at `max_total_discount_pct`. `kept`/`total_disc` apply the cap once to the sum. `raw_rate` branches on `autopay_discount_removed_on_cancel` (cancel only). `result` applies the floor and then `RND(…,2)`. `autopay_added` = `days_past_due == 0`. All of these correspond. The exception is **`held_premier`/`held_private`** (→ R5-G1).
+  - Minor: the compute hardcodes the two tier names instead of reading `relationship_qualifying_checking_tiers`. The list is `[Premier Checking, Private Client Checking]` in all six variants, so no value in the domain diverges (observation O5).
+- **returned_fee_waiver.** `fee_id`/`returned_pay` (latest returned_payment fee and the payment it names), `channel`/`debit_date`/`paying_account` (read from that payment), `source_closed` (`CFIELD` keyed on a unique `checking_account_id`), `pcb_error` (`channel=='autopay_pcb'`, closed_date non-empty, strictly earlier than posted_date), `prior_waivers` (once only) and `result` all correspond.
+- **late_charge_waiver.** `charge_id`/`charge_installment` (latest late_charge), `debit_id` (latest `autopay_pcb` payment toward that installment), `reversals` (≥1 reversal naming it), `source_closed` (unique `checking_account_id`), `pcb_error` and `result` all correspond.
+- **payoff_settlement.** `principal`, `fees_due`, `days`, `accrued` (one rounding), `penalty` (0 when pct is 0), `payoff` and `result` (0 when funds < payoff) correspond. The exception is **`funds = CFIELD('checking','ledger_balance', status='active') or 0`** (→ R5-G2).
+- **Sweep back.** No compute binding reads a quantity the rule does not state, apart from the two account-selection reads named above (they select by table order, which the rule never states).
+- **Rounding.** Every "rounded half-up / rounded to the cent / two decimal places" sentence maps to `RND`. The instantiation skill defines "rounding to `RND`" as the mapping. The evaluator implements `RND` as Python `round` on a float, which differs from decimal half-up only on exact half-cent inputs. That is an evaluator property, not a charter one, and the per-task files check that no scored figure sits on a half-cent (observation O7).
+
+#### action_binding_and_uuids
+
+Check 3.
+- `(target_tool, computes)`: `(post_installment_payment_660c6229, principal_portion)`, `(cancel_autopay_a2c51ad3, interest_rate)`, `(enroll_autopay_b9bffdb4, interest_rate)`, `(waive_returned_payment_fee_ab31cb83, amount)`, `(waive_late_charge_e8055e73, amount)`, `(post_payoff_payment_63569e96, amount)`. Each pair is claimed by exactly one policy.
+- `change_due_day_df9bec35` is claimed by no extended policy. It is governed by base `auto_due_date_change` and is workflow step 1 with `computed_by: []`.
+- The seven uuid8s are `660c6229, df9bec35, a2c51ad3, b9bffdb4, ab31cb83, e8055e73, 63569e96`. They are pairwise distinct, share no common prefix or tail pattern, and form no arithmetic sequence. Nothing indicates batch derivation.
+- Each tool's owner matches the charter:
+  - cancel and enroll are `owner="user"`, matching base "Enrolling or cancelling is the borrower's own instruction" and the blueprint summary;
+  - payment, due change, waivers and payoff are `owner="agent"`, matching "Waivers, due date changes, payoff posting … are agent service actions".
+- **No function body judges a business precondition or a prerequisite.** All seven bodies do `ctx.find` (for customer_id and current balances), then `ctx.create`/`ctx.update` of the arguments given, then return the receipt. No docstring mentions a past-due installment, a standing enrollment or a waiver-before-payoff condition.
+- No confirmation, review or wait is added. The `completed` `auto_requests` row that cancel/enroll write is the record of the borrower's own instruction.
+
+#### prerequisite_graph
+
+Check 7.
+- `prerequisite` is filled in on all 6 policies and on the workflow (`[]` on catchup, cancel, both waivers and the workflow).
+- Edges:
+  - E1 `enroll_rate → catchup` (value_input, gate `autopay_added`, resolved_by `post_installment_payment_660c6229`);
+  - E2 `enroll_rate → cancel_rate` (state_gate, gate `auto_loans.autopay_enrolled`, resolved_by `cancel_autopay_a2c51ad3`);
+  - E3 `payoff → returned_fee_waiver` (value_input, `fees_due`, `waive_returned_payment_fee_ab31cb83`);
+  - E4 `payoff → late_charge_waiver` (value_input, `fees_due`, `waive_late_charge_e8055e73`).
+- Every `problem` names an extended id in this file. None names a base policy or itself. The graph is two disjoint in-stars and is acyclic.
+- `policy_source` is verbatim in the cited rule for each edge:
+  - E1 = enroll rule "When the loan has an installment past due and the borrower brings it current in the same call, the scheduled payment is posted before the enrollment is recorded, so that the enrollment is recorded on a loan with no installment past due and carries the autopay discount."
+  - E2 = enroll rule "A new enrollment is recorded only on a loan with no enrollment standing; when the borrower moves autopay to a different checking account, the standing enrollment is first cancelled under its own rule, and the enrollment is then recorded from the new account."
+  - E3 and E4 = the two "Before the payoff amount is fixed, …" sentences of the payoff rule.
+- Each `condition` agrees with its sentence.
+  - E1 omits the rule's "and the borrower brings it current in the same call" qualifier, but restates the rule's own `autopay_added` sentence ("added at enrollment only when … days_past_due is zero"). It is therefore neither strengthened nor weakened in effect.
+- `kind` matches `gate`: `autopay_added` and `fees_due` are real bindings of the dependent compute, and `auto_loans.autopay_enrolled` is a real field and gate.
+- Each `resolved_by` tool genuinely produces its `effect`:
+  - the payment tool writes `days_past_due` as given;
+  - cancel writes `autopay_enrolled=False`;
+  - each waiver adds a waiver row to the ledger and lowers `fees_due`.
+- No authoring-viewpoint phrasing: a scan of the charter for "this task / at the opening / current world / in the task" returns nothing.
+
+#### override_declarations
+
+Check 1, finding half. Each `base_policy_refs` entry is taken sentence by sentence.
+
+- **catchup** (refs `auto_evt_payment_allocation`, `auto_evt_payoff_and_lien`; `overwrite: []`).
+  - Allocation sentences followed: accrual on principal from `last_payment_date`, cutoff and business-day credit, status gate, fees→interest→principal with settlement trigger, `last_payment_date` = credit date, satisfaction at ≥ monthly_payment, no early satisfaction, and principal-only (not reached).
+  - Two quantities are handled by an extended-specific formula, with no overwrite:
+    - (i) "standing credit" subtracts only the payment named by the **most recent** reversal. Base `auto_evt_returned_payment` makes every returned payment's installment unsatisfied again, so the two diverge only when two or more returned payments were credited toward the same installment (O2).
+    - (ii) principal and fees due are recomputed from the ledger instead of read from `principal_balance`/`fees_due`. These diverge only after a waiver of an already-paid fee, whose principal credit the ledger formula does not see (O3).
+  - "Payments from a PCB checking account debit that account through the payment's trigger": the tool does not implement that trigger (O1).
+  - Payoff sentences: not reached by a scheduled payment.
+  - Consequences are demonstrated per task.
+- **cancel_rate** (refs `auto_agg_relationship_discount`, `auto_evt_autopay`). Two clauses are replaced, each named verbatim in `overwrite`: "When autopay is cancelled … the APR rises by the autopay discount actually applied" and "cancelling removes it on the same schedule …". After replacement the merged semantics are unique: rebuild from the recorded discounts, in force from the cancellation. Every other sentence is followed:
+  - relationship granted at funding, fixed for life, not added later, not removed on closure (made concrete by the funded-date test);
+  - discounts stack to the cap and floor;
+  - the relationship discount is unaffected by autopay;
+  - owner = borrower; loan active or delinquent;
+  - APR changes leave monthly_payment alone.
+- **enroll_rate** (same refs). Two clauses are replaced and named: "Enrolling adds … from the next installment due at least autopay_lead_days …", replaced by the days_past_due gate at enrollment, and "and re-enrolling later restores it". The rest is followed, including "The autopay source must be a checking account of the same customer in active status when autopay is enrolled."
+- **returned_fee_waiver / late_charge_waiver** (ref `auto_evt_fee_waiver`; `overwrite: []`). Followed:
+  - waived in full as one row with `source_item_id` = fee;
+  - bank_error has no limit;
+  - waived once;
+  - the already-paid part goes to principal on the waiver date;
+  - courtesy gates, which are not used.
+  - The "contrary to this charter" ground is new charter text inside each extended rule ("PCB keeps an autopay enrollment drawing only on a source account that is open on each debit date …"). No sentence of the cited base policy keeps a fee in that situation. Base `auto_evt_returned_payment` ("The return also incurs returned_payment_fee") and `auto_evt_late_charge` are uncited, and they describe how a fee is assessed, not whether it may later be waived as bank error. So there is no quantity both clauses fight over (O4).
+- **payoff_settlement** (refs allocation, payoff_and_lien; `overwrite: []`). Followed: "The payoff amount on a date is principal_balance plus auto_msr_accrued_interest through that date plus fees_due" (same quantity as long as ledger and fields agree; see O3), payment_type payoff, pays to zero, and the move to paid_off through the trigger.
+  - "any excess is refunded": the ext amount equals the payoff exactly, so there is no excess.
+  - "a shortfall leaves the loan open …": concerns a payment that was posted; ext posts none.
+  - The lien/GAP sentences are not reached by the tool (lien set to release_pending; GAP handled by `auto_evt_gap_refund`).
+  - The checking-debit trigger is not implemented (O1).
+
+#### findings (charter-global, pre-reveal)
+
+**R5-G1 — SOURCE-POLICY RED (check 2, rule → compute not lossless: the relationship test over accounts of a tier).**
+- *Symptom.* The cancel and enroll rules test existentially over the borrower's checking accounts of a qualifying tier. The compute reads a single account per tier.
+- *Evidence.* Cancel rule, repeated word for word in the enroll rule: "it stays when, on the loan's funded_date, the borrower held a checking account of a tier in relationship_qualifying_checking_tiers, meaning one of those accounts was opened on or before funded_date and was not closed on or before funded_date; a qualifying account closed later still counts, and one opened after funded_date never counts." Compute (both policies): `held_premier: "(CFIELD('checking', 'opened_date', variant_name='Premier Checking') or '9999-12-31') <= F('funded_date') and (CFIELD('checking', 'closed_date', variant_name='Premier Checking') or '9999-12-31') > F('funded_date')"`, and the same for `held_private`. `CFIELD` returns `hs[0].get(field)`, the first matching row of the customer's checking table (`skills/erl-task-instantiate/scripts/check_compute.py` `CFIELD`/`_cross`). The DSL offers no inequality filter and no iteration over rows.
+- *Demonstrated consequence (same situation, two conclusions).* Take a borrower with two Premier Checking accounts: A (listed first, opened after `funded_date`) and B (opened before `funded_date`, still open). The rule says B was held at funding, so the relationship discount is kept. The compute says `held_premier` = A.opened ≤ funded = False; with no Private Client, `rel_kept` = 0. For a loan recording `autopay_and_relationship` at a rate above the floor, the rule's cancel APR is pre − 0.25 while the compute gives pre − 0; the enroll APR differs by the same 0.25.
+- *Root cause.* The rule's domain (any number of accounts per tier) is wider than what the compute expression implements (one account per tier). The instantiation standard itself requires "The formula must cover the complete policy domain, not merely the branch the current seed hits" and "`rule` and `compute` must have equal domains".
+- *Affected.* `auto_ext_autopay_cancel_rate` and `auto_ext_autopay_enroll_rate`: rule sentence above and compute `held_premier`/`held_private`/`rel_kept`/`rel_disc`. Both are claimed by task 0 (per-task consequence in `0.md` revision_5).
+- *Why RED and not an observation.* Checks 2, 3 and 7 are world-independent by the skill's own division ("None of the three reads a task's world"). For policy self-consistency, the demonstration the skill requires is two verbatim artifact passages reaching different conclusions in the same situation, which the construction above supplies. That the compute language cannot express the existential test does not exempt the pair: it is exactly the reason the rule and compute domains are unequal.
+
+**R5-G2 — SOURCE-POLICY RED (check 2, same class: which checking account caps the payment).**
+- *Symptom.* The catchup and payoff rules cap the amount by the paying account's posted funds. The compute reads the ledger_balance of the first active checking row of the customer.
+- *Evidence.* Catchup rule: "When a borrower asks PCB to pay … by a transfer from the borrower's own PCB checking account … The transfer is drawn only from posted funds: the paying account is the borrower's checking account in active status, and when its ledger_balance is lower than the shortfall the payment amount is that ledger_balance". Payoff rule: "The transfer is drawn only from posted funds of the borrower's checking account in active status: when its ledger_balance is lower than the payoff amount no payoff is posted". Compute (both): `funds: "CFIELD('checking', 'ledger_balance', status='active') or 0"`.
+- *Demonstrated consequence.* Take a borrower with two active checking accounts: A (listed first, ledger 100.00) and B (the one the borrower pays from, ledger 5,000.00), with a shortfall of 438.01.
+  - Catchup: the rule caps by the paying account B, giving an amount of 438.01. The compute caps by A, giving 100.00.
+  - Payoff: the rule posts the payoff, while the compute gives `result` 0.00.
+  - A borrower with no active account gives compute `funds` 0 (amount 0.00), where the rule states no outcome.
+- *Root cause.* The account is selected by table order, a basis the rule never states.
+- *Affected.* `auto_ext_catchup_installment_payment` `funds`/`amount` (task 0) and `auto_ext_payoff_settlement` `funds`/`result` (task 1).
+
+**Observations (not grounds for rework unless a task file demonstrates a consequence):**
+- **O1** (base-section trigger). Base event `auto_payment` declares `checking:checking_debit when payment_channel in [autopay_pcb, pcb_transfer]`, and base allocation says "Payments from a PCB checking account debit that account through the payment's trigger". `post_installment_payment_660c6229` and `post_payoff_payment_63569e96` write `payment_channel="pcb_transfer"` but no checking debit row, and do not lower `checking_accounts.ledger_balance`. No agent tool can write it either. Scored-value impact is judged per task.
+- **O2** (catchup, check 1): the most-recent-reversal restriction vs base returned-payment semantics. It diverges only with ≥2 returned payments toward one installment.
+- **O3** (catchup and payoff, check 1): the ledger recomputation of principal and fees due ignores the principal credit carried by a waiver of an already-paid fee (`applied_to_principal` in the waiver tools; base "recorded by the same waiver row"). It diverges from `principal_balance`/`fees_due` only after such a waiver.
+- **O4** (both waivers): the bank-error ground is extended-side charter text. No cited base sentence conflicts (see override_declarations).
+- **O5**: the cancel/enroll compute hardcodes the qualifying tier names; the value is equal in every variant.
+- **O6** (catchup): for an active account with negative ledger_balance, the rule literally yields a negative payment amount, which conflicts with the tool's "positive number of dollars". "Drawn only from posted funds" suggests nothing is drawn. Neither world has an overdrawn account.
+- **O7**: `RND` = float `round` vs "half-up"; exact half-cent inputs are checked per task.
+- **O8**: the workflow block carries `order_rationale` with a zero-wait sentence but no `requires_external_wait` or `zero_wait_proof` keys. `check_solvability.py` reads those keys from the task's `solvability_contract`, to be verified for task 0 at reveal.

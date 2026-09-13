@@ -1521,15 +1521,13 @@ extended_policies:
           from the next installment due at least autopay_lead_days calendar days after enrollment
         replaced_by: >-
           The autopay discount is added at enrollment only when the loan has no installment past due, that is when its
-          days_past_due is zero, and the paying account is a checking account of the borrower in active status; an
-          enrollment recorded while an installment is past due carries no autopay discount.
+          days_past_due is zero; an enrollment recorded while an installment is past due carries no autopay discount.
       - base_policy: auto_agg_relationship_discount
         superseded_clause: >-
           and re-enrolling later restores it
         replaced_by: >-
           Re-enrolling after a cancellation restores the autopay discount only on the same terms as a first enrollment:
-          when the loan has no installment past due and the paying account is a checking account of the borrower in
-          active status.
+          when the loan has no installment past due.
     trigger: on_request
     subject: [auto_set_autopay]
     computes: interest_rate
@@ -1549,10 +1547,11 @@ extended_policies:
       one of those accounts was opened on or before funded_date and was not closed on or before funded_date; a
       qualifying account closed later still counts, and one opened after funded_date never counts. The autopay
       discount is added at enrollment only when the loan has no installment past due, that is when its
-      days_past_due is zero, and the paying account is a checking account of the borrower in active status; an
-      enrollment recorded while an installment is past due carries no autopay discount. Re-enrolling after a
-      cancellation restores the autopay discount only on the same terms as a first enrollment: when the loan has no
-      installment past due and the paying account is a checking account of the borrower in active status. The
+      days_past_due is zero; an enrollment recorded while an installment is past due carries no autopay discount.
+      Every enrollment draws on a checking account of the borrower in active status, so the paying account named for
+      it decides where installments are drawn from and never whether the autopay discount is added. Re-enrolling
+      after a cancellation restores the autopay discount only on the same terms as a first enrollment: when the loan
+      has no installment past due. The
       relationship discount and the autopay discount are first added together into one total discount, that total is capped at
       max_total_discount_pct, and the capped total is subtracted once from the rate before discounts; when the result
       is below apr_floor the new APR is apr_floor, and the APR is rounded to two decimal places. rate_discounts is
@@ -1587,8 +1586,8 @@ extended_policies:
     cross_category:
       - category: checking
         as: branch
-        reads: [status, variant_name, opened_date, closed_date]
-        note: "The relationship-qualifying account held on funded_date and an active paying account decide which discounts enter the enrolled APR."
+        reads: [variant_name, opened_date, closed_date]
+        note: "The relationship-qualifying account held on funded_date decides whether the relationship discount enters the enrolled APR."
     params: {}
     compute:
       - rec_auto: "P('autopay_discount_pct') if 'autopay' in F('rate_discounts') else 0"
@@ -1597,8 +1596,7 @@ extended_policies:
       - held_premier: "(CFIELD('checking', 'opened_date', variant_name='Premier Checking') or '9999-12-31') <= F('funded_date') and (CFIELD('checking', 'closed_date', variant_name='Premier Checking') or '9999-12-31') > F('funded_date')"
       - held_private: "(CFIELD('checking', 'opened_date', variant_name='Private Client Checking') or '9999-12-31') <= F('funded_date') and (CFIELD('checking', 'closed_date', variant_name='Private Client Checking') or '9999-12-31') > F('funded_date')"
       - rel_disc: "P('relationship_discount_pct') if (held_premier or held_private) else 0"
-      - source_active: "EXISTS('checking', status='active')"
-      - autopay_added: "P('autopay_discount_pct') if (F('days_past_due') == 0 and source_active) else 0"
+      - autopay_added: "P('autopay_discount_pct') if F('days_past_due') == 0 else 0"
       - total_disc: "MN(P('max_total_discount_pct'), rel_disc + autopay_added)"
       - raw_rate: "pre_rate - total_disc"
       - result: "RND(P('apr_floor') if raw_rate < P('apr_floor') else raw_rate, 2)"
@@ -1609,8 +1607,7 @@ extended_policies:
       held_premier: "one of those accounts was opened on or before funded_date and was not closed on or before funded_date"
       held_private: "on the loan's funded_date, the borrower held a checking account of a tier in relationship_qualifying_checking_tiers"
       rel_disc: "a qualifying account closed later still counts, and one opened after funded_date never counts"
-      source_active: "the paying account is a checking account of the borrower in active status"
-      autopay_added: "an enrollment recorded while an installment is past due carries no autopay discount"
+      autopay_added: "The autopay discount is added at enrollment only when the loan has no installment past due, that is when its days_past_due is zero; an enrollment recorded while an installment is past due carries no autopay discount."
       total_disc: "The relationship discount and the autopay discount are first added together into one total discount, that total is capped at max_total_discount_pct"
       raw_rate: "the capped total is subtracted once from the rate before discounts"
       result: "when the result is below apr_floor the new APR is apr_floor, and the APR is rounded to two decimal places"
@@ -1748,10 +1745,12 @@ extended_policies:
     rule: >-
       When a borrower asks to pay an auto loan off today by a transfer from their own PCB checking account, the agent
       posts one payment of payment_type payoff for the payoff amount on today's credit date. Before the payoff amount
-      is fixed, every returned payment fee that followed an autopay debit presented to a closed source account is
-      waived for bank error under its own rule. Before the payoff amount is fixed, every late charge on an installment
-      left unpaid by an autopay debit presented to a closed source account is waived for bank error under its own
-      rule. The payoff never collects a fee assessed contrary to this charter. Principal is recomputed from the ledger
+      is fixed, the most recent returned payment fee on the loan is waived for bank error under its own rule when that
+      rule finds it followed an autopay debit presented to a closed source account. Before the payoff amount is
+      fixed, the most recent late charge on the loan is waived for bank error under its own rule when that rule finds
+      its installment was left unpaid by an autopay debit presented to a closed source account. The payoff never
+      collects a fee that either of those two rules finds assessed contrary to this charter. Principal is recomputed
+      from the ledger
       as the auto_disbursement amount less the principal_portion of every auto_payment plus the amount of every
       auto_payment_reversal. Fees due are recomputed from the ledger as all auto_fee amounts less all
       auto_fee_settlement amounts less all auto_fee_waiver amounts. Accrued interest is that principal times
@@ -1769,11 +1768,11 @@ extended_policies:
         kind: value_input
         gate: fees_due
         condition: >-
-          Every returned payment fee that followed an autopay debit presented to a closed source account has been
-          waived before the payoff amount is fixed.
+          The most recent returned payment fee on the loan, when its own rule finds it followed an autopay debit
+          presented to a closed source account, has been waived before the payoff amount is fixed.
         policy_source: >-
-          Before the payoff amount is fixed, every returned payment fee that followed an autopay debit presented to a
-          closed source account is waived for bank error under its own rule.
+          Before the payoff amount is fixed, the most recent returned payment fee on the loan is waived for bank error
+          under its own rule when that rule finds it followed an autopay debit presented to a closed source account.
         resolved_by: waive_returned_payment_fee_ab31cb83
         effect: >-
           The waiver row adds its amount to the auto_fee_waiver total, so fees_due falls by the returned payment fee
@@ -1782,11 +1781,12 @@ extended_policies:
         kind: value_input
         gate: fees_due
         condition: >-
-          Every late charge on an installment left unpaid by an autopay debit presented to a closed source account has
-          been waived before the payoff amount is fixed.
+          The most recent late charge on the loan, when its own rule finds its installment was left unpaid by an
+          autopay debit presented to a closed source account, has been waived before the payoff amount is fixed.
         policy_source: >-
-          Before the payoff amount is fixed, every late charge on an installment left unpaid by an autopay debit
-          presented to a closed source account is waived for bank error under its own rule.
+          Before the payoff amount is fixed, the most recent late charge on the loan is waived for bank error under its
+          own rule when that rule finds its installment was left unpaid by an autopay debit presented to a closed
+          source account.
         resolved_by: waive_late_charge_e8055e73
         effect: >-
           The waiver row adds the late charge to the auto_fee_waiver total, so fees_due falls by the late charge and

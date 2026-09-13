@@ -395,3 +395,141 @@ Checklist:
 - The render layer must re-render and re-audit the three retired-clause documents: the restored "outside" sentences and the ≥2-dispute amount are new source atoms.
 
 Open observations (not grounds for rework under the RED threshold): R4-O1, R4-O2, R3-O1 remainder, R3-O2, R2-O2, R2-O3, R3-T0-O1, T0-W1, R2-T0-W2.
+
+## revision_5
+
+Auditor: a new, independent auditor session (Claude, erl-task-policy-audit, re-audit round 5). It has no link to the auditor of revisions 1–4 and did not write any of the audited artifacts. Revisions 1–4 above are left exactly as they were.
+
+### charter_global_frozen
+
+- Freeze time: 2026-09-13T17:4xZ (the three revision_5 frozen blocks were all on disk by 17:50:16Z, per `date -u` run straight after the last append). Everything in this `charter_global_frozen` block was written before either task's masked fields were read and before any earlier revision or KB-audit report was opened.
+- Inputs, with hashes checked against the orchestrator's `MANIFEST.sha256`:
+  - `checking.extended.yaml` sha256 `f1179eda9d5beaf994e433a2b6850a01fe9a923df775f9f89efbd3fb8566b923`
+  - `task_tools.py` sha256 `b8ef325356f86f4c55b3a98eed5e600b1ecc8f5c66c05d3be111fdf15da8758f`
+  - `blueprint/products/checking.yaml` sha256 `635b57c4…6046`; `blueprint/products/savings.yaml` sha256 `8f308ff1…a40a`
+  - `task_0.masked.json` `664748699b2c…7e63b4` (from 0.json `a6dea81a…2d85`); `task_1.masked.json` `354bee71a0ba…b991c2` (from 1.json `d7593431…de6a`)
+- Fields read: blueprint.yaml, db_schema.json, share_tools.py, products/{checking,savings}.yaml (savings only for `overdraft_protection_source_eligible`), the lifecycle state lists of products/{cd,mortgage,auto}.yaml, the extended charter, task_tools.py, the masked views (`frozen_time`, `user_scenario`, `initial_state` only), `erlbench/scoring.py`, the compute evaluator in `skills/erl-task-instantiate/scripts/check_compute.py` (used only for DSL semantics), and the instantiate skill's workflow template (`references/product_extended.yaml`, lines 200–275).
+- Fields masked and left unread until the freeze: `evaluation_criteria`, `computations`, `charter_scope`, `required_documents`, `design_rationale`, `solvability_contract`, `prerequisite_closure`, every earlier revision of these audit files, and `audits/policy_kb/`.
+- Why this section is re-derived in full: the rework changed the root rules, so the charter hash almost certainly differs from the one revision 4 recorded. The brief also asks for a fully independent pass. So nothing here is carried forward.
+
+#### policy_conflict_scan
+
+- **Base copy.** Lines 1–1922 of the extended charter (everything before `extended_policies:`), diffed against `blueprint/products/checking.yaml`, match except for one trailing blank line. The base section is a verbatim copy.
+- **Claimed objects.** There are 6 extended policies, 1 workflow and 6 task tools. Each `(target_tool, computes)` pair belongs to exactly one policy:
+  - `checking_ext_transfer_fee_source_error_refund` → `refund_transfer_fee_error_033d9cbf` / amount
+  - `checking_ext_autopay_dispute_provisional_credit` → `post_dispute_provisional_credit_5453b90d` / amount
+  - `checking_ext_cycle_close_relationship_refund` → `refund_same_day_maintenance_fee_e9518b99` / amount
+  - `checking_ext_uncovered_item_fee_refund` → `refund_uncovered_overdraft_fee_6b0f4e50` / amount
+  - `checking_ext_uncovered_episode_extended_fee_refund` → `refund_extended_overdraft_fee_22b46ecc` / amount
+  - `checking_ext_private_client_entry_conversion` → `convert_checking_tier_696add48` / variant_name
+- **Overlapping subjects.** All five refund and credit policies write `checking_fee_refund` or `checking_provisional_credit`. Each one is restricted by fee code, or by the dispute, to a different object:
+  - most recent `overdraft_transfer` fee
+  - the single submitted dispute
+  - the `monthly_maintenance` fee posted on NOW
+  - most recent `overdraft_item` fee
+  - most recent `extended_overdraft` fee
+
+  Every tool hard-codes its own `fee_code`. So no two policies can decide the same row. Base `checking_evt_fee_refund` still governs the *earlier* fees of each code, and each ext rule says so in its first sentence. That is a partition, not a conflict.
+- **Triggers and time anchors.**
+  - Credit-due and notice-window timing is inherited unchanged from base `checking_evt_electronic_dispute` (policy 2: "Whether and when the credit is owed is inherited unchanged").
+  - The extended-overdraft episode anchor is inherited from `checking_evt_extended_overdraft_fee`.
+  - The relationship-balance measurement date matches base `checking_agg_relationship_balance` (cycle closing date for a waiver, frozen date for a conversion). The only change is the composition, which is declared (see override_declarations).
+  - No two policies set different anchors for the same quantity.
+- **Cross-category reads.** Savings: `overdraft_protection_source_eligible` (tier parameter), `current_balance`, `status`. CD and mortgage: `principal_balance`, `status`. Auto: `monthly_payment`, `autopay_enrolled`, `autopay_source_account_id`. Every read goes into a checking write only. No write crosses into another category.
+- **Scope exclusivity and completeness, inferred from the charter alone since `charter_scope` is masked.** The prerequisite graph has two components:
+  - {`cycle_close_relationship_refund` → `transfer_fee_source_error_refund`, `autopay_dispute_provisional_credit`}. The workflow's `computed_by` union is exactly these three policies.
+  - {`private_client_entry_conversion` → `uncovered_item_fee_refund`, `uncovered_episode_extended_fee_refund`}.
+
+  Together the two components cover all 6 policies, and they share no node. The actual `charter_scope` fields are compared after the reveal.
+- **Cross-component coupling (reworker flag 1).** Both root rules define "a credit the bank already owes" in general terms:
+  - Policy 3: "any fee refund due on the bank_error ground or as a dispute_final refund, whatever the fee and whichever policy decides it, and any provisional credit that has fallen due on a submitted dispute, whichever policy sets its amount".
+  - Policy 6: "a fee refund the bank owes on the bank_error ground or as a dispute_final refund, of any fee and under whichever policy decides it, or a provisional credit that has fallen due on a submitted dispute, however its amount is set".
+
+  So policy 3's rule also reaches refunds decided by policies 4/5, and policy 6's rule reaches credits decided by policies 1/2. Neither root declares an edge to the other component. As charter text this is an under-declared general dependency (finding C-O1). Whether it bites is purely a question of each world; that is checked per task.
+
+#### rule_compute_equivalence
+
+Every binding was checked against its `compute_basis` quotation and the rule, both directions. DSL semantics come from `check_compute.build_env`:
+- SUM, COUNT and LATEST are scoped to the holding.
+- CPARAM and CFIELD filter on `customer_id = owner` and return the first match.
+- `within_months=1` means `MONTHS(date, NOW) == 0`.
+
+- **transfer_fee_source_error_refund.**
+  - `fee_id`, `transfer_id`, `source_id`, `already_refunded` and `result` each map to a quoted clause.
+  - `source_eligible` is CPARAM on the savings tier. It returns None when the source is not the owner's, which leaves only `wrong_amount` live. That is exactly the rule's "When the source savings account is not on the customer's record … only the amount condition is judged".
+  - `wrong_amount` uses `P('overdraft_transfer_fee')`, the tier on the frozen date, where the rule says only "the checking tier's". This makes a difference only if the tier changed between the fee and the review (C-O3).
+  - No invented basis. No empty promise.
+- **autopay_dispute_provisional_credit.**
+  - `submitted_count`, `dispute_id`, `claimed`, `item_id`, `item` and `item_counterparty` are all quoted.
+  - `scheduled` = CFIELD auto `monthly_payment` with `auto_loan_id = counterparty`, `autopay_enrolled = True`, `autopay_source_account_id = HID`. That implements "the owner's PCB auto loan with autopay enrolled from this checking account".
+  - `cap = MX(0, item − scheduled)` when a scheduled payment exists, else `item`. That implements "never less than zero" and "When the disputed item is any other debit, the third figure does not apply".
+  - `result` = the minimum of the figures that apply when exactly one dispute is submitted, else 0 ("this policy posts nothing").
+  - The due and notice gates stay as base eligibility (trigger `state_due`), not compute. That is consistent.
+- **cycle_close_relationship_refund.**
+  - `fee_id` is restricted to `posted_date = NOW`.
+  - `own_part = MX(0, F('ledger_balance'))` is read at handling time. That implements "after every posting made to the account during that business day, and before the refund of the maintenance fee itself posts".
+  - The savings/cd/mortgage status lists match the rule. Taking the first CFIELD match per status implements "only the first on the customer's record is counted".
+  - The ledger waivers are guarded for `not_offered`.
+  - `within_months=1` equals the rule's cycle ("day after the previous cycle closing date through the current business day") whenever NOW is the cycle closing date and the cycle day exists in both months. It can drift for cycle days 29–31 (C-O4).
+  - `threshold` has no `not_offered` guard. For Access or Student Checking (`waiver_relationship_balance: not_offered`) the comparison `relationship >= 'not_offered'` is undefined, whereas the rule says a not_offered waiver "is not used" (C-O2).
+  - `inputs.history` lists only the `debit_card_pos` count, while compute also counts `debit_card_international` (declaration omission, C-O4).
+- **uncovered_item_fee_refund.** Every binding is quoted. `covered` applies the declared override: current link, current `current_balance` compared with the whole item. `de_minimis` is `0 < item ≤ overdraft_item_de_minimis`. `result` is correct.
+- **uncovered_episode_extended_fee_refund.** Every binding is quoted. `opens_episode` requires `DAYS(od_date, ext_date) == extended_overdraft_trigger_days`, which implements "posted exactly … calendar days before". `covered` is gated on `opens_episode`, and `wrong_amount` is independent of it. That implements "otherwise … only the amount ground below is judged".
+- **private_client_entry_conversion.** `own_part`, `savings_part`, `cd_part` and `mortgage_part` (gated on `K('target_includes_mortgage')`) are all quoted. `result` = `target_tier` when relationship ≥ `target_entry_min`, else the current tier ("nothing is written"). The inherited gates (active, age, tier cap, multi-holding, once per cycle) are eligibility, not compute. The params `target_entry_min` 250000.00 and `target_includes_mortgage` true equal Private Client Checking's `entry_relationship_balance_min` and `relationship_balance_includes_mortgage`.
+
+#### action_binding_and_uuids
+
+- Each task tool is owned by one target policy. The one tool shared with a base-ground decision is `refund_transfer_fee_error_033d9cbf`: workflow step 0 uses it with `computed_by: []` to refund an earlier transfer fee under base `checking_evt_fee_refund`. That is the same business event (`checking_fee_refund`, bank_error, `fee_code overdraft_transfer`), so there is one business reading.
+- Function bodies: every tool writes exactly its documented rows. The provisional-credit tool also sets `dispute_status = provisional_credited`, which is base semantics. No tool checks eligibility, status, amount, earlier refunds or qualification. All six docstrings say so. No confirmation, wait or review step is added.
+- uuid8s: `5453b90d`, `033d9cbf`, `e9518b99`, `6b0f4e50`, `22b46ecc`, `696add48`. They are pairwise distinct, share no prefix or suffix, and show no sequence. They look independently generated.
+- All six tools are `owner="agent"`. The module has no `owner="user"` tool (bears on W-1).
+
+#### prerequisite_graph
+
+- `prerequisite` is present on all 6 policies and on the workflow. Policies 1, 2, 4 and 5, and the workflow, have `[]`. Policy 3 → {policy 1, policy 2}. Policy 6 → {policy 4, policy 5}. No edge points at a base policy or at itself. The graph is acyclic. Adding the undeclared cross-component links of C-O1 (3→4, 3→5, 6→1, 6→2) would still be acyclic, because 1, 2, 4 and 5 have no out-edges.
+- `policy_source` quotes, each located verbatim in the cited rule:
+  - 3→1: "the refund of every overdraft transfer fee charged in error, the most recent one as checking_ext_transfer_fee_source_error_refund finds it and any earlier one under checking_evt_fee_refund" (rule lines 2051–2053).
+  - 3→2: "the provisional credit that checking_ext_autopay_dispute_provisional_credit finds owed" (line 2053).
+  - 6→4 and 6→5: "the refund of every overdraft item fee and every extended overdraft fee charged in error on the account, the most recent of each as … find them and any earlier one under checking_evt_fee_refund" (line 2303).
+- `condition` wording: each condition ("Every … charged in error on the account has been refunded before …" / "The provisional credit that has fallen due … has been posted before …") says the same as the rule's "every credit the bank already owes on the account is posted first". It is neither strengthened nor weakened. The 3→1 condition covers every erroneous transfer fee, including earlier ones that base decides. The rule sentence does too, so this is not a strengthening by the field.
+- `kind` and `gate`: all four edges are `value_input` with gate `own_part`, and `own_part` exists as a compute binding in both roots. `resolved_by` names the target tool of the cited policy. Each such tool raises `ledger_balance` by the amount posted, which makes `effect` ("raises the account's ledger balance, so own_part … rise") hold.
+- No authoring-viewpoint wording ("in this task", "at the opening") appears in any prerequisite entry.
+
+#### override_declarations
+
+Sentence by sentence against each `base_policy_refs` entry:
+- **policy 1 (transfer_fee_source_error_refund), `overwrite: []`.**
+  - `checking_evt_fee_refund`: full refund, bank_error, no time limit, refund once. All followed.
+  - `checking_evt_overdraft_protection_transfer`, "The savings tier must have overdraft_protection_source_eligible true": followed and restated as a draw restriction.
+  - `checking_evt_electronic_dispute`: no overlapping quantity.
+  - Dropped-branch check: the base bank_error grounds for a transfer fee also include "beyond … daily max". Policy 1's selector judges only ineligible-source and wrong-amount, then says "otherwise this policy refunds nothing". The phrase "this policy" leaves base in force, so that is coexistence, not a replacement (C-O5).
+- **policy 2 (autopay_dispute_provisional_credit).** The one base sentence it replaces ("The provisional credit amount is the dispute's claimed_amount, but never more than the disputed item's amount.") is declared. `replaced_by` covers both the ≥2-submitted and =1-submitted branches, so the merged amount is unique. Every other `checking_evt_electronic_dispute` sentence (channels, notice window, business-day due date, new-account substitution, submitted only, one credit, reversal, dispute_final) is inherited.
+- **policy 3 (cycle_close_relationship_refund).**
+  - Replaces the basis sentence of `checking_agg_relationship_balance`. Declared.
+  - Remaining `checking_agg_relationship_balance` sentences followed: measurement at close of business on the cycle closing date, negative counted as zero, mortgage only when the tier flag is true, pending deposits excluded.
+  - `checking_evt_maintenance_and_statement_fees`: waivers are alternatives, not prorated, not_offered unusable, "A fee assessed although a waiver was met is a bank error". Followed. The other waivers are left to base by name.
+  - `checking_evt_fee_refund`: bank_error, full refund, once. Followed.
+  - No anonymous factor or 0/1 multiplier replaces a base-fixed amount: the refund is the fee's own amount or nothing, which is base's rule.
+- **policy 4 (uncovered_item_fee_refund).**
+  - Replaces "the transfer is made only if the savings current_balance at that moment covers the whole shortfall, and a partial transfer is never made." for its refund decision (current link, whole item). Declared.
+  - `checking_evt_overdraft_and_returned_item_fees`: "a covered item is not an overdraft and carries no overdraft-item fee", de minimis. Followed.
+  - Base bank_error grounds not in its selector (daily limit, end-of-day de minimis, wrong amount): coexistence (C-O5).
+- **policy 5 (uncovered_episode_extended_fee_refund).** Same declared replacement as policy 4, applied to the item that opened the episode. `checking_evt_extended_overdraft_fee`: episode anchored on `negative_since_date`, posted at +trigger days, once per episode. Followed. Wrong-amount ground kept.
+- **policy 6 (private_client_entry_conversion).**
+  - Replaces the `checking_agg_relationship_balance` basis sentence. Declared.
+  - `checking_product_change`: active, target entry gate except deposit, multi-holding, no fee, once per cycle. All inherited. The added evidence rule for once-per-cycle ("judged on the conversions recorded during the current contact together with any the owner reports") supplies an evidence source; it changes no quantity.
+  - `checking_open_and_funding`: age and relationship entry gates inherited.
+- **Author "wrong value" signals.** None of the rules or bases calls base's output a wrong value.
+- **Result.** No undeclared override was found. Every declared override leaves a unique merged meaning.
+
+#### findings
+
+- **C-O1 (observation; bears on tasks 0 and 1).** The general definition of "credit the bank already owes" in both roots reaches policies claimed by the other task, with no `prerequisite` edge (quotes above). In any world where such a credit exists, the tree read from the policy would be larger than the declared one and would cross task scopes. A consequence can only be shown against a world, so each task file checks whether those links are empty.
+- **C-O2 (observation; no task bears it).** Policy 3's `threshold` has no `not_offered` guard. Compute is undefined for tiers that do not offer the relationship waiver (Access, Student).
+- **C-O3 (observation).** Policy 1's `wrong_amount` compares against the tier on the frozen date. Base service fees use the tier in force on the day of service. This diverges only after a tier change.
+- **C-O4 (observation).** Policy 3's `within_months=1` stands in for the statement cycle and can drift for cycle days 29–31. Policy 3's `inputs.history` omits the `debit_card_international` count.
+- **C-O5 (observation).** In policies 1, 4 and 5, "otherwise this policy refunds nothing" leaves base bank_error grounds for the same most-recent fee (daily-limit, end-of-day de minimis, and for policy 1 the transfer-fee daily max) outside the ext selector. "This policy" keeps base in force, so the pair is coexistence, not an undeclared override. A demonstration needs a world where such a ground fires on the most recent fee; each task file checks this.
+- **W-1 (check 6, owner=user clause: FAIL — recorded as a standing non-conformance observation, not a RED).**
+  - Check 6 and the instantiate template (`references/product_extended.yaml`: "at least one step must be `owner: user`") require a customer-owned workflow step. The workflow has four `owner: agent` steps, and its `order_rationale` says "The procedure has no customer-owned step because none of its postings is an owner's consent or claim under the checking charter". task_tools.py declares no `owner="user"` tool.
+  - The failure is shown verbatim. But no second answer, unmet prerequisite or scored-value change follows from it, so under the consequence table it cannot be raised to a RED. It needs an orchestrator ruling. `check_extended` does not test this clause (`no_handoff=True` concerns handoff GT only).
+- **W-2 (check 6, dataflow; observation).** `dataflow: []` while step 3 consumes the ledger balance raised by steps 0–2. The template's link kinds (object_binding into an action argument, state_effect as an eligibility status) cannot name a side-effect balance, and the `order_rationale` says this explicitly. The ordering 0–2 before 3 is carried by the rule text instead.

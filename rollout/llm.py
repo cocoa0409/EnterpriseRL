@@ -56,17 +56,21 @@ DEFAULT_LLM_MAX_TOKENS = 32 * 1024
 
 def args_for(model: str, effort: str, temperature: float = 1.0,
              max_tokens: int = DEFAULT_LLM_MAX_TOKENS) -> dict:
-    """Pick llm-args by model id: gpt/claude models take a top-level ``reasoning_effort``;
-    everything else (e.g. kimi) takes only ``temperature`` + ``max_tokens``. ``drop_params``
-    cleans up any residual mismatch, so this only needs to be approximately right.
+    """Pick llm-args by model id: gpt/claude models take a reasoning effort; everything
+    else (e.g. kimi) takes only ``temperature`` + ``max_tokens``. ``drop_params`` cleans up
+    any residual mismatch, so this only needs to be approximately right.
 
-    NOTE: for ``openai/responses/*`` this proxy IGNORES a flat ``reasoning_effort`` and only
-    honors the nested ``reasoning={"effort": ...}`` object — run.sh builds that shape and
-    passes it via --agent-llm-args, so this flat fallback matters only for non-responses ids."""
+    For ``openai/responses/*`` litellm DROPS a flat ``reasoning_effort``; only the nested
+    ``reasoning={"effort": ...}`` object reaches the server, so that shape is used there
+    (mirrors ``_derive_args`` in run.sh, which normally passes these via --*-llm-args)."""
     m = model.lower()
-    if "gpt" in m or "claude" in m:
-        return {"temperature": temperature, "reasoning_effort": effort, "max_tokens": max_tokens}
-    return {"temperature": temperature, "max_tokens": max_tokens}
+    args = {"temperature": temperature, "max_tokens": max_tokens}
+    if ("gpt" in m or "claude" in m) and effort:
+        if "responses/" in m:
+            args["reasoning"] = {"effort": effort}
+        else:
+            args["reasoning_effort"] = effort
+    return args
 
 
 @dataclass

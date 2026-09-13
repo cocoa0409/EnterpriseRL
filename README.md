@@ -40,8 +40,11 @@ plus the scenario's **share** tools; every **task** tool is hidden and reached v
 `erlbench`. A single run can cover multiple scenarios, sharing a per-scenario
 DB/KB/retrieval-index cache.
 
-Requires an OpenAI-compatible proxy in the environment (`OPENAI_API_BASE`,
-`OPENAI_API_KEY`).
+Models are served by AWS Bedrock's OpenAI-compatible `bedrock-mantle` endpoint
+(`https://bedrock-mantle.us-west-2.api.aws/openai/v1`): agent `openai.gpt-6-astra`,
+user simulator `openai.gpt-5.4`, both via the Responses API. Export the Bedrock API
+key as `AWS_BEARER_TOKEN_BEDROCK`. (An `OPENAI_API_BASE` / `OPENAI_API_KEY` already
+in the environment takes precedence, for any other OpenAI-compatible endpoint.)
 
 ```bash
 # All tasks in the default scenario (env/home_appliance_warranty_provider), 1 trial each:

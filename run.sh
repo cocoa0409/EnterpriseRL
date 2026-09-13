@@ -13,9 +13,14 @@
 #   TASK_IDS="service_claim_dispatch/0" ./run.sh                  # a single task
 #   AGENT_EFFORT=high ./run.sh                                    # lower the agent reasoning effort
 #
-# Requires an OpenAI-compatible proxy in the environment:
-#   OPENAI_API_BASE  (e.g. https://openai.app.msh.team/v1)
-#   OPENAI_API_KEY
+# Models are served by AWS Bedrock's OpenAI-compatible `bedrock-mantle` endpoint
+# (https://bedrock-mantle.us-west-2.api.aws/openai/v1 — the only mantle Region that
+# serves openai.gpt-6-astra), authenticated with a Bedrock API key:
+#   AWS_BEARER_TOKEN_BEDROCK   (the Bedrock long-term API key)
+# It is exported to litellm as OPENAI_API_KEY, and OPENAI_API_BASE defaults to the
+# mantle URL (BEDROCK_API_BASE overrides it). An OPENAI_API_KEY / OPENAI_API_BASE
+# already in the environment wins, so the script still works against any other
+# OpenAI-compatible endpoint.
 # Results land in data/simulations/<SAVE_TO>/results.json; per-task trajectories (with
 # --verbose-logs, the default) under data/simulations/<SAVE_TO>/artifacts/<scenario>/.
 #
@@ -25,13 +30,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# --- preflight: proxy credentials must be in the environment ------------------
-for var in OPENAI_API_KEY OPENAI_API_BASE; do
-  if [[ -z "${!var:-}" ]]; then
-    echo "ERROR: $var is not set. Export it (or source ~/.bashrc) first." >&2
-    exit 1
-  fi
-done
+# --- preflight: endpoint + credentials ----------------------------------------
+# Exported (not passed as CLI flags) so the key never shows up in `ps` output.
+: "${BEDROCK_API_BASE:=https://bedrock-mantle.us-west-2.api.aws/openai/v1}"
+export OPENAI_API_BASE="${OPENAI_API_BASE:-${BEDROCK_API_BASE}}"
+export OPENAI_API_KEY="${OPENAI_API_KEY:-${AWS_BEARER_TOKEN_BEDROCK:-}}"
+if [[ -z "${OPENAI_API_KEY}" ]]; then
+  echo "ERROR: no API key. Export AWS_BEARER_TOKEN_BEDROCK (the Bedrock API key; or source ~/.bashrc) first." >&2
+  exit 1
+fi
 
 # --- scenario + task selection (override via env) -----------------------------
 # Scenarios run in ONE process, sharing the per-scenario world cache (DB/KB/index
@@ -68,13 +75,17 @@ export MAX_CONCURRENCY
 
 # --- models (litellm ids) -----------------------------------------------------
 # litellm handles provider routing: a leading `openai/` targets the OpenAI-compatible
-# proxy (OPENAI_API_BASE); `openai/responses/<m>` targets the Responses API path,
-# where the proxy allows `tools` together with reasoning effort.
-: "${AGENT_LLM:=openai/responses/gpt-5.6-sol}"
-: "${USER_LLM:=openai/responses/gpt-5.4-mini-construct}"
-# Reasoning effort per role. On the gpt-5.x Responses models this proxy serves, the
-# supported levels are: none|minimal|low|medium|high|xhigh|max  (max is the top tier
-# on gpt-5.6; xhigh on gpt-5.1-codex-max/5.2).
+# endpoint (OPENAI_API_BASE); `openai/responses/<m>` targets its Responses API path.
+# The agent MUST use the Responses API: on Bedrock, gpt-6-astra rejects function tools
+# together with reasoning_effort on /chat/completions ("To use function tools, use
+# /v1/responses").
+#   agent: openai.gpt-6-astra  (Bedrock model card: model-card-openai-gpt-6-astra)
+#   user : openai.gpt-5.4      (Bedrock model card: model-card-openai-gpt-54)
+: "${AGENT_LLM:=openai/responses/openai.gpt-6-astra}"
+: "${USER_LLM:=openai/responses/openai.gpt-5.4}"
+# Reasoning effort per role, as verified on bedrock-mantle (an unsupported level 400s):
+#   openai.gpt-6-astra : low|medium|high|xhigh|max   (no none)
+#   openai.gpt-5.4     : none|low|medium|high|xhigh  (no max)
 : "${AGENT_EFFORT:=max}"
 : "${USER_EFFORT:=medium}"
 : "${AGENT_TEMPERATURE:=1.0}"   # kimi requires 1; anthropic too
@@ -83,12 +94,12 @@ export MAX_CONCURRENCY
 : "${USER_MAX_TOKENS:=32768}"
 
 # --- reasoning-effort format construction (built HERE in the shell) -----------
-# litellm 1.92 has NO working unified reasoning-effort path for the Responses API on
-# this proxy: a flat top-level `reasoning_effort` is silently IGNORED (the proxy never
-# validates or applies it — even a bogus value is accepted). The proxy only honors the
-# Responses API's NATIVE nested object `reasoning={"effort": <level>}` (verified: a bogus
-# level THERE returns 400 "Supported values are: none, minimal, low, medium, high, xhigh,
-# and max"). So we build the per-role llm-args JSON ourselves, choosing the shape by model
+# litellm 1.92 has NO working unified reasoning-effort path for the Responses API: a
+# flat top-level `reasoning_effort` is silently DROPPED before the request is sent (even
+# a bogus value is accepted). Only the Responses API's NATIVE nested object
+# `reasoning={"effort": <level>}` reaches the server (verified on bedrock-mantle: a bogus
+# level THERE returns 400 "Supported values are: 'none', 'low', 'medium', 'high', 'xhigh',
+# and 'max'"). So we build the per-role llm-args JSON ourselves, choosing the shape by model
 # id, and pass it verbatim via --agent-llm-args / --user-llm-args (rollout uses it as-is,
 # bypassing args_for; the nested `reasoning` key survives litellm.drop_params and reaches
 # completion()):

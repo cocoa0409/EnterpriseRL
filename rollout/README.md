@@ -98,8 +98,10 @@ and the task's `evaluation_criteria`, **gated on a normal end of call**
 
 ## Usage
 
-From the repo root, with an OpenAI-compatible proxy in the environment
-(`OPENAI_API_BASE`, `OPENAI_API_KEY`):
+From the repo root, with the Bedrock API key in the environment
+(`AWS_BEARER_TOKEN_BEDROCK`; the endpoint defaults to Bedrock's `bedrock-mantle`
+`https://bedrock-mantle.us-west-2.api.aws/openai/v1`, overridable via
+`BEDROCK_API_BASE`, or wholesale via `OPENAI_API_BASE` / `OPENAI_API_KEY`):
 
 ```bash
 # All tasks in the default scenario, 1 trial each:
@@ -158,18 +160,19 @@ hand-rolled. Every knob is an env var in `run.sh` mapped to a CLI flag:
 | env (run.sh) | CLI | meaning |
 |---|---|---|
 | `SCENARIOS` / `SCENARIO` | `--scenarios` / `--scenario` | one or more scenario dirs (space-separated); run in one process sharing the world cache |
-| `AGENT_LLM` / `USER_LLM` | `--agent-llm` / `--user-llm` | litellm ids. `openai/…` → OpenAI-compatible proxy; `openai/responses/…` → Responses API. Defaults: agent `openai/responses/gpt-5.6-sol`, user `openai/responses/gpt-5.4-mini-construct` |
-| `AGENT_EFFORT` / `USER_EFFORT` | `--agent-effort` / `--user-effort` | reasoning effort: `none\|minimal\|low\|medium\|high\|xhigh\|max` (model-dependent; `max` is the gpt-5.6 top tier) |
+| `AGENT_LLM` / `USER_LLM` | `--agent-llm` / `--user-llm` | litellm ids. `openai/…` → OpenAI-compatible endpoint; `openai/responses/…` → Responses API. Defaults: agent `openai/responses/openai.gpt-6-astra`, user `openai/responses/openai.gpt-5.4` (Bedrock). The agent must stay on the Responses API: Bedrock's gpt-6-astra rejects function tools + reasoning effort on Chat Completions |
+| `AGENT_EFFORT` / `USER_EFFORT` | `--agent-effort` / `--user-effort` | reasoning effort (model-dependent; an unsupported level 400s): gpt-6-astra `low\|medium\|high\|xhigh\|max`, gpt-5.4 `none\|low\|medium\|high\|xhigh`. Defaults: agent `max`, user `medium` |
 | `AGENT_MAX_TOKENS` / `USER_MAX_TOKENS` | `--*-max-tokens` | output cap (default 32768) |
 | `AGENT_LLM_ARGS` / `USER_LLM_ARGS` | `--*-llm-args` | full litellm-kwargs JSON override; empty → built by `run.sh` from the model id (see below) |
-| `AGENT_API_BASE`/`AGENT_API_KEY`, `USER_API_BASE`/`USER_API_KEY` | `--*-api-base` / `--*-api-key` | per-role endpoint override; empty → global `OPENAI_API_BASE`/`OPENAI_API_KEY` |
+| `AWS_BEARER_TOKEN_BEDROCK`, `BEDROCK_API_BASE` | `--api-key` / `--api-base` | global endpoint: Bedrock API key + mantle URL (default `https://bedrock-mantle.us-west-2.api.aws/openai/v1`); an explicit `OPENAI_API_KEY` / `OPENAI_API_BASE` wins |
+| `AGENT_API_BASE`/`AGENT_API_KEY`, `USER_API_BASE`/`USER_API_KEY` | `--*-api-base` / `--*-api-key` | per-role endpoint override; empty → the global endpoint above |
 | `MAX_ATTEMPTS` | `--max-attempts` | LLM retry cap; `0` (default) = retry forever |
 | `REQUEST_TIMEOUT` | `--request-timeout` | per-call timeout passed to litellm (`0` = its default) |
 | `MAX_CONCURRENCY` | `--max-concurrency` | concurrent rollouts; also sizes litellm's httpx pool |
 
 **Reasoning effort is formatted in `run.sh`, per model id.** litellm does not
 translate a flat `reasoning_effort` into the Responses API's nested `reasoning.effort`
-for `openai/responses/*` on this proxy — a flat value there is silently ignored. So
+for `openai/responses/*` — a flat value there is silently dropped. So
 `run.sh` builds the per-role llm-args JSON itself (`_derive_args`) and passes it via
 `--*-llm-args`:
 

@@ -455,10 +455,11 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--max-errors", type=int, default=10)
     p.add_argument("--max-concurrency", type=int, default=8)
 
-    # Models: litellm ids. A leading `openai/` routes to the OpenAI-compatible proxy;
-    # `openai/responses/<m>` targets the Responses API (tools + reasoning effort).
-    p.add_argument("--agent-llm", default=os.environ.get("AGENT_LLM", "openai/responses/gpt-5.6-sol"))
-    p.add_argument("--user-llm", default=os.environ.get("USER_LLM", "openai/responses/gpt-5.4-mini-construct"))
+    # Models: litellm ids. A leading `openai/` routes to the OpenAI-compatible endpoint
+    # (AWS Bedrock mantle by default); `openai/responses/<m>` targets the Responses API
+    # (the only path where Bedrock's gpt-6-astra accepts tools + reasoning effort).
+    p.add_argument("--agent-llm", default=os.environ.get("AGENT_LLM", "openai/responses/openai.gpt-6-astra"))
+    p.add_argument("--user-llm", default=os.environ.get("USER_LLM", "openai/responses/openai.gpt-5.4"))
     # Per-role reasoning effort (used only for gpt/claude ids via args_for).
     p.add_argument("--agent-effort", default=os.environ.get("AGENT_EFFORT", "high"))
     p.add_argument("--user-effort", default=os.environ.get("USER_EFFORT", "medium"))
@@ -479,8 +480,12 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--max-attempts", type=int, default=0,
                    help="LLM retry cap; 0 (default) = retry every generation error forever")
 
-    p.add_argument("--api-base", default=os.environ.get("OPENAI_API_BASE", ""))
-    p.add_argument("--api-key", default=os.environ.get("OPENAI_API_KEY", ""))
+    # Global endpoint: an explicit OPENAI_API_* wins; otherwise AWS Bedrock's mantle
+    # endpoint with the Bedrock API key (AWS_BEARER_TOKEN_BEDROCK).
+    p.add_argument("--api-base", default=os.environ.get("OPENAI_API_BASE") or os.environ.get(
+        "BEDROCK_API_BASE", "https://bedrock-mantle.us-west-2.api.aws/openai/v1"))
+    p.add_argument("--api-key", default=os.environ.get("OPENAI_API_KEY")
+                   or os.environ.get("AWS_BEARER_TOKEN_BEDROCK", ""))
 
     p.add_argument("--save-to", default=None,
                    help="output dir name under data/simulations/ (default: timestamped)")
@@ -504,8 +509,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.api_key:
         os.environ.setdefault("OPENAI_API_KEY", args.api_key)
     if not (args.api_base or args.agent_api_base) or not (args.api_key or args.agent_api_key):
-        raise SystemExit("OPENAI_API_BASE and OPENAI_API_KEY must be set "
-                         "(env, --api-base/--api-key, or per-role --*-api-base/--*-api-key).")
+        raise SystemExit("no API endpoint/key: export AWS_BEARER_TOKEN_BEDROCK (Bedrock API key), "
+                         "or set OPENAI_API_BASE/OPENAI_API_KEY, --api-base/--api-key, "
+                         "or per-role --*-api-base/--*-api-key.")
 
     scenarios = args.scenarios or [args.scenario]
 

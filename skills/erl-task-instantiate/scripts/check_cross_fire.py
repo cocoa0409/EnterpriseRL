@@ -95,7 +95,6 @@ def main():
         for item in (extended.get("extended_policies") or [])
         if isinstance(item, dict) and item.get("id")
     }
-    workflows = [item for item in (extended.get("workflows") or []) if isinstance(item, dict)]
 
     known_task_tools = task_tool_names(os.path.join(diff_dir, "task_tools.py"))
     task_paths = select_task_paths(diff_dir, task_selector)
@@ -106,6 +105,8 @@ def main():
     scope_paths = paths_through_task(diff_dir, task_selector) if task_mode else task_paths
 
     fails = []
+    if "workflows" in extended:
+        fails.append("charter carries a `workflows` key — every problem is an extended_policy; delete the key")
     scopes = {}
     for task_path in scope_paths:
         tid = os.path.splitext(os.path.basename(task_path))[0]
@@ -129,20 +130,19 @@ def main():
         scope = task.get("charter_scope")
         if not isinstance(scope, dict):
             fails.append(
-                f"charter_scope {tid}.json: missing — each task must register its policy, "
-                "workflow, and task-tool ownership"
+                f"charter_scope {tid}.json: missing — each task must register its policy "
+                "and task-tool ownership"
             )
             scope = {}
 
         policy_scope = scope.get("extended_policies") or []
-        workflow_scope = scope.get("workflows") or []
         tool_scope = scope.get("task_tools") or []
+        if "workflows" in scope:
+            fails.append(f"charter_scope {tid}.json: workflows is not a field — a task claims extended_policies "
+                         "and task_tools only")
         if not isinstance(policy_scope, list):
             fails.append(f"charter_scope {tid}.json: extended_policies must be a list")
             policy_scope = []
-        if not isinstance(workflow_scope, list):
-            fails.append(f"charter_scope {tid}.json: workflows must be a list")
-            workflow_scope = []
         if not isinstance(tool_scope, list):
             fails.append(f"charter_scope {tid}.json: task_tools must be a list")
             tool_scope = []
@@ -162,15 +162,8 @@ def main():
                 f"charter_scope {tid}.json: task_tools {sorted(set(tool_scope))} "
                 f"!= task tools called by gold {sorted(gold_tools)}"
             )
-        unknown_workflows = set(workflow_scope) - {wf.get("id") for wf in workflows}
-        if unknown_workflows:
-            fails.append(f"charter_scope {tid}.json: unknown workflow ids {sorted(unknown_workflows)}")
-        if len(workflow_scope) > 1:
-            fails.append(f"charter_scope {tid}.json: at most one workflow may be claimed")
-
         scopes[tid] = {
             "extended_policies": set(policy_scope),
-            "workflows": set(workflow_scope),
             "task_tools": set(tool_scope),
         }
 
@@ -182,7 +175,7 @@ def main():
     )
     for index, left in enumerate(tids):
         for right in tids[index + 1:]:
-            for key in ("extended_policies", "workflows", "task_tools"):
+            for key in ("extended_policies", "task_tools"):
                 overlap = scopes[left][key] & scopes[right][key]
                 if overlap:
                     fails.append(
@@ -209,7 +202,7 @@ def main():
     mode_label = f", selected_task={task_selector}" if task_mode else ""
     print(
         f"🔎 SCOPE gate  ({len(task_paths)} tasks{mode_label}, "
-        f"policies={len(policies)}, workflows={len(workflows)}, hard-fails={len(fails)})"
+        f"policies={len(policies)}, hard-fails={len(fails)})"
     )
     if fails:
         print("  [FAIL]")

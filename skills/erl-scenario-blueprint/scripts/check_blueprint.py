@@ -66,7 +66,7 @@ domain-scope-only summaries) stay with the author: they surface here as
 warnings at most, never as passes.
 
 Usage (from the repo root):
-  python3 skills/erl-scenario-blueprint/scripts/check_blueprint.py env/<scenario>
+  .venv/bin/python skills/erl-scenario-blueprint/scripts/check_blueprint.py env/<scenario>
 
 Needs PyYAML (the runtime already depends on it). Files are parsed, never executed.
 Exit 0 = BLUEPRINT OK; exit 1 = a structural requirement is violated.

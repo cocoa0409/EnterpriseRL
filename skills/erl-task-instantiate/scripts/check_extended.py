@@ -1,18 +1,38 @@
 """EXTENDED gate: verify <category>.extended.yaml is a compatible superset of the
 blueprint charter, its extended_policies are well-formed and machine-parseable, its
 every policy has a real cross-category factor that computes only for the primary category,
-and exactly one of the difficulty's M tasks closes one >=4-step workflow; all policies
-are covered across the M task scopes.
+every prerequisite is stated by a prerequisite sentence in the blocked policy's own rule,
+every task's gold calls at least one owner=user task tool, and all policies are covered
+across the M task scopes.
 
 Checks:
   compat   every base key of blueprint/products/<category>.yaml is present in the
-           extended file and DEEP-EQUAL (extended only ADDS workflows + extended_policies).
+           extended file and DEEP-EQUAL (extended only ADDS extended_policies).
   policy   each extended_policy: id prefixed <category>_ ; subject subset of base declared
            events; base_policy_refs include every base policy governing those refined events
            (and may additionally cite genuine input lineage); computes + target_tool present;
            rule non-empty; compute is a non-empty ordered list ending in `result`, every
            expression parses under the restricted grammar, and every P()/SUM()/EXISTS()/...
-           name resolves against the real schema/params/categories.
+           name resolves against the real schema/params/categories; XSUM/XCOUNT/XMAX/XLATEST
+           name another category and one of THAT category's event tables.
+  baseline each extended_policy declares `baseline`: `rule`, a self-sufficient paragraph (every
+           sentence verbatim in the policy's rule) stating the standard method and default values
+           — the computation document the KB renders, and the fall-through of every factor — and
+           `params`, the quantitative keys that are the defaults.
+  factors  each extended_policy declares `factors`: 4 to 6 rules, each a TRIGGER CONDITION plus an
+           EFFECT. Each owns a disjoint set of compute bindings, one of them `decides` (an
+           input of the result, never `result`); `effect` is parameter (the tier selects a
+           value) or method (the tier selects how the quantity is computed); the ladder has
+           >= 3 tiers, pairwise disjoint as stated (`when` + `value` | `method`), its bindings
+           fork at least tiers-1 times; a
+           `baseline` for its `decides` binding; at least one binding reads history / a
+           date span / another category (a tier is established from records, never read off
+           a field that names the outcome). Per policy: >= 2 parameter, >= 2 method, >= 2
+           multi-source (every tier beyond the fall-through combines >= 2 predicates over
+           distinct evidence by and / or), >= 2 `cross_difficulty` — their tier is decided from
+           another category's holding or ledger, and that category is among the policy's
+           declared cross_category. Whether each factor bears weight on a task's world is
+           check_compute's job (baseline substitution must change `result`).
   overwrite  extended MAY supersede base (they are successive versions of the same product law
            and extended wins on conflict) but ONLY clause by clause and only where declared:
            `overwrite` is required (write [] for none); each entry names a base_policy that
@@ -23,26 +43,39 @@ Checks:
            clause: sentences not named stay in force and stay inherited. What is superseded is
            the handling clause, never a params VALUE — base numbers remain valid and base-homed.
   crosscat EVERY extended_policy has a non-empty cross_category; its declarations exactly
-           match both the categories read by compute through EXISTS/CPARAM/CFIELD and
-           inputs.cross_category; each category is REAL and != primary; and the policy's
+           match both the categories read by compute through EXISTS/CPARAM/CFIELD/XSUM/XCOUNT/
+           XMAX/XLATEST and inputs.cross_category; each category is REAL and != primary; and the policy's
            target_tool writes ONLY primary-category tables (cross-category rule).
-  cardinality a non-empty consecutive tasks/0.json..tasks/M-1.json set and exactly one workflow.
-  exactly one task claims that workflow and its GT task-tool call sequence exactly matches
-           the steps' tool + owner + order. Workflow refs == that task's computations ==
-           that task's charter_scope; all policies are covered across task scopes.
-  prereq   PROBLEM TREE. `extended_policy` and `workflow` are both "the solution to one
-           problem"; `prerequisite` declares problem->problem dependencies (never step order
-           inside one problem). Every policy and workflow must carry `prerequisite` ([] when
-           none): each entry names another SOLVABLE problem in this file (not a base policy,
-           not itself), a kind (state_gate | value_input), the gate it unblocks, the condition,
-           a `policy_source` that is a VERBATIM sentence of this problem's own rule or of a base
-           rule it inherits (a prerequisite absent from general prose never reaches the agent
-           through the KB and is therefore undiscoverable), the depended-on problem's own action
-           as `resolved_by`, and its effect. The whole edge set must be acyclic. Per task, the
-           tree rooted at the task's root problem must have >= 2 prerequisite edges, >= 1 of
-           them `value_input` (without one, doing A-then-B and B-then-A yield the SAME terminal
-           DB, so the ordering the prerequisite asserts is not observable by hash scoring at
-           all), and every problem in the tree must be inside that task's charter_scope.
+  cardinality a non-empty consecutive tasks/0.json..tasks/M-1.json set; the charter carries no
+           `workflows` key and no task claims one (every problem is an extended_policy resolved
+           by one target_tool call, and the order of a task's writes is entailed by its
+           prerequisite edges alone); all policies are covered across task scopes, no two
+           tasks overlap.
+  prereq   PROBLEM TREE. Every problem is one `extended_policy`; `prerequisite` declares
+           problem->problem dependencies, and the edges of the difficulty form its execution
+           graph. Every policy must carry `prerequisite` ([] when none): each entry names
+           another SOLVABLE problem in this file (not a base policy, not itself), a kind
+           (state_gate | value_input), the gate it unblocks, a `form` (state | action), the
+           PREREQUISITE SENTENCE as `policy_source` — a VERBATIM sentence of this policy's OWN
+           rule that states outright, with an ordering connective (before / after / only after /
+           only once / until / first ...), that this policy's own result waits on something: in
+           the state form (preferred) on a record-visible state named in the words the tables
+           and finders use, with no action, performer or tool named; in the action form (a
+           declared fallback carrying `fallback_reason`) on the depended-on action named in
+           plain business language — in either form naming no tool, no policy id and no code
+           token — the handling-time state as `condition` (an authoring field), the depended-on
+           problem's own target_tool as `resolved_by`, and its effect. A rule names no other
+           problem's tool or id, and the depended-on rule never restates the prerequisite
+           sentence. The whole edge set must be acyclic. Per task, the tree rooted at the
+           task's root problem must have >= 3 prerequisite PROBLEMS (any acyclic shape: chain,
+           fan-out, diamond or a mix), >= 2 of its edges `value_input` (state_gate edges alone
+           leave A-then-B and B-then-A with the SAME terminal DB, so the ordering is not
+           observable by hash scoring, and one value_input edge hangs the whole calculation
+           test on a single number), and every problem in the tree must be inside that task's
+           charter_scope.
+  usertool every task's gold calls at least one owner=user task tool through
+           unlock_user_discoverable_tool -> call_user_discoverable_tool: at least one problem
+           of every tree is the customer's own write, handed over by the agent.
   nohandoff the blueprint may expose a transfer-to-human share tool, but task gold must
             never call it; this skill does not author handoff-type GT tasks.
 
@@ -82,11 +115,15 @@ _ALLOWED_NODES = (
     ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow,
     ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.In, ast.NotIn,
 )
+_XHIST = {"XSUM", "XCOUNT", "XMAX", "XLATEST"}      # another category's event history
 _FUNCS = {"F", "P", "K", "SUM", "COUNT", "MAX", "LATEST", "EXISTS", "CPARAM", "CFIELD",
-          "MONTHS", "DAYS", "MX", "MN", "RND", "ABS", "min", "max", "round", "abs", "float", "int"}
+          "MONTHS", "DAYS", "MX", "MN", "RND", "ABS", "min", "max", "round", "abs", "float", "int"} | _XHIST
 _CONSTS = {"NOW", "HID", "CUST", "True", "False", "None"}
 _HIST = {"SUM", "COUNT", "MAX", "LATEST"}
-_CROSS = {"EXISTS", "CPARAM", "CFIELD"}
+_CROSS = {"EXISTS", "CPARAM", "CFIELD"} | _XHIST
+from check_compute import (factor_shape_errors, MIN_FACTORS_PER_COMP, MIN_CROSS_FACTORS_PER_COMP,  # noqa: E402
+                           MIN_PARAM_FACTORS_PER_COMP, MIN_METHOD_FACTORS_PER_COMP,
+                           MAX_FACTORS_PER_COMP, MIN_MULTISOURCE_FACTORS_PER_COMP, multi_source)
 
 
 def load_yaml(p):
@@ -204,6 +241,9 @@ def main():
     task_tool_set = tool_names(tt_path)          # hidden task tools (unlock/call only)
     writes = tool_write_tables(tt_path)
     named_tools = set()                          # task tools named in extended.yaml (the structured KB)
+    _SHADOW = ("may be zero in practice", "can be zero depending on the case",
+               "may or may not apply in practice", "this task", "this problem",
+               "that task", "in this case", "usually zero", "generally zero", "not triggered")
 
     cur_params = {}
 
@@ -238,6 +278,16 @@ def main():
                         fails.append(f"{where}: {fn}('{oc}') not a known category")
                     elif oc == cat:
                         fails.append(f"{where}: {fn}('{oc}') references the primary category (cross_category must be OTHER categories)")
+                    if fn in _XHIST:
+                        # second positional arg: an event table OWNED by that other category
+                        if len(node.args) < 2 or not isinstance(node.args[1], ast.Constant):
+                            fails.append(f"{where}: {fn}('{oc}', ...) needs the other category's event table as its second argument")
+                        else:
+                            xt = node.args[1].value
+                            if xt not in db_schema:
+                                fails.append(f"{where}: {fn} reads table '{xt}' not in db_schema")
+                            elif table_cat.get(xt) != oc:
+                                fails.append(f"{where}: {fn}('{oc}', '{xt}') — table '{xt}' is not an event table of category '{oc}'")
                 if fn == "K" and node.args and isinstance(node.args[0], ast.Constant):
                     if node.args[0].value not in cur_params:
                         fails.append(f"{where}: K('{node.args[0].value}') not a key in this policy's params")
@@ -346,19 +396,12 @@ def main():
         else:
             # rule is a GENERAL clause for all customers — it must carry no task shadow
             # (authoring-viewpoint meta notes about which factor happens to be zero in a task)
-            for shadow in ("may be zero in practice", "can be zero depending on the case",
-                           "may or may not apply in practice", "this task", "this problem",
-                           "that task", "in this case", "usually zero", "generally zero", "not triggered"):
+            for shadow in _SHADOW:
                 if shadow in rule_text.lower():
                     fails.append(f"{w}: rule contains task-shadow meta note '{shadow}' — a general policy "
                                  "knows no specific customer; write negative space as a conditional clause "
                                  "(those meeting X are charged/granted Y; those not meeting it are out of "
                                  "scope) instead")
-            # rule must be detailed enough to stand alone (mirror of compute in prose)
-            if len(rule_text) < 80:
-                fails.append(f"{w}: rule too thin ({len(rule_text)} chars) — it must spell out every factor's "
-                             "source/basis, condition criteria, combination order, rounding and caps so a reader "
-                             "can recompute the value without seeing compute")
         cur_params = ep.get("params") or {}
         compute = ep.get("compute") or []
         compute_cross_refs = set()
@@ -374,6 +417,56 @@ def main():
                 known_vars.add(name)
             if "result" not in known_vars:
                 fails.append(f"{w}: compute has no final 'result' binding")
+        # ---- baseline: the standard method + default values, the root every factor falls back to ----
+        bl = ep.get("baseline")
+        if not isinstance(bl, dict) or not str(bl.get("rule") or "").strip():
+            fails.append(f"{w}: missing `baseline.rule` — every computation states its standard method and default "
+                         "values in a self-sufficient paragraph (rendered as the computation document; every factor's "
+                         "fall-through tier is this baseline)")
+        else:
+            for sent in re.split(r"(?<=[.!?])\s+", str(bl.get("rule")).strip()):
+                if len(_nows(sent)) < 12:
+                    continue
+                if _nows(sent) not in _nows(own_rule):
+                    fails.append(f"{w}: baseline.rule sentence {sent.strip()[:70]!r} is not a verbatim sentence of the "
+                                 "policy's rule — the baseline is a subset of the rule, quoted, never a second text")
+            bp_keys = bl.get("params")
+            if not isinstance(bp_keys, list):
+                fails.append(f"{w}: baseline.params must be a list of the quantitative keys that are the defaults "
+                             "(this policy's params keys and/or tier parameter keys); [] when there is none")
+            else:
+                for k in bp_keys:
+                    if k not in cur_params and k not in primary_params:
+                        fails.append(f"{w}: baseline.params key '{k}' is neither a params key of this policy nor a "
+                                     "parameter_schema key")
+        # ---- factors: declared rules with ladders (structure only; weight is check_compute's) ----
+        f_errs, factors = factor_shape_errors(ep, w)
+        fails.extend(f_errs)
+        if factors:
+            if not (MIN_FACTORS_PER_COMP <= len(factors) <= MAX_FACTORS_PER_COMP):
+                fails.append(f"{w}: declares {len(factors)} factors (outside {MIN_FACTORS_PER_COMP}..{MAX_FACTORS_PER_COMP}) "
+                             "— a computation rests on 4 to 6 rules that each decide one of its inputs")
+            n_param = sum(1 for f in factors if f.get("effect") == "parameter")
+            n_method = sum(1 for f in factors if f.get("effect") == "method")
+            n_multi = sum(1 for f in factors if multi_source(ep, f))
+            if n_param < MIN_PARAM_FACTORS_PER_COMP:
+                fails.append(f"{w}: only {n_param} effect=parameter factors (< {MIN_PARAM_FACTORS_PER_COMP})")
+            if n_method < MIN_METHOD_FACTORS_PER_COMP:
+                fails.append(f"{w}: only {n_method} effect=method factors (< {MIN_METHOD_FACTORS_PER_COMP}) — at least "
+                             "two factors must change how a quantity is computed, not only which number enters it")
+            if n_multi < MIN_MULTISOURCE_FACTORS_PER_COMP:
+                fails.append(f"{w}: only {n_multi} multi-source factors (< {MIN_MULTISOURCE_FACTORS_PER_COMP}) — every "
+                             "tier of such a factor beyond the fall-through combines two conditions over distinct evidence by and / or")
+            xds = [f.get("cross_difficulty") for f in factors if f.get("cross_difficulty")]
+            if len(xds) < MIN_CROSS_FACTORS_PER_COMP:
+                fails.append(f"{w}: only {len(xds)} cross_difficulty factors (< {MIN_CROSS_FACTORS_PER_COMP}) — at "
+                             "least two factors must decide their tier from the customer's holdings or ledger "
+                             "in another difficulty")
+            for xd in xds:
+                if xd == cat:
+                    fails.append(f"{w}: a cross_difficulty factor names the primary category '{cat}'")
+                elif xd not in cats:
+                    fails.append(f"{w}: cross_difficulty '{xd}' is not a known category")
         cc = ep.get("cross_category") or []
         cc_cats = set()
         if not cc:
@@ -390,8 +483,13 @@ def main():
                     fails.append(f"{w}: cross_category names the primary category")
             if compute_cross_refs != cc_cats:
                 fails.append(f"{w}: cross_category declarations {sorted(map(str, cc_cats))} must exactly "
-                             f"match compute's EXISTS/CPARAM/CFIELD categories "
+                             f"match compute's EXISTS/CPARAM/CFIELD/XSUM/XCOUNT/XMAX/XLATEST categories "
                              f"{sorted(map(str, compute_cross_refs))} — declared-only dependencies are decoration")
+            for f in factors:
+                xd = f.get("cross_difficulty")
+                if xd and xd not in cc_cats:
+                    fails.append(f"{w}: factor '{f.get('id')}' is cross_difficulty='{xd}' but that category is not "
+                                 "declared in cross_category")
             input_cc = {entry.get("category") if isinstance(entry, dict) else entry
                         for entry in ((ep.get("inputs") or {}).get("cross_category") or [])}
             if input_cc != cc_cats:
@@ -407,278 +505,19 @@ def main():
         fails.append(f"only {cross_cat_count}/{len(eps)} extended_policies have cross-category factors "
                      "(EVERY policy must have one)")
 
-    # ---- one workflow, with its policies nested at their exact write steps ----
-    _SHADOW = ("may be zero in practice", "can be zero depending on the case",
-               "may or may not apply in practice", "this task", "this problem",
-               "that task", "in this case", "usually zero", "generally zero", "not triggered")
-    wfs = extended.get("workflows") or []
-    if task_mode:
-        if len(wfs) > 1:
-            fails.append(f"cardinality: an in-progress difficulty may have zero or one workflow, found {len(wfs)}")
-    elif len(wfs) != 1:
-        fails.append(f"cardinality: expected exactly one workflow per difficulty, found {len(wfs)}")
-    wf_ids = [wf.get("id") for wf in wfs]
-    if any(not wid for wid in wf_ids):
-        fails.append("every workflow must have a non-empty id")
-    if len(set(wf_ids)) != len(wf_ids):
-        fails.append("workflow ids must be unique")
-    wf_step_policy_refs = {}
-
-    def normalize_policy_refs(raw, where):
-        """computed_by accepts a scalar for compatibility; templates use a list."""
-        if raw is None:
-            return []
-        if isinstance(raw, str) and raw:
-            return [raw]
-        if isinstance(raw, list) and all(isinstance(x, str) and x for x in raw):
-            return raw
-        fails.append(f"{where}: computed_by must be a policy id or a list of non-empty policy ids")
-        return []
-
-    for wf in wfs:
-        wid = wf.get("id", "?")
-        steps = wf.get("steps") or []
-        if "computed_by" in wf:
-            fails.append(f"workflow {wid}: top-level computed_by is ambiguous; nest policy ids on the exact "
-                         "steps that trigger them")
-        if len(steps) < 4:
-            fails.append(f"workflow {wid}: {len(steps)} task-tool write steps (>=4 required for a declared workflow)")
-        step_refs = []
-        for step_index, st in enumerate(steps):
-            t = st.get("tool") if isinstance(st, dict) else st
-            owner = st.get("owner") if isinstance(st, dict) else None
-            if t and t not in task_tool_set:
-                fails.append(f"workflow {wid}: step tool '{t}' is not a task tool (workflow steps must be "
-                             "task_tools.py writes, not share/read tools)")
-            if t:
-                named_tools.add(t)
-            if owner not in {"agent", "user"}:
-                fails.append(f"workflow {wid}: step tool '{t}' has owner {owner!r}; owner must be agent|user")
-            subject = st.get("subject") if isinstance(st, dict) else None
-            if not isinstance(subject, str) or subject not in base_events:
-                fails.append(f"workflow {wid}.steps[{step_index}]: subject must name exactly one declared "
-                             "base event realized by this atomic write")
-            else:
-                event_target = (base_events.get(subject) or {}).get("target")
-                if st.get("writes") != event_target:
-                    fails.append(f"workflow {wid}.steps[{step_index}]: writes={st.get('writes')!r} must "
-                                 f"equal base event {subject!r} target={event_target!r}")
-            step_base_refs = st.get("base_policy_refs") if isinstance(st, dict) else None
-            if not isinstance(step_base_refs, list) or not step_base_refs or not all(
-                    isinstance(ref, str) and ref for ref in step_base_refs):
-                fails.append(f"workflow {wid}.steps[{step_index}]: base_policy_refs must be a non-empty "
-                             "list containing every base policy that governs this subject")
-                step_base_refs = []
-            elif len(set(step_base_refs)) != len(step_base_refs):
-                fails.append(f"workflow {wid}.steps[{step_index}]: duplicate base_policy_refs "
-                             f"{step_base_refs}")
-            if isinstance(subject, str) and subject in base_events:
-                expected_step_refs = {
-                    ref for ref, policy in base_policies.items()
-                    if subject in (policy.get("subject") or [])
-                }
-                if set(step_base_refs) != expected_step_refs:
-                    fails.append(f"workflow {wid}.steps[{step_index}]: base_policy_refs must exactly "
-                                 f"cover subject {subject!r}; missing="
-                                 f"{sorted(expected_step_refs - set(step_base_refs))}, extra="
-                                 f"{sorted(set(step_base_refs) - expected_step_refs)}")
-            refs = normalize_policy_refs(st.get("computed_by") if isinstance(st, dict) else None,
-                                         f"workflow {wid}.steps[{step_index}]")
-            step_refs.append(refs)
-            if len(set(refs)) != len(refs):
-                fails.append(f"workflow {wid}.steps[{step_index}]: duplicate computed_by policy ids {refs}")
-            for pid in refs:
-                pol = ep_by_id.get(pid)
-                if not pol:
-                    fails.append(f"workflow {wid}.steps[{step_index}]: computed_by names unknown policy '{pid}'")
-                elif pol.get("target_tool") != t:
-                    fails.append(f"workflow {wid}.steps[{step_index}]: policy '{pid}' targets "
-                                 f"'{pol.get('target_tool')}', not this step's tool '{t}'")
-                elif subject not in (pol.get("subject") or []):
-                    fails.append(f"workflow {wid}.steps[{step_index}]: policy '{pid}' does not govern "
-                                 f"this step's exact base subject {subject!r}")
-
-        dataflow = wf.get("dataflow")
-        if not isinstance(dataflow, list):
-            fails.append(f"workflow {wid}: dataflow must be a list (use [] only when no later step "
-                         "consumes an earlier step's object or state)")
-            dataflow = []
-        seen_links = set()
-        for link_index, raw_link in enumerate(dataflow):
-            link = raw_link if isinstance(raw_link, dict) else {}
-            where = f"workflow {wid}.dataflow[{link_index}]"
-            source_step = link.get("from_step")
-            target_step = link.get("to_step")
-            if (not isinstance(source_step, int) or isinstance(source_step, bool)
-                    or not isinstance(target_step, int) or isinstance(target_step, bool)
-                    or not (0 <= source_step < target_step < len(steps))):
-                fails.append(f"{where}: from_step/to_step must satisfy 0 <= from < to < {len(steps)}")
-                continue
-            kind = link.get("kind")
-            if kind not in {"object_binding", "state_effect"}:
-                fails.append(f"{where}: kind must be object_binding|state_effect")
-            source_table = link.get("source_table")
-            source_field = link.get("source_field")
-            if not isinstance(source_table, str) or source_table not in db_schema:
-                fails.append(f"{where}: source_table {source_table!r} is not in db_schema.json")
-            elif source_field not in (db_schema.get(source_table) or {}):
-                fails.append(f"{where}: source_field {source_field!r} is not on {source_table!r}")
-            declared_write = steps[source_step].get("writes") if isinstance(steps[source_step], dict) else None
-            if source_table and declared_write != source_table:
-                fails.append(f"{where}: source_table {source_table!r} must equal producer step "
-                             f"writes={declared_write!r}")
-            signature = (source_step, target_step, kind, source_table, source_field)
-            if signature in seen_links:
-                fails.append(f"{where}: duplicate dataflow link {signature}")
-            seen_links.add(signature)
-
-            bindings = link.get("consumer_bindings")
-            if not isinstance(bindings, list):
-                fails.append(f"{where}: consumer_bindings must be a list")
-                bindings = []
-            if kind == "object_binding" and not bindings:
-                fails.append(f"{where}: object_binding requires at least one consumer binding")
-            if kind == "state_effect" and bindings:
-                fails.append(f"{where}: state_effect carries state, not an action argument; "
-                             "consumer_bindings must be []")
-            for binding_index, raw_binding in enumerate(bindings):
-                binding = raw_binding if isinstance(raw_binding, dict) else {}
-                bwhere = f"{where}.consumer_bindings[{binding_index}]"
-                if not isinstance(binding.get("action_arg"), str) or not binding.get("action_arg"):
-                    fails.append(f"{bwhere}: action_arg must be a non-empty task-tool parameter")
-                role = binding.get("role")
-                if role not in {"direct", "authorization"}:
-                    fails.append(f"{bwhere}: role must be direct|authorization")
-                if role == "authorization":
-                    policy = base_policies.get(binding.get("policy_id"))
-                    if not policy:
-                        fails.append(f"{bwhere}: authorization policy_id must name a base policy")
-                        continue
-                    consumer_step = steps[target_step] if isinstance(steps[target_step], dict) else {}
-                    if binding.get("policy_id") not in (consumer_step.get("base_policy_refs") or []):
-                        fails.append(f"{bwhere}: authorization policy must be in the consumer step's "
-                                     "base_policy_refs")
-                    eligibility = {
-                        gate.get("id"): gate for gate in (policy.get("eligibility") or [])
-                        if isinstance(gate, dict) and gate.get("id")
-                    }
-                    gate = eligibility.get(binding.get("eligibility_id"))
-                    if not gate:
-                        fails.append(f"{bwhere}: eligibility_id must name a gate of the base policy")
-                    else:
-                        if consumer_step.get("subject") not in (gate.get("applies_to") or []):
-                            fails.append(f"{bwhere}: eligibility gate does not apply to consumer subject "
-                                         f"{consumer_step.get('subject')!r}")
-                        allowed_gate_fields = {
-                            field for group in ((gate.get("evidence_contract") or {}).get("correlation_keys") or [])
-                            if isinstance(group, list) for field in group
-                        }
-                        if binding.get("gate_field") not in allowed_gate_fields:
-                            fails.append(f"{bwhere}: gate_field {binding.get('gate_field')!r} is not a "
-                                         "declared correlation key of that eligibility gate")
-                        expected_arg = ((gate.get("evidence_contract") or {}).get("action_bindings") or {}).get(
-                            binding.get("gate_field")
-                        )
-                        if binding.get("action_arg") != expected_arg:
-                            fails.append(f"{bwhere}: action_arg {binding.get('action_arg')!r} must equal "
-                                         f"the gate's canonical action binding {expected_arg!r}")
-            establishes_gates = link.get("establishes_gates")
-            if kind == "state_effect":
-                if not isinstance(establishes_gates, list) or not establishes_gates:
-                    fails.append(f"{where}: state_effect must declare a non-empty establishes_gates list "
-                                 "tying the changed state to every affected consumer base eligibility")
-                    establishes_gates = []
-                consumer_step = steps[target_step] if isinstance(steps[target_step], dict) else {}
-                seen_established_gates = set()
-                for gate_index, raw_established_gate in enumerate(establishes_gates):
-                    establishes_gate = raw_established_gate if isinstance(raw_established_gate, dict) else {}
-                    ewhere = f"{where}.establishes_gates[{gate_index}]"
-                    policy_id = establishes_gate.get("policy_id")
-                    eligibility_id = establishes_gate.get("eligibility_id")
-                    gate_key = (policy_id, eligibility_id)
-                    if gate_key in seen_established_gates:
-                        fails.append(f"{ewhere}: duplicate gate {gate_key}")
-                    seen_established_gates.add(gate_key)
-                    policy = base_policies.get(policy_id)
-                    if not policy:
-                        fails.append(f"{ewhere}: policy_id must name a base policy")
-                    else:
-                        if policy_id not in (consumer_step.get("base_policy_refs") or []):
-                            fails.append(f"{ewhere}: policy must be in the consumer "
-                                         "step's base_policy_refs")
-                        gates = {
-                            gate.get("id"): gate for gate in (policy.get("eligibility") or [])
-                            if isinstance(gate, dict) and gate.get("id")
-                        }
-                        gate = gates.get(eligibility_id)
-                        if not gate:
-                            fails.append(f"{ewhere}: eligibility_id must name a gate "
-                                         "of the base policy")
-                        else:
-                            if consumer_step.get("subject") not in (gate.get("applies_to") or []):
-                                fails.append(f"{ewhere}: gate does not apply to consumer "
-                                             f"subject {consumer_step.get('subject')!r}")
-                            expected_field = f"{source_table}.{source_field}"
-                            if establishes_gate.get("evidence_field") != expected_field:
-                                fails.append(f"{ewhere}: evidence_field must equal the "
-                                             f"changed source field {expected_field!r}")
-                            if expected_field not in (gate.get("evidence_fields") or []):
-                                fails.append(f"{ewhere}: changed source field "
-                                             f"{expected_field!r} is not evidence for that gate")
-                            authority = ((gate.get("evidence_contract") or {}).get("authority"))
-                            if authority not in {"system_record", "mixed"}:
-                                fails.append(f"{ewhere}: a prior DB state effect can only "
-                                             "establish a system_record or mixed-authority gate")
-                expected_field = f"{source_table}.{source_field}"
-                expected_established_gates = {
-                    (policy_id, gate.get("id"))
-                    for policy_id in (consumer_step.get("base_policy_refs") or [])
-                    for gate in ((base_policies.get(policy_id) or {}).get("eligibility") or [])
-                    if isinstance(gate, dict)
-                    and consumer_step.get("subject") in (gate.get("applies_to") or [])
-                    and expected_field in (gate.get("evidence_fields") or [])
-                }
-                if seen_established_gates != expected_established_gates:
-                    fails.append(f"{where}: establishes_gates must exactly cover consumer gates whose "
-                                 f"evidence uses {expected_field!r}; missing="
-                                 f"{sorted(expected_established_gates - seen_established_gates, key=str)}, "
-                                 f"extra={sorted(seen_established_gates - expected_established_gates, key=str)}")
-            elif establishes_gates is not None:
-                fails.append(f"{where}: establishes_gates is only valid for kind=state_effect")
-        wf_step_policy_refs[wid] = step_refs
-        workflow_policy_ids = {pid for refs in step_refs for pid in refs}
-        if not workflow_policy_ids:
-            fails.append(f"workflow {wid}: step-level computed_by must reference at least one policy")
-        if not workflow_policy_ids <= declared_ep_id_set:
-            fails.append(f"workflow {wid}: step-level computed_by policies {sorted(workflow_policy_ids)} must "
-                         f"be a subset of declared extended_policies {sorted(declared_ep_id_set)}; "
-                         "no out-of-scope policy")
-        # scenario / order_rationale are GENERAL clauses too (same discipline as policy rule)
-        scen = str(wf.get("scenario") or "").strip()
-        orat = str(wf.get("order_rationale") or "").strip()
-        for field, text in (("scenario", scen), ("order_rationale", orat)):
-            for shadow in _SHADOW:
-                if shadow in text.lower():
-                    fails.append(f"workflow {wid}.{field}: contains task-shadow meta note '{shadow}' — "
-                                 "a general SOP clause knows no specific task")
-        if not scen or len(scen) < 30:
-            fails.append(f"workflow {wid}: scenario too thin ({len(scen)} chars) — it must state the SOP's "
-                         "applicability (which holdings, in what state/condition, ending in what terminal state)")
-        elif ("→" in scen or "->" in scen):
-            fails.append(f"workflow {wid}: scenario restates the step sequence (arrow chain) — the order lives "
-                         "in steps; scenario must describe the applicable business situation instead")
-        if not orat or len(orat) < 80:
-            fails.append(f"workflow {wid}: order_rationale too thin ({len(orat)} chars) — it must justify EACH "
-                         "adjacent pair (step k before k+1) with the policy clause it rests on and what breaks "
-                         "if swapped; a bare 'wrong if reordered' is a conclusion, not a justification")
+    # ---- no workflows: every problem is an extended_policy; order comes from prerequisite edges ----
+    if "workflows" in extended:
+        fails.append("charter carries a `workflows` key — this pipeline has no workflow problems: every problem is an "
+                     "extended_policy resolved by one target_tool call, and the order of a task's writes is entailed by "
+                     "its prerequisite edges alone; delete the key")
 
     # ---- every defined task tool must be NAMED in extended.yaml (the structured KB) ----
     # extended.yaml IS the KB the agent reads to discover a hidden tool; a task tool named by
-    # no extended_policy.target_tool and no workflow step is undiscoverable dead code.
+    # no extended_policy.target_tool is undiscoverable dead code.
     for tn in sorted(task_tool_set):
         if tn not in named_tools:
-            fails.append(f"task tool '{tn}' is named by no extended_policy.target_tool and no workflow step "
-                         "in extended.yaml — an agent could never discover/unlock it")
+            fails.append(f"task tool '{tn}' is named by no extended_policy.target_tool in extended.yaml — an "
+                         "agent could never discover/unlock it")
 
     # ---- M tasks, at continuous loader-visible paths tasks/0.json..tasks/M-1.json ----
     all_task_paths = select_task_paths(diff)
@@ -702,13 +541,9 @@ def main():
         loaded_tasks.append((tp, tk))
     task_count = len(task_paths)
 
-    wf_by_id = {wf.get("id"): wf for wf in wfs}
-
     # ---- every task closes its own policy -> computation -> exact GT call ----
-    # The workflow task has an additional step-level closure below; local tasks do
-    # not participate in workflow sequence matching.
-    # ---- prerequisite: policy-side declarations (structure, refs, prose, acyclicity) ----
-    prereq_utils.validate_declarations(extended, base_policies, task_tool_set, fails)
+    # ---- prerequisite: policy-side declarations (structure, refs, prerequisite sentences, acyclicity) ----
+    prereq_utils.validate_declarations(extended, task_tool_set, fails)
     prereq_idx = prereq_utils.problem_index(extended)
     prereq_out = {}
     for _oid, _okind, _node in prereq_utils.owners(extended):
@@ -717,21 +552,19 @@ def main():
 
     all_used_policies = set()
     scope_by_task = {}
-    workflow_tool_set = {st.get("tool") for wf in wfs for st in (wf.get("steps") or [])
-                         if isinstance(st, dict) and st.get("tool")}
     for tp, tk in loaded_tasks:
         tid = os.path.basename(tp)
         scope = tk.get("charter_scope") or {}
-        claimed = scope.get("workflows") or []
-        if not isinstance(claimed, list):
-            fails.append(f"task {tid}: charter_scope.workflows must be a list")
-            claimed = []
-        if len(claimed) > 1 or any(wid not in wf_by_id for wid in claimed):
-            fails.append(f"task {tid}: charter_scope.workflows must be [] or the one known workflow id, got {claimed}")
-        if len(set(claimed)) != len(claimed):
-            fails.append(f"task {tid}: charter_scope.workflows contains duplicates {claimed}")
+        if "workflows" in scope:
+            fails.append(f"task {tid}: charter_scope.workflows is not a field — a task claims extended_policies "
+                         "and task_tools only; its write order is the topological order of its problem tree")
         actions = tk.get("evaluation_criteria") or []
         calls = gold_task_tool_calls(actions, task_tool_set)
+        # ---- at least one problem of every tree is the customer's own write ----
+        if not any(_o == "user" for _t, _o, _i in calls):
+            fails.append(f"user-tool {tid}: gold calls no owner=user task tool — every task's tree contains at "
+                         "least one problem whose target_tool is owner=user, unlocked and handed over by the agent "
+                         "and run by the customer (unlock_user_discoverable_tool -> call_user_discoverable_tool)")
         for ai, act in enumerate(actions):
             for fld in ("objective", "necessity"):
                 if not str(act.get(fld) or "").strip():
@@ -771,9 +604,6 @@ def main():
         if tk.get("required_documents") != scope_pids:
             fails.append(f"policy-closure {tid}: required_documents must exactly equal "
                          "charter_scope.extended_policies in the same order")
-        if not claimed and set(scope_tools) & workflow_tool_set:
-            fails.append(f"workflow-guidance {tid}: non-workflow task uses workflow tool(s) "
-                         f"{sorted(set(scope_tools) & workflow_tool_set)}")
         action_to_call = {action_index: i for i, (_, _, action_index) in enumerate(calls)}
         seen_pairs = set()
         for comp_index, comp in enumerate(comps):
@@ -808,11 +638,10 @@ def main():
             fails.append(f"prereq {tid}: missing prerequisite_closure.root_problem — every task is a problem "
                          "tree whose root is the problem the customer's surface request points at")
         else:
-            prereq_utils.check_task_tree(tid, root, set(scope_pids) | set(claimed), extended, fails)
+            prereq_utils.check_task_tree(tid, root, set(scope_pids), extended, fails)
 
         all_used_policies.update(set(scope_pids))
-        scope_by_task[tid] = {"extended_policies": set(scope_pids),
-                              "workflows": set(claimed), "task_tools": set(scope_tools)}
+        scope_by_task[tid] = {"extended_policies": set(scope_pids), "task_tools": set(scope_tools)}
 
     # In per-task mode, compare the selected task with all earlier completed
     # tasks immediately.  Future tasks do not exist yet and are deliberately not
@@ -834,144 +663,23 @@ def main():
             prior_scope = prior_tk.get("charter_scope") or {}
             prior_assets = {
                 "extended_policies": set(prior_scope.get("extended_policies") or []),
-                "workflows": set(prior_scope.get("workflows") or []),
                 "task_tools": set(prior_scope.get("task_tools") or []),
             }
-            for key in ("extended_policies", "workflows", "task_tools"):
+            for key in ("extended_policies", "task_tools"):
                 overlap = selected_scope.get(key, set()) & prior_assets[key]
                 if overlap:
                     fails.append(f"charter_scope: selected task {selected_tid} overlaps completed task "
                                  f"{os.path.basename(prior_tp)} on {key} {sorted(overlap)} — "
                                  "redesign the selected task before continuing")
 
-    # ---- exactly one task closes workflow -> policy -> computation -> exact GT call ----
-    workflow_guided_tasks = 0
-    for tp, tk in loaded_tasks:
-        tid = os.path.basename(tp)
-        scope = tk.get("charter_scope") or {}
-        claimed = scope.get("workflows") or []
-        sole_wid = wf_ids[0] if len(wf_ids) == 1 else None
-        if claimed and claimed != ([sole_wid] if sole_wid else []):
-            fails.append(f"workflow-guidance {tid}: charter_scope.workflows must be exactly "
-                         f"{[sole_wid] if sole_wid else []}, got {claimed}")
-        expected = []
-        unknown = []
-        for wid in claimed:
-            wf = wf_by_id.get(wid)
-            if not wf:
-                unknown.append(wid)
-                continue
-            expected.extend((st.get("tool"), st.get("owner"))
-                            for st in (wf.get("steps") or []) if isinstance(st, dict))
-        if unknown:
-            fails.append(f"workflow-guidance {tid}: charter_scope.workflows names unknown ids {unknown}")
-            continue
-        actions = tk.get("evaluation_criteria") or []
-        calls = gold_task_tool_calls(actions, task_tool_set)
-        actual = [(tool, owner) for tool, owner, _ in calls]
-        if claimed and actual != expected:
-            fails.append(f"workflow-guidance {tid}: GT task-tool sequence {actual} != claimed workflow "
-                         f"steps {expected}; tool, owner, and order must match exactly")
-            continue
-        if len(claimed) != 1:
-            continue
-
-        wid = claimed[0]
-        step_refs = wf_step_policy_refs.get(wid, [])
-        action_to_workflow_step = {action_index: i for i, (_, _, action_index) in enumerate(calls)}
-        comps = tk.get("computations") or []
-        comp_pids = [c.get("policy_id") for c in comps if isinstance(c, dict) and c.get("policy_id")]
-        scope_pids = scope.get("extended_policies") or []
-        scope_tools = scope.get("task_tools") or []
-        workflow_pids = [pid for refs in step_refs for pid in refs]
-        all_pid_set = set(scope_pids)
-
-        if len(set(scope_pids)) != len(scope_pids):
-            fails.append(f"policy-closure {tid}: charter_scope.extended_policies has duplicates {scope_pids}")
-        if set(scope_pids) != all_pid_set:
-            fails.append(f"policy-closure {tid}: charter_scope.extended_policies {sorted(set(scope_pids))} must "
-                         f"equal this task's policy scope {sorted(all_pid_set)}")
-        if set(comp_pids) != all_pid_set:
-            fails.append(f"policy-closure {tid}: computations policy ids {sorted(set(comp_pids))} must equal "
-                         f"this task's policy scope {sorted(all_pid_set)}")
-        if set(workflow_pids) != all_pid_set:
-            fails.append(f"policy-closure {tid}: workflow step computed_by ids {sorted(set(workflow_pids))} must "
-                         f"equal this task's policy scope {sorted(all_pid_set)}")
-        if tk.get("required_documents") != scope_pids:
-            fails.append(f"policy-closure {tid}: required_documents must exactly equal "
-                         "charter_scope.extended_policies in the same order")
-        actual_tools = []
-        for tool, _owner, _action_index in calls:
-            if tool not in actual_tools:
-                actual_tools.append(tool)
-        if scope_tools != actual_tools:
-            fails.append(f"policy-closure {tid}: charter_scope.task_tools must equal the GT workflow tools "
-                         f"in first-use order; got {scope_tools}, expected {actual_tools}")
-
-        actual_computation_pairs = set()
-        for comp_index, comp in enumerate(comps):
-            if not isinstance(comp, dict):
-                fails.append(f"policy-closure {tid}: computations[{comp_index}] must be an object")
-                continue
-            pid = comp.get("policy_id")
-            pol = ep_by_id.get(pid)
-            step = comp.get("step")
-            if not isinstance(step, int) or isinstance(step, bool) or not (0 <= step < len(actions)):
-                fails.append(f"policy-closure {tid}: computation '{pid}' has invalid evaluation action step {step!r}")
-                continue
-            workflow_step = action_to_workflow_step.get(step)
-            if workflow_step is None:
-                fails.append(f"policy-closure {tid}: computation '{pid}' step {step} is not a GT task-tool call")
-                continue
-            refs_here = step_refs[workflow_step] if workflow_step < len(step_refs) else []
-            call_tool = calls[workflow_step][0]
-            if pid not in refs_here:
-                fails.append(f"policy-closure {tid}: computation '{pid}' occurs at GT action {step}, but workflow "
-                             f"step {workflow_step} computed_by is {refs_here}")
-            if pol:
-                if pol.get("target_tool") != call_tool:
-                    fails.append(f"policy-closure {tid}: computation '{pid}' occurs on tool '{call_tool}', but "
-                                 f"the policy targets '{pol.get('target_tool')}'")
-                if comp.get("arg") != pol.get("computes"):
-                    fails.append(f"policy-closure {tid}: computation '{pid}' arg '{comp.get('arg')}' != policy "
-                                 f"computes '{pol.get('computes')}'")
-            actual_computation_pairs.add((workflow_step, pid))
-
-        for workflow_step, refs in enumerate(step_refs):
-            for pid in refs:
-                if (workflow_step, pid) not in actual_computation_pairs:
-                    action_index = calls[workflow_step][2] if workflow_step < len(calls) else "?"
-                    fails.append(f"policy-closure {tid}: workflow step {workflow_step} computed_by '{pid}' has no "
-                                 f"matching computation at GT call action {action_index}")
-        workflow_guided_tasks += 1
-    sole_wid = wf_ids[0] if len(wf_ids) == 1 else None
-    workflow_claimed_tasks = sum(
-        1 for _tp, tk in loaded_tasks
-        if sole_wid and (tk.get("charter_scope") or {}).get("workflows") == [sole_wid]
-    )
-    if task_mode:
-        selected_claims = [
-            (tk.get("charter_scope") or {}).get("workflows") or []
-            for _tp, tk in loaded_tasks
-        ]
-        selected_claims_workflow = bool(selected_claims and selected_claims[0])
-        if selected_claims_workflow and (workflow_claimed_tasks != 1 or workflow_guided_tasks != 1):
-            fails.append(f"workflow-guidance: selected task claims the workflow but does not close it "
-                         f"(claims={workflow_claimed_tasks}, valid={workflow_guided_tasks})")
-    else:
-        if workflow_claimed_tasks != 1:
-            fails.append(f"workflow-guidance: expected exactly one task claiming the workflow, found "
-                         f"{workflow_claimed_tasks}")
-        if workflow_guided_tasks != 1:
-            fails.append(f"workflow-guidance: expected exactly one valid workflow-guided task, found "
-                         f"{workflow_guided_tasks}")
+    if not task_mode:
         if all_used_policies != declared_ep_id_set:
             fails.append(f"policy coverage: M tasks use {sorted(all_used_policies)}, expected all extended policies "
                          f"{sorted(declared_ep_id_set)}")
     scope_items = list(scope_by_task.items())
     for i, (ta, sa) in enumerate(scope_items):
         for tb, sb in scope_items[i + 1:]:
-            for key in ("extended_policies", "workflows", "task_tools"):
+            for key in ("extended_policies", "task_tools"):
                 overlap = sa[key] & sb[key]
                 if overlap:
                     fails.append(f"charter_scope: tasks {ta} and {tb} share {key} {sorted(overlap)}")
@@ -993,8 +701,7 @@ def main():
                          "instantiate does not author handoff-type GT tasks")
     mode_label = f", selected_task={task_selector}" if task_mode else ""
     print(f"🔎 EXTENDED gate  (category={cat}, extended_policies={len(eps)}, cross-cat={cross_cat_count}, "
-          f"workflows={len(wfs)}, task_tools={len(task_tool_set)}, tasks={task_count}{mode_label}, "
-          f"workflow_guided_tasks={workflow_guided_tasks}, no_handoff=True)")
+          f"task_tools={len(task_tool_set)}, tasks={task_count}{mode_label}, no_handoff=True)")
     if fails:
         print("  [FAIL]")
         for f in fails[:50]:
@@ -1002,11 +709,13 @@ def main():
         print("EXTENDED NOT OK")
         sys.exit(1)
     if task_mode:
-        print("  [PASS] selected task closes its policy/tool scope; shared charter is structurally valid "
-              "(difficulty-wide workflow/cardinality/coverage deferred to final run)")
+        print("  [PASS] selected task closes its policy/tool scope and calls a customer's own tool; shared charter is "
+              "structurally valid, every prerequisite is stated by a prerequisite sentence (difficulty-wide "
+              "cardinality/coverage deferred to final run)")
     else:
-        print("  [PASS] compatible charter; every policy has a real cross-category factor; one task "
-              "closes the unique workflow and all policies are covered across the suite")
+        print("  [PASS] compatible charter; every policy has a real cross-category factor; every prerequisite is "
+              "stated by a prerequisite sentence; every task calls a customer's own tool; all policies are covered "
+              "across the suite with disjoint scopes")
     print("EXTENDED OK")
     sys.exit(0)
 

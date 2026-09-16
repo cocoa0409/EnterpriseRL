@@ -4,8 +4,10 @@
 is written there. Two opposite obligations follow, both checked here:
 
 A. IDENTITY MUST BE PRESENT (persona step, HARD). Every value the CUSTOMER supplies to a gold tool
-   must appear in `user_scenario`. `verify_customer_identity` checks MULTIPLE customer-stated
-   credential attributes (K>=2; its customer_id locator param never counts). If the gold passes an
+   must appear in `user_scenario`. The blueprint's identity-verification share tool checks several
+   customer-stated credential attributes (as many as its match threshold requires; its customer_id
+   locator param never counts), and those parameters, plus the common defaults below, are the
+   attributes checked here. If the gold passes an
    attribute value (e.g. an ssn_last4) that appears nowhere in `user_scenario`, no real simulator
    could produce it — the author lifted it from a locate/DB return (the god's-eye defect). Internal
    ids (customer_id, holding uuids) are EXEMPT: those legitimately come from a locate/find return,
@@ -19,7 +21,7 @@ B. THE ANSWER MUST BE ABSENT (persona disclosure rule, HARD for non-integers). T
    answers are only WARNed, since integers like caps/tiers legitimately occur.)
 
 Plus a DISCLOSURE lint (persona disclosure rule, WARN): a multi-write task whose persona contains no
-natural conditional reaction cues is likely a flat monologue that proactively telegraphs the SOP /
+natural conditional reaction cues is likely a flat monologue that proactively telegraphs the solution path /
 prerequisites instead of letting the agent discover them and the customer react passively. The cues
 may be phrased freely; this check does not prescribe headings, numbered blocks, or an X→Y template.
 
@@ -36,7 +38,34 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from gate_utils import select_task_paths, split_task_flag
 
+# Fallback only, used when the blueprint's identity-verification tool cannot be read: the credential
+# attributes are normally derived from that tool's own parameters, whatever the scenario names them.
 ID_ATTRS = ("name", "phone_number", "ssn_last4", "email", "service_password", "registered_address")
+
+
+def identity_attrs(target):
+    """Customer attributes that count as self-stated credentials: the parameters of the blueprint's
+    identity-verification share tool (customer_id excluded); the generic defaults only when that tool
+    cannot be read."""
+    attrs = []
+    path, bp = os.path.abspath(target), None
+    while path != "/":
+        if os.path.isdir(os.path.join(path, "blueprint")):
+            bp = os.path.join(path, "blueprint")
+            break
+        path = os.path.dirname(path)
+    if bp:
+        try:
+            import ast
+            from check_solvability import identity_preamble_contract
+            verifier = identity_preamble_contract(bp).get("verifier")
+            tree = ast.parse(open(os.path.join(bp, "share_tools.py")).read())
+            for fn in tree.body:
+                if isinstance(fn, ast.FunctionDef) and fn.name == verifier:
+                    attrs += [a.arg for a in fn.args.args if a.arg not in ("ctx", "customer_id")]
+        except (Exception, SystemExit):  # noqa: BLE001 — fall back to the defaults when the blueprint cannot be read
+            pass
+    return tuple(dict.fromkeys(attrs or list(ID_ATTRS)))
 # passive-reaction openers, matched on word boundaries so they cannot fire inside longer words
 COND_MARKERS = re.compile(
     r"\b(?:if|whenever|once|unless|in case|should you|as long as|provided that|suppose)\b"
@@ -77,6 +106,7 @@ def main():
     task_paths = select_task_paths(target, task_selector)
     if not task_paths:
         raise SystemExit(f"no task json under {target}/tasks/")
+    id_attrs = identity_attrs(target)
 
     mode_label = f", selected_task={task_selector}" if task_selector is not None else ""
     print(f"🔎 GROUNDING & DISCLOSURE gate  ({len(task_paths)} tasks{mode_label})")
@@ -92,7 +122,7 @@ def main():
         custs = (t.get("initial_state") or {}).get("customers", {}) or {}
         attr_val_to_field = {}
         for row in custs.values():
-            for f in ID_ATTRS:
+            for f in id_attrs:
                 v = row.get(f)
                 if v not in (None, ""):
                     attr_val_to_field[str(v)] = f
@@ -133,9 +163,10 @@ def main():
                 # (int glued to a money unit like '9 USD' / 'USD 9' / '$9'); bare digits inside
                 # phone/id/password runs, and tier prices like '159 USD plan', are NOT flagged.
                 iv = str(int(round(f)))
+                # currency-agnostic: any ISO-style currency code, currency word or currency symbol
                 money = re.compile(
-                    rf"(?:(?<![\d.]){re.escape(iv)}\s*(?:USD|dollars?)\b(?!\s*(?:tier|plan|package))"
-                    rf"|(?:USD|\$)\s*{re.escape(iv)}(?![\d.]))", re.I)
+                    rf"(?:(?<![\d.]){re.escape(iv)}\s*(?:[A-Z]{{3}}|dollars?|euros?|pounds?|yuan|yen|francs?|rupees?)\b(?!\s*(?:tier|plan|package))"
+                    rf"|(?:[A-Z]{{3}}|[$€£¥₹])\s*{re.escape(iv)}(?![\d.]))")
                 if money.search(persona):
                     warns.append(f"{tid}: integer answer expected={iv} (policy {c.get('policy_id')}) "
                                  "appears as an amount in user_scenario — check it is not telegraphing the answer.")
@@ -146,7 +177,7 @@ def main():
         n_cond = len(COND_MARKERS.findall(persona))
         if n_writes >= 2 and n_cond < 2:
             warns.append(f"{tid}: {n_writes} gold writes but only {n_cond} natural conditional-reaction "
-                         "markers in user_scenario — likely a flat monologue that telegraphs the SOP. "
+                         "markers in user_scenario — likely a flat monologue that telegraphs the solution path. "
                          "Add clear passive reactions in the customer's own voice; do not convert it "
                          "into headings, numbered blocks, or a repeated X→Y template.")
 

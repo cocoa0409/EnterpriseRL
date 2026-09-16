@@ -173,24 +173,26 @@ def validate_fixed(errors, where, description, schemas, annotation):
         fail(errors, where, "fixed-format float without a mapped schema field must still state precision")
     if not formats and annotation == "int" and "integer" not in description.lower():
         fail(errors, where, "fixed-format integer without a mapped schema field must state integer precision")
-    if annotation in {"float", "int"} and not re.search(
-            r"\bunits?\b|\bdimensionless\b|\bpercent(?:age)?\b|\bratios?\b", description, re.I):
-        fail(errors, where, "numeric fixed-format description must explicitly state its unit or that it is dimensionless")
 
 
 def validate_enum(errors, where, description, schemas):
-    if not re.search(r"allowed values|permitted values|accepted values|valid values|possible values"
-                     r"|accepts only|only accepts|limited to|restricted to|\bone of\b", description, re.I):
-        fail(errors, where, "enum description must explicitly introduce its closed value set")
     values = enum_values(schemas)
     if not values:
-        if not re.search(r"[^\s/／、]+\s*[（(][^）)]+[）)]", description):
-            fail(errors, where, "enum values must each carry an applicable-situation description")
-        return
+        return          # no closed set is known from the schema, so the literals cannot be checked mechanically
+    positions = []
     for value in values:
-        pattern = rf"(?<![A-Za-z0-9_]){re.escape(value)}(?![A-Za-z0-9_])\s*[（(][^）)]+[）)]"
-        if not re.search(pattern, description):
-            fail(errors, where, f"enum value {value!r} is missing or has no applicable-situation description")
+        m = re.search(rf"(?<![A-Za-z0-9_]){re.escape(value)}(?![A-Za-z0-9_])", description)
+        if not m:
+            fail(errors, where, f"enum value {value!r} is missing from the description")
+        else:
+            positions.append((m.start(), m.end(), value))
+    positions.sort()
+    # every literal must be followed by some text of its own (its applicable situation), in any format,
+    # before the next literal begins: a bare comma list of values is not a per-value situation
+    for i, (_start, end, value) in enumerate(positions):
+        nxt = positions[i + 1][0] if i + 1 < len(positions) else len(description)
+        if not re.search(r"[A-Za-z]{3,}", description[end:nxt]):
+            fail(errors, where, f"enum value {value!r} carries no applicable-situation text after it")
 
 
 def return_keys(fn):

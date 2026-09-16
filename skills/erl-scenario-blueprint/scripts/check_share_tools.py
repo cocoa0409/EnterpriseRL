@@ -32,7 +32,7 @@ no separate `locate_customer`; this same finder both enters by attribute and tra
 id. A customers finder that takes ONLY customer_id is unenterable — a HARD failure.
 
 Usage (from the repo root):
-  python3 skills/erl-scenario-blueprint/scripts/check_share_tools.py env/<scenario>
+  .venv/bin/python skills/erl-scenario-blueprint/scripts/check_share_tools.py env/<scenario>
 
 Pure stdlib. Reads db_schema.json + share_tools.py (AST, never executed).
 Exit 0 = SHARE TOOLS OK; exit 1 = a table is missing its all-ids finder.

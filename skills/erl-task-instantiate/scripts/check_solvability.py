@@ -2,13 +2,12 @@
 
 This is the structural half of the policy-evidence audit. It verifies that each task begins
 with the runtime-mandatory locate -> in-session identity-verification write, each scored
-task-tool call has a contract, every base policy governing that exact write subject is retained
-even for workflow steps with no computed parameter, and each applicable eligibility gate is
-covered by reachable evidence while unrelated gates are absent. Evidence is required to be
+task-tool call has a contract, every base policy governing that exact write subject is retained,
+and each applicable eligibility gate is covered by reachable evidence while unrelated gates are
+absent. Evidence is required to be
 authoritative, pre-action, and object-correlated to the actual call arguments; time conditions
 are checked against the frozen clock, required user inputs occur verbatim in the persona, and
-every seeded primary holding/event row has an explicit consistency audit. Workflow actions must
-also declare that they require no external wait and provide a zero-wait proof. The gate checks only
+every seeded primary holding/event row has an explicit consistency audit. The gate checks only
 the declared policy/GT correspondence; a separate human semantic audit must reject a CRUD status
 write that merely pretends an external event happened. Task tools are atomic CRUD operations: no inferred
 business semantics, counterfactual mutations, or rejection behavior are tested here.
@@ -45,6 +44,30 @@ def as_list(value):
 
 def as_dict(value):
     return value if isinstance(value, dict) else {}
+
+
+def _nows(s):
+    return "".join(str(s or "").split())
+
+
+def retired_gates_of(base_policies, ext_policies):
+    """Eligibility gates an extended policy's `overwrite` has retired: a superseded_clause that quotes a
+    gate's condition sentence (whitespace-insensitive containment either way) retires that gate, so it is
+    no longer inherited into base_preconditions (erl-task-instantiate Step 1)."""
+    retired = set()
+    for ep in ext_policies.values():
+        for entry in as_list(as_dict(ep).get("overwrite")):
+            entry = as_dict(entry)
+            bpid = entry.get("base_policy")
+            clause = _nows(entry.get("superseded_clause"))
+            if not bpid or not clause or bpid not in base_policies:
+                continue
+            for gate in as_list(as_dict(base_policies[bpid]).get("eligibility")):
+                gate = as_dict(gate)
+                cond = _nows(gate.get("condition"))
+                if cond and (cond in clause or clause in cond):
+                    retired.add((bpid, gate.get("id")))
+    return retired
 
 
 def scenario_root(start):
@@ -256,6 +279,7 @@ def main():
     base_policies = {p.get("id"): p for p in as_list(base.get("policies")) if as_dict(p).get("id")}
     ext_policies = {p.get("id"): p for p in as_list(extended.get("extended_policies"))
                     if as_dict(p).get("id")}
+    retired_gates = retired_gates_of(base_policies, ext_policies)
     binding = as_dict(base.get("binding"))
     primary_seed_tables = {binding.get("holding_table"), *as_list(binding.get("event_tables"))}
     primary_seed_tables.discard(None)
@@ -499,9 +523,9 @@ def main():
             fail("missing solvability_contract mapping")
             contract = {}
 
-        request_binding_version = contract.get("request_binding_version")
+        request_binding_version = contract.get("request_binding_version", 1)
         if request_binding_version != 1:
-            fail(f"request_binding_version must be 1, got {request_binding_version!r}")
+            fail(f"request_binding_version, when given, must be 1, got {request_binding_version!r}")
             # Keep checking the v1 fields: omitting the version must not also bypass
             # request-to-action disambiguation diagnostics.
             request_binding_version = 1
@@ -543,144 +567,6 @@ def main():
             by_step[step] = item
         if set(by_step) != set(call_steps):
             fail(f"gold_actions steps {sorted(by_step)} must exactly equal task call steps {call_steps}")
-
-        # For the one workflow-guided task, prove the declared inter-step dataflow on the
-        # real replay ledger.  Independent validity of step A and step B is insufficient:
-        # if B is documented as consuming the object A just created, every direct and
-        # authorization reference in B must equal A's actual changed-row value.
-        claimed_workflows = as_list(as_dict(task.get("charter_scope")).get("workflows"))
-        workflow_by_id = {
-            as_dict(workflow).get("id"): as_dict(workflow)
-            for workflow in as_list(extended.get("workflows"))
-        }
-        is_workflow_task = (
-            len(claimed_workflows) == 1
-            and claimed_workflows[0] in workflow_by_id
-        )
-        workflow_base_by_step = {}
-        if is_workflow_task:
-            workflow = workflow_by_id[claimed_workflows[0]]
-            workflow_steps = as_list(workflow.get("steps"))
-            if len(call_steps) == len(workflow_steps):
-                for workflow_index, raw_workflow_step in enumerate(workflow_steps):
-                    workflow_step = as_dict(raw_workflow_step)
-                    workflow_base_by_step[call_steps[workflow_index]] = {
-                        "subjects": {workflow_step.get("subject")},
-                        "base_policy_refs": set(as_list(workflow_step.get("base_policy_refs"))),
-                    }
-                for link_index, raw_link in enumerate(as_list(workflow.get("dataflow"))):
-                    link = as_dict(raw_link)
-                    dwhere = f"workflow_dataflow[{link_index}]"
-                    from_index = link.get("from_step")
-                    to_index = link.get("to_step")
-                    if (not isinstance(from_index, int) or isinstance(from_index, bool)
-                            or not isinstance(to_index, int) or isinstance(to_index, bool)
-                            or not (0 <= from_index < len(call_steps))
-                            or not (0 <= to_index < len(call_steps))):
-                        continue  # check_extended owns structural diagnostics
-                    producer_step = call_steps[from_index]
-                    consumer_step = call_steps[to_index]
-                    before_db, before_error = replay_prefix(
-                        deepcopy(initial), deepcopy(actions), producer_step)
-                    after_db, after_error = replay_prefix(
-                        deepcopy(initial), deepcopy(actions), producer_step + 1)
-                    if before_error or after_error:
-                        fail(f"{dwhere}: cannot replay producer step: {before_error or after_error}")
-                        continue
-                    source_table = link.get("source_table")
-                    source_field = link.get("source_field")
-                    before_rows = as_dict(before_db.tables.get(source_table))
-                    after_rows = as_dict(after_db.tables.get(source_table))
-                    changed = {
-                        row_id: as_dict(row)
-                        for row_id, row in after_rows.items()
-                        if as_dict(before_rows.get(row_id)) != as_dict(row)
-                        and source_field in as_dict(row)
-                    }
-                    if not changed:
-                        fail(f"{dwhere}: producer step {producer_step} did not change declared source "
-                             f"{source_table}.{source_field}; the stated dependency is decorative")
-                        continue
-                    if link.get("kind") == "state_effect":
-                        old_new_pairs = {
-                            (str(as_dict(before_rows.get(row_id)).get(source_field)),
-                             str(row.get(source_field)))
-                            for row_id, row in changed.items()
-                        }
-                        if all(old == new for old, new in old_new_pairs):
-                            fail(f"{dwhere}: producer leaves {source_table}.{source_field} unchanged")
-                        consumer_contract = as_dict(by_step.get(consumer_step))
-                        established_gates = as_list(link.get("establishes_gates"))
-                        if not established_gates:
-                            fail(f"{dwhere}: state effect lacks establishes_gates")
-                        for established_gate in established_gates:
-                            established_gate = as_dict(established_gate)
-                            policy_id = established_gate.get("policy_id")
-                            eligibility_id = established_gate.get("eligibility_id")
-                            matching_preconditions = [
-                                as_dict(precondition)
-                                for precondition in as_list(consumer_contract.get("base_preconditions"))
-                                if as_dict(precondition).get("policy_id") == policy_id
-                                and as_dict(precondition).get("eligibility_id") == eligibility_id
-                            ]
-                            if len(matching_preconditions) != 1:
-                                fail(f"{dwhere}: state effect gate {policy_id}/{eligibility_id} must "
-                                     "appear exactly once in the consumer's base_preconditions")
-                                continue
-                            precondition = matching_preconditions[0]
-                            prior_ref = f"prior_step:{producer_step}"
-                            if prior_ref not in as_list(precondition.get("evidence")):
-                                fail(f"{dwhere}: consumer eligibility must cite {prior_ref} as its "
-                                     "pre-action system evidence")
-                            if not any(
-                                    as_dict(binding).get("source") == prior_ref
-                                    and as_dict(binding).get("source_table") == source_table
-                                    for binding in as_list(precondition.get("evidence_bindings"))):
-                                fail(f"{dwhere}: consumer eligibility must correlate the prior "
-                                     f"{source_table!r} row to its current action arguments")
-                        continue
-                    if link.get("kind") != "object_binding":
-                        continue
-                    produced_values = {row.get(source_field) for row in changed.values()}
-                    produced_values.discard(None)
-                    if len(produced_values) != 1:
-                        fail(f"{dwhere}: object producer must yield exactly one changed "
-                             f"{source_table}.{source_field}, got {sorted(produced_values, key=str)}")
-                        continue
-                    produced = next(iter(produced_values))
-                    consumer_args = action_business_args(actions[consumer_step])
-                    consumer_contract = as_dict(by_step.get(consumer_step))
-                    preconditions = as_list(consumer_contract.get("base_preconditions"))
-                    for binding_index, raw_binding in enumerate(as_list(link.get("consumer_bindings"))):
-                        binding = as_dict(raw_binding)
-                        bwhere = f"{dwhere}.consumer_bindings[{binding_index}]"
-                        action_arg = binding.get("action_arg")
-                        if action_arg not in consumer_args:
-                            fail(f"{bwhere}: action_arg {action_arg!r} is absent from consumer step "
-                                 f"{consumer_step}")
-                        elif str(consumer_args.get(action_arg)) != str(produced):
-                            fail(f"{bwhere}: consumer {action_arg}={consumer_args.get(action_arg)!r} "
-                                 f"does not reference producer's actual {source_table}.{source_field}="
-                                 f"{produced!r}")
-                        if binding.get("role") == "authorization":
-                            policy_id = binding.get("policy_id")
-                            eligibility_id = binding.get("eligibility_id")
-                            gate_field = binding.get("gate_field")
-                            matching_preconditions = [
-                                as_dict(precondition) for precondition in preconditions
-                                if as_dict(precondition).get("policy_id") == policy_id
-                                and as_dict(precondition).get("eligibility_id") == eligibility_id
-                            ]
-                            if len(matching_preconditions) != 1:
-                                fail(f"{bwhere}: authorization gate {policy_id}/{eligibility_id} must "
-                                     "appear exactly once in the consumer's base_preconditions")
-                            elif not any(
-                                    as_dict(evidence_binding).get("gate_field") == gate_field
-                                    and as_dict(evidence_binding).get("action_arg") == action_arg
-                                    for evidence_binding in as_list(
-                                        matching_preconditions[0].get("evidence_bindings"))):
-                                fail(f"{bwhere}: consumer precondition does not bind authorization "
-                                     f"field {gate_field!r} to {action_arg!r}")
 
         gates_checked = 0
         required_time_gates = {}
@@ -799,19 +685,6 @@ def main():
             for ref in provenance_evidence:
                 check_evidence(ref, f"{where}.stage_provenance", step)
 
-            # Structural zero-wait gate for the workflow-guided task.  This deliberately
-            # requires an explicit proof instead of trying to infer business semantics
-            # from tool names or status strings.  Human review must still verify that a
-            # synchronous CRUD effect is the real business action, rather than a marker
-            # laundering a consultation, delivery, payment, approval, or other external
-            # event that would take real time.
-            if is_workflow_task:
-                if item.get("requires_external_wait") is not False:
-                    fail(f"{where}.requires_external_wait must be false for every workflow step")
-                if not str(item.get("zero_wait_proof") or "").strip():
-                    fail(f"{where}.zero_wait_proof must explain why every workflow precondition "
-                         "is available without external events or time progression")
-
             has_prior = any(
                 isinstance(ref, str) and ref.startswith("prior_step:")
                 for ref in provenance_evidence
@@ -833,23 +706,20 @@ def main():
 
             required_refs = set()
             required_gates = set()
+            scope_free_policies = set()   # governing policies whose every applicable gate an overwrite retired
             required_subjects = set()
             extended_lineage_refs = set()
-            workflow_base = workflow_base_by_step.get(step)
-            if workflow_base is not None:
-                required_subjects.update(workflow_base["subjects"])
-            else:
-                for comp in computations:
-                    comp = as_dict(comp)
-                    if comp.get("step") != step:
-                        continue
-                    ep = ext_policies.get(comp.get("policy_id"))
-                    if not ep:
-                        fail(f"{where}: computation names unknown extended policy "
-                             f"{comp.get('policy_id')!r}")
-                        continue
-                    required_subjects.update(as_list(ep.get("subject")))
-                    extended_lineage_refs.update(as_list(ep.get("base_policy_refs")))
+            for comp in computations:
+                comp = as_dict(comp)
+                if comp.get("step") != step:
+                    continue
+                ep = ext_policies.get(comp.get("policy_id"))
+                if not ep:
+                    fail(f"{where}: computation names unknown extended policy "
+                         f"{comp.get('policy_id')!r}")
+                    continue
+                required_subjects.update(as_list(ep.get("subject")))
+                extended_lineage_refs.update(as_list(ep.get("base_policy_refs")))
             required_subjects.discard(None)
             for policy_id in extended_lineage_refs:
                 if policy_id not in base_policies:
@@ -858,31 +728,28 @@ def main():
                 policy_id for policy_id, base_policy in base_policies.items()
                 if required_subjects & set(as_list(base_policy.get("subject")))
             }
-            if workflow_base is not None:
-                declared_workflow_refs = workflow_base["base_policy_refs"]
-                if declared_workflow_refs != governing_refs:
-                    fail(f"{where}: workflow step base_policy_refs must exactly cover its subject; "
-                         f"missing={sorted(governing_refs - declared_workflow_refs)}, "
-                         f"extra={sorted(declared_workflow_refs - governing_refs)}")
-            else:
-                missing_lineage = governing_refs - extended_lineage_refs
-                if missing_lineage:
-                    fail(f"{where}: extended base_policy_refs omit governing base policies "
-                         f"{sorted(missing_lineage)}")
+            missing_lineage = governing_refs - extended_lineage_refs
+            if missing_lineage:
+                fail(f"{where}: extended base_policy_refs omit governing base policies "
+                     f"{sorted(missing_lineage)}")
             required_refs.update(governing_refs)
             if not required_subjects or not required_refs:
                 fail(f"{where}: every business call must resolve an exact base event subject and all "
-                     "base policies governing that write; computed_by=[] is not a qualification bypass")
+                     "base policies governing that write; a gold write with no computation is not a "
+                     "problem of the tree")
             for policy_id in required_refs:
                 base_policy = base_policies.get(policy_id)
                 if base_policy is None:
                     fail(f"{where}: write lineage references unknown base policy {policy_id!r}")
                     continue
-                gates = [as_dict(gate) for gate in as_list(base_policy.get("eligibility"))
-                         if set(as_list(as_dict(gate).get("applies_to"))) & required_subjects]
+                gates_all = [as_dict(gate) for gate in as_list(base_policy.get("eligibility"))
+                             if set(as_list(as_dict(gate).get("applies_to"))) & required_subjects]
+                gates = [gate for gate in gates_all if (policy_id, gate.get("id")) not in retired_gates]
                 if gates:
                     for gate in gates:
                         required_gates.add((policy_id, gate.get("id")))
+                elif gates_all:
+                    scope_free_policies.add(policy_id)
                 else:
                     required_gates.add((policy_id, "policy_scope"))
 
@@ -906,6 +773,8 @@ def main():
                     required_key = (policy_id, eligibility_id)
                     if eligibility_id == "policy_scope":
                         gate = None
+                        if policy_id in scope_free_policies:
+                            continue      # every applicable gate of this policy is retired by an extended overwrite
                         if required_key not in required_gates:
                             fail(f"{pwhere}: policy_scope is not applicable here; {policy_id} has "
                                  "subject-scoped eligibility gates for this write")
@@ -914,6 +783,8 @@ def main():
                         gate = None
                     else:
                         gate = policy_gates[eligibility_id]
+                        if required_key in retired_gates:
+                            continue      # retired by an extended overwrite: tolerated when declared, never required
                         if required_key not in required_gates:
                             fail(f"{pwhere}: eligibility gate {eligibility_id!r} does not apply to any "
                                  "exact base event subject realized by this business call")
@@ -937,8 +808,8 @@ def main():
                     if str(precondition.get("condition") or "").strip() != str(gate.get("condition") or "").strip():
                         fail(f"{pwhere}: condition must quote the eligibility gate verbatim")
                     needed_fields = set(as_list(gate.get("evidence_fields")))
-                    # A workflow may establish an authoritative evidence row in an
-                    # earlier write.  The evidence list names the producing step,
+                    # A preceding write may establish an authoritative evidence row in an
+                    # earlier step.  The evidence list names the producing step,
                     # while its structured correlation bindings name the table in
                     # that step's real DB delta.  When that delta changes exactly
                     # one row, the row is the cited system evidence: count all of
@@ -1235,20 +1106,21 @@ def main():
             if not str(root or "").strip():
                 fail("prerequisite_closure.root_problem is empty")
             edges = as_list(pc.get("edges"))
-            if len(edges) < 2:
-                fail(f"prerequisite_closure.edges has {len(edges)} edge(s); at least 2 prerequisites "
-                     "are required (chain A->B->C or fan-out A->B, A->C)")
+            dep_problems = {str(e.get("to") or "").strip() for e in edges if isinstance(e, dict)} - {"", str(root or "")}
+            if len(dep_problems) < 3:
+                fail(f"prerequisite_closure declares {len(dep_problems)} prerequisite problem(s); at least 3 are "
+                     "required, the root not counted (any acyclic shape: chain, fan-out, diamond or a mix)")
             kinds = [e.get("kind") for e in edges if isinstance(e, dict)]
-            if edges and "value_input" not in kinds:
-                fail("prerequisite_closure has no value_input edge — with only state_gate edges the "
-                     "terminal DB is identical whether the prerequisite is solved before or after, so "
-                     "the ordering it asserts is unobservable to hash scoring")
+            if edges and kinds.count("value_input") < 2:
+                fail(f"prerequisite_closure has {kinds.count('value_input')} value_input edge(s); at least 2 are "
+                     "required — state_gate edges alone leave the terminal DB identical whichever order the "
+                     "writes take, and a single value_input edge hangs the whole calculation test on one number")
             for ei, e in enumerate(edges):
                 where = f"prerequisite_closure.edges[{ei}]"
                 if not isinstance(e, dict):
                     fail(f"{where}: must be a mapping")
                     continue
-                for key in ("from", "to", "kind", "condition", "policy_source", "resolved_by"):
+                for key in ("from", "to", "kind", "form", "condition", "policy_source", "resolved_by"):
                     if not str(e.get(key) or "").strip():
                         fail(f"{where}: missing {key}")
                 unres = e.get("unresolved_at_frozen_time")

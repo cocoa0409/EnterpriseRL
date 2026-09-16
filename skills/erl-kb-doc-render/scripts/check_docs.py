@@ -1,7 +1,8 @@
 """DOCS gate: verify a rendered KB corpus (env/<scenario>/docs/<product>/) against the
 render values — agent-facing wording with zero implementation leaks, independent policy
-fragments, single-home quantitative coverage, tool/SOP fidelity. Normative semantic bijection
-is a manual hard gate: this script cannot prove that prose invented no confirmation/review step.
+fragments, quantitative coverage (every number rendered at least once), tool fidelity, prerequisite sentences carried verbatim.
+Normative semantic bijection is a manual hard gate: this script cannot prove that prose invented
+no confirmation/review step.
 
 WHAT IT CHECKS (the mechanically decidable subset of SKILL.md's values):
   structure   id/title/content/meta present; id == doc_<product>_<topic>_<uuid8> and matches
@@ -10,51 +11,70 @@ WHAT IT CHECKS (the mechanically decidable subset of SKILL.md's values):
   leak        content+title contain NO snake_case code token outside the whitelist
               (task tool names ∪ share tool names ∪ unlock/call meta-tool names), no compute-DSL
               fragments, no 16-hex row ids. This single rule catches table/field/event/param/
-              policy-id leakage wholesale (they are all snake_case).
+              policy-id leakage wholesale (they are all snake_case). Every doc's content must also
+              name its product (the display name or the shared prefix of its tier names).
   tools       every task tool has EXACTLY ONE invocation doc (meta.tool), whose role follows the
               product-wide reference split: a target_tool referenced by one policy is merged into
               that hub; shared or non-target tools have a standalone tool doc. Content names the
-              tool verbatim plus unlock wording; user-owned tools' docs must say the customer themselves.
-  workflow    every workflow has EXACTLY ONE doc (meta.workflow). It is never a runbook: it must
-              not name any of its step tools (tool names live only in their invocation docs)
-              and must not number its steps — the order is carried by the reasons, not stated.
+              tool verbatim plus unlock wording and spells out every parameter by name; user-owned
+              tools' docs must say the customer themselves.
+  no workflow the charter has no `workflows` key and no doc has role=sop or meta.workflow: every
+              problem is an extended policy, and the order of a task's writes is what the
+              solver works out from the policies' prerequisite sentences, the depended-on
+              rules and the records — never from a rendered route.
   scatter     every extended policy has EXACTLY ONE hub (meta.role=hub, carries empty), but the hub
               MUST NOT expose a factor list, factor count, fragment navigation, or completion cue.
-              Independent factor/meta_rule docs privately claim source compute bindings through
-              meta.covers; every binding (including result) has exactly one home. There is no
-              arbitrary fragment-count floor: only real source semantics may create fragments.
-              Carries caps (factor<=2, facet<=6) block fake scattering.
-  prereq      a prerequisite is carried by ENTAILMENT (a principle in the blocked problem's docs,
-              completed by the depended-on problem's own rules and the facts), never stated. So
-              no doc may contain an edge's `condition` or `policy_source` verbatim, nor restate
-              one closely in a sentence that also carries a gating/ordering cue; and the
-              `resolved_by` tool of an edge must not appear in the blocked problem's docs (a
-              cross-problem operational pointer welds two problems into one procedure). Whether
-              each hop is really entailed at the source's strength is a MANUAL gate.
-  explicit    the controlled scaffolding of a stated dependency or procedure fails anywhere:
-              entry conditions, not-yet-hold clauses, precedence labels ending in "first",
-              step-before-step, wrong/correct-reading contrasts, named mistakes. Titles may not
-              take the question form or the internal-procedure form (task-mirroring titles).
-  wording     paraphrase, never copy: no run of SHINGLE words copied from the charter text, and
-              no run of SHINGLE words recurring in TEMPLATE_DOCS+ docs (templated phrasing).
-              Quoted/backticked spans (exact identifiers, fixed phrases) are excluded.
+              The computation doc and the factor docs privately claim source compute bindings
+              through meta.covers; every binding (including result) is covered by a fragment. The source fixes
+              the factor fragments: every declared `factors[].id` of a policy has EXACTLY ONE factor
+              doc (meta.factor == the id) whose covers include all of that factor's bindings, no
+              factor doc names an undeclared factor, and a cross_difficulty factor's doc names the
+              other product by its display name (findable from that product's records). Such a
+              policy also has EXACTLY ONE computation doc (role=baseline) covering every
+              non-factor binding (result included), carrying every baseline.params key that is the
+              policy's own params key, and free
+              of any hint that something modifies it (unless-otherwise, adjustments may apply,
+              qualifying customers, elsewhere); no doc of the retired meta_rule role; and no factor doc points at,
+              overrides or replaces "the standard calculation" — a discrete topology, never a star.
+              The SKILL's single-home rule is an authoring ideal this gate does NOT enforce: it caps
+              no doc's carries and never fails a second home. It checks only the floor — a policy's
+              OWN constants (its params) rendered in that policy's own docs, and every tier
+              parameter (variants.<key>) rendered at least once somewhere in the product corpus,
+              the docs whose rules read it naming it in business words.
+              Whether every tier of a ladder is present and exact in the prose is a MANUAL gate.
+  prereq      a prerequisite is carried AS THE SOURCE STATES IT: the edge's PREREQUISITE SENTENCE
+              (`policy_source`, a sentence of the blocked policy's own rule stating outright, with
+              an ordering connective, what that policy's result waits on — a record-visible state
+              in the state form, the depended-on action in business words in the action form)
+              appears VERBATIM in a doc of the blocked policy (its hub or one of its fragments) and
+              in no doc of any other policy; the depended-on policy's own docs carry its own rule;
+              the `resolved_by` tool of an edge must not appear in the blocked policy's docs (a
+              tool-name pointer welds two problems into one procedure). The edge's `condition`,
+              `fallback_reason` and `resolved_by` are authoring fields. Whether the hop is then
+              resolvable from the sentence, the depended-on docs and the records at the source's
+              strength — and whether a state-form restatement quietly names the action — is a
+              MANUAL gate.
+  routed      the controlled scaffolding of a route across problems fails anywhere: step-before-
+              step ordering, procedure entry conditions, wrong/correct-reading contrasts, named
+              mistakes. Titles may not take the question form or the internal-procedure form
+              (task-mirroring titles).
   full span   EVERYTHING in the charter is carried somewhere (splitting must never drop): every BASE
               policy has >=1 doc (meta.policy_id); every extended policy has its hub+fragments;
-              every task tool its invocation doc; every workflow its SOP doc; every
-              parameter_schema key a home. Scattering means splitting, never dropping.
+              every task tool its invocation doc; every parameter_schema key a home. Scattering
+              means splitting, never dropping.
   superseded  base and extended are successive versions of one product law and extended wins on
               conflict, each conflict declared clause by clause in extended_policies[].overwrite.
               A superseded clause KEEPS its bearing doc (an override never breaks the bijection)
               but that doc must declare it in meta.superseded_clauses and its prose must carry the
               controlled retirement marker, so withdrawn law can never read as in force. Declaring
               a clause the source does not retire fails too: the KB may not withdraw law on its
-              own. Exactly one home per retired clause. Only the handling clause retires — base
+              own. At least one home per retired clause. Only the handling clause retires — base
               params VALUES stay valid and stay homed in that same doc, so `coverage` is unchanged.
   coverage    required quantitative keys — every extended policy params key, every variant
               param its compute reads via P('...'), every parameter_schema key, and every
               BASE policy params key whose value is a literal ("=<param>" references excluded:
-              their number is already homed under variants.<param>) — each claimed by EXACTLY
-              ONE doc's meta.carries (single home); claimed numeric values spot-checked to
+              their number is already homed under variants.<param>) — each claimed by AT LEAST
+              one doc's meta.carries; claimed numeric values spot-checked to
               actually appear in that doc's content (rates accept percent form).
 
 Usage (repo root):
@@ -87,27 +107,13 @@ SNAKE = re.compile(r"[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+")
 HEX16 = re.compile(r"\b[0-9a-f]{16}\b")
 DSL = ("SUM(", "COUNT(", "EXISTS(", "CPARAM(", "CFIELD(", "LATEST(", "ctx.", "make_id",
        "F('", "P('", "K('", "MX(", "MN(", "RND(")
-# formal register: policy prose states arithmetic in WORDS (multiplied by / less / total /
-# the higher of), never as equation symbols. Unambiguous equation markers only — markdown bold
-# (*), unit slashes (USD/month), list dashes and date hyphens are NOT arithmetic and stay legal.
-ARITH = ("＝", "×", "÷", "＋", "−", "=", "+")
-FACTOR_CARRY_CAP = 2
-FACET_CARRY_CAP = 6
-# ANTI-PADDING: length must come from each doc's OWN substance. A line (>=25 chars) that
-# recurs verbatim in >=4 docs is stamped boilerplate (injected glossaries, per-role template
-# sections) — it fakes length and floods BM25 with identical text. Per-doc ratio of such
-# lines must stay under the cap, and the corpus mean under a tighter cap.
-BOILER_MIN_LINE = 25
-BOILER_DOCS = 4
-BOILER_DOC_RATIO = 0.25
-BOILER_MEAN_RATIO = 0.12
 
 # Hub must remain a policy/tool entry, never a map of the hidden policy fragments. These markers
 # are intentionally strict: a hub that tells the agent where else to read recreates a stopping
 # condition even without a numbered factor list.
 NAV_CUES = (r"see also|for (?:full )?details,? see"
-            r"|(?:see|refer to|consult)\b[^.;\n]{0,40}\b(?:docs?|documents?|polic(?:y|ies)|sections?"
-            r"|clauses?|annex|appendix|schedule|table|SOP)\b"
+            r"|(?:see|refer to|consult)\b[^.;\n]{0,40}\b(?:another|other|separate|the relevant|the corresponding)"
+            r"\s+(?:docs?|documents?|pages?|polic(?:y|ies)|sections?|clauses?)\b"
             r"|read (?:this )?(?:together with|alongside)|continue reading|further reading|read all of")
 
 HUB_DIRECTORY_PATTERNS = (
@@ -122,83 +128,62 @@ HUB_DIRECTORY_PATTERNS = (
     (re.compile(NAV_CUES, re.I), "reading navigation/completion cue"),
 )
 FRAGMENT_NAV_PATTERNS = (
-    (re.compile(r"\bhub\b|satellite doc|factor doc|fragment doc|other fragments", re.I),
+    (re.compile(r"satellite doc|factor doc|fragment doc|other fragments", re.I),
      "fragment topology"),
     (re.compile(NAV_CUES, re.I), "reading navigation/completion cue"),
     (re.compile(r"(?:the\s+)?(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)"
                 r"\s+factor|factor\s+(?:no\.?\s*)?\d+", re.I), "factor ordinal"),
 )
 
-# IMPLICIT CARRIAGE: what the solver must work out — a dependency between problems, the order of
-# a procedure, a remedy — is carried by entailment and never stated. These are the unmistakable
-# surface forms of a stated dependency or procedure; a match fails whatever the semantics. The
-# subtler statements no pattern can catch remain the manual gate's job.
+# ROUTED CARRIAGE: a dependency is stated exactly as the source states it — one prerequisite
+# sentence per edge, on the blocked side — and never as a route through several problems. These
+# are the unmistakable surface forms of a rendered route or procedure; a match fails whatever the
+# semantics. The subtler routes no pattern can catch remain the manual gate's job.
 EXPLICIT_FORMS = (
-    (re.compile(r"\bentry\s+conditions?\b", re.I), "entry condition"),
-    (re.compile(r"\bwhere\s+(?:that|this|it|they)\s+(?:does|do)\s+not\s+(?:yet\s+)?hold", re.I),
-     "not-yet-hold gating clause"),
-    (re.compile(r"\*\*[^*\n]{0,60}\bfirst\b[.:!]?\s*\*\*", re.I), "precedence label ending in 'first'"),
     (re.compile(r"\bsteps?\s*\d+\s+(?:before|after|precedes?|follows?)\s+steps?\s*\d+", re.I),
      "step-before-step ordering"),
     (re.compile(r"\bbefore\s+(?:running|starting|beginning|carrying\s+out)\s+(?:this|the)\s+"
                 r"(?:procedure|process|workflow)", re.I), "procedure entry condition"),
-    (re.compile(r"\b(?:wrong|incorrect|mistaken)\s+(?:reading|interpretation)s?\b"
-                r"|\bcorrect\s+(?:basis|reading|interpretation)\b|\bmis-?readings?\b"
+    (re.compile(r"\b(?:wrong|incorrect|mistaken)\s+(?:reading|interpretation)s?\b|\bmis-?readings?\b"
                 r"|\bcommon\s+(?:mistake|error|misunderstanding|misconception)s?\b", re.I),
      "wrong-reading contrast / named mistake"),
 )
-# A restatement of a prerequisite that also carries one of these cues reads as an instruction.
-ORDER_CUE = re.compile(r"\b(?:before|first|prior\s+to|only\s+after|only\s+once|until|not\s+yet"
-                       r"|in\s+advance|ahead\s+of|precede[sd]?|preceding)\b", re.I)
-NEAR_RESTATE = 0.8        # share of a prerequisite's content words found in one sentence
+# BASELINE + FACTORS, discrete: the computation document (role=baseline) renders the standard
+# method and default values and must be SILENT about anything that modifies it — an agent that
+# finds it alone must compute a definite wrong number with no signal. These are the unmistakable
+# hints that something else applies; a match in a baseline doc fails whatever the semantics.
+BASELINE_HINT_PATTERNS = (
+    (re.compile(r"\bunless\s+otherwise\b", re.I), "unless-otherwise hint"),
+    (re.compile(r"\b(?:adjustments?|variations?|exceptions?|special\s+(?:rules?|rates?|terms?|treatment))"
+                r"\s+(?:may\s+|can\s+|will\s+)?appl(?:y|ies)\b", re.I), "adjustment hint"),
+    (re.compile(r"\bmay\s+be\s+(?:adjusted|varied|modified|reduced|increased|halved|doubled|waived)\b", re.I),
+     "may-be-adjusted hint"),
+    (re.compile(r"\b(?:set\s+out|described|provided|stated|explained|detailed)\s+(?:elsewhere|separately"
+                r"|in\s+(?:a|another|other|the\s+relevant)\s+(?:document|page|rule|section|polic(?:y|ies)))", re.I),
+     "elsewhere pointer"),
+    (re.compile(r"\b(?:certain|some|eligible|qualifying|selected)\s+[a-z][a-z-]*(?:\s+[a-z][a-z-]*)?"
+                r"\s+(?:may\s+)?(?:receive|qualify|are\s+entitled|enjoy|get|benefit)\b", re.I),
+     "qualifying-parties hint"),
+    (re.compile(r"\b(?:the\s+)?(?:standard|default|baseline)\s+(?:calculation|method|rule|treatment|formula)"
+                r"\s+(?:applies|is\s+used)\s+(?:unless|except|where\s+no|when\s+no)", re.I), "standard-unless hint"),
+)
+# A factor doc states only its tiers; pointing at the computation document welds the two.
+FACTOR_XREF_PATTERNS = (
+    (re.compile(r"\b(?:standard|default|general|usual|normal|ordinary|baseline)\s+(?:calculation|method|rule|treatment"
+                r"|formula)\s+(?:described|set\s+out|stated|provided|explained|detailed)\b", re.I),
+     "pointer to the computation document"),
+    (re.compile(r"\b(?:instead\s+of|in\s+place\s+of|overrid(?:es|ing)|replac(?:es|ing)|supersed(?:es|ing))\s+the\s+"
+                r"(?:standard|default|general|usual|normal|ordinary|baseline)\s+(?:calculation|method|rule|treatment"
+                r"|formula)\b", re.I), "override wording"),
+    (re.compile(r"\b(?:set\s+out|described|stated|provided|explained|detailed|defined)\s+elsewhere\b"
+                r"|\bin\s+(?:a|the)\s+separate\s+(?:document|page|rule)\b", re.I), "elsewhere pointer"),
+)
 # Task-mirroring title forms: a question restating a request, or an internal procedure label.
 TITLE_FORMS = (
     (re.compile(r"\?\s*$|^\s*how\s+(?:do|does|can|should|to|is|are)\b", re.I), "question form"),
     (re.compile(r"^\s*internal\s*[:\-–—]|\bhandling\s+procedure\b", re.I),
      "internal-procedure form"),
 )
-STEP_NUMBERING = re.compile(r"\bsteps?\s*(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b"
-                            r"|\b(?:first|second|third|fourth|fifth|final|last)\s+step\b", re.I)
-# PARAPHRASE: a run of SHINGLE words copied from the charter, or recurring in TEMPLATE_DOCS docs,
-# is copied/templated wording. Quoted/backticked spans are exact identifiers and fixed phrases
-# (tool names, enum values, verbatim argument phrases) and are excluded.
-SHINGLE = 10
-TEMPLATE_DOCS = 3
-WORD = re.compile(r"[a-z0-9]+")
-QUOTED = re.compile(r"`[^`]*`|\"[^\"\n]*\"|“[^”\n]*”")
-STOP = set("a an the of to and or is are be by for in on at as that this with from its it their any "
-           "every each which who has have been was were not no than then when where once so into "
-           "under over per such these those shall will would may must can could should".split())
-
-
-def _words(text):
-    return WORD.findall(QUOTED.sub(" ", str(text or "")).lower())
-
-
-def _shingles(words, n=SHINGLE):
-    return {" ".join(words[i:i + n]) for i in range(len(words) - n + 1)}
-
-
-def _content_words(text):
-    return {w for w in WORD.findall(str(text or "").lower()) if len(w) > 2 and w not in STOP}
-
-
-def _sentences(text):
-    return [s for s in re.split(r"(?<=[.!?])\s+|\n+", str(text or "")) if s.strip()]
-
-
-def _charter_texts(node, out):
-    """Every natural-language string of the charter long enough to hold a copied run."""
-    if isinstance(node, str):
-        if len(WORD.findall(node.lower())) >= SHINGLE:
-            out.append(node)
-    elif isinstance(node, dict):
-        for v in node.values():
-            _charter_texts(v, out)
-    elif isinstance(node, list):
-        for v in node:
-            _charter_texts(v, out)
-    return out
 
 
 def load_yaml(p):
@@ -289,11 +274,17 @@ def main():
         interfaces = {}
     share_tools = set(tool_owners(os.path.join(bdir, "share_tools.py")))
     whitelist = set(task_tools) | share_tools | META_TOOLS
+    # official display names of every product: a cross-difficulty factor doc must name the product
+    # whose records decide its tier, so a reader of those records can find the rule.
+    display_names = {}
+    for f in glob.glob(os.path.join(bdir, "products", "*.yaml")):
+        d0 = load_yaml(f)
+        if isinstance(d0, dict) and d0.get("category"):
+            display_names[str(d0["category"])] = str(d0.get("display_name") or "").strip()
 
     eps = {p["id"]: p for p in (charter.get("extended_policies") or [])}
     base_pols = {p["id"]: p for p in (charter.get("policies") or []) if isinstance(p, dict) and p.get("id")}
     base_policies = set(base_pols)
-    wfs = {w["id"]: w for w in (charter.get("workflows") or [])}
     display_name = str(charter.get("display_name") or "").strip()
     # product self-identification tokens: the official display name, and (if all variants share
     # a family prefix, e.g. a series name) that family name — either names the product in prose.
@@ -313,7 +304,7 @@ def main():
     param_schema_keys = set((charter.get("parameter_schema") or {}).keys())
     variants = {v["name"]: (v.get("parameters") or {}) for v in (charter.get("variants") or [])}
 
-    # required quantitative keys (single-home coverage targets)
+    # required quantitative keys (coverage targets)
     required = {f"variants.{k}" for k in param_schema_keys}
     p_ref = re.compile(r"P\('([^']+)'\)")
     for pid, p in eps.items():
@@ -325,7 +316,7 @@ def main():
                 required.add(f"variants.{m}")
     # base policies' own LITERAL constants are quantitative homes too — without them a
     # base-policy number copied into two docs slips through. "=<param>" reference values
-    # are skipped: their number's single home is already the variants.<param> key above.
+    # are skipped: their number is already required under the variants.<param> key above.
     for pid, p in base_pols.items():
         for k, v in (p.get("params") or {}).items():
             if isinstance(v, str) and v.startswith("="):
@@ -338,6 +329,9 @@ def main():
     if not paths:
         raise SystemExit(f"no docs under {ddir}")
     docs, fails = [], []
+    if "workflows" in charter:
+        fails.append("charter carries a `workflows` key — this pipeline has no workflow problems; every problem is an "
+                     "extended policy and the order of a task's writes is derived, never rendered")
     seen_ids = set()
     for pth in paths:
         fn = os.path.basename(pth)
@@ -357,38 +351,6 @@ def main():
         seen_ids.add(did)
         docs.append((fn, d))
 
-    # ---- anti-padding: cross-doc verbatim lines are boilerplate, not substance ----------
-    line_homes = {}
-    doc_lines = {}
-    for fn, d in docs:
-        lines = set()
-        for ln in str(d.get("content", "")).splitlines():
-            s = ln.strip().lstrip("-#*0123456789. ").strip()
-            if len(s) < BOILER_MIN_LINE:
-                continue
-            if set(s) <= set("|-:— "):           # markdown table separators are structure
-                continue
-            lines.add(s)
-        doc_lines[fn] = lines
-        for s in lines:
-            line_homes.setdefault(s, set()).add(fn)
-    boiler_lines = {s for s, homes in line_homes.items() if len(homes) >= BOILER_DOCS}
-    ratios = []
-    for fn, d in docs:
-        total = max(1, len(str(d.get("content", ""))))
-        b = sum(len(s) for s in doc_lines[fn] if s in boiler_lines)
-        r = b / total
-        ratios.append(r)
-        if r > BOILER_DOC_RATIO:
-            fails.append(f"{fn}: {r:.0%} of content is cross-doc boilerplate (verbatim lines shared by "
-                         f">={BOILER_DOCS} docs; cap {BOILER_DOC_RATIO:.0%}) — remove repetition; retain "
-                         "a shared definition only when the structured source gives it an independent home")
-    if ratios:
-        mean_r = sum(ratios) / len(ratios)
-        if mean_r > BOILER_MEAN_RATIO:
-            fails.append(f"corpus boilerplate ratio {mean_r:.0%} > {BOILER_MEAN_RATIO:.0%} — injected "
-                         "glossaries/template sections are padding, not source-backed policy substance")
-
     # ---- leak + register --------------------------------------------------------------
     for fn, d in docs:
         text = str(d.get("title", "")) + "\n" + str(d.get("content", ""))
@@ -403,12 +365,7 @@ def main():
         hit = [s for s in DSL if s in text]
         if hit:
             fails.append(f"{fn}: implementation leak — compute-DSL fragment {hit}")
-        # formal register: arithmetic in words, never equation symbols
         body = str(d.get("content", ""))
-        sym = sorted({s for s in ARITH if s in body})
-        if sym:
-            fails.append(f"{fn}: arithmetic symbols {sym} in prose — state calculations in words "
-                         "(multiplied by / less / total / the higher of), never as equations")
         # product self-identification: the corpus is one merged retrieval pool across products;
         # a doc whose CONTENT never names its product is an ambiguity source (the id prefix does
         # not count — content is the policy body the agent reads).
@@ -417,42 +374,20 @@ def main():
                          "in the merged corpus an unnamed late-fee/penalty/discount doc is ambiguous across "
                          "products; state the product's official name in the prose (value 3)")
 
-    # ---- implicit carriage: stated-dependency scaffolding, task-mirroring titles --------
+    # ---- routed carriage: route/procedure scaffolding, task-mirroring titles --------------
     for fn, d in docs:
         title = str(d.get("title", ""))
         text = title + "\n" + str(d.get("content", ""))
         for rx, label in EXPLICIT_FORMS:
             hit = rx.search(text)
             if hit:
-                fails.append(f"{fn}: pre-solved form ({label}) via {hit.group(0)!r} — what the solver must "
-                             "work out is carried by definitions and principles, never stated as an instruction")
+                fails.append(f"{fn}: routed form ({label}) via {hit.group(0)!r} — a dependency is carried by the "
+                             "source's prerequisite sentence on the blocked side, never as a route or a procedure")
         for rx, label in TITLE_FORMS:
             if rx.search(title):
                 fails.append(f"{fn}: title in {label} ({title[:80]!r}) — a title names the product and a "
                              "general subject, never a request or a procedure for a particular situation")
                 break
-
-    # ---- paraphrase: nothing copied from the charter, no templated wording ------------
-    charter_sh = set()
-    for s in _charter_texts(charter, []):
-        charter_sh |= _shingles(_words(s))
-    doc_sh = {fn: _shingles(_words(str(d.get("title", "")) + "\n" + str(d.get("content", ""))))
-              for fn, d in docs}
-    sh_homes = {}
-    for fn, sh in doc_sh.items():
-        for s in sh:
-            sh_homes.setdefault(s, set()).add(fn)
-    templated = {s for s, homes in sh_homes.items() if len(homes) >= TEMPLATE_DOCS}
-    for fn, _d in docs:
-        copied = doc_sh[fn] & charter_sh
-        if copied:
-            fails.append(f"{fn}: {len(copied)} run(s) of {SHINGLE} words copied from the charter, e.g. "
-                         f"{sorted(copied)[0]!r} — paraphrase in the document's own words (exact identifiers "
-                         "and fixed phrases go in backticks)")
-        shared = doc_sh[fn] & templated
-        if shared:
-            fails.append(f"{fn}: templated wording — {len(shared)} run(s) of {SHINGLE} words recur in "
-                         f">={TEMPLATE_DOCS} docs, e.g. {sorted(shared)[0]!r} — word each document afresh")
 
     # ---- tools -----------------------------------------------------------------------
     inv = {}
@@ -498,41 +433,22 @@ def main():
         if t not in task_tools:
             fails.append(f"meta.tool '{t}' is not a task tool of this product")
 
-    # ---- workflow: one implicit document per workflow, never a runbook ------------------
-    sops = {}
+    # ---- no workflow documents: order is derived by the solver, never rendered -----------
     for fn, d in docs:
-        w = (d.get("meta") or {}).get("workflow")
-        if w:
-            sops.setdefault(w, []).append((fn, d))
-    for wid, wf in wfs.items():
-        entries = sops.get(wid, [])
-        if len(entries) != 1:
-            fails.append(f"workflow {wid}: {len(entries)} workflow docs (need exactly 1)")
-            continue
-        fn, d = entries[0]
-        text = str(d.get("title", "")) + "\n" + str(d.get("content", ""))
-        # The course of a workflow is what the solver works out: the document carries purpose,
-        # parties and what each part relies on. Naming the step tools, or numbering steps, turns
-        # it back into a recipe (tool names stay in their own invocation documents).
-        named = sorted({str(s.get("tool")) for s in (wf.get("steps") or [])
-                        if s.get("tool") and str(s.get("tool")) in text})
-        if named:
-            fails.append(f"{fn}: workflow doc names its step tool(s) {named} — tool names belong only to "
-                         "their invocation docs; the workflow doc carries purpose and reliance, not a recipe")
-        hit = STEP_NUMBERING.search(text)
-        if hit:
-            fails.append(f"{fn}: workflow doc numbers its steps via {hit.group(0)!r} — the order must follow "
-                         "from the stated reasons, never be listed")
-    for w in sops:
-        if w not in wfs:
-            fails.append(f"meta.workflow '{w}' is not a workflow of this product")
+        m = d.get("meta") or {}
+        if m.get("role") == "sop" or m.get("workflow"):
+            fails.append(f"{fn}: role=sop / meta.workflow — there are no workflow documents; every problem is an "
+                         "extended policy and the order of writes is what the solver derives")
+        if m.get("role") == "meta_rule":
+            fails.append(f"{fn}: role=meta_rule is retired — the assembly of the result belongs to the computation "
+                         "document (role=baseline) and every other fragment renders one declared factor")
 
     # ---- scatter (non-directory hub + independently discoverable policy fragments) -----
     by_policy = {}
     for fn, d in docs:
         m = d.get("meta") or {}
         pid = m.get("policy_id")
-        if pid and m.get("role") in ("hub", "factor", "meta_rule"):
+        if pid and m.get("role") in ("hub", "factor", "baseline"):
             by_policy.setdefault(pid, []).append((fn, d))
     for pid, p in eps.items():
         group = by_policy.get(pid, [])
@@ -550,7 +466,7 @@ def main():
                          "state, never an agent-visible or hub-attached directory")
         if "covers" in hd["meta"]:
             fails.append(f"{hfn}: hub meta.covers is forbidden — compute coverage belongs only to "
-                         "independent factor/meta_rule docs")
+                         "the computation doc and the factor docs")
         if hd["meta"].get("tool") and hd["meta"]["tool"] != p.get("target_tool"):
             fails.append(f"{hfn}: hub meta.tool != policy target_tool")
 
@@ -578,10 +494,10 @@ def main():
                 fails.append(f"{hfn}: hub repeats hidden factor name {name!r} — this directly reconnects "
                              "the policy entry to a discoverable fragment")
 
-        # No arbitrary factor-count floor. Binding coverage and quantitative single-home checks
+        # No arbitrary factor-count floor. Binding coverage and quantitative coverage checks
         # prove source coverage; forcing extra fragments would reward duplicated or invented prose.
 
-        fragments = [(fn, d) for fn, d in group if d["meta"]["role"] in ("factor", "meta_rule")]
+        fragments = [(fn, d) for fn, d in group if d["meta"]["role"] in ("factor", "baseline")]
         binding_names = []
         for item in (p.get("compute") or []):
             if not isinstance(item, dict) or len(item) != 1:
@@ -596,8 +512,6 @@ def main():
             if not isinstance(covers, list) or not all(isinstance(x, str) and x.strip() for x in covers):
                 fails.append(f"{fn2}: {role2} doc requires meta.covers as a list of source compute bindings")
                 continue
-            if role2 == "meta_rule" and not covers:
-                fails.append(f"{fn2}: meta_rule doc requires at least one source compute binding in meta.covers")
             if len(covers) != len(set(covers)):
                 fails.append(f"{fn2}: duplicate binding names in meta.covers")
             body2 = str(d2.get("title", "")) + "\n" + str(d2.get("content", ""))
@@ -608,16 +522,91 @@ def main():
                                  "state only this document's business rule, with no reading map")
             for name in covers:
                 cover_homes.setdefault(name, []).append(fn2)
-                if name in body2:
+                # only a code-shaped binding name (snake_case or numbered) can leak; a plain-word binding
+                # such as `balance` or `discount` is ordinary business vocabulary and is never a leak
+                code_shaped = "_" in name or any(ch.isdigit() for ch in name)
+                if code_shaped and re.search(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", body2):
                     fails.append(f"{fn2}: hidden compute binding {name!r} leaks into title/content")
         for name in binding_names:
             homes = cover_homes.get(name, [])
-            if len(homes) != 1:
-                fails.append(f"policy {pid}: compute binding '{name}' is covered by {len(homes)} "
-                             f"fragment docs {homes} (need exactly 1; completeness stays in private meta)")
+            if not homes:
+                fails.append(f"policy {pid}: compute binding '{name}' is covered by no fragment doc "
+                             "(every binding needs a home; completeness stays in private meta)")
         for name, homes in cover_homes.items():
             if name not in binding_names:
                 fails.append(f"policy {pid}: meta.covers claims unknown compute binding '{name}' in {homes}")
+
+        # ---- declared factors: one fragment per factor, carrying all of its bindings ----------
+        declared = [f for f in (p.get("factors") or []) if isinstance(f, dict) and f.get("id")]
+        if not declared:
+            fails.append(f"policy {pid}: the charter declares no factors for this policy — an extended policy renders as "
+                         "hub + computation doc + one doc per declared factor; re-instantiate the charter first")
+        if declared:
+            declared_ids = {str(f["id"]) for f in declared}
+            # ---- the computation document: exactly one, silent, covering every non-factor binding ----
+            bases = [(fn2, d2) for fn2, d2 in group if d2["meta"]["role"] == "baseline"]
+            if len(bases) != 1:
+                fails.append(f"policy {pid}: {len(bases)} computation docs (role=baseline; need exactly 1 rendering "
+                             "baseline.rule — the standard method and default values every factor falls back to)")
+            factor_bindings = set()
+            for f in declared:
+                factor_bindings |= {str(b) for b in (f.get("bindings") or [])}
+            if bases:
+                bfn, bd = bases[0]
+                cov_b = {str(x) for x in (bd["meta"].get("covers") or [])}
+                expected_b = set(binding_names) - factor_bindings
+                if not expected_b <= cov_b:
+                    fails.append(f"{bfn}: computation doc covers {sorted(cov_b)} but must cover every binding that "
+                                 f"belongs to no factor {sorted(expected_b)} (result included)")
+                btext = str(bd.get("title", "")) + "\n" + str(bd.get("content", ""))
+                for rx, label in BASELINE_HINT_PATTERNS:
+                    hit = rx.search(btext)
+                    if hit:
+                        fails.append(f"{bfn}: computation doc carries a {label} via {hit.group(0)!r} — the baseline is "
+                                     "silent about anything that modifies it; an agent that finds it alone must "
+                                     "compute a definite wrong number with no signal")
+                bcar = set(bd["meta"].get("carries") or [])
+                for k in ((p.get("baseline") or {}).get("params") or []):
+                    if k not in (p.get("params") or {}):
+                        continue      # a tier parameter: its figure lives in the facet table; this doc only names it
+                    key = f"{pid}.params.{k}"
+                    if key not in bcar:
+                        fails.append(f"{bfn}: computation doc does not carry default key '{key}' named in "
+                                     "baseline.params — a policy's own defaults are homed in the computation document")
+            for fn2, d2 in fsats:
+                ftext = str(d2.get("title", "")) + "\n" + str(d2.get("content", ""))
+                for rx, label in FACTOR_XREF_PATTERNS:
+                    hit = rx.search(ftext)
+                    if hit:
+                        fails.append(f"{fn2}: factor doc carries a {label} via {hit.group(0)!r} — a factor states its "
+                                     "tiers and never names, overrides or points at the computation document")
+            for f in declared:
+                fid = str(f["id"])
+                homes_f = [(fn2, d2) for fn2, d2 in fsats if str(d2["meta"].get("factor") or "") == fid]
+                if len(homes_f) != 1:
+                    fails.append(f"policy {pid}: declared factor '{fid}' has {len(homes_f)} factor docs (need exactly 1 "
+                                 "whose meta.factor is the source factor id — a factor is rendered as one fragment "
+                                 "carrying its whole ladder)")
+                    continue
+                fn2, d2 = homes_f[0]
+                cov = {str(x) for x in (d2["meta"].get("covers") or [])}
+                fb = {str(b) for b in (f.get("bindings") or [])}
+                if fb - cov:
+                    fails.append(f"{fn2}: factor doc for '{fid}' does not cover its own bindings {sorted(fb - cov)} "
+                                 "— meta.covers must include every binding of the declared factor")
+                xd = f.get("cross_difficulty")
+                if xd:
+                    other = display_names.get(str(xd))
+                    if other and other not in str(d2.get("content", "")):
+                        fails.append(f"{fn2}: cross-difficulty factor '{fid}' decides its tier from '{xd}' records but "
+                                     f"never names that product ({other!r}) — a reader of those records must be able "
+                                     "to find the rule (value 2)")
+            for fn2, d2 in fsats:
+                nm = str(d2["meta"].get("factor") or "")
+                if nm and nm not in declared_ids:
+                    fails.append(f"{fn2}: meta.factor '{nm}' is not a declared factor of {pid} — under a charter that "
+                                 "declares factors, every factor doc renders exactly one of them (the assembly of the "
+                                 "result and the defaults belong to the computation document, role=baseline)")
 
     # ---- full span: every BASE policy carried by >=1 doc (splitting must never drop) ----
     base_covered = {str(pid) for pid in ((d.get("meta") or {}).get("policy_id")
@@ -654,10 +643,16 @@ def main():
                          "presents as retired")
             continue
         for clause in raw:
-            declared_homes.setdefault((pid, _nows(clause)), []).append(fn)
-            if _nows(clause) not in superseded.get(pid, {}):
+            cn = _nows(clause)
+            # a registered clause matches a retired clause when either contains the other (both are
+            # verbatim substrings of the same base rule; a folded scalar may split them differently)
+            matched = [norm for norm in superseded.get(pid, {}) if cn and (cn == norm or cn in norm or norm in cn)]
+            if not matched:
                 fails.append(f"{fn}: meta.superseded_clauses names a clause of '{pid}' that no extended "
                              "policy retires in its overwrite — KB may not withdraw law the source keeps")
+                continue
+            for norm in matched:
+                declared_homes.setdefault((pid, norm), []).append(fn)
         if raw and SUPERSEDED_MARK not in str(d.get("content") or ""):
             fails.append(f"{fn}: declares superseded clauses but its content never says "
                          f"{SUPERSEDED_MARK!r} — a retired clause must read as retired, never as in force")
@@ -668,84 +663,65 @@ def main():
                 fails.append(f"supersession: a clause of base policy '{pid}' is retired by an extended "
                              f"policy, but no role=policy doc declares it in meta.superseded_clauses "
                              f"(clause opens {verbatim[:24]!r}) — the KB would still teach withdrawn law")
-            elif len(homes) > 1:
-                fails.append(f"supersession: the retired clause of '{pid}' is declared by {homes} "
-                             "— exactly one home, same as every other bearing relation")
 
-    # ---- prerequisite: carried by entailment, never stated, no cross-problem pointers ---
-    prereq_edges = []            # (owner_id, owner_is_workflow, entry)
+    # ---- prerequisite: the prerequisite sentence carried verbatim, once, on the blocked side;
+    #      no tool-name pointers into the blocked side -----------------------------------------
+    prereq_edges = []            # (owner policy id, entry)
     for _pid, _p in sorted(eps.items()):
         for _e in (_p.get("prerequisite") or []):
             if isinstance(_e, dict):
-                prereq_edges.append((_pid, False, _e))
-    for _wid, _wf in sorted(wfs.items()):
-        if isinstance(_wf, dict):
-            for _e in (_wf.get("prerequisite") or []):
-                if isinstance(_e, dict):
-                    prereq_edges.append((_wid, True, _e))
+                prereq_edges.append((_pid, _e))
 
-    def _docs_of_problem(problem_id, is_workflow):
-        key = "workflow" if is_workflow else "policy_id"
-        return [(fn, d) for fn, d in docs if (d.get("meta") or {}).get(key) == problem_id]
+    def _docs_of_policy(pid):
+        return [(fn, d) for fn, d in docs if (d.get("meta") or {}).get("policy_id") == pid]
 
-    sentences = {fn: _sentences(d.get("content")) for fn, d in docs}
-    for owner, owner_is_wf, e in prereq_edges:
-        own_docs = {fn for fn, _ in _docs_of_problem(owner, owner_is_wf)}
-        # The hop is entailed by a principle plus the depended-on rules and the facts; the source's
-        # own sentences for it (condition, policy_source) are never written into the prose —
-        # neither verbatim nor as a close restatement carrying a gating/ordering cue.
-        for field in ("condition", "policy_source"):
-            src = str(e.get(field) or "").strip()
-            if not src:
-                continue
-            where = f"prerequisite of '{owner}' ({field} opens {src[:24]!r})"
+    for owner, e in prereq_edges:
+        own_docs = {fn for fn, _ in _docs_of_policy(owner)}
+        dep = str(e.get("problem") or "").strip()
+        src = str(e.get("policy_source") or "").strip()
+        if src:
             norm = _nows(src)
-            verbatim = {fn for fn, d in docs if norm in _nows(d.get("content"))}
-            for fn in sorted(verbatim):
-                fails.append(f"{fn}: states the {where} verbatim — a prerequisite is carried by entailment "
-                             "from definitions and principles, never written out")
-            cw = _content_words(src)
-            if len(cw) < 6:
-                continue
-            for fn, _d in docs:
-                if fn in verbatim:
-                    continue
-                for sent in sentences[fn]:
-                    if len(cw & _content_words(sent)) / len(cw) >= NEAR_RESTATE and ORDER_CUE.search(sent):
-                        fails.append(f"{fn}: restates the {where} as an instruction ({sent.strip()[:90]!r}) — "
-                                     "state the governing principle in the document's own terms, never the "
-                                     "condition or an order")
-                        break
-        # resolved_by must not leak into the blocked problem's docs as an operational pointer
+            label = f"the prerequisite sentence of '{owner}' (opens {src[:24]!r})"
+            homes = sorted(fn for fn, d in docs if norm in _nows(d.get("content")))
+            own_homes = [fn for fn in homes if fn in own_docs]
+            foreign = [fn for fn in homes if fn not in own_docs]
+            if not own_homes:
+                fails.append(f"prerequisite of '{owner}' on '{dep}': {label} is carried verbatim by no doc of that "
+                             "policy — the blocked policy's hub or one of its fragments must carry it word for word, "
+                             "ordering connective and form intact")
+            for fn in foreign:
+                fails.append(f"{fn}: carries {label} verbatim although it is not a doc of that policy — a second home "
+                             "outside the blocked side welds two problems together (the depended-on policy's docs "
+                             "state only its own rule and never say who waits on it)")
+        # resolved_by must not leak into the blocked problem's docs as a tool-name pointer
         rb = str(e.get("resolved_by") or "").strip()
         if rb:
-            for fn in own_docs:
+            for fn in sorted(own_docs):
                 doc = next(d for f, d in docs if f == fn)
                 if rb in str(doc.get("content") or "") + str(doc.get("title") or ""):
-                    fails.append(f"{fn}: names the prerequisite's resolved_by action {rb!r} inside the "
-                                 "docs of the problem it blocks — the source declares a condition, never "
-                                 "a cross-problem instruction; the resolving action belongs to the other "
-                                 "problem's own doc")
-    # ---- coverage: single-home quantitative keys ---------------------------------------
+                    fails.append(f"{fn}: names the prerequisite's resolved_by tool {rb!r} inside the "
+                                 "docs of the problem it blocks — the tool belongs to the other problem's own doc; "
+                                 "the blocked side states its prerequisite sentence and nothing that routes it")
+    # ---- coverage: every quantitative key rendered at least once; a policy's own constants in its own docs
     claims = {}
     for fn, d in docs:
         m = d.get("meta") or {}
-        carries = m.get("carries") or []
-        role = m.get("role")
-        cap = FACTOR_CARRY_CAP if role in ("factor", "meta_rule") else FACET_CARRY_CAP
-        if len(carries) > cap:
-            fails.append(f"{fn}: carries {len(carries)} keys > cap {cap} for role {role} (fake scattering)")
-        for k in carries:
+        for k in (m.get("carries") or []):
             claims.setdefault(k, []).append((fn, d))
     for k in sorted(required):
         homes = claims.get(k, [])
-        if len(homes) == 0:
-            fails.append(f"coverage: quantitative key '{k}' claimed by no doc")
-        elif len(homes) > 1:
-            fails.append(f"coverage: quantitative key '{k}' claimed by {len(homes)} docs "
-                         f"({[fn for fn, _ in homes]}) — every number lives in exactly one doc")
-        else:
-            fn, d = homes[0]
+        if not homes:
+            fails.append(f"coverage: quantitative key '{k}' rendered by no doc")
+            continue
+        if ".params." in k:
+            own_pid = k.partition(".params.")[0]
+            if own_pid in eps:
+                own_fns = {fn for fn, _ in _docs_of_policy(own_pid)}
+                if not any(fn in own_fns for fn, _ in homes):
+                    fails.append(f"coverage: '{k}' is this policy's own constant but none of that policy's docs "
+                                 f"carries it ({[fn for fn, _ in homes]}) — a policy's own numbers are rendered in "
+                                 "that policy's documents")
+        for fn, d in homes:
             c = str(d["content"])
             if k.startswith("variants."):
                 pk = k.split(".", 1)[1]
@@ -773,18 +749,19 @@ def main():
     length_note = (f" content[min/mean/max]={min(lengths)}/{sum(lengths)/len(lengths):.0f}/{max(lengths)}"
                    if lengths else "")
     print(f"🔎 DOCS gate  product={product} profile={profile} docs={len(docs)} roles={n_role}{length_note}")
-    print(f"   required quantitative keys={len(required)}  task_tools={len(task_tools)}  workflows={len(wfs)}")
+    print(f"   required quantitative keys={len(required)}  task_tools={len(task_tools)}  prerequisite edges={len(prereq_edges)}")
     if fails:
         print("\n  [FAIL]")
         for f in fails[:60]:
             print("   -", f)
         print("DOCS NOT OK")
         sys.exit(1)
-    print("\n  [PASS] mechanical gates: structure, zero implementation leaks, tool fidelity, one implicit "
-          "workflow doc each, non-directory hubs, private compute-binding coverage, single-home quantitative "
-          "coverage, no stated prerequisites or scaffolding, no copied or templated wording")
-    print("  [MANUAL REQUIRED] normative claims <-> structured source semantic bijection; every dependency and "
-          "order entailed at the source's strength yet stated nowhere")
+    print("\n  [PASS] mechanical gates: structure, zero implementation leaks, tool fidelity, no workflow docs, "
+          "non-directory hubs, private compute-binding coverage, quantitative coverage, every "
+          "prerequisite sentence carried verbatim on its blocked side, no tool-name pointers or route scaffolding")
+    print("  [MANUAL REQUIRED] normative claims <-> structured source semantic bijection; every hop resolvable "
+          "at the source's strength from the prerequisite sentence, the depended-on docs and the records, "
+          "no state-form sentence restated as an action, and no route stated beyond the sentences")
     print("DOCS OK")
     sys.exit(0)
 

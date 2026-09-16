@@ -18,11 +18,13 @@ The reachable context is rebuilt from the runtime-visible surfaces, cumulatively
          + the company background shown in the agent system prompt
          + schemas of directly listed share tools
   per-task + the user-simulator brief as the potential dialogue source + frozen_time
-  dynamic  + the RETURN TEXT of every PRIOR agent-owned gold action, appended while replaying the
-           gold in order with the real tools (a value minted by an earlier agent write — e.g. a
-           request id a later step must quote — becomes reachable when that write returns).
-           User-owned tool results are not visible to the agent unless the simulator relays them
-           in dialogue. Hidden task-tool schemas are appended only after their unlock action,
+  dynamic  + the RETURN TEXT of every PRIOR gold action, agent-owned or user-owned, appended
+           while replaying the gold in order with the real tools (a value minted by an earlier
+           write — e.g. a request id a later step must quote — becomes reachable when that write
+           returns). A user-owned tool's return lands in the user simulator's context, and a
+           customer cooperates with the desk: the agent can ask and the customer reads it back,
+           so it counts as reachable just like an agent-owned return (this is also what the
+           instantiate and audit skills promise). Hidden task-tool schemas are appended only after their unlock action,
            matching the runtime.
 
 The authoring files `*.extended.yaml`, blueprint product YAML, `initial_state`, task JSON,
@@ -192,10 +194,12 @@ def main():
                 n_copied += 1
                 if not reachable(str(v)):
                     missing.setdefault(str(v), []).append(f"{a.get('tool','?')}:{path}")
-            # 2) execute it with the real tools and append its return — later actions may copy it
+            # 2) execute it with the real tools and append its return — later actions may copy it.
+            #    Agent-owned and user-owned alike: the runtime runs both, the world advances for both,
+            #    and the customer relays a user-owned tool's return to the agent on request.
             tool, args = _resolve(a)
             spec = specs.get(tool) if tool else None
-            if spec is not None and a.get("owner") == "agent":
+            if spec is not None:
                 try:
                     out = str(spec.func(ToolContext(db, clock, db_schema,
                                                     writable=(spec.rw == "write")),

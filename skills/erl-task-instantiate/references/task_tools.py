@@ -4,14 +4,14 @@ Path: env/<scenario>/tasks/<difficulty>/task_tools.py
 These are this difficulty's hidden task tools (they take the key parameters the agent has computed
 and perform one atomic write). No domain examples are given; take the Python functions in this file
 directly as the code skeleton and replace the placeholders according to the current blueprint /
-policy / workflow / DB schema. Never wrap this file into a string constant, and never copy business
+policy / DB schema. Never wrap this file into a string constant, and never copy business
 names, parameter sets, enum values or receipt fields from another scenario.
 
 Tool contract (carried over from the blueprint):
   - Named <verb>_<object>_<uuid8>: uuid8 is an 8-hex suffix frozen at authoring time so names never
     collide across difficulties (the placeholders below show it as _<uuid8>).
   - HIDDEN: absent from every tool list; the name is registered only in <category>.extended.yaml
-    (a workflow step / extended_policies.target_tool), and gold reaches it through unlock_* -> call_*.
+    (extended_policies.target_tool), and gold reaches it through unlock_* -> call_*.
     A share tool, by contrast, is always directly callable by name — the two are different.
   - @tool(owner="agent"|"user", rw="read"|"write"); owner follows the permission doctrine (the
     customer disposing of their own affairs -> user, a service action -> agent).
@@ -59,8 +59,9 @@ Tool contract (carried over from the blueprint):
     business result is observable afterwards. Never write merely "returns the result" or
     "operation succeeded".
   - The docstring addresses the tool's user and introduces only this tool. Do not use implementation
-    terms such as table, row, primary key, foreign key or schema; do not state the workflow position,
-    the upstream/downstream tools or policy preconditions; do not write the policy formula for a
+    terms such as table, row, primary key, foreign key or schema; do not state this action's position
+    in any sequence, the upstream/downstream tools or policy preconditions, and use no ordering word
+    such as before, after or first; do not write the policy formula for a
     numeric/date parameter. How a parameter should be represented belongs to the tool contract; why
     it takes that value belongs to the policy/KB, and the two are never mixed.
 
@@ -144,7 +145,7 @@ def <customer_confirm_tool>(ctx: ToolContext, <holding_id>: str, <computed_amoun
     """<In the business language of the current domain, fully state which business object the customer
     themselves disposes of and how, exactly what account/status/business-record change it produces,
     what the customer can observe afterwards, and which receipt indicates the call completed. Never
-    state the workflow position.>
+    state this action's position in any sequence, and never name another action.>
 
     Args:
         <holding_id>: <Id class — state the exact reference number of the business object the customer

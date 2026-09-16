@@ -126,13 +126,16 @@ def _tool_rw(fn):
 
 
 def _ctx_tables(fn, method):
+    """Tables named as the first (string-literal) argument of ctx.<method>(...) calls
+    inside ``fn``; ``method`` is one name or a tuple of names (find / fuzzy_find)."""
+    methods = (method,) if isinstance(method, str) else tuple(method)
     tables = set()
     for node in ast.walk(fn):
         if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
             continue
         if not (isinstance(node.func.value, ast.Name) and node.func.value.id == "ctx"):
             continue
-        if node.func.attr != method or not node.args:
+        if node.func.attr not in methods or not node.args:
             continue
         first = node.args[0]
         if isinstance(first, ast.Constant) and isinstance(first.value, str):
@@ -208,12 +211,12 @@ def identity_preamble_contract(blueprint_dir):
     tree = ast.parse(open(share_path).read(), filename=share_path)
     fns = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
     customer_finders = [
-        fn for fn in fns if _tool_rw(fn) == "read" and "customers" in _ctx_tables(fn, "find")
+        fn for fn in fns if _tool_rw(fn) == "read" and "customers" in _ctx_tables(fn, ("find", "fuzzy_find"))
     ]
     verification_writers = [
         fn for fn in fns
         if _tool_rw(fn) == "write"
-        and "customers" in _ctx_tables(fn, "find")
+        and "customers" in _ctx_tables(fn, ("find", "fuzzy_find"))
         and verification_table in (_ctx_tables(fn, "create") | _ctx_tables(fn, "update"))
     ]
     if len(customer_finders) != 1:

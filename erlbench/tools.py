@@ -51,6 +51,10 @@ class ToolContext:
               hash — the same prefix+parts always yield the same id
       reads : ctx.find(table, **match) -> list of matching rows
               (no match kwargs = all rows)
+              ctx.fuzzy_find(table, **match) -> the same, but values are
+              compared after normalisation on both sides (casefold, letters
+              and digits only) — for criteria the caller states in speech
+              (names, phone numbers, emails); ids read from records use find
       writes: ctx.create(table, row_key, **fields) / ctx.update(table, key,
               **fields) / ctx.delete(table, key)   (rw="write" tools only)
       time  : ctx.now()                         (the task's frozen_time,
@@ -78,12 +82,19 @@ class ToolContext:
         from the arguments that identify the row (same parts => same id)."""
         return make_id(prefix, *parts, length=length)
 
-    # the single read
+    # reads
     def find(self, table: str, **match) -> list:
         """Return all rows whose fields equal ``match`` (field names schema-checked).
         No kwargs returns the whole table."""
         self._check_fields(table, self._declared(table), match)
         return self.db.find(table, **match)
+
+    def fuzzy_find(self, table: str, **match) -> list:
+        """Like ``find`` but values are compared after normalisation on both sides
+        (casefold, letters and digits only). For criteria the caller states in speech —
+        names, phone numbers, emails — never for ids read from records."""
+        self._check_fields(table, self._declared(table), match)
+        return self.db.fuzzy_find(table, **match)
 
     # writes
     def _declared(self, table: str) -> list:

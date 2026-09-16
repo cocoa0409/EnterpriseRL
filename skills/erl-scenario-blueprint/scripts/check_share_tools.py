@@ -77,7 +77,7 @@ def parse_read_tools(path):
         for node in ast.walk(fn):
             if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                     and isinstance(node.func.value, ast.Name) and node.func.value.id == "ctx"
-                    and node.func.attr == "find" and node.args
+                    and node.func.attr in ("find", "fuzzy_find") and node.args
                     and isinstance(node.args[0], ast.Constant)
                     and isinstance(node.args[0].value, str)):
                 finds.append(node.args[0].value)

@@ -23,6 +23,7 @@ Rules for every tool:
   - The ctx interface is closed and validator-enforced:
       id   : ctx.make_id(prefix, *identifying_args) — deterministic content hash; same prefix and args give the same id. Build it from the arguments that identify the row, and store it in the row's id field yourself.
       read : ctx.find(table, **match) -> list   (no kwargs = whole table)
+             ctx.fuzzy_find(table, **match) -> list — the same, but values are compared after normalisation on both sides (casefold, letters and digits only). Use it for criteria the caller states in speech (names, phone numbers, emails), and plain find for ids read from records.
       write: ctx.create(table, row_key, **fields) / ctx.update(table, row_key, **fields) / ctx.delete(table, row_key) — inserts are idempotent on row_key; table and field names are checked against db_schema.json ({table: [field, ...]}).
       time : ctx.now()   (slice ctx.now()[:10] for the date part)
     Anything else on ctx is rejected.
@@ -70,7 +71,9 @@ def find_<table>(ctx: ToolContext, <id_field_1>: str = "", <id_field_2>: str = "
 # internal customer_id from it. Finding is NOT verifying (verification is a separate write).
 # Every attribute param must be a real field of the customers table (enforced), so the entry
 # can never drift from the schema. There is no separate `locate_customer` — this one tool is
-# both the by-id finder and the by-attribute entry.
+# both the by-id finder and the by-attribute entry. It matches through ctx.fuzzy_find, so what
+# the caller states is compared to the profile after normalisation — a trailing full stop,
+# spacing or case never blocks the lookup.
 @tool(owner="agent", rw="read")
 def find_customers(ctx: ToolContext, customer_id: str = "", <attr_1>: str = "", <attr_2>: str = "", <attr_3>: str = "") -> str:
     """<Introduce this in business language: look up the customer profile and establish whose
@@ -90,7 +93,7 @@ def find_customers(ctx: ToolContext, customer_id: str = "", <attr_1>: str = "", 
                                "<field_2>": <attr_2>, "<field_3>": <attr_3>}.items() if v}
     if not match:
         return "Error: provide at least one id or attribute to find the customer."
-    rows = ctx.find("customers", **match)
+    rows = ctx.fuzzy_find("customers", **match)
     if not rows:
         return f"No customer matches {match}."
     if len(rows) > 1:

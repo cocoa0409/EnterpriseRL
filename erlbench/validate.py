@@ -97,7 +97,7 @@ def _lint_tool_sources(root: str) -> List[str]:
 _CTX_WRITES = {"create", "update", "delete"}
 # The COMPLETE ctx interface a generated tool may use. Anything else on ctx
 # (including ctx.db) is rejected — the CRUD layer is the only door to the DB.
-_CTX_ALLOWED = {"make_id", "find", "create", "update", "delete", "now"}
+_CTX_ALLOWED = {"make_id", "find", "fuzzy_find", "create", "update", "delete", "now"}
 
 
 def _decorator_rw(fn: ast.FunctionDef):
@@ -150,7 +150,7 @@ def _rw_consistency_errors(root: str) -> List[str]:
             writes, offside = _scan_ctx_usage(fn)
             if offside:
                 errs.append(f"{rel}: '{fn.name}' uses {', '.join(sorted(offside))} — outside the tool "
-                            "interface (allowed: ctx.make_id/find/create/update/delete/now)")
+                            "interface (allowed: ctx.make_id/find/fuzzy_find/create/update/delete/now)")
             if rw == "write" and not writes:
                 errs.append(f"{rel}: '{fn.name}' is declared rw='write' but never calls "
                             "ctx.create/ctx.update/ctx.delete")

@@ -5,7 +5,8 @@ the shape of each row are described by the scenario's ``db_schema.json`` (which
 is documentation + light validation, not enforced typing) — this keeps generated
 scenarios flexible while the hash below stays reproducible.
 
-The runtime accesses it through exactly four operations — ``find`` (read),
+The runtime accesses it through five operations — ``find`` and ``fuzzy_find``
+(reads; ``fuzzy_find`` compares values after ``normalize`` on both sides),
 ``insert`` / ``update`` / ``delete`` (writes; ``insert`` is idempotent on the
 row id, so replaying the same write twice is a no-op and can never corrupt the
 hash) — plus ``hash()`` for scoring.
@@ -17,6 +18,15 @@ import hashlib
 import json
 from copy import deepcopy
 from typing import Dict, List, Optional
+
+
+def normalize(value) -> str:
+    """Canonical form for tolerant matching: casefold, then keep letters and digits
+    only. Case, spacing and punctuation vanish, so "Kestrel Grid Networks Inc." and
+    "kestrel grid networks inc" compare equal, as do "+86 574 8131 0427" and
+    "8657481310427". Applied identically to the stored value and the value looked up;
+    nothing looser than whole-string equality after normalisation."""
+    return "".join(ch for ch in str(value).casefold() if ch.isalnum())
 
 
 class DB:
@@ -49,6 +59,15 @@ class DB:
         out = []
         for row in self.tables.get(table, {}).values():
             if all(str(row.get(k)) == str(v) for k, v in match.items()):
+                out.append(row)
+        return out
+
+    def fuzzy_find(self, table: str, **match) -> List[dict]:
+        """Like ``find`` but both sides pass through ``normalize`` first — for criteria
+        the caller states in speech (names, phone numbers, emails), never for ids."""
+        out = []
+        for row in self.tables.get(table, {}).values():
+            if all(normalize(row.get(k)) == normalize(v) for k, v in match.items()):
                 out.append(row)
         return out
 

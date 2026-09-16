@@ -2,649 +2,665 @@
 
 ## charter_global_frozen
 
-- Frozen: written to disk by 2026-09-12T18:50Z (UTC), round 1, before any task's GT was revealed. Nothing in this section is derived from a revealed GT field.
-- Auditor: independent erl-task-policy-audit agent (Claude). It did not author the audited artifacts and was given no answers.
-- Freeze hashes (sha256, checked against the orchestrator MANIFEST):
-  - `env/regional_retail_bank/tasks/card_billing_payments_and_disputes/card.extended.yaml` = `a56e40d65fc96b096f8d37698271658d7c097b342a4cc8548a15b40918c6c362`
-  - `env/regional_retail_bank/tasks/card_billing_payments_and_disputes/task_tools.py` = `d83a5ee8c9ca6af1fd84a440513dca45bb0ba24c2433c93afe9f8e6bac77b628`
-- Read to build this section: `blueprint/blueprint.yaml`, `blueprint/db_schema.json`, `blueprint/share_tools.py`, `blueprint/products/card.yaml`, the extended charter, `task_tools.py`, and the compute-DSL helper definitions (`skills/erl-task-instantiate/scripts/check_compute.py`, lines 141-260: `COUNT/SUM` are scoped to the holding and `within_months` means `0 <= MONTHS(posted, now) < n`; `EXISTS/CFIELD` are scoped to the holding's customer; `RND` is Python `round`).
-- Masked and not read before every task's derivation was frozen: every task field except `frozen_time`, `user_scenario` and `initial_state` (so `evaluation_criteria`, `computations`, `charter_scope`, `required_documents`, `design_rationale`, `solvability_contract`, `prerequisite_closure`, `db_closure*`). `worklog.md`, sibling difficulties and other scenarios were not read.
-- Entry conditions (Step 0): the gate snapshot came with the brief. check_extended, check_task_tools, replay_tasks, check_solvability, check_compute, check_grounding and check_cross_fire all exited 0. check_traceability is deferred until the KB is published. The masked views and their hashes were supplied, and the view hashes match the files on disk. Input is complete.
+- freeze time (UTC): 2026-09-16 09:13:04 (hashes taken), section written before any task's `evaluation_criteria` / `computations` were read.
+- `env/regional_retail_bank/tasks/card_billing_payments_and_disputes/card.extended.yaml`
+  sha256 `52c5124dc141f8797773ff2b39a500859117336ab1cfe1ee1e73c647e4f4df45`
+- `env/regional_retail_bank/tasks/card_billing_payments_and_disputes/task_tools.py`
+  sha256 `d326ce40b5b1e3893b7d771856f5c5e6077ebf419d73bd1d218598d6d7a88792`
+- `env/regional_retail_bank/blueprint/products/card.yaml`
+  sha256 `24ae13549122ccbae7d04336dcbc97d7ed134773de02ce3daaaa6896c638ef78`
+- auditor: independent source-layer auditor (not the instantiating agent).
+- Fields permitted for this section: `blueprint.yaml`, `db_schema.json`, `share_tools.py`, `blueprint/products/*.yaml`, the whole of `card.extended.yaml`, `task_tools.py`, `erlbench/`, and the instantiation-gate snapshot supplied with the brief.
+- Fields explicitly masked at the time this section was written: `evaluation_criteria`, `computations`, `charter_scope`, `required_documents`, `design_rationale`, `solvability_contract`, `prerequisite_closure`, `db_closure`, `db_closure_matches_initial_state` for both tasks, and every sibling difficulty's audit output.
+
+### entry_conditions (step 0)
+
+The brief supplied all three required items and they check out:
+
+- the instantiation-stage gate snapshot with its actual output lines (EXTENDED OK, TASK TOOL CONTRACT OK, REPLAY OK, SOLVABILITY OK, COMPUTE OK, GROUNDING OK, SCOPE OK). Cited, not re-run.
+- the masked views and their hashes. I re-hashed both and they match the brief:
+  `0.json` = `901447f2a71f1eb4468b2f1acdc2e9ae1d07fccb5a27da74e688643c437e51b8`,
+  `1.json` = `931ad11b84d8c34fe67d6da650052a68b915140ddc80d8a605604d34a07f71dd`.
+  Each masked view carries exactly `frozen_time`, `user_scenario`, `initial_state` (verified by listing the top-level keys).
+- `check_traceability.py` is scheduled for the render stage by design; this is not recorded as incomplete input.
+
+No incomplete-input finding.
 
 ### policy_conflict_scan
 
-**The base copy is verbatim.** Lines 1-1524 of the extended charter are byte-identical to `blueprint/products/card.yaml` (`diff` is empty). All ten top-level keys also compare equal as parsed YAML. The only additions are `extended_policies` (6) and `workflows` (1).
+Base copy: `sed -n '1,1524p' card.extended.yaml` is byte-identical to `blueprint/products/card.yaml` (diff reports only a trailing blank line at 1525 before `extended_policies:`). The base section has not been rewritten.
 
-**Overlapping subjects among the extended policies:**
+Five extended policies, each with a distinct subject, trigger, target tool and computed quantity:
 
-| Extended policy | subject | target_tool | computes | owner |
+| policy | subject | computes | target tool | prerequisite |
 | --- | --- | --- | --- | --- |
-| card_ext_autopay_miss_late_fee_ground | card_fee_reversal | reverse_autopay_late_fee_e77f172c | adjustment_reason | agent |
-| card_ext_autopay_source_restoration | card_rewards_redeem | restore_overdrawn_checking_with_points_4e4b44ef | reward_points | user |
-| card_ext_rewards_balance_payoff | card_rewards_redeem, card_rewards_credit | apply_points_to_card_balance_295c0528 | reward_points | user |
-| card_ext_closing_balance_autopay | card_set_autopay | set_closing_card_autopay_dbe1c3a9 | autopay_amount | user |
-| card_ext_closing_points_cashout | card_rewards_redeem | cash_out_closing_card_points_6700a44f | reward_points | user |
-| card_ext_closure_autopay_carryover | card_close | confirm_card_closure_806ea607 | autopay_option | user |
-| (workflow step 0, no extended policy) | card_fee_reversal | refund_closing_annual_fee_cfb04f99 | — (base card_evt_annual_fee) | agent |
+| `card_ext_late_fee_correction` | `card_fee_reversal` | `correction_amount` | `reverse_card_late_fee_4ff0f41c` | [] |
+| `card_ext_rewards_statement_credit` | `card_rewards_redeem` | `points_redeemed` | `redeem_card_points_9bfb7edb` | → `card_ext_late_fee_correction` |
+| `card_ext_dispute_provisional_credit` | `card_dispute_credit` | `provisional_credit_amount` | `post_card_dispute_credit_83d80881` | [] |
+| `card_ext_dispute_rebill_recovery` | `card_dispute_rebill` | `rebill_amount` | `rebill_card_dispute_credit_f8e84f35` | [] |
+| `card_ext_autopay_fixed_amount` | `card_set_autopay` | `autopay_amount` | `set_card_autopay_amount_b2f02f74` | → `card_ext_dispute_provisional_credit`, → `card_ext_dispute_rebill_recovery` |
 
-- Three policies write `card_rewards_redeem`, and they are told apart by trigger:
-  - restoration: an ask to apply points to the balance while the autopay source is overdrawn;
-  - payoff: an ask to pay the balance down with points;
-  - cash-out: an ask to cash out while closing.
-  
-  Restoration and payoff fire together by design (restoration is a prerequisite of payoff). Cash-out never overlaps them, because its trigger needs a closing. No two policies reach different conclusions on the same trigger.
-- **Time anchors:**
-  - fee ground: "less than one whole calendar month before the handling date", with the most recent statement's `payment_due_date`;
-  - annual-fee refund: base `annual_fee_refund_window_days` = 30;
-  - every other policy: handling time.
-  
-  No two of these anchors conflict.
-- **Cross-category reads.** All of them read `checking_accounts` of the same customer only (the DSL scopes to the customer). The reads are status, negative_since_date and ledger_balance. None of the policies writes checking.
-- **Terminal states.** The payoff leaves the card's balance at or above zero when an active checking account exists. The closure leaves status `closed`, with the option decided by the carryover policy. The findings below record where a terminal state conflicts with inherited base text.
-- **Claimed scopes of the M = 2 tasks, inferred only from the permitted views and tool contracts:**
-  - task 0 is the payoff tree: payoff, fee ground and restoration;
-  - task 1 is the workflow tree: workflow, closing autopay, cash-out and carryover.
-  
-  The two sets are disjoint. Together they cover all 6 extended policies and the single workflow, and exactly one task (task 1) claims the workflow. This inference is re-checked against `charter_scope` only in the closing checklist, after the reveal.
+Overlapping-subject check. Two policies share `base_policy_refs: [card_evt_billing_disputes]`
+(`card_ext_dispute_provisional_credit`, `card_ext_dispute_rebill_recovery`), but they act on
+disjoint ledger events (`card_dispute_credit` vs `card_dispute_rebill`), on disjoint dispute
+statuses (`submitted` vs `resolved_cardholder_liable`) and supersede different base sentences.
+No overlap. No two policies claim the same quantity, terminal state or cross-category read boundary.
+
+Time anchors: every extended policy anchors on `NOW` (frozen date) through `MONTHS(F('opened_date'), NOW)`
+and on `posted_date` / `notice_date` windows. No two policies anchor the same quantity on different clocks.
+
+Cross-category read boundaries: all cross reads go through `CFIELD` / `EXISTS` / `XSUM` / `XCOUNT`
+on `checking`, `savings`, `cd`. No extended policy writes outside `card`.
+
+Task scopes (derived independently from the two `prerequisite` trees, not from `charter_scope`, which is masked):
+- tree A = { `card_ext_rewards_statement_credit` (root), `card_ext_late_fee_correction` }
+- tree B = { `card_ext_autopay_fixed_amount` (root), `card_ext_dispute_provisional_credit`, `card_ext_dispute_rebill_recovery` }
+
+The two sets are pairwise disjoint and their union is all five extended policies: **mutually exclusive and jointly complete**.
+
+**policy_conflict_scan: PASS.**
 
 ### rule_compute_equivalence
 
-Check 2, policy by policy, in both directions (rule sentence to compute binding, and compute binding back to rule sentence):
+Check 2 run over all five policies, binding by binding, in both directions.
 
-- **card_ext_autopay_miss_late_fee_ground.**
-  - `fees_in_window` and `reversals_in_window` implement "posted date is less than one whole calendar month before the handling date … counted as the late payment fees posted in that window minus the late payment fee reversals posted in that window". The DSL's `within_months=1` is exactly `0 <= MONTHS < 1`, and the counting rule is taken verbatim from the rule.
-  - `covers_minimum` is the first condition.
-  - `source_status` is the second. The DSL restricts `EXISTS/CFIELD` to the cardholder's own checking, which matches "of the cardholder".
-  - `funded_on_due_date` is the third. It is a string compare of ISO dates, which matches "empty or is a date later than".
-  - `payments_on_due_date` is the fourth. `F('payment_due_date')` matches "the payment_due_date of the card's most recent statement".
-  - `result` requires all four conditions plus at least one unreversed fee.
-  - The rule's "full amount of the fee" is not a compute output. The tool `amount` takes the fee row's amount, per base card_evt_fee_reversal "reversed in full".
-  - No binding lacks a basis, and no rule sentence lacks an implementation.
-- **card_ext_autopay_source_restoration.**
-  - The shortfall is `MX(0, -ledger)` on the named source.
-  - Points needed is the ceiling of `RND(shortfall/value, 6)`, which matches "rounded up to the next whole point".
-  - Unredeemed is ledger earn − redeem − forfeit.
-  - Target is `MX(min, needed)`. It falls back to all unredeemed when the target exceeds them, and pays nothing when unredeemed < min or shortfall = 0.
-  - Equivalent in both directions.
-- **card_ext_rewards_balance_payoff.**
-  - The balance is `F('current_balance')` "after those reversals". This is correct because the reversal tool updates `current_balance`.
-  - The cover points are the ceiling of balance/value, and 0 when the balance is 0 or below.
-  - The applied points are `MN(unredeemed, cover)` when the customer has an active checking account, and all unredeemed otherwise.
-  - The result is 0 when the balance is 0 or below, or when the applied points are below the minimum.
-  - Equivalent. The credit amount (points × value, half-up) is not a compute output. It is the base `redemption_value` formula.
-- **card_ext_closing_balance_autopay.**
-  - The 13-term ledger sum matches the rule's list item for item.
-  - It is capped at `last_statement_balance`.
-  - It is 0.00 when the balance is 0 or below, or when there is no active checking account.
-  - `RND` is applied once, at the end. The DSL's `SUM` also rounds each 2-decimal sum to 2 places, which cannot move a sum of cent values.
-  - Equivalent.
-- **card_ext_closing_points_cashout.** The receiver is `F('autopay_source_account_id')`. The deposit is all unredeemed points when the receiver is active and unredeemed ≥ min, and 0 otherwise. Equivalent.
-- **card_ext_closure_autopay_carryover.** The option is `none` when the balance is 0 or below. When a balance remains, the option is kept if the source is active and set to `none` otherwise. Equivalent.
-- **Observation O-1 (rounding convention).** Rules say "rounded half-up"; the DSL `RND` is Python `round` on binary floats. No half-cent value arises in either task (the values are 64.18, 244.42, 291.82 and 132.71), so there is no consequence.
+Forward (compute → rule): every one of the 5 policies supplies a `compute_basis` entry for every
+`compute` binding, and I checked each quotation is a verbatim substring of that policy's own `rule`.
+Every quantity, window, filter, tier, branch, cross-category read, acting base, grouping, cap/floor
+and rounding convention in the compute has a rule sentence behind it.
+
+Backward (rule → compute): every normative sentence of each `rule` is implemented. In particular
+every declared factor's ladder tier is both a rule sentence and a branch of the `decides` binding,
+and every branch of each `decides` binding is a tier the rule states — checked for all 25 factors.
+No tier lives only in `compute`; no tier is promised only in prose.
+
+Ladder disjointness as stated, checked per policy:
+- the checking-tier ladders (`credited_share`, `covered_share`, `credited_proportion`, `coverage_share`)
+  each have tier 1 = {Premier, Private Client} ∧ payments ≥ n, tier 2 = active checking ∧ ¬{Premier, Private Client} ∧ payments ≥ n,
+  tier 3 = otherwise. Disjoint as stated, and the compute's nested conditional reproduces exactly that
+  (`checking_tier != None and checking_tier != 'Premier Checking' and checking_tier != 'Private Client Checking'`).
+- the deposit/fee ladders: `>= high ∧ fees == 0`, `>= high ∧ fees > 0`, otherwise. Disjoint.
+- the balance/count ladders (savings, cd): `>= threshold ∧ count >= n`, `has_X ∧ < threshold ∧ count >= n`, otherwise. Disjoint.
+- the seasoning ladders: `months >= n ∧ p`, `months >= n ∧ ¬p`, otherwise. Disjoint.
+
+Residual observations (no rule/compute gap demonstrated; recorded, not red):
+
+- **OBS-C1 — `RND` is Python `round`, which is banker's rounding, while every rule sentence says
+  "rounded half-up".** `skills/erl-task-instantiate/scripts/check_compute.py:381`:
+  `"RND": lambda x, n=2: round(float(x), n)`. The two differ only on an exact half. Neither task's
+  world produces an exact half at any `RND` call (checked: 23.400000000000002, 11.2, 12.6, 976.075,
+  275.93, 1068.3435, 32988.0, 41235.0), so no scored value moves. Framework-level; recorded as an
+  observation, not a red light.
+- **OBS-C2 — `float(int(x))` implements "reduced to the whole dollar below it".** For a negative
+  argument this truncates toward zero (i.e. upward), not to the dollar below. It appears in
+  `card_ext_late_fee_correction.rounded_correction`, `card_ext_dispute_provisional_credit.rounded_credit`,
+  `card_ext_dispute_rebill_recovery.rounded_rebill` and `card_ext_autopay_fixed_amount.rounded_amount`.
+  Only `rounded_rebill` can see a negative argument (`at_risk * rebilled_share - interest_relief`).
+  Neither task takes that tier with a negative argument, so nothing moves. Observation.
+- **OBS-C3 — binding name `interest_max_6m` carries a window its expression does not have.**
+  `card.extended.yaml`, `card_ext_dispute_rebill_recovery.compute`:
+  `interest_max_6m: "MAX('card_transactions','amount', event_type='card_interest_charge')"` — no
+  `within_months`. The rule sentence it implements is "the largest single interest charge **ever**
+  billed to the card account", and `compute_basis.interest_max_6m` quotes exactly that, so rule and
+  compute agree; only the binding's name misleads. Observation.
+- **OBS-C4 — a misfiled `compute_basis` citation.** `card_ext_rewards_statement_credit.compute_basis.reversals_1m`
+  quotes the policy's **prerequisite sentence** ("The number of points a statement-credit redemption
+  uses is fixed only after every late payment fee entry standing on the card account carries a
+  matching reversal entry in the ledger") instead of the sentence that defines the quantity
+  ("...less the fee reversals credited to it in the last month..."). The defining sentence is present
+  in the rule and is cited for `fees_1m` and `interest_1m`, so there is no rule/compute gap — the
+  citation is simply filed against the wrong binding. Observation.
+
+**rule_compute_equivalence: PASS** (four observations, no red).
 
 ### action_binding_and_uuids
 
-- **(target_tool, computes).** Each pair is claimed by exactly one policy (table above). The workflow step `refund_closing_annual_fee_cfb04f99` has `computed_by: []`. Its parameters come from base card_evt_annual_fee ("reversed in full with adjustment_reason bank_error").
-- **uuid8s:**
-  - e77f172c, 4e4b44ef, 295c0528, cfb04f99, dbe1c3a9, 6700a44f, 806ea607.
-  - All seven are distinct and no two share a prefix or form a sequence. No tail is a modified copy of another tool's, and none shows signs of batch derivation. Nothing on record contradicts independent generation.
-- **Tool bodies (`task_tools.py`):**
-  - The bodies contain no branch on eligibility, status, window, prerequisite or amount. The only conditional is `_open_cycle`, which is posting-cycle bookkeeping.
-  - None of the seven tools refuses, errors or hints when a prerequisite is unresolved.
-  - No tool adds a confirmation, review or wait.
-- **Observation O-2 (the cross-category redemption trigger is not implemented).**
-  - Base event `card_rewards_redeem` declares the trigger `checking:checking_deposit` when `redemption_type: deposit_to_checking` (extended charter lines 783-785).
-  - `restore_overdrawn_checking_with_points_4e4b44ef` (task_tools.py lines 93-108) and `cash_out_closing_card_points_6700a44f` (lines 242-257) write only the card-side redemption row and `rewards_balance`. They never credit the receiving checking account or clear `negative_since_date`.
-  - The module docstring presents this as a design choice ("exactly one atomic card-ledger or card-account posting").
-  - Consequence: after a restoration the DB still shows the source overdrawn, and after a cash-out the checking ledger is unchanged. No agent action can produce the other terminal state, and no scored parameter reads the checking row after these writes. The per-task files record the check. Recorded as an observation.
+Each `(target_tool, computes)` pair is claimed by exactly one policy (table in `policy_conflict_scan`);
+all five pairs are distinct on both components.
+
+Tool module: `task_tools.py`, five tools.
+
+| tool | uuid8 | owner | rw |
+| --- | --- | --- | --- |
+| `reverse_card_late_fee_4ff0f41c` | `4ff0f41c` | agent | write |
+| `redeem_card_points_9bfb7edb` | `9bfb7edb` | user | write |
+| `post_card_dispute_credit_83d80881` | `83d80881` | agent | write |
+| `rebill_card_dispute_credit_f8e84f35` | `f8e84f35` | agent | write |
+| `set_card_autopay_amount_b2f02f74` | `b2f02f74` | user | write |
+
+Each uuid8 is 8 hex characters, all five are distinct, none shares a prefix or suffix with another,
+none is a sequence number and none is derivable from a neighbour by an increment. No reuse, no
+batch derivation.
+
+Docstrings: none names another tool, none states a position in a cross-problem sequence, none carries
+a business confirmation, review, wait or procedure that the policy does not have.
+
+- **OBS-C5 — the ordering phrase "before the call" in `Args` entries.** Every `Id class` argument
+  line ends "…read it from the <X> lookup for this cardholder before the call" (e.g.
+  `task_tools.py`, `reverse_card_late_fee_4ff0f41c`, `card_account_id`). The word "before" is an
+  ordering connective, but its scope is how to source that argument's value from a *read* lookup,
+  not the write's position relative to another problem's write; it names no tool and no policy.
+  Recorded as an observation.
+
+**action_binding_and_uuids: PASS** (one observation).
 
 ### prerequisite_graph
 
-Check 7 over the whole graph. The edges are:
+Check 7 over the whole graph. `prerequisite` is filled in on all five policies
+(`[]` on `card_ext_late_fee_correction`, `card_ext_dispute_provisional_credit`,
+`card_ext_dispute_rebill_recovery`; one edge on `card_ext_rewards_statement_credit`;
+two edges on `card_ext_autopay_fixed_amount`).
 
-- `card_ext_rewards_balance_payoff` → `card_ext_autopay_miss_late_fee_ground`: value_input, gate `balance`, resolved_by reverse_autopay_late_fee_e77f172c.
-- `card_ext_rewards_balance_payoff` → `card_ext_autopay_source_restoration`: state_gate, gate `card_transactions.counterparty_account_id`, resolved_by restore_overdrawn_checking_with_points_4e4b44ef.
-- `card_ext_closing_points_cashout` → `card_ext_closing_balance_autopay`: value_input, gate `receiver_status`, resolved_by set_closing_card_autopay_dbe1c3a9.
-- `card_ext_closure_autopay_carryover` → `card_ext_closing_points_cashout`: state_gate, gate `card_transactions.redemption_type`, resolved_by cash_out_closing_card_points_6700a44f.
-- `card_ext_closure_autopay_carryover` → `card_ext_closing_balance_autopay`: value_input, gate `option`, resolved_by set_closing_card_autopay_dbe1c3a9.
-- All other policies and the workflow declare `prerequisite: []`.
+Three edges:
 
-Results:
+| # | blocked policy | depended-on problem | kind | gate | form | resolved_by |
+| --- | --- | --- | --- | --- | --- | --- |
+| E1 | `card_ext_rewards_statement_credit` | `card_ext_late_fee_correction` | `value_input` | `settlement_target` | `state` | `reverse_card_late_fee_4ff0f41c` |
+| E2 | `card_ext_autopay_fixed_amount` | `card_ext_dispute_provisional_credit` | `value_input` | `payable_balance` | `state` | `post_card_dispute_credit_83d80881` |
+| E3 | `card_ext_autopay_fixed_amount` | `card_ext_dispute_rebill_recovery` | `payable_balance` → `value_input` | `payable_balance` | `state` | `rebill_card_dispute_credit_f8e84f35` |
 
-- **Filled in and well-formed.** Every policy and the workflow fills in `prerequisite`. Every `problem` is an extended id in this file; none is a base id and none is self-referential. The graph is acyclic: it is two disjoint trees of depth 1 and depth 2.
-- **Every `policy_source` is verbatim in the cited `rule`.** Checked mechanically after whitespace normalisation: all 5 are True.
-- **Each `condition` agrees with its cited sentence**, neither strengthened nor weakened.
-- **`resolved_by` makes each `effect` hold:**
-  - the reversal tool lowers `current_balance`;
-  - the restoration tool writes a `deposit_to_checking` row whose `counterparty_account_id` is the source;
-  - `set_closing_card_autopay` writes `autopay_option` and `autopay_source_account_id`;
-  - the cash-out tool writes a `deposit_to_checking` row.
-- **`kind` matches `gate`.** Each value_input gate (`balance`, `receiver_status`, `option`) is a real binding of the dependent's compute.
-- **Observation O-3 (state_gate gates are field paths).** The two state_gate gates are field paths, not eligibility-entry ids, because extended policies carry no eligibility blocks. Each denotes the procedural precondition its rule sentence states ("must first be deposited", "must already be cashed out").
-- **Observation O-4 (world assumptions in general text).**
-  - Two `effect` texts assert a world-specific baseline: "instead of 0" on cashout→closing autopay, and "instead of none" on carryover→closing autopay. Both hold only when the card names no active autopay source beforehand.
-  - The workflow `order_rationale` likewise states "before step 1 the card names no autopay source". A card carrying an active autopay source satisfies the scenario ("an active rewards credit card") yet falsifies this sentence.
-  - These phrasings are authored from the task's viewpoint, but no consequence is demonstrable in either task's world. Recorded as observations.
-- **Observation O-5 (the refund→autopay dependency is carried only by workflow order).**
-  - The refund → closing-autopay dependency exists only as workflow order and `order_rationale`: step 0's refund lowers the ledger balance that `card_ext_closing_balance_autopay` sizes.
-  - No `prerequisite` edge carries it. `card_ext_closing_balance_autopay` declares `[]`, and its rule only says "so any fee already refunded as part of the closing is out of it", which does not require the refund to happen first.
-  - The per-task check is in task 1.
+- every `problem` names another **extended** policy id in this file; none names a base policy and
+  none names itself.
+- the graph is acyclic: E1 out of `card_ext_rewards_statement_credit`, E2/E3 out of
+  `card_ext_autopay_fixed_amount`, and the three depended-on policies have `prerequisite: []`.
+  No cross-task reference exists, so the difficulty-wide graph is a DAG of depth 1.
+- each `policy_source` is verbatim locatable in the **blocked** policy's own `rule` — I matched each
+  as a substring, modulo the YAML folded-scalar line wrapping.
+- `form: state` on all three; no `fallback_reason` appears anywhere, which is correct because no edge
+  is declared in the action form.
+- `condition` restates the handling-time state check at exactly the strength of the sentence
+  (E1: every `late_payment` fee entry named as the source item of a fee reversal entry;
+  E2: every `submitted` dispute named by a `dispute_provisional` dispute-credit entry;
+  E3: every `resolved_cardholder_liable` dispute's temporary credit named as source item of a rebill
+  entry). No quiet strengthening or weakening.
+- `resolved_by` genuinely makes the gate hold: `reverse_card_late_fee_4ff0f41c` creates the
+  `card_fee_reversal` row with `fee_code="late_payment"` and `source_item_id` = the fee
+  (`task_tools.py`); `post_card_dispute_credit_83d80881` creates the `card_dispute_credit` row with
+  `adjustment_reason="dispute_provisional"` and the dispute id; `rebill_card_dispute_credit_f8e84f35`
+  creates the `card_dispute_rebill` row with the temporary credit as `source_item_id`.
+- `kind: value_input` on all three, and each `gate` names a binding that genuinely exists in the
+  blocked policy's `compute`: `settlement_target` in `card_ext_rewards_statement_credit`,
+  `payable_balance` in `card_ext_autopay_fixed_amount`. Whether each edge moves the value is a
+  per-task fact and is demonstrated in `0.md` / `1.md`.
+- no authoring-viewpoint phrasing ("in this task", "at the opening", "the current world") appears in
+  any `prerequisite` field.
+
+**prerequisite_graph: PASS.**
+
+### prerequisite_sentences
+
+Check 6, four-point test on each of the three sentences.
+
+**E1** — `card_ext_rewards_statement_credit.rule`:
+> "The number of points a statement-credit redemption uses is fixed only after every late payment fee entry standing on the card account carries a matching reversal entry in the ledger."
+
+1. joins this policy's own result ("the number of points a statement-credit redemption uses") to what
+   it waits on with an explicit ordering connective — **"only after"**. ✓
+2. state form: "every late payment fee entry standing on the card account carries a matching reversal
+   entry in the ledger" is a record-visible state in the words the tables and finders use
+   (`find_card_transactions` describes "fees … reversals"); no action, no performer, no tool. ✓
+3. names no tool, no policy id, no snake_case token, no row id. ✓
+4. exactly the strength of the `condition` (both quantify over *every* late-payment fee entry on the
+   account). ✓
+
+One write of this difficulty brings that state about: `reverse_card_late_fee_4ff0f41c` is the only tool
+in `task_tools.py` that creates a `card_fee_reversal` row (the other four create `card_rewards_redeem`,
+`card_dispute_credit`, `card_dispute_rebill`, and update `card_accounts`). Unique. ✓
+
+Derivation to a single reading: the sentence says the point count waits on every late-payment fee
+carrying a reversal; the records show which fees do not; `card_ext_late_fee_correction.rule` says the
+unallowed part of a billed late payment fee "is credited back as one reversal entry carrying that late
+payment fee as its source item". That is the only rule in the charter that describes writing a reversal
+entry against a late payment fee, so the hop resolves in one way. ✓
+
+**E2** — `card_ext_autopay_fixed_amount.rule`:
+> "The fixed monthly amount of a standing automatic payment instruction is settled only after every billing dispute standing in submitted status on the card account carries its temporary credit entry in the ledger."
+
+Ordering connective "only after" ✓; state form, record-visible ("billing dispute standing in submitted
+status", "temporary credit entry in the ledger"), no action/performer/tool ✓; no tool name, policy id,
+snake_case or row id ✓; same strength as the `condition` ✓. Unique bringing-about write:
+`post_card_dispute_credit_83d80881` is the only tool creating a `card_dispute_credit` row. ✓
+`card_ext_dispute_provisional_credit.rule` is the only rule describing the posting of a temporary
+credit on a submitted dispute — single reading. ✓
+
+**E3** — `card_ext_autopay_fixed_amount.rule`:
+> "That amount is settled only once no temporary credit remains outstanding on a billing dispute the card account records as resolved against the cardholder."
+
+Ordering connective "only once" ✓; state form ("no temporary credit remains outstanding on a billing
+dispute … resolved against the cardholder") ✓; no tool/policy id/snake_case/row id ✓; same strength as
+the `condition` ✓. Unique bringing-about write: `rebill_card_dispute_credit_f8e84f35` is the only tool
+creating a `card_dispute_rebill` row ✓. `card_ext_dispute_rebill_recovery.rule` is the only rule
+describing the rebill of an outstanding temporary credit — single reading ✓.
+
+Nothing else about these dependencies is written anywhere: none of the three blocked rules carries a
+second wording, a tool name or another problem's id for the same dependency; and none of the three
+depended-on rules restates the prerequisite sentence (checked by substring search over each rule).
+
+Cross-problem orders stated in a rule that ground no declared edge: none found in the five extended
+rules. The base rules state no cross-problem order that any tree rests on.
+
+**prerequisite_sentences: PASS.**
 
 ### override_declarations
 
-Check 1's finding half. Every extended policy declares `overwrite: []`, so each conclusion below is sentence by sentence against its `base_policy_refs`.
+Check 1's finding half, sentence by sentence against each `base_policy_refs` entry. Findings only —
+the demonstration of consequence, where any, lives in the task files.
 
-**card_ext_autopay_miss_late_fee_ground** (refs card_evt_fee_reversal, card_evt_payments, card_evt_late_and_returned_payment_fees):
-- **card_evt_fee_reversal:**
-  - "reversed in full … one card_fee_reversal row whose source_item_id is the fee": followed.
-  - "A bank_error reversal applies to any fee billed contrary to this charter, such as …; it has no limit": followed. The extended rule names one more instance of contrary-to-charter billing: the bank's failure to take the autopay debit that card_evt_payments says it takes on the due date. It uses no allowance.
-  - "A courtesy_waiver reversal applies only to a late_payment fee", the courtesy count, the prior on-time payments, and active/suspended: not touched. The extended rule defers courtesy to base when its result is `none`.
-  - "A fee can be reversed at most once": followed ("has not already been reversed").
-  - dispute_final: not applicable.
-- **card_evt_payments:**
-  - The crediting and cutoff sentences are followed.
-  - The autopay sentence ("debits the named PCB checking account on the due date") is the premise of the extended rule, and the autopay-source sentence is its second condition.
-  - Observation O-6: the fourth condition inspects only the due date itself. It does not look at the next business day that base's weekend/holiday sentence makes on-time. This bites only when the due date is a non-business day, which is not the case in either task.
-- **card_evt_late_and_returned_payment_fees:** the extended rule does not change when or how much a late fee is billed. It only decides the reversal ground. Followed.
-- Conclusion: no undeclared override.
+**`card_ext_late_fee_correction` → `card_evt_fee_reversal`.** `overwrite` declares one sentence:
+"A fee is reversed in full, never in part, as one card_fee_reversal row whose source_item_id is the fee."
+Working through the remaining base sentences:
+- "A bank_error reversal applies to any fee billed contrary to this charter, such as … it has no limit."
+  — the extended correction is written with `adjustment_reason="bank_error"` (`task_tools.py`) and its
+  rule grounds itself in "the charter does not allow the bank to keep all of it". The base list is
+  open ("such as"), and "it has no limit" is inherited and honoured (the extended rule has no count gate).
+  Followed, not overridden.
+- "A courtesy_waiver reversal applies only to a late_payment fee." / the `late_fee_courtesy_waivers_365d`
+  count gate / the `late_fee_courtesy_min_prior_on_time` gate / "The account must be active or suspended
+  when a courtesy reversal is granted." — all four govern `courtesy_waiver` reversals only. The extended
+  reversal is `bank_error`. Inherited unchanged; not engaged.
+- "A fee can be reversed at most once." — inherited. See OBS-C6.
+- "When a dispute is resolved for the cardholder, fees billed on the disputed charge are reversed with
+  adjustment_reason dispute_final." — different occasion; untouched.
 
-**card_ext_autopay_source_restoration** (refs card_evt_rewards, card_evt_payments):
-- **card_evt_rewards:**
-  - whole points: followed;
-  - "at least rewards_redemption_minimum_points per redemption": followed (the target is at least the minimum, and no deposit is made below it);
-  - "a deposit to a PCB checking … account of the same customer … at rewards_point_value_cash": followed, into the same customer's source;
-  - "Redemption is allowed only while the account is active": inherited.
-- **card_evt_payments:** the autopay-source sentence is the premise. Followed.
-- Conclusion: no undeclared override.
+- **OBS-C6 — the extended fee selector does not exclude an already-reversed fee.**
+  `card_ext_late_fee_correction.rule`: "The fee as billed is the amount of the most recent late payment
+  fee entry posted to the card account, selected by posted date", implemented as
+  `LATEST('card_transactions','amount', date_field='posted_date', event_type='card_fee', fee_code='late_payment')`.
+  If the most recent late payment fee already carried a reversal, the extended rule would still compute
+  a correction on it while base's `reverse_once` dedup gate forbids writing it. Neither task's world
+  puts the most recent late fee in that state (task 0's `fe3f9bf7` is unreversed; task 1 does not use
+  this policy), so no second defensible answer is demonstrable on either world. Observation, not a red.
 
-**card_ext_rewards_balance_payoff** (refs card_evt_rewards, card_evt_payments):
-- **card_evt_rewards:** statement credit is an allowed type, and whole points and the minimum are followed. The number of points is a quantity base leaves to the request, and the extended rule fixes it without contradicting base.
-- **card_evt_payments:** "A payment larger than the balance creates a credit balance that is refunded on request". The extended branch "no active checking → all unredeemed" can create a credit balance, which is consistent with base.
-- Conclusion: no undeclared override.
+**`card_ext_rewards_statement_credit` → `card_evt_rewards`.** `overwrite` declares the whole redemption
+sentence ("Points are redeemed only in whole points, at least rewards_redemption_minimum_points per
+redemption, by one of rewards_redemption_types … rounded half-up to the cent."). Remaining base sentences:
+- "Only tiers whose rewards_program is not none earn points." — inherited, engaged as a precondition.
+- the earning / clawback sentences — untouched.
+- "Redemption is allowed only while the account is active." — inherited and not weakened.
+- "All unredeemed points are forfeited when … it closes" — different occasion; untouched.
+The two clauses inside the superseded sentence that the extended rule keeps alive — whole points, and
+the tier's redemption minimum — are restored explicitly ("Where the point count so obtained is below the
+tier's own redemption minimum, no statement-credit redemption is made and nothing is posted"), so the
+declaration does not silently drop them.
 
-**card_ext_closing_balance_autopay** (refs card_evt_payments, card_closure):
-- **card_evt_payments:** "a fixed amount but never more than the statement balance" is followed by the cap at last_statement_balance. The active same-customer source rule is followed. "Setting up or changing autopay is the cardholder's own instruction" is followed (owner user).
-- **card_closure:** "autopay continues until the balance reaches zero". Observation O-7: the extended rule makes the closing instruction a fixed_amount instruction. On a card already carrying a different, valid autopay option, that replaces the instruction base says "continues". Neither task's world exercises this: task 1's card carries `autopay_option none`.
-- Conclusion: no conflict demonstrable in any task world.
+- **OBS-C7 — the task tool does not fire the base event trigger the redemption carries.**
+  `blueprint/products/card.yaml`, event `card_rewards_redeem`, `triggers: - event: "card:card_rewards_credit"
+  when: {redemption_type: statement_credit} …`, and `card_rewards_credit` "lowers the card balance".
+  `redeem_card_points_9bfb7edb` writes only the `card_rewards_redeem` row (with `amount=""`) and updates
+  `rewards_balance`; it writes no `card_rewards_credit` row and does not change `current_balance`. The
+  docstring is candid about this ("the statement credit follows on the card"). This changes the terminal
+  balance but not the computed `points_redeemed`, and the base trigger is a world-generation rule rather
+  than a rule the agent applies. Observation.
 
-**card_ext_closing_points_cashout** (refs card_evt_rewards, card_closure, card_evt_payments):
-- **card_evt_rewards** — "Points are redeemed only in whole points, at least rewards_redemption_minimum_points per redemption, by one of rewards_redemption_types: a statement credit, a deposit to a PCB checking or savings account of the same customer, or a gift card, each at rewards_point_value_cash per point":
-  - the extended rule handles the receiving account differently and does not declare it: "into the PCB checking account named on the card's closing autopay instruction … when the card names no autopay source account, or the named account is not active, this policy makes no deposit and the result is 0";
-  - base allows a deposit to any PCB checking account of the same customer;
-  - the extended rule zeroes the quantity whenever the card names no active autopay source, even when the customer holds an active checking account that base would accept;
-  - this is the **0/1 multiplier** shape: an existence condition multiplied onto a points quantity that base has already fixed. → **Finding F-1**.
-- **card_closure** — "Unredeemed points are forfeited at closure": followed.
-- **card_evt_payments**: nothing is contradicted.
+**`card_ext_dispute_provisional_credit` → `card_evt_billing_disputes`.** `overwrite` declares the
+temporary-credit sentence ("A temporary credit of the claimed amount, never more than the charge, is
+posted as a card_dispute_credit with adjustment_reason dispute_provisional on the day a qualifying
+dispute is registered."). Remaining base sentences:
+- the registration sentence, the notice window and its counting rule — inherited unchanged.
+- "Only a dispute whose dispute_status is submitted can receive a temporary credit." — inherited; the
+  extended rule restates the same restriction in its own words ("still stands in submitted status") and
+  does not weaken it.
+- "Each dispute receives at most one temporary credit." — inherited, not weakened.
+- "While a dispute is open, the disputed amount is not counted toward the minimum payment and no late
+  fee or interest accrues on it." — see OBS-C8.
+- the rebill and merchant-credit sentences — belong to the other extended policy.
 
-**card_ext_closure_autopay_carryover** (refs card_closure, card_evt_rewards, card_evt_payments):
-- **card_closure** — "Closing a card is the cardholder's own decision: the agent registers a card_requests row of request_type account_closure in pending_customer_confirmation status, and the account closes only after the cardholder confirms":
-  - neither the extended rule nor the workflow keeps the agent's registration of a `card_requests` row;
-  - the workflow's step list ends with the cardholder's `confirm_card_closure_806ea607` and has no registration step;
-  - no task or share tool can create a `card_requests` row (share_tools.py has only `find_card_requests`; task_tools.py has none);
-  - the base sentence is not named in any `overwrite`. → **Finding F-2**.
-- **card_closure** — "A balance does not prevent closure … autopay continues until the balance reaches zero": followed for the zero-balance → none branch.
-  - Observation O-8: base event `card_close` gives the field semantics "autopay_option: Unchanged while a balance remains". The extended branch "a balance remains but the card names no autopay source, or the source is not active → none" changes an existing non-none option to none while a balance remains.
-  - This is demonstrable only on a card whose option is not `none` while its source is missing or inactive. Neither task's world has such a card: in task 1, when step 1 is skipped the option is already `none`.
-- **card_evt_rewards** — "a cardholder closing the card must redeem before the closure is confirmed": followed, as the state_gate.
+- **OBS-C8 — base's "not counted toward the minimum payment" and the extended payable balance.**
+  `card_evt_billing_disputes` excludes an open dispute's amount from the minimum payment, while
+  `card_ext_autopay_fixed_amount.payable_balance` counts the disputed purchase in full among the charges
+  and nets only the computed temporary credit. The base sentence is about the *minimum payment*, which
+  the autopay fixed amount is not, so the two do not decide the same quantity and this is not read as
+  an undeclared override. Observation.
 
-**card_wf_rewards_card_closure:**
-- Step 0 cites `card_evt_fee_reversal` only. Observation O-9: the governing base sentence for the refund is card_evt_annual_fee's "When the cardholder closes the account within annual_fee_refund_window_days … reversed in full with adjustment_reason bank_error", which card_closure repeats. The parameters are nonetheless unique.
+**`card_ext_dispute_rebill_recovery` → `card_evt_billing_disputes`.** `overwrite` declares the rebill
+sentence ("A temporary credit may be rebilled only when the dispute's dispute_status is
+resolved_cardholder_liable or withdrawn, for the full temporary credit, with the temporary credit as
+source_item_id."). The status gate and the `source_item_id` requirement survive in the extended rule and
+in the tool; the two things the declaration replaces are "for the full temporary credit" (now a computed
+share) and the basis (now "the amount at risk" = the dispute's recorded claim). Both are inside the
+declared sentence. The remaining base sentences (registration, notice window, one temporary credit,
+merchant-credit resolution) are inherited unchanged.
 
-### workflow_shape (check 6, charter-level half; the task-level half is in 1.md)
+**`card_ext_autopay_fixed_amount` → `card_evt_payments`.** `overwrite` declares the fragment "for the
+minimum due, the statement balance, or a fixed amount but never more than the statement balance".
+Remaining base sentences:
+- payment crediting cutoff, weekend/holiday rule, minimum-payment formula, CARD Act allocation order,
+  credit balance refund — none of them decides `autopay_amount`; untouched.
+- "The autopay source account must be a checking account of the same customer in active status." —
+  inherited, not weakened; it is a live gate on the target tool's `autopay_source_account_id`.
+- "Setting up or changing autopay is the cardholder's own instruction; cancelling takes effect for due
+  dates at least autopay_change_lead_days calendar days after the change is recorded." — inherited; the
+  target tool is `owner="user"`, consistent with it.
+The cap moves from the statement balance to the payable balance, which is exactly what the declared
+fragment replaces.
 
-- Exactly one workflow, `card_wf_rewards_card_closure`.
-- It has 4 synchronous write steps: agent, user, user, user. Three steps are `owner=user`, and each can be completed in the same consultation.
-- The dataflow has two `object_binding` entries:
-  - step 1 → 2: `card_accounts.autopay_source_account_id` → `checking_account_id`;
-  - step 1 → 3: `autopay_option` → `autopay_option`.
-  
-  Both correspond verbatim to the tool arguments.
-- **Observation O-10 (missing zero-wait fields and dataflow rows).**
-  - The workflow has no `requires_external_wait` field and no `zero_wait_proof` field. Its keys are `dataflow, id, order_rationale, prerequisite, scenario, steps`. The only zero-wait statement is the last sentence of `order_rationale`.
-  - The step 0 → 1 dependency (the balance the refund lowers) has no dataflow row, and neither does the step 2 → 3 dependency (the points state).
-  - Zero-wait holds in substance, as argued per step in task 1, so no consequence is demonstrable. Recorded as an observation.
+**No undeclared override found.** Every conflict between base and extended is named in that policy's
+`overwrite` by the base sentence it replaces, and the merged semantics after each replacement is unique.
+None of the three disguised forms is present: no anonymous intermediate (every extended intermediate is
+introduced by a rule sentence of its own), no 0/1 multiplier applied to a base-fixed amount, and no
+dropped base branch (every base branch that the extended selector can reach is still reachable).
+
+**override_declarations: PASS** (three observations).
+
+### factor_ladders
+
+Charter-global structure of the factors. 25 factors across five policies.
+
+| policy | factors | parameter | method | multi-source | cross-difficulty (categories) |
+| --- | --- | --- | --- | --- | --- |
+| `card_ext_late_fee_correction` | 4 | 2 | 2 | 4 | 4 (checking ×3, savings ×1) |
+| `card_ext_rewards_statement_credit` | 4 | 2 | 2 | 4 | 3 (checking ×2, savings ×1) |
+| `card_ext_dispute_provisional_credit` | 5 | 2 | 3 | 5 | 4 (checking ×2, savings ×1, cd ×1) |
+| `card_ext_dispute_rebill_recovery` | 5 | 2 | 3 | 5 | 3 (cd ×1, savings ×1, checking ×1) |
+| `card_ext_autopay_fixed_amount` | 6 | 4 | 2 | 6 | 3 (checking ×2, savings ×1, cd ×1) |
+
+Every policy is inside the 4–6 bound, and every policy meets ≥2 `parameter`, ≥2 `method`,
+≥2 multi-source and ≥2 `cross_difficulty`.
+
+`decides` is an input binding in every case, never `result`:
+`credited_share`, `relationship_addition`, `raw_correction`, `rounded_correction`;
+`settlement_target`, `covered_share`, `point_value`, `rounded_points`;
+`credited_proportion`, `proportion_base`, `offset_amount`, `uplift`, `rounded_credit`;
+`rebilled_share`, `relief_share`, `open_interest`, `raw_rebill`, `rounded_rebill`;
+`coverage_share`, `coverage_base`, `spread_cycles`, `carryover_addition`, `spread_amount`, `rounded_amount`.
+
+Binding sets are disjoint within each policy: no binding appears in two factors' `bindings` lists of the
+same policy (checked per policy; the shared upstream reads such as `checking_deposits_6m` appear in
+exactly one factor's `bindings` in each policy).
+
+Tier counts: every one of the 25 ladders has exactly three tiers, the fall-through counted, and each is
+pairwise disjoint as stated (see `rule_compute_equivalence` for the disjointness argument by shape).
+
+Every tier beyond the fall-through is multi-source: each is a conjunction of two conditions resting on
+distinct records (a holding field plus a ledger aggregate, or two ledger aggregates over distinct rows).
+Counted per policy above.
+
+Every tier is stated in the `rule` with its condition and its value or method, and implemented in
+`compute`; no tier lives only in one face.
+
+Label honesty, checked one by one:
+- every `parameter` factor's tiers substitute a different number into the same expression
+  (`credited_share`, `relationship_addition`, `covered_share`, `point_value`, `credited_proportion`,
+  `uplift`, `rebilled_share`, `relief_share`, `coverage_share`, `spread_cycles`, `carryover_addition`);
+- every `method` factor's tiers change the algorithm — the window the aggregate is drawn from
+  (`settlement_window_convention`, `open_interest_aggregation`), the base the share acts on
+  (`proportion_base_convention`, `coverage_base_convention`), which rows are aggregated
+  (`merchant_offset_selection`), the order the addition enters (`addition_entry_point`,
+  `addition_entry_order`), the moment the cap bites (`ceiling_moment`), or the rounding convention
+  (`correction_rounding_convention`, `point_count_rounding`, `credit_rounding_convention`,
+  `rebill_rounding_convention`, `instalment_rounding_convention`);
+- no `method` tier names a computation rule the charter nowhere states: each is quoted verbatim from
+  its own policy's `rule`.
+
+Cross-difficulty categories read: `checking` (holding `variant_name`, `ledger_balance`, `status`, and
+`checking_transactions` deposits and fees), `savings` (holding `current_balance`, `status`, and
+`savings_transactions` deposits, withdrawals and interest credits), `cd` (holding `principal_balance`,
+`status`, and `cd_transactions` interest payouts). Every one of these is a real table and column of
+`db_schema.json` and a real event type of the corresponding blueprint product.
+
+Whether each factor **bears weight** rests on one world and is decided in `0.md` / `1.md` under
+`factor_weight`; nothing about weight is concluded here.
+
+**factor_ladders: PASS** (structure).
 
 ### findings
 
-**F-1: SOURCE-POLICY. An undeclared 0/1 override of base card_evt_rewards by card_ext_closing_points_cashout. Bears on task 1.**
-- **Symptom.** For a cardholder closing a card who asks to cash points out to checking, base and extended reach different conclusions on `reward_points` whenever the card names no active autopay source.
-- **Root cause.** The extended rule ties the receiving account to "the PCB checking account named on the card's closing autopay instruction" and returns 0 otherwise. Base permits a deposit to any PCB checking account of the same customer. `overwrite: []`.
-- **Evidence.**
-  - Base card_evt_rewards rule (extended charter lines 1390-1394): "…by one of rewards_redemption_types: a statement credit, a deposit to a PCB checking or savings account of the same customer, or a gift card, each at rewards_point_value_cash per point…".
-  - card_ext_closing_points_cashout rule (lines 1825-1834): "…as one deposit_to_checking redemption into the PCB checking account named on the card's closing autopay instruction… when the card names no autopay source account, or the named account is not active, this policy makes no deposit and the result is 0."
-  - Compute `result: "0 if (below_minimum or receiver_status != 'active') else unredeemed"`.
-- **Consequence.** It is demonstrated in task 1's opening world; see `1.md`. The value_input edge cashout → closing_balance_autopay bears weight only through this undeclared restriction.
-- **Affected artifact.** card.extended.yaml › extended_policies › card_ext_closing_points_cashout (rule, compute.result, overwrite), the prerequisite edge on it, and workflow order_rationale sentence 2.
+Charter-global findings, one by one. All six are observations; no charter-global red light.
 
-**F-2: SOURCE-POLICY. An inherited base agent write is silently dropped from the closure SOP and has no executing tool. Bears on task 1.**
-- **Symptom.** The inherited base card_closure procedure includes an agent-owned `card_requests` registration. The workflow's closure path, and every tool in the difficulty, omit it.
-- **Root cause.**
-  - card_ext_closure_autopay_carryover lists card_closure in `base_policy_refs` with `overwrite: []`, so the base procedure is inherited in full.
-  - The workflow `card_wf_rewards_card_closure` is still authored as the complete synchronous SOP ("…and the cardholder confirms the closure").
-  - Its four steps contain no registration, and no tool writes `card_requests`.
-- **Evidence.**
-  - card_closure rule (extended charter lines 1517-1518): "the agent registers a card_requests row of request_type account_closure in pending_customer_confirmation status, and the account closes only after the cardholder confirms."
-  - The workflow steps (lines 1964-1967).
-  - task_tools.py: seven tools, none writing `card_requests`.
-  - share_tools.py lines 425-440: `find_card_requests` is read-only, and no share write touches `card_requests`.
-- **Consequence.** It is demonstrated in task 1's world; see `1.md`.
-- **Affected artifact.** card.extended.yaml › card_ext_closure_autopay_carryover (overwrite) and workflows › card_wf_rewards_card_closure › steps; task_tools.py (no registration tool).
+| id | verdict | subject | bears on |
+| --- | --- | --- | --- |
+| OBS-C1 | observation | `RND` is banker's rounding while every rule says "half-up" | tasks 0 and 1 (no value moves) |
+| OBS-C2 | observation | `float(int(x))` is truncation, not floor, on a negative argument | task 1 (`rounded_rebill`; tier not taken) |
+| OBS-C3 | observation | binding named `interest_max_6m` has no window | task 1 |
+| OBS-C4 | observation | `compute_basis.reversals_1m` cites the prerequisite sentence, not the defining sentence | task 0 |
+| OBS-C5 | observation | "before the call" in every `Args` entry of `task_tools.py` | tasks 0 and 1 |
+| OBS-C6 | observation | the extended late-fee selector does not exclude an already-reversed fee | task 0 (state not reached) |
+| OBS-C7 | observation | `redeem_card_points_9bfb7edb` fires no `card_rewards_credit` and leaves `current_balance` unchanged | task 0 |
+| OBS-C8 | observation | base's minimum-payment exclusion for an open dispute vs the extended payable balance | task 1 |
 
-**Observations O-1 to O-10 (above).** None of them demonstrates a consequence against either task's world at charter level. Task files re-check the ones that touch their world: O-2, O-5, O-6 and O-7/O-8 in their respective tasks.
+**Charter-global verdict: policy self-consistency holds at the charter level. No `SOURCE-POLICY RED`.**
 
 ## closing_checklist
 
-Written after both reveals, at about 2026-09-12T18:55Z. Nothing above this heading was changed after the reveal.
+Written after both tasks' `source_derivation_frozen` and `source_gt_comparison` were on disk. This is
+the one difficulty-level conclusion reached **after** the reveals; the charter-global section above
+remains pre-reveal by construction and was not touched.
 
-- **Per-task files.**
-  - `0.md` and `1.md` correspond one-to-one with `tasks/0.json` and `tasks/1.json`, and this file sits beside them.
-  - Round 1, no earlier revision.
-  - Each file carries a frozen derivation that was hashed before the reveal, followed by a `source_gt_comparison`.
-- **Verdicts:**
-  - task 0: **PASS**. Policy self-consistency PASS, problem tree PASS, unique solution PASS.
-  - task 1: **SOURCE-POLICY RED**. F-1 is the undeclared 0/1 override in card_ext_closing_points_cashout. F-2 is the undeclared drop of base card_closure's agent registration of a `card_requests` row. Problem tree PASS; unique solution PASS.
-- **Coverage and scope** (confirmed against the revealed `charter_scope`):
-  - task 0 = {card_ext_autopay_miss_late_fee_ground, card_ext_autopay_source_restoration, card_ext_rewards_balance_payoff}, workflows [], tools {e77f172c, 4e4b44ef, 295c0528};
-  - task 1 = {card_ext_closing_balance_autopay, card_ext_closing_points_cashout, card_ext_closure_autopay_carryover}, workflows [card_wf_rewards_card_closure], tools {cfb04f99, dbe1c3a9, 6700a44f, 806ea607}.
-  - The two scopes are pairwise disjoint across the whole problem trees and jointly cover all 6 extended policies. There is exactly one workflow, claimed only by task 1.
-  - Task tools and GT are closed: every GT write tool is in its task's scope, and every scoped tool is used.
-  - All seven uuid8s are distinct (§ action_binding_and_uuids).
-- **Problem trees:**
-  - Task 0 has 2 prerequisites, 1 of them value_input, and no cycle.
-  - Task 1 has 2 root prerequisites plus 1 nested, 2 of them value_input, and no cycle.
-  - The difficulty-wide `prerequisite` graph is two disjoint DAGs. No cross-task reference exists.
-- **Gates.** The artifacts are byte-identical to the gate snapshot supplied in the brief. Hashes re-checked at 18:53:45Z: charter `a56e40d6…`, tools `d83a5ee8…`, `0.json` `9243947b…`, `1.json` `4a0a62ff…`. The instantiation gates were therefore not re-run by this auditor, per Step 0.
-- **Difficulty result: NOT PASSED at the source layer.**
-  - Task 1 carries SOURCE-POLICY RED on F-1 and F-2.
-  - Task 0 passes on its own evidence.
-  - The observations O-1 to O-10 (here), O-T0-1 to O-T0-3 (`0.md`) and O-T1-a to O-T1-d (`1.md`) are recorded and are not grounds for rework.
+**The difficulty does not close.** Step 4 requires all four relationships to PASS on every task; two
+red lights stand. The checklist is recorded in full so that what does hold is on record.
 
-## revision_2
+| item | state |
+| --- | --- |
+| per-task audit files correspond one-to-one with the tasks, `_difficulty.md` alongside them | **yes** — `0.md`, `1.md`, `_difficulty.md` in `env/regional_retail_bank/audits/policy_task/card_billing_payments_and_disputes/` |
+| old revisions traceable | **n/a** — first revision of this difficulty; nothing overwritten |
+| every comparison section carries a PASS | **no** — `0.md` carries SOURCE-FACTOR RED; `1.md` carries SOURCE-FACTOR RED and SOURCE-TASK RED |
+| extended policies fully covered | **yes** — all five are claimed: task 0 takes `card_ext_late_fee_correction` + `card_ext_rewards_statement_credit`, task 1 takes `card_ext_dispute_provisional_credit` + `card_ext_dispute_rebill_recovery` + `card_ext_autopay_fixed_amount` |
+| the M tasks' scopes pairwise disjoint, each spanning the whole tree | **yes** — the two `charter_scope.extended_policies` sets are disjoint and each is exactly its task's root plus all of its prerequisite problems |
+| task tools and GT closed | **yes** — the five tools are partitioned 2 / 3 across the two tasks, and every gold write calls a tool of that task's own `charter_scope.task_tools` |
+| each task tool uses an independently generated, frozen uuid8 | **yes** — see § `action_binding_and_uuids` |
+| every tree has 1–3 prerequisite problems | **yes** — task 0 has 1, task 1 has 2 |
+| at least max(n−1, 1) `value_input` edges | **yes** — task 0: 1 of 1 required; task 1: 2 of 1 required |
+| at least one problem resolved by an `owner=user` tool | **yes** — task 0 `redeem_card_points_9bfb7edb`, task 1 `set_card_autopay_amount_b2f02f74` |
+| no cycle, including across tasks | **yes** — three edges, all from a root to a leaf; no cross-task reference exists |
+| every computation declares a self-sufficient baseline giving a definite number different from gold | **yes** — 11.20 vs 23.00; 4144 vs 33000; 898.80 vs 976.00; 480.00 vs 276.00; 3502.96 vs 1068.00 |
+| 4–6 factors per computation, ≥2 of each effect, ≥2 multi-source, ≥2 cross-difficulty | **yes** — see § `factor_ladders`; counts 4/4/5/5/6 |
+| every ladder of at least three tiers stated in full in its rule | **yes** — all 25 ladders |
+| every factor proved to bear weight on its task's world against an honest baseline | **yes numerically** — all 25 move their task's scored value, and every `baseline` is exactly what that policy's `baseline.rule` states for that input — **but** two factors take their tier on records the policy in force forbids (FIND-0-1, FIND-1-1), which is what the two SOURCE-FACTOR reds record |
+| instantiation-stage gates re-run once on the final form | **not done, and out of scope for this audit** — the brief directs this auditor to cite the supplied snapshot and not to run the gates; the artifacts are in any case not in final form while the reds stand |
 
-### charter_global_frozen (revision 2)
+### blocking findings
 
-- Written before any round-2 task GT was read.
-- Auditor: the same independent erl-task-policy-audit agent as round 1.
-- Inputs:
-  - `card.extended.yaml` sha256 `0d0299c581f22596970a0c76f318c3e1d9ca395111026119d4cff322a4cd371d`, changed from round 1's `a56e40d6…`, so this section is re-derived in full;
-  - `task_tools.py` `d83a5ee8…b628`, unchanged;
-  - `share_tools.py`, `db_schema.json` and `products/card.yaml`, all unchanged.
-- The round-2 masked views match the MANIFEST hashes and are byte-identical to the round-1 views (`cmp`).
-- The post-rework gate snapshot came with the coordinator's message: all 7 gates OK, traceability deferred. Input is complete.
-- Round-1 text above this heading is left untouched.
-
-### What changed in the charter (located by re-reading every extended policy and the workflow)
-
-- **Base section (lines 1-1524).** Still byte-identical to `blueprint/products/card.yaml`: `diff` is empty and all 10 top-level keys compare equal.
-- **Policies unchanged on re-read.** `card_ext_autopay_miss_late_fee_ground`, `card_ext_autopay_source_restoration`, `card_ext_rewards_balance_payoff` and `card_ext_closing_balance_autopay` sit at the same line spans as round 1 (1530-1815), and their rule, compute, compute_basis and prerequisite are unchanged. Their round-1 conclusions carry forward.
-- **`card_ext_closing_points_cashout`** (lines 1817-1871):
-  - It now declares `overwrite: [{base_policy: card_evt_rewards, superseded_clause: "a deposit to a PCB checking or savings account of the same customer", replaced_by: "A closing cash-out is made only as a deposit to a PCB checking account of the cardholder whose status is active, the account the cardholder names"}]`.
-  - The rule no longer ties the receiving account to the closing autopay instruction.
-  - `prerequisite` is now `[]`: the edge to `card_ext_closing_balance_autopay` is gone.
-  - The compute now reads `active_checking = CFIELD('checking','status',status='active')`, and `result = 0 if (below_minimum or not receiver_active) else unredeemed`.
-- **`card_ext_closure_autopay_carryover`** (lines 1873-1949):
-  - It now declares `overwrite: [{base_policy: card_closure, superseded_clause: "the agent registers a card_requests row of request_type account_closure in pending_customer_confirmation status, and the account closes only after the cardholder confirms", replaced_by: "No separate closure request is registered by the agent: the cardholder's own confirmation on the card account is the closure record, and the account closes at that confirmation and not before"}]`.
-  - The same sentence is added to the rule.
-  - The `effect` of the edge to closing autopay is reworded, with no "instead of none".
-  - The compute is unchanged.
-- **Workflow `card_wf_rewards_card_closure`:**
-  - The scenario says the points are cashed out "into an active PCB checking account the cardholder names", and that the confirmation closes the card "with no separate closure request registered".
-  - The step-2 role is reworded.
-  - Dataflow 1→2 is removed; 1→3 is kept.
-  - In `order_rationale`, step 1 before step 2 is now "by this SOP's sequencing … a swap would reach the same terminal state; the order is fixed so that every correct handling follows one procedure".
-  - New fields: `requires_external_wait: false` and `zero_wait_proof`.
-
-### policy_conflict_scan (revision 2)
-
-- The subject/tool/computes table is the same as round 1, and the three `card_rewards_redeem` writers are still told apart by trigger.
-- The cash-out's receiving account is now "an active PCB checking account the cardholder names". It no longer depends on the card's autopay fields, so it has no subject overlap with `card_ext_closing_balance_autopay`.
-- The cross-category reads are still of the same customer's checking account only.
-- **Scope inference from the views and contracts:**
-  - task 0 = {fee ground, restoration, payoff};
-  - task 1 = {workflow, closing autopay, cash-out, carryover}.
-  
-  They are disjoint, jointly complete, and there is one workflow.
-
-### rule_compute_equivalence (revision 2)
-
-- The four unchanged policies are carried forward from round 1 § rule_compute_equivalence.
-- **card_ext_closing_points_cashout, rule to compute:**
-  - "When the cardholder holds no PCB checking account whose status is active, no closing cash-out can be made and the result is 0" maps to `receiver_active` (customer-scoped `CFIELD`).
-  - The ledger count of unredeemed points maps to `earned − redeemed − forfeited`.
-  - The minimum guard maps to `below_minimum`.
-  - "all of the card's unredeemed points" maps to `result`.
-- **card_ext_closing_points_cashout, compute back to rule:** no binding lacks a rule sentence.
-- **Observation R2-O-1 (named account not checked).**
-  - "the account the cardholder names" constrains the tool argument `checking_account_id`, not the computed quantity.
-  - The compute tests that *some* active checking account exists, not that the *named* one is active. A cardholder with one active and one inactive checking account who names the inactive one would get `result = unredeemed` from the compute, while the rule forbids that deposit.
-  - Not demonstrable in either task: task 1's customer holds exactly one checking account, and it is active.
-- **Observation R2-O-2 (pre-existing, not a regression).**
-  - Pass-through bindings have no `compute_basis` key of their own: `option`/`source_negative_since` in the fee ground, `point_value`/`unredeemed`/`minimum_points` in the restoration and payoff, and `unredeemed`/`minimum_points` in the cash-out.
-  - The sentence each implements is quoted verbatim under a sibling binding: `earned` for the ledger count, and `covers_minimum`/`funded_on_due_date` for the autopay fields.
-  - This was present in round 1 and is unchanged. No consequence.
-
-### action_binding_and_uuids (revision 2)
-
-`task_tools.py` is unchanged (same hash), so round 1 § action_binding_and_uuids carries forward: one policy per `(target_tool, computes)` pair, seven distinct uuid8s, and no tool that judges a prerequisite. O-2 (the deposit tools do not credit checking) still stands as an observation.
-
-### prerequisite_graph (revision 2)
-
-- **Edges:**
-  - payoff → fee ground (value_input, `balance`);
-  - payoff → restoration (state_gate);
-  - carryover → cash-out (state_gate, `card_transactions.redemption_type`);
-  - carryover → closing autopay (value_input, `option`).
-  
-  Every policy and the workflow fills in `prerequisite`.
-- **Well-formed.** Every `problem` is an extended id in this file, none is a base id and none is self-referential. The graph is acyclic: two depth-1 trees.
-- **Checked mechanically:**
-  - every `policy_source` is verbatim in the cited rule (4/4 True);
-  - each value_input gate is a real binding (`balance`, `option`).
-- **Condition and effect.** Each `condition` agrees with its cited sentence. The reworded carryover `effect` ("writes autopay_option fixed_amount and an active checking source … while a balance remains, that option is the one kept") is true of `set_closing_card_autopay_dbe1c3a9` and the carryover compute, and it asserts no world-specific baseline.
-- **O-3 (state_gate gates are field paths)** is unchanged. It is an observation.
-
-### override_declarations (revision 2)
-
-- **card_ext_closing_points_cashout vs card_evt_rewards:**
-  - The `superseded_clause` is verbatim in the base rule (mechanical check True), and `replaced_by` is verbatim in the extended rule (True).
-  - Merged semantics: a closing cash-out goes only to a PCB checking account of the cardholder that is active and that the cardholder names. Savings, statement credit, gift card and travel are "not a closing cash-out under this policy". That wording scopes the policy rather than forbidding base's other redemption types, so no second conclusion arises.
-  - The 0-branch now fires only when the customer holds no active checking account, which the declared `replaced_by` covers ("whose status is active").
-  - Remaining base sentences: "whole points, at least rewards_redemption_minimum_points" is followed, "Redemption is allowed only while the account is active" is inherited, and "a cardholder closing the card must redeem before the closure is confirmed" is followed.
-  - card_closure and card_evt_payments: no conflict.
-- **card_ext_closure_autopay_carryover vs card_closure:**
-  - The `superseded_clause` is verbatim in base (True), and `replaced_by` is verbatim in the extended rule (True).
-  - Merged semantics: no `card_requests` row, and the card closes at the cardholder's confirmation. That is unique.
-  - The rest of base card_closure is inherited: a balance does not prevent closure, the balance remains payable, points are forfeited at closure, the refund of an annual fee inside the window, and closed accounts are never reopened.
-  - O-8 (the base event field "Unchanged while a balance remains" vs the extended branch "source not active → none") is unchanged and still not demonstrable.
-- **The other four extended policies.** Their text is unchanged, so the round-1 conclusions (no undeclared override; O-6, O-7) carry forward.
-- **Workflow.** The step-0 citation (O-9) is unchanged. It is an observation.
-
-### workflow_shape (revision 2)
-
-- One workflow, with 4 synchronous write steps (agent, user, user, user).
-- `requires_external_wait: false` and `zero_wait_proof` are now present. The proof's step-by-step inputs are true of the charter and tool contracts: step 0 needs the fee row and the call; step 1 needs step 0's credit, the last statement balance and an active checking account; step 2 needs the points and an active checking account; step 3 needs steps 1 and 2.
-- The dataflow is 1→3 `autopay_option` → `autopay_option`, which matches the tool argument.
-- The removal of dataflow 1→2 is correct, because step 2 no longer consumes step 1's output.
-- **Observation R2-O-3 (dataflow rows still missing).** The value dependency step 0 → step 1 (the balance the refund lowers) and the state dependency step 2 → step 3 still have no dataflow rows. This is the dataflow half of round-1 O-10, unchanged. No consequence.
-- **Observation R2-O-4 (step 1 before step 2 has no policy basis).**
-  - The adjacent order is now supported only by "this SOP's sequencing". `order_rationale` itself states "neither step's value depends on the other, so a swap would reach the same terminal state".
-  - That is true: the two steps write disjoint fields, and the scorer compares DB hashes.
-  - The fixed order has no policy basis beyond the SOP, but both orders yield one terminal state. No consequence.
-
-### findings status (revision 2)
-
-| Item | Round-1 verdict | Revision-2 status | Evidence |
+| finding | task | verdict | one-line consequence |
 | --- | --- | --- | --- |
-| F-1 | SOURCE-POLICY RED (task 1) | **closed at charter level** | Declared overwrite on card_evt_rewards (clause verbatim). The autopay-source 0/1 multiplier is removed from the rule and compute. The receiving-account condition is now one that base (as overwritten) and the extended rule agree on. The per-task check is in `1.md` revision_2. |
-| F-2 | SOURCE-POLICY RED (task 1) | **closed at charter level** | Declared overwrite on card_closure (clause verbatim). The rule and the workflow scenario say that no request is registered. The inherited procedure and the SOP now give one write set. |
-| O-4 | observation | closed | The "instead of 0" edge is deleted, the "instead of none" effect is reworded, and the order_rationale no longer asserts a world baseline. |
-| O-10 | observation | partly closed | The `requires_external_wait` / `zero_wait_proof` fields are present. The dataflow rows for 0→1 and 2→3 remain absent (R2-O-3). |
-| O-1, O-2, O-3, O-5, O-6, O-7, O-8, O-9 | observations | unchanged | Same text and same tools. |
-| New | — | R2-O-1, R2-O-2 (pre-existing), R2-O-3, R2-O-4 | All observations. None is demonstrable in either task's world. |
+| FIND-0-1 | 0 | SOURCE-FACTOR RED | a `checking_fee` row whose `posted_date` the checking charter forbids is what keeps `settlement_window_convention` on its first tier; on the charter-required date the scored `points_redeemed` is 18500, not 33000 |
+| FIND-1-1 | 1 | SOURCE-FACTOR RED | `dispute_uplift_ladder`'s tier rests on a `card_disputes` row whose notice predates the disputed charge's statement by 234 days; without it `provisional_credit_amount` is 1001.00 and `autopay_amount` 1065.00 |
+| FIND-1-2 | 1 | SOURCE-TASK RED | `rebill_amount` rests on a claim of 640.00 against a 268.00 charge, credited on a dispute noticed 53 days outside the 60-day window; applying the base cap the rebill overwrite never supersedes gives 0.00 and an autopay of 1027.00 |
 
-No new charter-level defect with a demonstrable consequence was found.
+### what does hold
 
-### closing_checklist (revision 2)
-
-Written after both round-2 reveals, at about 2026-09-12T19:08Z. Nothing in the revision_2 charter-global section above was edited after the reveal.
-
-- **Per-task files.** `0.md` and `1.md` each carry a `revision_2` section: a frozen derivation, hashed at 19:06:14Z before the reveal, followed by a comparison.
-  - Round-1 text is untouched.
-  - Both revision-2 derivations disclose that the auditor had already seen round-1 GT. The blind evidence of record remains the round-1 frozen derivations, which revision 2 re-checked only against what changed.
-- **Verdicts (revision 2):**
-  - task 0: **PASS**. Policy self-consistency PASS, problem tree PASS, unique solution PASS. Unchanged from round 1.
-  - task 1: **PASS**. Policy self-consistency PASS, with F-1 and F-2 verified closed; problem tree PASS; unique solution PASS. Round 1 was SOURCE-POLICY RED.
-- **Coverage and scope** (round-2 `charter_scope`):
-  - task 0 = {fee ground, restoration, payoff} with tools {e77f172c, 4e4b44ef, 295c0528};
-  - task 1 = {closing autopay, cash-out, carryover} + workflow `card_wf_rewards_card_closure`, with tools {cfb04f99, dbe1c3a9, 6700a44f, 806ea607}.
-  - The scopes are disjoint across the whole problem trees and jointly cover all 6 extended policies and the one workflow. Exactly one task claims the workflow.
-  - Tools and GT are closed, and the uuid8s are unchanged and distinct.
-- **Problem trees:**
-  - Task 0 has 2 prerequisites, 1 of them value_input.
-  - Task 1 has 2 prerequisites, 1 of them value_input.
-  - Both are acyclic. The difficulty-wide graph is two disjoint depth-1 DAGs, with no cross-task edge.
-- **Gates.** The post-rework gate snapshot came with the coordinator's message: all 7 gates OK, traceability deferred.
-  - At reveal the artifacts matched the snapshot hashes: charter `0d0299c5…`, tools `d83a5ee8…`, `0.json` `69caeda5…`, `1.json` `0430fc01…`.
-  - The auditor did not re-run the gates, per Step 0.
-- **Difficulty result (revision 2): PASSED at the source layer.**
-  - Every round-1 RED is closed. No new defect with a demonstrable consequence was found, and nothing regressed.
-  - The remaining items are observations only: O-1, O-2, O-3, O-5 to O-9, R2-O-1 to R2-O-4, O-T0-1, O-T0-3, O-T1-a, O-T1-b and O-T1-d.
-
-## revision_3
-
-### charter_global_frozen (revision 3)
-
-- Written at about 2026-09-12T21:30Z, before any round-3 task GT was read.
-- Auditor: the same independent agent.
-- Inputs:
-  - `card.extended.yaml` `775c4f9454ee33e0009d67ee7a2d0ba7ccc952f74275e4bb5fe27c2ca8990fc0`, changed from `0d0299c5…`;
-  - `task_tools.py` `e5d430db2b109e67d378ffdc525fded241a19b9155030edb619c93a1c746c485`, changed from `d83a5ee8…`.
-  
-  Both changed, so every charter-global conclusion is re-derived below.
-- The blueprint files are unchanged: their mtimes predate round 1, and `products/card.yaml` is `24ae1354…`.
-- The round-3 views match the MANIFEST and are byte-identical to the round-1 views.
-- The post-rework gate snapshot came with the coordinator's message: all 7 OK.
-- **Additional input read at the coordinator's direction:** the KB audit reports `env/regional_retail_bank/audits/policy_kb/card_billing_payments_and_disputes/0.md` and `1.md`, for items N1, N2, N3 and N5.
-- **Disclosure.** Those reports quote scored values. This auditor was already non-blind to this difficulty's GT from rounds 1 and 2.
-- Earlier revisions above are untouched.
-
-### What changed (located by re-reading every extended policy, the workflow, and every tool body and docstring)
-
-- **Base section.** Still byte-identical to `blueprint/products/card.yaml`: all 10 top-level keys are equal, and the base event trigger `card_rewards_redeem → checking:checking_deposit` (lines 783-785) is still present and not overwritten.
-- **`task_tools.py`:**
-  - All seven function bodies are identical to rounds 1 and 2 (checked by `ast.unparse` of each body without its docstring), with the same signatures, owners and uuid8s.
-  - Only docstrings changed. The module docstring and the `restore_overdrawn_checking_with_points_4e4b44ef` and `cash_out_closing_card_points_6700a44f` docstrings now say that a deposit redemption "is recorded on the card with its receiving checking account" and that the tool "does not itself post an entry on the checking account's own ledger".
-- **`card_ext_autopay_source_restoration`:**
-  - The ordering word "first" is removed ("are redeemed as a deposit_to_checking redemption into that same checking account").
-  - It adds: "This card policy records the redemption on the card only, as a card_rewards_redeem entry that names that checking account as the receiving account and carries the cash value; the matching entry on the checking account's own ledger is not posted by this card policy, and nothing in this policy reads or waits for it."
-  - The compute and compute_basis are unchanged.
-- **`card_ext_closing_balance_autopay`:** "recorded before the closure" is removed. The compute is unchanged.
-- **`card_ext_closing_points_cashout`:**
-  - "before the closure is confirmed" is removed.
-  - The overwrite `replaced_by`, and the rule, now read: "Outside a closing, points may still be redeemed as a deposit to a PCB checking or savings account of the same customer at rewards_point_value_cash per point; a closing cash-out, however, is made only as a deposit to a PCB checking account of the cardholder whose status is active, the account the cardholder names".
-  - It adds the same card-only recording sentence.
-  - The compute is unchanged.
-- **`card_ext_closure_autopay_carryover`:** unchanged. So are `card_ext_autopay_miss_late_fee_ground` and `card_ext_rewards_balance_payoff`.
-- **Workflow.** The scenario wording reads "cashed out on the card to an active PCB checking account the cardholder names". The steps, dataflow, order_rationale, `requires_external_wait` and `zero_wait_proof` are unchanged.
-
-### policy_conflict_scan (revision 3)
-
-- Subjects, tools and computes are the same as round 2. The three `card_rewards_redeem` writers are still told apart by trigger.
-- **N3 resolution.** Redemption by deposit outside a closing now has one answer in every text that speaks to it:
-  - the overwrite keeps "a deposit to a PCB checking or savings account of the same customer" in force outside a closing;
-  - every rewards tier's `rewards_redemption_types` lists deposit_to_checking and deposit_to_savings;
-  - the restoration's deposit_to_checking on a card that is not closing is covered.
-  
-  These no longer conflict.
-- **Scope inference.** Unchanged: task 0 is the payoff tree, and task 1 is the workflow tree. The scopes are disjoint and complete, with one workflow.
-
-### rule_compute_equivalence (revision 3)
-
-- **All six compute blocks are unchanged**, and every `compute_basis` string is still verbatim in its rule (mechanical check: no failure).
-- **Sentences added to rules:**
-  - The card-only recording sentence (restoration, cash-out) states the tool effect. It governs no computed quantity, so it needs no binding and makes no empty promise.
-  - The "Outside a closing …" clause (cash-out) grants a permission outside this policy's trigger. It is not a quantity of this compute.
-- **Sentences removed** ("first", "before the closure is confirmed", "recorded before the closure") removed no quantity. No binding depended on them.
-- **Round-2 observations** R2-O-1 (the compute checks that some active checking exists, not the named one) and R2-O-2 (pass-through bindings) are unchanged.
-
-### action_binding_and_uuids (revision 3)
-
-- The `(target_tool, computes)` pairs are unchanged. The seven uuid8s are unchanged and distinct.
-- The bodies are unchanged, so no tool judges any prerequisite.
-- **N1 / O-2 re-assessed:**
-  - The charter now states, in both deposit policies, that the card policy records the redemption on the card only and does not post or read the checking-side entry. The two tool docstrings say the same.
-  - The base event trigger `checking:checking_deposit` remains. It is base text, kept verbatim and not overwritten, so the charter still declares a checking-side deposit event that nothing in the environment writes.
-  - Because the extended text scopes itself ("not posted by this card policy"), the two statements no longer contradict each other. Neither yields a different agent action, parameter or reachable terminal state.
-  - **Status:** the N1 contradiction is resolved at the extended/tool layer. The residual base trigger stays as observation O-2.
-- **R3-O-1 (new, observation).** The receipt gloss in both deposit tools still says `receiving_account_id (text reference number of the checking account credited)`, beside the new sentence that the tool does not post on the checking ledger. This is a wording tension with no consequence.
-
-### prerequisite_graph (revision 3)
-
-- The edges are unchanged:
-  - payoff → fee ground (value_input, `balance`);
-  - payoff → restoration (state_gate);
-  - carryover → cash-out (state_gate);
-  - carryover → closing autopay (value_input, `option`).
-- The graph is acyclic, and every `problem` is an extended id.
-- Every `policy_source` is verbatim in its rule (4/4).
-- The conditions and effects are unchanged from revision 2.
-- **N2 re-assessed.** Each ordering now lives only in the rule of the dependent policy (payoff, carryover) and in the workflow's `order_rationale`. The depended-on policies' own rules no longer restate "first" or "before the closure".
-  - One residual restatement remains: base card_evt_rewards "so a cardholder closing the card must redeem before the closure is confirmed". It is verbatim base and cannot be edited, and it was not introduced by the extension.
-  - Removing the words changes no trigger, eligibility or value: restoration is still triggered by the payoff request, and the cash-out and closing autopay are still required before closure by carryover's rule.
-  - **Status:** closed at the extended layer. The base residual is recorded, but it is not a defect of this charter.
-
-### override_declarations (revision 3)
-
-- **card_ext_closing_points_cashout → card_evt_rewards.**
-  - The `superseded_clause` is verbatim in base, and `replaced_by` is verbatim in the extended rule.
-  - Merged semantics:
-    - outside a closing, a deposit to a PCB checking or savings account of the same customer is allowed at the cash value, which restates base;
-    - a closing cash-out goes only to an active PCB checking account the cardholder names.
-  - The merged semantics are unique in both situations the texts address.
-  - **R3-O-2 (new, observation).** During a closing, a *savings* deposit is granted by no text: it is not "outside a closing", and "a savings deposit … is not a closing cash-out under this policy". The single remaining reading is that it is not available during a closing, while statement credit, gift card and travel remain available under base. Neither task exercises this: task 1's customer holds no savings account and asks for cash to checking.
-- **card_ext_closure_autopay_carryover → card_closure.** Unchanged from revision 2, and unique.
-- **Other policies.**
-  - The restoration's new sentence scopes the card policy's own write. It contradicts no base policy sentence; the base event trigger is covered under N1 / O-2 above.
-  - The closing autopay's removed words change no base relation.
-  - The round-1/2 conclusions for the fee ground and payoff carry forward.
-
-### workflow_shape (revision 3)
-
-- Unchanged from revision 2:
-  - one workflow;
-  - 4 synchronous steps (agent, user, user, user);
-  - `requires_external_wait: false` and `zero_wait_proof` present and true of the charter and tools;
-  - dataflow 1→3 correct.
-- R2-O-3 (dataflow rows for 0→1 and 2→3 still absent) and R2-O-4 (the step-1/step-2 order is fixed by SOP sequencing and commutes) are unchanged. Both are observations.
-- **N5 re-assessed** (the published runbook exposes task 1's whole route):
-  - The framework requires exactly one workflow task per difficulty, and a workflow is itself policy text.
-  - The existence of every prerequisite is conveyed by policy text rather than by the customer, which is what the problem-tree relationship requires.
-  - The persona still raises only the root.
-  - No source change was made, and none is needed for any of the three relationships. Recorded as a design observation, as the KB report does.
-
-### findings status (revision 3)
-
-| Item | Status | Evidence |
-| --- | --- | --- |
-| F-1 | still closed | The cash-out overwrite is declared, the compute still reads any active checking (not the autopay fields), and there is no edge to closing autopay. |
-| F-2 | still closed | The carryover overwrite is unchanged, and no tool writes `card_requests`. |
-| N1 (KB report) | resolved at the extended/tool layer; residual base trigger = O-2 (observation) | Restoration and cash-out rules plus the three docstrings. |
-| N2 (KB report) | closed at the extended layer; base "must redeem before the closure is confirmed" remains (verbatim base) | Mechanical check: ordering words now appear only in the payoff rule. |
-| N3 (KB report) | closed | The `replaced_by` keeps non-closing deposits. It is consistent with `rewards_redemption_types` and the restoration. |
-| N5 (KB report) | no source change; design observation | See workflow_shape. |
-| R2-O-1, R2-O-2, R2-O-3, R2-O-4, O-1, O-3, O-5 to O-9 | unchanged observations | — |
-| New | R3-O-1, R3-O-2 | Observations only. Neither is demonstrable in either task's world. |
-
-No new charter-level defect with a demonstrable consequence was found, and nothing regressed.
-
-### closing_checklist (revision 3)
-
-Written after both round-3 reveals, at about 2026-09-12T21:33Z. The revision_3 charter-global section above was not edited after the reveal.
-
-- **Per-task files.** `0.md` and `1.md` each carry a `revision_3` section: a frozen derivation, hashed at 21:30:28Z before the reveal, followed by a comparison. It discloses non-blindness from rounds 1-2 and from the KB reports. Earlier revisions are untouched.
-- **Verdicts (revision 3):**
-  - task 0: **PASS**. Policy self-consistency, problem tree and unique solution all PASS.
-  - task 1: **PASS**. Policy self-consistency, problem tree and unique solution all PASS. F-1 and F-2 remain closed.
-- **KB-report items.**
-  - N1: resolved at the extended/tool layer; the residual base trigger is observation O-2.
-  - N2: closed at the extended layer.
-  - N3: closed.
-  - N5: design observation, no source change needed.
-  - None of them yields a demonstrable consequence under the three relationships.
-- **Coverage and scope.** Round-3 `charter_scope` is unchanged from round 2: disjoint, complete over 6 extended policies plus 1 workflow, and one workflow task. The tools are closed, and the uuid8s are unchanged and distinct.
-- **Trees.** Task 0 has 2 prerequisites, 1 of them value_input. Task 1 has 2 prerequisites, 1 of them value_input. The difficulty-wide graph is acyclic, with no cross-task edge.
-- **Gates.** The orchestrator's post-rework snapshot shows all 7 OK. At reveal the artifacts matched the MANIFEST hashes: charter `775c4f94…`, tools `e5d430db…`, `0.json` `30016e7c…`, `1.json` `6b5210e0…`. The auditor did not re-run the gates, per Step 0.
-- **Difficulty result (revision 3): PASSED at the source layer.**
-  - No new defect with a demonstrable consequence was found, and nothing regressed.
-  - The new observations are R3-O-1 and R3-O-2, alongside the carried observations.
+Both tasks' independent derivations reproduced GT **exactly** — every parameter, tool, owner, order,
+terminal state, baseline figure and per-factor sensitivity figure, with no discrepancy anywhere. The
+charter is self-consistent, all three prerequisite edges are genuinely unmet at the opening and all
+three bear weight, every tree carries a customer's own write, and no tool judges a prerequisite. The
+three reds are all defects of the seeded worlds against products of this scenario's own blueprint; none
+is attributable to a solving agent, and none is a defect of the extended policy text.
 
 ---
 
-## revision_4
+## revision_2
 
-Re-audit round 4 by a new, independent auditor (session 6eb63703, `erl-task-policy-audit`). The auditor of revisions 1–3 is not resumed; revisions 1–3 above are left untouched and were **not read** before every per-task derivation of this revision was frozen to disk.
+Re-audit round 2, UTC 2026-09-16 09:51. Revision 1 above is left exactly as written.
 
-## charter_global_frozen (revision_4)
+### re-derivation grounds
 
-- freeze time: 2026-09-13 (UTC), before any reveal; auditor: erl-task-policy-audit, revision_4, session 6eb63703.
-- inputs and hashes (verified against the orchestrator's MANIFEST.sha256 before use):
-  - `card.extended.yaml` sha256 `2c341306557aaf8df04032a9fbd018fa0c71cc457bee78e6106dfba4723d9640`
-  - `task_tools.py` sha256 `34c958794ec6c261f909487f0634cd096b95c2dcd074a75305d9b148582255ce`
-  - blueprint read directly: `blueprint.yaml`, `products/card.yaml`, `db_schema.json`, `share_tools.py`; DSL semantics taken from `skills/erl-task-instantiate/scripts/check_compute.py` (code only: COUNT/SUM auto-scoped to the target holding; `within_months=n` means `0 <= MONTHS(date, NOW) < n`; EXISTS/CFIELD scoped to the holding's customer, CFIELD returns the first match; RND is Python `round`).
-- fields permitted: charter, tool contracts, blueprint, masked views (frozen_time / user_scenario / initial_state only).
-- fields masked and not read before freeze: every `evaluation_criteria`, `computations`, `charter_scope`, `required_documents`, `design_rationale`, `solvability_contract`, `prerequisite_closure`; revisions 1–3 of these audit files; `audits/policy_kb/`; `docs/`.
-- Re-derivation basis: this section is re-derived **in full** (not carried forward), because this auditor has no trusted prior context; whether the two hashes moved since revision_3 is recorded in the post-reveal comparison below.
+| shared input | round-1 sha256 | round-2 sha256 | moved? |
+| --- | --- | --- | --- |
+| `card.extended.yaml` | `52c5124d…f4df45` | `52c5124dc141f8797773ff2b39a500859117336ab1cfe1ee1e73c647e4f4df45` | **no** |
+| `task_tools.py` | `d326ce40…d7a88792` | `d326ce40b5b1e3893b7d771856f5c5e6077ebf419d73bd1d218598d6d7a88792` | **no** |
+| `blueprint/products/card.yaml` | `24ae1354…c638ef78` | `24ae13549122ccbae7d04336dcbc97d7ed134773de02ce3daaaa6896c638ef78` | **no** |
 
-### policy_conflict_scan (revision_4)
+Both shared objects are byte-identical to the round that produced the charter-global section, so
+§ `policy_conflict_scan`, § `rule_compute_equivalence`, § `action_binding_and_uuids`,
+§ `prerequisite_graph`, § `prerequisite_sentences`, § `override_declarations` and § `factor_ladders`
+are **carried forward by reference**, with those two hashes as the grounds. They were not re-derived.
+The eight charter-global observations OBS-C1 … OBS-C8 stand unchanged.
 
-- **Base copy.** `yaml.safe_load` of lines 1–1525 of `card.extended.yaml` equals `blueprint/products/card.yaml` key-for-key (`category, display_name, binding, lifecycle, accounts, parameter_schema, variants, events, measures, policies` all `==`); textual `diff` differs only by one trailing blank line. Base is verbatim.
-- **Extended policies (6) and their subjects / tools / computes.**
-  | id | subject | target_tool | computes | overwrite |
-  | --- | --- | --- | --- | --- |
-  | card_ext_autopay_miss_late_fee_ground (A) | card_fee_reversal | reverse_autopay_late_fee_e77f172c (agent) | adjustment_reason | [] |
-  | card_ext_autopay_source_restoration (B) | card_rewards_redeem | restore_overdrawn_checking_with_points_4e4b44ef (user) | reward_points | [] |
-  | card_ext_rewards_balance_payoff (C) | card_rewards_redeem, card_rewards_credit | apply_points_to_card_balance_295c0528 (user) | reward_points | [] |
-  | card_ext_closing_balance_autopay (D) | card_set_autopay | set_closing_card_autopay_dbe1c3a9 (user) | autopay_amount | [] |
-  | card_ext_closing_points_cashout (E) | card_rewards_redeem | cash_out_closing_card_points_6700a44f (user) | reward_points | card_evt_rewards deposit clause |
-  | card_ext_closure_autopay_carryover (F) | card_close | confirm_card_closure_806ea607 (user) | autopay_option | card_closure closure-request clause |
-  Workflow `card_wf_rewards_card_closure`: step 0 refund_closing_annual_fee_cfb04f99 (agent, computed_by []), step 1 D, step 2 E, step 3 F.
-- **Overlapping subjects.** B, C and E all write `card_rewards_redeem`; their triggers are disjoint by rule text: B "asks to apply rewards points to a card's balance while the PCB checking account named as that card's autopay source is overdrawn"; C "asks to use rewards points to pay down a card's balance"; E "a cardholder who is closing a card asks to cash out its points". B and C co-fire by design (C's rule sends the overdrawn-source case to B first); E never co-fires with B/C unless the cardholder closing a card also asks to pay the balance with points, which neither persona does. No two policies reach different conclusions on one quantity in one situation.
-- **Triggers / time anchors.** A: late fee posted with `MONTHS(posted_date, NOW) < 1`, due date = `payment_due_date` of the most recent statement. D/E/F: handling-time `current_balance`; D additionally inherits card_evt_annual_fee's `annual_fee_refund_window_days: 30` for the reversal it orders first. No conflicting anchors.
-- **Eligibility inherited from base, untouched by extended:** card_evt_rewards "Redemption is allowed only while the account is active" (B, C, E all act on an active card before closure); card_evt_payments "The autopay source account must be a checking account of the same customer in active status" (D requires an active checking; A/B/F read source status); card_evt_fee_reversal "A fee is reversed in full, never in part" and "A fee can be reversed at most once" (A reverses the full fee once).
-- **Cross-category reads.** All six read `checking` (A: status, negative_since_date; B: ledger_balance; C/D/E/F: status). All read the cardholder's own checking rows (EXISTS/CFIELD customer-scoped). No write to checking by any tool.
-- **Terminal states.** C leaves the card open with the credit posted; F closes the card; no policy's terminal state contradicts another's.
-- **Scope partition (derived from the charter, before reveal).** The prerequisite graph splits into two components: {A, B → C} and {D → E, D → F, E → F, + workflow}. A task rooted at C spans A, B, C; a task rooted at F spans D, E, F and the workflow. Two such tasks are pairwise disjoint and jointly cover all six extended policies and the single workflow. (Compared against each task's `charter_scope` after reveal.)
+All three round-1 reds were seed-versus-charter defects and all three fixes are edits to the seeded
+worlds, so everything re-derived this round is per-task. The blueprint products the fixes are judged
+against were also re-hashed and are unmoved:
+`checking.yaml` `635b57c4…166046`, `savings.yaml` `8f308ff1…0100a40a`, `cd.yaml` `7a14550e…044aa8`.
 
-### rule_compute_equivalence (revision_4)
+### rebuilt masked views
 
-Swept each binding against its `compute_basis` quotation and back against the rule, sentence by sentence.
+Re-hashed against the brief and matching: `0.json` `2f47b371266d206dbdd6cd255478448e312a7da1a6bd195af3a3e8fc9c336e10`,
+`1.json` `bf0402a18093aea98d8436547f1ddc5712e1d69637989fa277f3bf68a021d831`. Both carry exactly
+`frozen_time`, `user_scenario`, `initial_state`. Both worlds were re-read in full; no round-1 reading
+was carried forward unchecked. `frozen_time` is unmoved on both tasks (2026-03-17 10:40:00 EST;
+2026-05-21 14:05:00 EDT).
 
-- **A.** `fees_in_window` / `reversals_in_window` = "counted as the late payment fees posted in that window minus the late payment fee reversals posted in that window" with the window "posted date is less than one whole calendar month before the handling date" (`within_months=1` on posted_date) — exact. `covers_minimum` = "autopay_option is minimum_due or statement_balance, or it is fixed_amount with an autopay_amount of at least the statement's minimum_payment_due; an autopay_option of none never qualifies" — exact. `source_status` = "a PCB checking account of the cardholder whose status is active" (EXISTS/CFIELD customer-scoped) — exact. `funded_on_due_date` = "negative_since_date is empty or is a date later than the payment due date" — exact (string compare on ISO dates). `payments_on_due_date` = "no card_payment posted to the card on the payment due date itself" — exact. `result` bank_error/none — exact. The rule's "reversed in full ... as one card_fee_reversal row whose source_item_id is that fee" is carried by the base sentence "A fee is reversed in full" and the tool; not an empty promise. PASS.
-- **B.** `source_ledger`/`shortfall` = "ledger_balance at handling time taken as a positive amount when it is below zero; a source account whose ledger balance is zero or above has no shortfall" — exact. `points_needed` = "shortfall divided by the card tier's rewards_point_value_cash, rounded up to the next whole point" (`RND(...,6)` before the ceiling is a float guard only). `unredeemed` = earn − redeem − forfeit — exact. `target_points` / `points_short` / `result` — exact to "the greater of the points needed and ... minimum", "when the unredeemed points are fewer than that greater figure, all unredeemed points", "below rewards_redemption_minimum_points, no deposit". The rule's cash value sentence (points × rewards_point_value_cash, half-up) governs the `amount` argument and agrees with base card_evt_rewards `redemption_value`. PASS.
-- **C.** `balance` = handling-time current_balance "after those reversals"; `cover_points` ceiling, zero when balance ≤ 0; `unredeemed`; `active_checking` = any active checking of the cardholder; `applied_points` lesser-of vs all-unredeemed; `result` zero when balance ≤ 0 or below minimum — all exact. Cash value sentence as B. PASS.
-- **D.** 13 ledger totals = the enumerated sum/minus list, verbatim; `statement_cap`/`capped_balance` = "never more than the card's last_statement_balance"; `active_checking`; `result` = 0.00 on balance ≤ 0 or no active checking, else RND once. Note: RND is Python `round`, not half-up — no tie arises on cent-exact ledger sums (observation R4-G-O4). PASS.
-- **E.** `balance_remains`, `source_status`, `active_checking`, `receiver_active` (source status when balance remains, any active checking otherwise), `unredeemed`, `below_minimum`, `result` — exact to the rule's four branches. PASS.
-- **F.** `balance`, `option`, `source_status`, `balance_remains`, `result` = none when balance ≤ 0; kept option when balance remains and source active; none when balance remains and source missing/not active — exact. PASS.
-- No compute invents a basis; no rule sentence that sizes a scored argument lacks a binding (the `amount` arguments of B/C/E follow the rule's own "points × rewards_point_value_cash, rounded half-up" sentence, identical to base `redemption_value`).
+**A caution for anyone re-checking this round against revision 1: task 1's `card_transactions` row ids
+were permuted wholesale by the regeneration.** `bd3e87da…` is now a 402.00 dining purchase of
+2024-09-18 where in round 1 it was a 1480.00 purchase of 2025-06-14; `93820e2b…` is now the 8400.00
+purchase where it was the 268.00 one; `9d3720f2…` is now a merchant credit where it was the 640.00
+dispute credit; `21b8bc3f…` is now the 1284.00 purchase where it was the 212.75 one. Every row
+identified in revision 1 by id must be re-identified by content. This round did so.
 
-### action_binding_and_uuids (revision_4)
+### what actually changed in the two worlds
 
-- `(target_tool, computes)`: six distinct tools, each claimed by exactly one policy; the workflow's step-0 tool `refund_closing_annual_fee_cfb04f99` is claimed by no extended policy (base-governed). PASS.
-- uuid8s: `e77f172c, 4e4b44ef, 295c0528, cfb04f99, dbe1c3a9, 6700a44f, 806ea607` — no shared prefix/suffix, no sequence or adjacency pattern, none reused. PASS (provenance of generation is not observable beyond this).
-- Tool bodies (task_tools.py lines 32–286): none reads status, dates, windows, counts or prerequisite rows; none refuses or hints. `ctx.find(...)[0]` only fails on a wrong card id. Effects: A-tool posts card_fee_reversal fee_code late_payment and lowers current_balance; annual-fee tool the same with fee_code annual; restore/cash-out tools post card_rewards_redeem deposit_to_checking with counterparty and lower rewards_balance; apply-points posts redeem + card_rewards_credit and lowers both balances; set-autopay overwrites the three autopay fields; confirm-closure sets status closed, closed_date, autopay_option. PASS.
-- Observation R4-G-O3: `restore_overdrawn_checking_with_points_4e4b44ef` and `cash_out_closing_card_points_6700a44f` have the identical business effect (one card_rewards_redeem deposit_to_checking naming the receiving checking account); the restore tool's docstring is generic ("turn card rewards points into cash in a checking account"). They are told apart by tool name and by the cash-out docstring ("a credit card the cardholder is closing"). No second defensible binding arises in either task world (see task files).
+Established row by row against revision 1's recorded contents, not from the reworker's account.
 
-### prerequisite_graph (revision_4)
+**Task 0 — one deletion, nothing else.** `checking_transactions` 7 → 6 rows: the
+`monthly_maintenance` `checking_fee` of 12.00 posted 2025-09-11 is gone. The six direct deposits of
+2180.00 are unchanged in date and amount. `card_transactions` is unchanged at 69 rows (fingerprint of
+every (posted_date, event_type, amount, reward_points, fee_code) tuple recomputed; the two
+`late_payment` fees of 2024-08-08 and 2026-03-08 and the single reversal of 2024-08-20 naming the
+former are all still there). `card_accounts`, `savings_accounts`, `savings_transactions` and
+`customers` are unchanged field for field. `user_scenario` is unchanged in substance.
 
-- `prerequisite` present on all six policies and the workflow (`[]` on A, B, D and the workflow).
-- Edges: C ← A (value_input, gate `balance`), C ← B (state_gate, gate `card_transactions.counterparty_account_id`), E ← D (value_input, gate `receiver_active`), F ← E (state_gate, gate `card_transactions.redemption_type`), F ← D (value_input, gate `option`). Every `problem` is an extended policy id of this file; none is a base id or self. Acyclic (two components, depth ≤ 2). PASS.
-- `policy_source` verbatim in the cited rule: C←A "any late payment fee on the card that was billed contrary to this charter must first be reversed, so that the balance the points pay reflects only what the cardholder owes" (C rule, "First, ..."); C←B "when the PCB checking account named as the card's autopay source is overdrawn, the points needed to restore it must first be deposited to it under card_ext_autopay_source_restoration" (C rule, "Second, ..."); E←D "When a balance will remain owed, the closing autopay instruction under card_ext_closing_balance_autopay must already be in force before the closing cash-out is made, since it names the receiving account" (E rule); F←E "the card's unredeemed points must already be cashed out under card_ext_closing_points_cashout, since points are forfeited at closure" (F rule); F←D "when a balance will remain owed, a closing autopay instruction under card_ext_closing_balance_autopay must already be in force, so the remaining balance is collected" (F rule). All five locate verbatim. PASS.
-- `condition` vs cited sentence: none strengthened or weakened (F←E's "Every closing cash-out that card_ext_closing_points_cashout can make" matches F's "Each of these two requirements reaches only what its own policy can make"; F←D's "When the cardholder holds an active checking account" matches F's zero-autopay carve-out). PASS.
-- `resolved_by` makes `effect` hold: A-tool lowers current_balance (C's `balance`); restore tool writes counterparty_account_id; set-autopay writes the active source (E's `source_status`/`receiver_active`, F's `option`); cash-out tool writes the redemption. `value_input` gates `balance`, `receiver_active`, `option` are real bindings of the dependent's compute. PASS.
-- The two `state_gate` edges name a ledger field where the resolved state is observable rather than an `eligibility` id (extended policies carry no eligibility list); the gate itself is the rule's "must first/already" sentence. Observation R4-G-O6.
-- No authoring-viewpoint phrasing ("this task", "at the opening", "current world", "wrong value", "avoid") anywhere in `extended_policies`/`workflows` (grep, lines 1526–2064). PASS.
+**Task 1 — one addition, one deletion, three repointings, and the arithmetic they imply.**
+- `card_transactions` 59 → 61: one new `card_purchase` of **402.00** posted 2024-09-18
+  (`statement_date` 2024-10-12, `merchant_category` dining) and its paired `card_rewards_earn` of
+  **1206** points. Every other ledger row is unchanged in date, type and amount.
+- `checking_transactions` 7 → 6: the `monthly_maintenance` fee of 15.00 posted 2025-11-19 is gone;
+  the six deposits of 2460.00 are unchanged.
+- all three `card_disputes` rows keep their status, claim and notice date, and all three now name a
+  different `disputed_txn_id`; the 640.00 temporary credit's `source_item_id` moved with its dispute.
+- `card_accounts` moved only by the consequences of the new purchase: `current_balance`
+  7705.92 → 8107.92 (+402.00), `last_statement_balance` 8405.92 → 8807.92 (+402.00),
+  `minimum_payment_due` 84.06 → 88.08 (= max(35.00, 1% of 8807.92), recomputed and correct),
+  `rewards_balance` 54369 → 55575 (+1206).
+- `savings_*`, `cd_*`, `customers` and `user_scenario` unchanged.
 
-### override_declarations (revision_4)
+Nothing else rode along. This was confirmed twice over: by the row-level comparison above, and by
+recomputing **every binding of every one of the five computations** on the new worlds and accounting
+for each one that moved.
 
-Sentence-by-sentence against each `base_policy_refs` entry; criterion = the quantity that ends up scored.
+### the fixes tested on the charter, not accepted on assertion
 
-- **A** vs card_evt_fee_reversal: S1 "reversed in full ... one card_fee_reversal row" — followed. S2 "A bank_error reversal applies to any fee billed contrary to this charter, such as ...; it has no limit" — A names a further class ("Such a fee was billed contrary to this charter") grounded in base card_evt_payments "Automatic payment debits the named PCB checking account on the due date for the minimum due, the statement balance, or a fixed amount": when all four of A's conditions hold, the bank did not perform that base obligation. S3–S6 courtesy gates — A states "the cardholder's courtesy allowance is neither used nor consulted" only for its bank_error class and sends every other case back to card_evt_fee_reversal; the courtesy gates are not weakened. S7 "A fee can be reversed at most once" — followed (unreversed count). vs card_evt_late_and_returned_payment_fees S1 "A late fee is billed when payments and credits ... total less than that statement's minimum_payment_due" — A does not say the fee should not have been billed mechanically; it classifies the reversal ground. Does a base-only reading reach a *determinate different* adjustment_reason? No: base gives no test for whether a missed autopay debit was the bank's failure, so base alone is indeterminate between bank_error and courtesy_waiver, and A supplies the test. Not an undeclared override. Recorded as observation R4-G-O1 (the only place a base-only reader could land on courtesy_waiver). vs card_evt_payments — followed.
-- **B** vs card_evt_rewards: whole points, minimum per redemption, deposit to a PCB checking account of the same customer at rewards_point_value_cash, half-up — followed; "Redemption is allowed only while the account is active" — inherited. The base event `card_rewards_redeem` triggers `checking:checking_deposit`; B says "the matching entry on the checking account's own ledger is not posted by this card policy" — a statement of what this card policy posts, not a denial of the event; no scored quantity (observation R4-G-O5). vs card_evt_payments — not touched.
-- **C** vs card_evt_rewards — statement credit at cash value, minimum points — followed. vs card_evt_payments "A payment larger than the balance creates a credit balance that is refunded on request" — C avoids the credit balance only when an active checking exists and otherwise applies all points; compatible. No override.
-- **D** vs card_evt_payments "a fixed amount but never more than the statement balance" — followed (cap at last_statement_balance); "must be a checking account of the same customer in active status" — followed; "Setting up or changing autopay is the cardholder's own instruction" — followed (user-owned tool). vs card_closure "it remains payable under the existing terms and minimum payments, and autopay continues until the balance reaches zero" — followed. vs card_evt_annual_fee refund-on-closure sentence — D orders that reversal before counting. No override.
-- **E** vs card_evt_rewards "a deposit to a PCB checking or savings account of the same customer" — declared in `overwrite` (closing cash-out only to an active checking; while a balance remains, the closing-autopay source). The replaced_by text is quoted verbatim in the rule. vs card_closure "Unredeemed points are forfeited at closure" — followed. vs card_evt_payments — followed. Merged semantics unique.
-- **F** vs card_closure: closure-request sentence — declared in `overwrite` (no card_requests row; confirmation on the account). "A balance does not prevent closure; it remains payable under the existing terms and minimum payments, and autopay continues until the balance reaches zero" — F follows it where the balance is ≤ 0 (none) and where a balance remains with an active source (kept). **Where a balance remains and the card names no autopay source or the source is not active, F sets `none`**; base card_closure "autopay continues until the balance reaches zero", read with the base `card_close` event field "autopay_option: Unchanged while a balance remains; set to none once the balance is zero", leaves the option unchanged. That sub-branch is not named in F's `overwrite`. See finding R4-G-1.
-- **Workflow step 0** (base-governed): card_evt_annual_fee "When the cardholder closes the account within annual_fee_refund_window_days calendar days after the annual fee posted, the fee is reversed in full with adjustment_reason bank_error" — followed; step 0's `base_policy_refs` lists only card_evt_fee_reversal, not card_evt_annual_fee (metadata, observation R4-G-O7).
+**The deletion argument (FIND-0-1, FIND-1-3), tested independently.** The reworker argues from a
+further clause of `checking_evt_maintenance_and_statement_fees` that no monthly maintenance fee is
+assessable on either account at any amount or date. That argument holds:
 
-### findings (revision_4, charter-global, pre-reveal)
+- Premier Checking's waiver parameters (`blueprint/products/checking.yaml`) are
+  `waiver_min_daily_balance 10000.00`, `waiver_direct_deposit_total not_offered`,
+  **`waiver_relationship_balance 25000.00`**, `waiver_debit_purchase_count not_offered`,
+  `waiver_age_under not_offered`, `waiver_age_at_least not_offered`,
+  `waiver_military_active_duty true`, `waiver_employee true`.
+- the rule: "The waivers are alternatives and **any single one suffices**… A waiver whose parameter is
+  not_offered cannot be used."
+- `checking_agg_relationship_balance` / `checking_msr_relationship_balance`: "Sum over the customer's
+  holdings of: ledger_balance of each checking account not closed or charged_off …, current_balance of
+  each savings account not closed, principal_balance of each certificate not closed"; "For the
+  maintenance fee waiver the measurement date is the statement cycle closing date."
+- task 0: 6240.18 + 31480.55 = **37720.73** ≥ 25000.00. Task 1: 8904.62 + 46215.80 + 25000.00 =
+  **80120.42** ≥ 25000.00. Both clear the threshold by a wide margin at every cycle close in the seeded
+  span (working the savings balance backwards through its own deposits and interest credits keeps
+  task 0 above 34000 even at the earliest cycle in the window).
+- neither customer is `active_duty` or `active_employee`, so the two boolean waivers are irrelevant;
+  the relationship-balance waiver alone decides it.
+- the paper statement fee is not an alternative source of a `checking_fee` row here: Premier Checking's
+  `paper_statement_fee` is 0.00 and both accounts' `statement_delivery` is `electronic`.
 
-- **R4-G-1 — undeclared deviation in F's inactive-source branch (check 1).** Symptom: F's rule "When a balance remains but the card names no autopay source, or the source is not active, the option is none." Base card_closure: "autopay continues until the balance reaches zero"; base event `card_close.fields.autopay_option`: "Unchanged while a balance remains; set to none once the balance is zero." Situation: balance 100.00 remains, card autopay_option statement_balance, source checking status closed → base: statement_balance (unchanged); F: none. F's `overwrite` names only the closure-request clause. Root cause: F handles a base-governed quantity (autopay_option at closure) differently in one sub-branch without declaring it. Mitigating reading: base card_evt_payments "The autopay source account must be a checking account of the same customer in active status" makes an instruction on an inactive source non-compliant under base too, but base never sets it to none, so the textual conflict stands. Consequence: demonstrable only in a world where a balance remains and the source is inactive/absent at closure; task 1 (the only task claiming F) reaches F with an active source (its own file shows no second answer). **Classification: charter-global observation (latent undeclared deviation) — the skill locates a consequence only against one world and one scored solution, and no task of this difficulty instantiates the branch.** Bears on: task 1 (citation only).
-- **R4-G-O1** A vs base late-fee/bank_error sentences — analysed above; base-only reading indeterminate; not a RED. Bears on task 0.
-- **R4-G-O2 (base-section defect)** base card_evt_payments rule text "the greater of minimum_payment_floor and minimum_payment_pct percent of the new statement balance plus the interest and fees billed on that statement" vs its `formula` `min(max(minimum_payment_floor, round(last_statement_balance * minimum_payment_pct / 100, 2)), last_statement_balance)` (formula omits interest and fees). Verbatim base; not an extended defect. Whether it moves a scored value is checked per task (both task files).
-- **R4-G-O3** two user tools with identical effect (above). Bears on tasks 0 and 1.
-- **R4-G-O4** RND is Python round, not half-up; checked per task for ties.
-- **R4-G-O5** B/E card-only posting vs base `card_rewards_redeem` trigger to `checking:checking_deposit`; the checking ledger is not moved by any tool. Bears on tasks 0 and 1 (no scored read after the write).
-- **R4-G-O6** state_gate `gate` fields name ledger columns, not eligibility ids.
-- **R4-G-O7** workflow step-0 `base_policy_refs` omits card_evt_annual_fee; step 0's ground (closure inside the refund window) is completed by step 3 of the same consultation (see task 1, handling time).
+So zero `checking_fee` rows is the world the checking charter yields on both accounts, and deleting the
+row — rather than re-dating it to the cycle closing date — is the repair the charter actually
+supports. Re-dating would have been wrong.
 
-(End of the pre-reveal charter-global section of revision_4. The post-reveal comparison and closing checklist follow the per-task freezes.)
+**The reworker's claim that task 0's scored value is unchanged "not because I preserved it but because
+that is what the charter-consistent world yields" is verified and correct.** `checking_fees_6m` was 0
+in round 1 and is 0 now, but for a different and now legitimate reason: in round 1 a fee row existed
+and was excluded only by an arithmetic accident of a `posted_date` the charter forbids; now no such row
+can exist at all. The tier `settlement_window_convention` takes is produced by the rule applied to a
+charter-consistent world.
+
+### per-item verdicts
+
+| item | round-1 verdict | claim | round-2 verdict |
+| --- | --- | --- | --- |
+| FIND-0-1 | SOURCE-FACTOR RED | closed by deletion | **CLOSED** |
+| FIND-1-1 | SOURCE-FACTOR RED | closed by seeding a new charge; root value moved | **CLOSED** |
+| FIND-1-2 | SOURCE-TASK RED | closed by repointing; second reading vanishes | **CLOSED** |
+| FIND-1-3 | observation | closed by the same argument as FIND-0-1 | **CLOSED** |
+| FIND-0-4 | observation | corrected | **CLOSED** |
+| FIND-0-3 | observation | not actionable (a gate requires it) | **claim upheld; observation remains open** |
+| FIND-0-2 | observation | recorded, not actioned | **remains open** |
+| FIND-1-4 | observation | recorded, not actioned | **remains open** |
+| FIND-1-5 | observation | recorded, not actioned | **remains open** |
+| OBS-C1 … OBS-C8 | observations | unchanged | **unchanged, still open** |
+| — | — | — | **OBS-R2-1 new** (see task files) |
+
+The per-item evidence for FIND-0-1 / FIND-0-2 / FIND-0-3 / FIND-0-4 is in `0.md` § `revision_2`, and
+for FIND-1-1 / FIND-1-2 / FIND-1-3 / FIND-1-4 / FIND-1-5 in `1.md` § `revision_2`.
+
+**FIND-0-3, claim tested and upheld.** `skills/erl-task-instantiate/scripts/check_solvability.py`
+lines 968–976 hard-fail when `base_preconditions` does not *exactly* match every subject-scoped
+eligibility gate of every base policy governing the write subject — `missing=` and `extra=` are both
+failures. `retired_gates_of` (line 55) drops a gate only when an `overwrite`'s `superseded_clause`
+quotes that gate's condition sentence; `card_ext_late_fee_correction.overwrite` quotes the amount
+clause, which is no gate's condition, so all four `card_evt_fee_reversal` gates must be listed. The
+task cannot omit the three courtesy gates without failing the gate block. The observation is therefore
+**not actionable at the task level** and its proper addressee is the base charter's gate scoping —
+`courtesy_count`, `prior_on_time` and `account_open_for_courtesy` carry
+`applies_to: [card_fee_reversal]`, which does not distinguish a `courtesy_waiver` reversal from a
+`bank_error` one, although the rule sentences that introduce them speak only of courtesy reversals.
+It moves no scored value and stays an observation.
+
+### regression sweep
+
+- **Charter:** unmoved (hashes above). No policy, tool, uuid8, prerequisite edge, prerequisite sentence,
+  override declaration or factor ladder changed.
+- **Scopes:** still pairwise disjoint and jointly complete — `charter_scope.extended_policies` is
+  `[card_ext_late_fee_correction, card_ext_rewards_statement_credit]` for task 0 and
+  `[card_ext_dispute_provisional_credit, card_ext_dispute_rebill_recovery, card_ext_autopay_fixed_amount]`
+  for task 1, exactly as in round 1.
+- **Problem trees:** both intact and both still unmet at the opening — task 0's 2026-03-08 late payment
+  fee still carries no reversal; task 1's submitted dispute still carries no temporary credit and the
+  ledger still holds no `card_dispute_rebill` row at all.
+- **Load-bearing edges:** all three still move their root's scored value (task 0: 33000 vs 35000;
+  task 1: 1129.00 vs 1275.00 skipping the credit, vs 1087.00 skipping the rebill, vs 1234.00 skipping
+  both).
+- **Customer's own writes:** both present and unmoved — `redeem_card_points_9bfb7edb` (task 0) and
+  `set_card_autopay_amount_b2f02f74` (task 1), both `owner="user"` in the unmoved tool module.
+- **Order independence (task 1):** re-verified by running both orders — writing the rebill first still
+  yields a provisional credit of 976.00, and writing the credit first still yields a rebill of 276.00.
+- **Factors:** all 25 still bear weight on their task's world against the same honest baselines; every
+  count still inside 4–6 with ≥2 of each effect, ≥2 multi-source and ≥2 cross-difficulty.
+- **Personas:** unchanged in substance on both tasks; each still raises only the root problem, names no
+  prerequisite, and closes where `evaluation_criteria` closes.
+- **Gate-snapshot movements accounted for:** task 0's replay closure 84 → 83 is the one deleted
+  checking row; task 1's 83 → 84 and seed rows 60 → 62 are the one deleted checking row against the two
+  added card rows; history depth 98 → 99 is the added card ledger row. Each movement is the claimed
+  edit and nothing more.
+
+**No regression found.**
+
+## closing_checklist — revision_2
+
+| item | state |
+| --- | --- |
+| per-task audit files correspond one-to-one with the tasks, `_difficulty.md` alongside them | yes |
+| old revisions traceable | **yes** — revision 1 is preserved verbatim in all three files; revision 2 is appended below it |
+| every comparison section carries a PASS | **yes** — `0.md` and `1.md` both PASS on all four relationships in revision 2 |
+| extended policies fully covered; scopes pairwise disjoint, each spanning the whole tree | yes |
+| task tools and GT closed; each uuid8 independently generated and frozen | yes (charter unmoved) |
+| every tree has 1–3 prerequisite problems and ≥ max(n−1,1) `value_input` edges | yes — task 0: 1 problem, 1 edge; task 1: 2 problems, 2 edges |
+| at least one problem resolved by an `owner=user` tool; no cycle, including across tasks | yes |
+| every computation declares a self-sufficient baseline giving a definite number different from gold | yes — 11.20 vs 23.00; 4144 vs 33000; 898.80 vs 976.00; 480.00 vs 276.00; 3703.96 vs 1129.00 |
+| 4–6 factors per computation, ≥2 of each effect, ≥2 multi-source, ≥2 cross-difficulty; every ladder ≥3 tiers stated in full | yes |
+| every factor bears weight against an honest baseline, on a world the charter can produce | **yes** — this is what revision 1's two SOURCE-FACTOR reds denied and what the fixes restore |
+| every computation retains a genuine near-miss | yes, with one qualification recorded as OBS-R2-1 |
+| instantiation-stage gates re-run once on the final form | supplied with the brief and cited; all seven green after the rework. Not re-run by this auditor, per the brief |
+
+### the difficulty closes out
+
+All four relationships now PASS on both tasks:
+
+| relationship | task 0 | task 1 |
+| --- | --- | --- |
+| policy self-consistency | PASS | PASS |
+| the problem tree holds | PASS | PASS |
+| factors bear weight | **PASS** (was SOURCE-FACTOR RED) | **PASS** (was SOURCE-FACTOR RED) |
+| policy ↔ task unique solution | PASS | **PASS** (was SOURCE-TASK RED) |
+
+**`card_billing_payments_and_disputes` passes the source-layer audit.** Six observations remain open
+(OBS-C1 … OBS-C8 charter-global, FIND-0-2, FIND-0-3, FIND-1-4, FIND-1-5 and the new OBS-R2-1); none is
+grounds for rework, and each is recorded with the recomputation showing it moves no scored value.

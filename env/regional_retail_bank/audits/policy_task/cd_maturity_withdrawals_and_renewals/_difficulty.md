@@ -1330,3 +1330,718 @@ Base-section observations (base layer, reported for completeness; scored-value i
 
 - **B-7.1** cd_evt_early_withdrawal `formula.penalty_amount` = `principal_balance * interest_rate / 100 * early_withdrawal_penalty_days / day_count_basis`, while its own rule makes the basis "the requested amount for a partial" and applies the six-day minimum. Base formula ≠ base rule. No extended policy recomputes a penalty amount (both reversal policies reverse the booked amount), so no scored value moves.
 - **B-7.2** base `lifecycle` marks grace_period→active and grace_period→closed as `by: system` at the end of grace, while this difficulty books the renewal with an agent task tool on the first day after grace. The renewal is due on the frozen date in the one world that books it; no scored value moves.
+
+---
+
+## revision_8
+
+Re-audit round 8, by a new auditor in a fresh session; not the auditor of revisions 1-7. **Revisions 1-7 above are untouched.** Pre-append sha256 of this file: `304ef565e2ccaf4cad404cbd487b059b428d3e7010780ec33fd3a81162b77e37` (1332 lines).
+
+**Grounds for re-deriving the charter-global section in full rather than carrying it forward.** The shared inputs have moved since the round that produced revision_7: `cd.extended.yaml` was `075133aa807389ef92fa2d34cedca31df5b12b742e2144205202b1de80cdd19f` at revision_7 and is now `0dfc2c4b2268b0b7f7fea4bbf14884e02f359195ef1a8efd8060bd58705638a3`; `task_tools.py` was `d2dc551eec2c627b7e1ae048299ca450e5aee33f9bd1800417a30d7641922470` and is now `7fd301983c9fd6de17f3ece522baed38ff73ec078d2c349b9afaac2fc45a7398`. The difficulty has been regenerated: the four extended policies, their tool names and uuid8s, both task worlds and both problem trees are new, and nothing of revisions 1-7 applies to the artifacts on disk. The whole section below was therefore re-derived from scratch, blind, before any GT was revealed.
+
+**The revision_8 text was written before its author read any part of revisions 1-7.** The earlier revisions were discovered only after both tasks' derivations were frozen and both GTs revealed, when the working tree was compared with git; the first twenty lines of each old file were then read to establish the revision numbering and the old artifact hashes quoted above. No blind answer below was written with any knowledge of an earlier revision's conclusions.
+
+### charter_global_frozen
+
+- auditor: independent source-layer auditor (not the instantiating agent)
+- freeze time (charter-global section written, before any task GT was revealed): 2026-09-16T09:34:57Z
+- freeze hashes (sha256):
+  - `env/regional_retail_bank/tasks/cd_maturity_withdrawals_and_renewals/cd.extended.yaml` = `0dfc2c4b2268b0b7f7fea4bbf14884e02f359195ef1a8efd8060bd58705638a3`
+  - `env/regional_retail_bank/tasks/cd_maturity_withdrawals_and_renewals/task_tools.py` = `7fd301983c9fd6de17f3ece522baed38ff73ec078d2c349b9afaac2fc45a7398`
+  - `env/regional_retail_bank/blueprint/products/cd.yaml` = `7a14550e7c6bc9cfc2f59401c8032dd5371b4809ce2874ec58315695dc044aa8`
+- fields permitted for this section: `blueprint/blueprint.yaml`, `blueprint/db_schema.json`, `blueprint/share_tools.py`, `blueprint/products/*.yaml` (cd plus the five categories the cross-category factors read), the whole of `cd.extended.yaml`, the whole of `task_tools.py`, and `erlbench/` + the instantiation gate scripts used only as arithmetic oracles.
+- fields explicitly masked while this section was written: `evaluation_criteria`, `computations`, `charter_scope`, `required_documents`, `design_rationale`, `solvability_contract`, `prerequisite_closure`, `db_closure`, `db_closure_matches_initial_state` of both tasks. The two task worlds were read only through the machine-masked views
+  `.../scratchpad/masked/cd_maturity_withdrawals_and_renewals/0.json` (sha256 `5d0d55b7829114f87d2d55c88fd34e972980497f703237134684806bb971b2d5`) and `1.json` (sha256 `7ec8744fde485c6e402a51f4d560fdaa3a64aff7f4deb8af243fb1545d4fbe68`), each carrying only `frozen_time`, `user_scenario`, `initial_state`.
+- contamination: none. No unmasked task file was opened before both task derivations were on disk; no recursive grep was run over `env/regional_retail_bank/tasks/`.
+
+#### entry conditions (step 0)
+
+The instantiation gate snapshot was supplied with the brief and is cited, not re-run: EXTENDED OK, TASK TOOL CONTRACT OK, REPLAY OK (0.json 14 acts / 1.json 16 acts, det True, 0 errs, closure matches), SOLVABILITY OK (verify True, 2 base gates, 5 gates, 20/14 seed rows), COMPUTE OK (branches mean 35.00, steps mean 15.00, history_rows_max 10, branches_max 37), GROUNDING OK, SCOPE OK. `check_traceability.py` is correctly deferred to the render stage. Masked views were constructed mechanically with their hashes, and both hashes were re-verified by this auditor and match the brief. **Entry conditions complete.** A green gate block is the qualification to enter this audit, not evidence that the policy is self-consistent over its domain.
+
+#### policy_conflict_scan
+
+The structured policy in force for this category is `cd.extended.yaml`: eleven base policies copied from `blueprint/products/cd.yaml` plus four `extended_policies`. The base section was compared key by key against the blueprint file and is **verbatim identical** (`category`, `display_name`, `binding`, `lifecycle`, `accounts`, `parameter_schema`, `variants`, `events`, `measures`, `policies` all compare equal), so the base copy has not been rewritten.
+
+Overlapping subjects across the four extended policies:
+
+| policy | subject | target_tool | computes | trigger |
+| --- | --- | --- | --- | --- |
+| cd_ext_overdue_term_renewal_rate | [cd_renew] | record_term_renewal_3666596b | new_interest_rate | state_due |
+| cd_ext_partial_early_withdrawal_penalty | [cd_withdrawal] | confirm_partial_withdrawal_44cc2957 | penalty_amount | on_request |
+| cd_ext_omitted_withdrawal_entry | [cd_penalty] | credit_mischarged_penalty_7001af6d | entry_amount | state_due |
+| cd_ext_term_restoring_add_on | [cd_deposit] | confirm_term_add_on_1e70ab4d | deposit_amount | on_request |
+
+No two extended policies share a subject event type, a target tool or a computed quantity. `cd_ext_partial_early_withdrawal_penalty` and `cd_ext_omitted_withdrawal_entry` both end in a `cd_penalty` ledger row, but the first writes it only as the inseparable companion of a withdrawal it creates in the same call, while the second attaches one to a withdrawal already standing on the ledger; the two can never claim the same row. Time anchors are distinct (renewal anchored on the ended term's maturity date; penalty on the day the principal leaves; entry on the day it is booked; deposit on the day it posts). Terminal states are distinct (certificate carried into a new term / principal reduced by a withdrawal and its penalty / principal reduced by an entry / principal raised by a deposit). Cross-category reads are all read-only through `CFIELD`/`XSUM`/`XCOUNT` on checking, savings, card and auto; no extended policy writes outside `cd_certificates` and `cd_transactions`.
+
+Claimed scopes: the M=2 tasks partition the four extended policies into two problem trees, {cd_ext_overdue_term_renewal_rate → cd_ext_partial_early_withdrawal_penalty} and {cd_ext_omitted_withdrawal_entry → cd_ext_term_restoring_add_on}. The two sets are **pairwise disjoint and jointly complete** over `extended_policies`. (Which task takes which tree is recorded in that task's own file.)
+
+**Result: no policy-to-policy conflict found among the four extended policies.** Conflicts found against the *base* section are recorded under `override_declarations` and `rule_compute_equivalence` below.
+
+#### rule_compute_equivalence
+
+Check 2 was run sentence by sentence over all four policies: every quantity, window, filter, tier, branch, cross-category read, acting base, grouping, cap/floor and rounding convention in each `compute` was traced to a verbatim `compute_basis` quotation, and each `rule` sentence was swept back to a compute binding. Every `compute_basis` entry is a verbatim substring of its policy's `rule` (checked mechanically). The declared factor ladders were checked tier by tier against the rule prose and against the `decides` binding's branches.
+
+Four divergences were found where the rule sentence and the implementing expression do not say the same thing. They are written up in `findings` as **CG-1** … **CG-4**.
+
+Everything else closes in both directions. In particular:
+- the assembled-rate ordering ("added together in that order … rounded down … once, at the end") is implemented once, at `rounded_rate`, with no intermediate rounding;
+- the penalty ordering ("after the basis, the rate and the days have been brought together in that order") is implemented as `raw_penalty` → `charged_penalty` → `rounded_penalty` with a single rounding;
+- the entry ordering ("after the principal, the rate and the days have been brought together in that order") is implemented as `raw_entry` → single half-up rounding at `result`;
+- the add-on caps ("no more than the total the tier accepts … less what has already been added", "no more than the room left under the largest principal", "at least the smallest single add-on") are implemented as `MX(MN(MN(...)))` in exactly that order.
+
+#### action_binding_and_uuids
+
+Each `(target_tool, computes)` pair is claimed by exactly one policy (table above); no pair is claimed twice and no policy claims two tools. Reading each tool's subject, base refs, docstring and terminal state, each admits one business reading. No tool adds a confirmation, review, wait or procedure outside its policy; each function body performs only the writes its policy's terminal state names, and **no function body reads a prerequisite, refuses, errors or hints on a business ground** (verified by reading all four bodies: each does `ctx.find` for the owner/balance, `ctx.create`/`ctx.update`, and returns a confirmation string; there is no conditional refusal anywhere).
+
+uuid8s: `3666596b`, `44cc2957`, `7001af6d`, `1e70ab4d`. All four are 8 hex characters, pairwise distinct, share no prefix, are not adjacent or sequential values, and none is another's tail rewritten. **No evidence of batch derivation.**
+
+Docstring sequence discipline: no docstring names another tool or states this action's position relative to another action. Two phrases were examined and cleared, one retained as an observation (**CG-8**).
+
+#### prerequisite_graph
+
+Check 7 over the whole graph:
+
+| blocked policy | problem | kind | gate | form | fallback_reason | resolved_by | == dep target_tool | gate in blocked compute |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| cd_ext_partial_early_withdrawal_penalty | cd_ext_overdue_term_renewal_rate | value_input | applied_rate | state | absent (correct) | record_term_renewal_3666596b | yes | yes |
+| cd_ext_term_restoring_add_on | cd_ext_omitted_withdrawal_entry | value_input | entries_booked_year | state | absent (correct) | credit_mischarged_penalty_7001af6d | yes | yes |
+
+`cd_ext_overdue_term_renewal_rate.prerequisite` and `cd_ext_omitted_withdrawal_entry.prerequisite` are both `[]` (filled in, not omitted). Every `problem` points at another extended policy id in this same file; neither points at a base policy nor at itself. The graph has two edges and four nodes and is **acyclic**, and remains acyclic when the two tasks' trees are unioned (they share no node). Both `policy_source` strings were confirmed mechanically to be verbatim substrings of the blocked policy's own `rule` and **not** substrings of the depended-on policy's rule. Both `form` values are `state` and neither carries `fallback_reason`, which is correct for the state form. Neither `condition` is stronger or weaker than what check 6 derives from the sentence. Both `resolved_by` tools genuinely make the `effect` hold (the renewal write sets `interest_rate`/`term_start_date`/`maturity_date`/`status`/`renewal_count`, which is exactly what `applied_rate` reads through `F('interest_rate')` and `checking_opened_before_term`; the entry write creates a `cd_penalty` row, which is exactly what `entries_booked_year` sums). Both `kind` values are `value_input` and both `gate` names are real bindings in the blocked policy's `compute`. No authoring-viewpoint phrasing ("in this task", "at the opening", "the current world") appears in either `prerequisite` block.
+
+#### prerequisite_sentences
+
+Check 6, four-point test, on each of the two edges.
+
+**Edge 1** — `cd_ext_partial_early_withdrawal_penalty` waits on `cd_ext_overdue_term_renewal_rate`.
+Sentence (verbatim from the blocked policy's own rule): *"The penalty on principal taken out of a certificate before maturity is worked out only after the certificate carries the rate and the term dates of the term running on the day the principal leaves."*
+1. Ordering connective: **"only after"**, joining this policy's own result ("the penalty … is worked out") to what it waits on. ✓
+2. Declared form is `state`; what is waited on is *"the certificate carries the rate and the term dates of the term running on the day the principal leaves"* — a record-visible state in the words the certificate table and its finder use (`interest_rate`, `term_start_date`, `maturity_date` are shown by `find_cd_certificates` as "the rate and APY of the current term … term start and maturity dates"). No action, no performer, no tool. ✓
+3. Names no tool, no policy id, no snake_case token, no row id. ✓
+4. Strength and scope match `condition` exactly (status active and the dates spanning the day of the withdrawal). ✓
+Exactly one write of this difficulty brings that state about: `record_term_renewal_3666596b` writes `term_start_date`, `maturity_date`, `interest_rate` and `status`. The other three writes create ledger rows and adjust `principal_balance` only, and none writes a term date or a rate onto the certificate. **The hop resolves in one reading.** Derivation a reader performs: the sentence says the penalty waits on the certificate carrying *this* term's rate and dates → the records show dates that do not span today and a status that is not active → the only rule in the charter that describes a certificate being given a new term's rate and dates is `cd_ext_overdue_term_renewal_rate` ("A term that has reached the end of its grace window without the owner closing the certificate is carried into a new term …", "The rate a new term carries is …") → its own target tool is the write. No second reading is available.
+No second wording of this dependency appears anywhere in the blocked rule, and the depended-on rule does not restate the sentence.
+
+**Edge 2** — `cd_ext_term_restoring_add_on` waits on `cd_ext_omitted_withdrawal_entry`.
+Sentence (verbatim from the blocked policy's own rule): *"The deposit that restores a certificate to the principal its term began with is fixed only after every early partial withdrawal standing on its ledger carries the entry owed for the principal it removed."*
+1. Ordering connective: **"only after"**. ✓
+2. Declared form is `state`; what is waited on is *"every early partial withdrawal standing on its ledger carries the entry owed for the principal it removed"* — a record-visible state of the ledger, in the words `find_cd_transactions` uses ("early withdrawal penalties … and the entry it relates to (the withdrawal behind a penalty)"). No action, no performer, no tool. ✓
+3. Names no tool, no policy id, no snake_case token, no row id. ✓
+4. Matches `condition` in strength and scope. ✓
+One write brings the state about for a withdrawal already on the ledger: `credit_mischarged_penalty_7001af6d`, which takes a `source_item_id` naming an existing withdrawal. `confirm_partial_withdrawal_44cc2957` also creates a `cd_penalty` row, but only as the companion of a withdrawal it creates in the same call, so it can never attach an entry to a withdrawal that is already standing entry-less. **The hop therefore resolves in one reading**, though the reader must notice that distinction; it is recorded as observation **CG-9**.
+Derivation a reader performs: the sentence says the deposit waits on every early partial withdrawal carrying its entry → the ledger shows a withdrawal with no entry against it → the only rule that describes booking the entry a withdrawal owes is `cd_ext_omitted_withdrawal_entry` ("An early partial withdrawal owes the certificate an entry for the principal it removed, and where the ledger carries no such entry against it the entry is still owed and is booked when it is found.") → its own target tool is the write.
+No second wording; the depended-on rule does not restate the sentence.
+
+**No cross-problem order is stated in any extended rule that grounds no declared edge.** Every sentence containing an ordering or timing word was enumerated mechanically and each is either one of the two prerequisite sentences or an intra-computation window ("in the twelve months before the deposit", "after the basis, the rate and the days have been brought together in that order", "before the term now running began"), none of which orders one problem against another. No base rule sentence grounds either edge.
+
+#### override_declarations
+
+Check 1, sentence by sentence against every `base_policy_refs` entry. Findings only; each affected task's file demonstrates the consequence against its own world.
+
+**cd_ext_overdue_term_renewal_rate** (refs `cd_rate_and_bonuses`, `cd_evt_maturity_and_grace`); three `overwrite` entries, each naming a base sentence verbatim: the relationship-bonus sentence, the jumbo-bonus clause, and the "for a renewal it is the principal_balance on the renewal date after any grace-period add-ons and withdrawals" clause. Sweeping the remaining base sentences:
+- "The rate of a term is fixed at its start." — followed.
+- "It is the tier's standard_interest_rate plus bonus points, and the APY is the tier's standard_apy plus the same bonus points." — followed, with the graded figures substituted for the bonus points.
+- "The two bonuses stack by simple addition; no other bonus exists." — followed (`assembled_rate` is a sum).
+- "A bonus that is later lost … stays in the rate until the term ends; a bonus that becomes available mid-term is not added until the next term." — not contradicted (this is a renewal).
+- "On renewal the rate follows renewal_rate_basis: the target tier's published standard rates **on the maturity date**, with both bonuses re-evaluated **on the renewal date** when relationship_bonus_on_renewal is true." — the extended rule anchors everything on *"the day the new term is recorded"* ("the new term's figures are those of the day it is recorded", "the relationship figure and the jumbo figure the certificate earns on the day the new term is recorded"). The extended rule dates the rate and the bonus evaluation from a **different day** than the base sentence does, and that base sentence is **not named in `overwrite`**. Recorded as **CG-5**.
+- `cd_evt_maturity_and_grace`: "On the day after the grace period ends, if no grace action closed it, the certificate follows its renewal_instruction: under auto_renew it renews into renewal_target_tier … with a new term starting on the maturity date." — followed exactly (tier from `renewal_target_tier`, term starting on the maturity date). "An auto_renew instruction is honored only where auto_renew_available is true" — inherited, not weakened. "After the grace period ends, any withdrawal is again an early withdrawal of the new term." — inherited and relied on by edge 1.
+
+**cd_ext_partial_early_withdrawal_penalty** (refs `cd_evt_early_withdrawal`, `cd_evt_maturity_and_grace`, `cd_evt_interest`); four `overwrite` entries naming, verbatim, the request/confirm sentence, the penalty-basis sentence, the penalty-formula sentence and the penalty-days sentence. Sweeping the rest of `cd_evt_early_withdrawal`:
+- "Principal can be withdrawn before maturity only from a certificate whose status is active." — inherited, not weakened; it is part of why edge 1 is unmet at the opening.
+- the ordered classification of withdrawal kinds (interest_withdrawal → death_waiver → penalty_free → early_full/early_partial) — inherited; the extended rule addresses only the early_partial branch.
+- "Partial withdrawals are allowed only where partial_early_withdrawal_allowed is true, for at least partial_withdrawal_min_amount, leaving at least minimum_balance_after_partial, and no more than max_partial_withdrawals_per_term per term counted by cd_msr_term_partial_withdrawals; a request breaking any of these is declined, never converted." — inherited. The extended rule restates the remaining-balance limb in its own words ("The largest sum a single partial withdrawal may remove is the principal standing on the certificate less the balance the tier requires to remain after a partial withdrawal") without weakening it. Tension with the inherited limb once the penalty is also taken from principal is recorded as observation **CG-7**.
+- "The penalty is taken from principal even when it exceeds interest earned" — inherited; the tool lowers `principal_balance` by the penalty.
+- "For a full withdrawal … for a partial the amount paid out is the requested amount and the penalty is deducted from the remaining principal." — followed by the tool body.
+- "Proceeds go by one of payout_methods to an account of the same customer or by official check." — inherited; the tool's `destination` enum is exactly `payout_methods` plus `none`.
+- `cd_evt_interest`: "Interest accrued but not yet credited is credited on the day of a full early withdrawal before the penalty is computed." — scoped to *full* withdrawals, so it does not reach a partial; not weakened.
+**No undeclared override found in this policy** beyond the observation at CG-7.
+
+**cd_ext_omitted_withdrawal_entry** (refs `cd_evt_early_withdrawal`, `cd_evt_interest`); three `overwrite` entries naming, verbatim, the penalty-basis sentence, the penalty-days sentence and the penalty-formula sentence. The remaining base sentences (classification order, partial limits, penalty taken from principal, proceeds) are untouched by this policy, which pays nothing out. The base trigger "Every other withdrawal before maturity is early_full or early_partial and carries a penalty through its trigger" is the very premise this policy acts on. **No undeclared override found.**
+
+**cd_ext_term_restoring_add_on** (refs `cd_evt_term_add_on`, `cd_evt_maturity_and_grace`, `cd_agg_combined_principal`, `cd_open_and_funding`, `cd_evt_early_withdrawal`); one `overwrite` entry naming, verbatim, the add-on limits sentence. Sweeping the rest:
+- "Outside the grace period a certificate accepts new principal only on a tier whose term_add_on_max_count is above zero." — inherited, not weakened.
+- "A term add-on is allowed only while the certificate's status is active." — inherited.
+- "An add-on earns the certificate's existing rate from its posted date and does not change the maturity date or re-evaluate the jumbo bonus." — restated in the extended rule in the same terms and implemented by the tool (which touches neither dates nor rate).
+- `cd_agg_combined_principal`: the `combined_principal_cap` of 2,500,000.00 is inherited and not weakened; `cd_open_and_funding`: `funding_sources_allowed` is inherited and is exactly the tool's `funding_source` enum.
+**No undeclared override found.**
+
+Three disguised forms were looked for specifically. **Anonymous intermediate factor:** the graded bindings all carry their own names and each is quoted to a rule sentence; none hides inside an unnamed intermediate. **0/1 multiplier:** `retained_share` (0.9/0.95/1) and `restoration_allowance` are multipliers/addends but never zero out a base the rule has already fixed; `interest_days` can be 0, and that is the baseline the rule itself states ("the days over which it runs are none"). **Dropped branch:** base's branches that extended's selectors never produce were checked — `cd_evt_early_withdrawal`'s `interest_withdrawal`, `death_waiver` and `penalty_free` kinds are simply out of these policies' subject, not dropped by a selector. No author note in any `rule` or `compute_basis` calls a base output a "wrong value" or an "algorithm to avoid".
+
+#### factor_ladders
+
+Charter-global structure only. Whether a factor bears weight is a fact about one world and lives in that task's `factor_weight`.
+
+**cd_ext_overdue_term_renewal_rate** — 4 factors.
+
+| id | effect | decides | tiers | multi-source (non-fall-through tiers) | cross_difficulty |
+| --- | --- | --- | --- | --- | --- |
+| relationship_figure_grade | parameter | relationship_figure | 3 | yes (checking_accounts row ∧ checking_transactions rows) | checking |
+| jumbo_figure_grade | parameter | jumbo_figure | 3 | yes (carried principal from cd_certificates/cd_transactions ∧ savings_accounts row) | savings |
+| carried_principal_measure | method | carried_principal | 3 | yes (cd_transactions rows ∧ cd_certificates.interest_rate against the tier parameter) | — |
+| assembled_rate_rounding | method | rounded_rate | 3 | **no** (each tier is one condition on one card-spend aggregate) | card |
+
+Counts: 2 `parameter`, 2 `method`, 3 multi-source, 3 `cross_difficulty` (checking, savings, card). Within bounds (4–6 factors, ≥2 of each effect, ≥2 multi-source, ≥2 cross-difficulty). Binding sets are pairwise disjoint. No `decides` is `result`. Every tier of every ladder appears as a sentence of the `rule` and as a branch of the `decides` expression, except as recorded at **CG-1** (`relationship_figure`, closed enumeration in compute against an open tier-dependent list in the rule) and **CG-2** (`jumbo_figure` tier 1, "holds an active savings or money market account" implemented as `savings_balance > 0`). Labels are honest: the two `parameter` factors substitute percentage-point figures into an unchanged sum; the two `method` factors change the measurement of the base and the rounding operation respectively, and every method tier names a rule the charter states.
+
+**cd_ext_partial_early_withdrawal_penalty** — 5 factors.
+
+| id | effect | decides | tiers | multi-source | cross_difficulty |
+| --- | --- | --- | --- | --- | --- |
+| penalty_basis_measure | method | charged_basis | 3 | yes (cd_transactions interest rows ∧ cd_certificates.interest_rate; cd_transactions withdrawal rows ∧ absence of interest rows) | — |
+| charged_rate_grade | parameter | applied_rate | 3 | yes (checking_accounts row ∧ cd_certificates.term_start_date) | checking |
+| charged_days_measure | method | charged_days | 3 | yes (card_accounts row ∧ card_transactions rows) | card |
+| charged_share_grade | parameter | retained_share | 3 | yes (savings_accounts row ∧ cd_certificates.renewal_count) | savings |
+| charged_penalty_rounding | method | rounded_penalty | 3 | tier 1 yes (checking_accounts row ∧ cd_certificates.renewal_count); tier 2 single-source | checking |
+
+Counts: 2 `parameter`, 3 `method`, ≥4 multi-source, 4 `cross_difficulty` (checking, card, savings, checking). Within bounds. Binding sets disjoint; no `decides` is `result`. Labels honest (`charged_rate_grade` and `charged_share_grade` substitute numbers; `penalty_basis_measure`, `charged_days_measure` and `charged_penalty_rounding` change the base, the day count and the rounding operation). Tier-to-rule correspondence holds except as recorded at **CG-3** ("in the month now running" implemented as a rolling `within_months=1` window) and **CG-1** (the same closed/open checking-tier enumeration, here in `applied_rate`, plus a zero-balance gap in `charged_penalty_rounding` tier 2).
+
+**cd_ext_omitted_withdrawal_entry** — 4 factors.
+
+| id | effect | decides | tiers | multi-source | cross_difficulty |
+| --- | --- | --- | --- | --- | --- |
+| entry_principal_measure | method | entry_principal | 3 | yes (card_accounts row ∧ cd_transactions interest rows) | card |
+| entry_rate_grade | parameter | entry_rate | 3 | yes (auto_loans row ∧ auto_transactions rows) | auto |
+| entry_days_measure | method | entry_days | 3 | yes (savings_accounts row ∧ cd_transactions interest rows) | savings |
+| added_days_grade | parameter | added_days | 3 | yes (cd_transactions withdrawal date ∧ savings_accounts row) | savings |
+
+Counts: 2 `parameter`, 2 `method`, 4 multi-source, 4 `cross_difficulty` (card, auto, savings, savings — two distinct categories). Within bounds. Binding sets disjoint. Labels honest (`entry_rate_grade` and `added_days_grade` substitute a rate and a day count; `entry_principal_measure` and `entry_days_measure` change how the base and the day span are measured, including a cap in tier 1). Tier-to-rule correspondence holds except as recorded at **CG-4** (tiers 2 and 3 of `entry_principal_measure` overlap as the rule states them) and **CG-6** ("interest was credited in each of the three months" implemented as a row count, not a distinct-month count).
+
+**cd_ext_term_restoring_add_on** — 5 factors.
+
+| id | effect | decides | tiers | multi-source | cross_difficulty |
+| --- | --- | --- | --- | --- | --- |
+| lost_principal_measure | method | lost_principal | 3 | yes (auto_loans row ∧ cd_transactions withdrawal rows) | auto |
+| restored_interest_span | method | interest_days | 3 | yes (checking_accounts row ∧ cd_transactions withdrawal rows) | checking |
+| restoration_rate_grade | parameter | restoration_rate | 3 | yes (card_accounts row ∧ card_transactions rows) | card |
+| restoration_allowance_grade | parameter | restoration_allowance | 3 | tier 1 yes (savings_accounts row ∧ cd_certificates.renewal_count); tier 2 single-source | savings |
+| restoring_deposit_rounding | method | rounded_deposit | 3 | yes (cd_transactions add-on rows ∧ checking_accounts.opened_date) | checking |
+
+Counts: 2 `parameter`, 3 `method`, ≥4 multi-source, 5 `cross_difficulty` (auto, checking, card, savings, checking). Within bounds. Binding sets disjoint. Labels honest. Tier-to-rule correspondence **fails on tier 2 of `lost_principal_measure`**, recorded as **CG-1a** below in findings, and the same closed/open checking-tier enumeration recurs in `restored_interest_span` (**CG-1**).
+
+#### findings
+
+Each finding names the tasks it bears on so that their files can carry the demonstration; the demonstrations themselves are not repeated here.
+
+---
+
+**CG-1 — SOURCE-POLICY RED. The checking-tier list that three ladders call "a tier the certificate's own tier lists as qualifying" is implemented as a fixed three-tier enumeration, so the rule and the compute reach different conclusions for two of the six certificate tiers.**
+
+*Symptom.* Three ladders decide a tier by whether the owner's checking account is "of a tier the certificate's own tier lists as qualifying"; the implementing expressions test membership of the literal set {Interest Checking, Premier Checking, Private Client Checking}.
+
+*Root cause.* `relationship_qualifying_checking_tiers` is a per-variant parameter, not a constant. `blueprint/products/cd.yaml` sets it to `[Interest Checking, Premier Checking, Private Client Checking]` for five tiers but to **`[Premier Checking, Private Client Checking]`** for the 11-Month No-Penalty Certificate. The compute hard-codes the five-tier value.
+
+*Evidence.*
+- rule, `cd_ext_overdue_term_renewal_rate`: "an owner who holds an active checking account of a tier the certificate's own tier lists as qualifying and has had fewer than six deposits posted to it in those three months earns three quarters of the tier's relationship bonus points"
+- compute, same policy: `relationship_figure: … (P('relationship_apy_bonus') * 3 / 4 if ((qualifying_checking_tier == 'Interest Checking' or qualifying_checking_tier == 'Premier Checking' or qualifying_checking_tier == 'Private Client Checking') and checking_deposit_count < 6) else 0)`
+- rule, `cd_ext_partial_early_withdrawal_penalty`: "an owner holding an active checking account of a tier the certificate's own tier lists as qualifying, opened before the term now running began, is charged at the rate the term carries less the tier's relationship bonus points; an owner holding an active checking account of a tier that does not qualify … is charged at the tier's published standard interest rate"; compute `applied_rate` hard-codes the same three tiers as qualifying and `{Access Checking, Student Checking, Everyday Checking}` as non-qualifying.
+- rule, `cd_ext_term_restoring_add_on`: "where the owner holds an active checking account of a tier the certificate's own tier lists as qualifying …"; compute `qualifying_checking: 1 if (checking_tier_held == 'Interest Checking' or … ) else 0`.
+- `blueprint/products/cd.yaml`, 11-Month No-Penalty Certificate: `relationship_qualifying_checking_tiers: [Premier Checking, Private Client Checking]`.
+
+*Demonstrated consequence.* Take an 11-Month No-Penalty Certificate whose owner holds an active Interest Checking account with fewer than six deposits in the window. The rule places the owner on the fall-through tier ("an owner who holds no active checking account of a qualifying tier earns nothing"): relationship figure **0.00**, assembled rate 3.54 + 0.00 + jumbo. The compute places the owner on tier 2: relationship figure 0.05 × 3/4 = **0.0375**, assembled rate 3.5775 + jumbo. The two readings differ by 0.04 percentage points on the rate written for the term, and in `applied_rate` the same customer is charged at `F('interest_rate') − 0.05` under the compute and at the tier's published 3.54 under the rule. Under `charged_rate_grade` the compute's non-qualifying set is also closed where the rule's is open ("a tier that does not qualify"), so an Interest Checking holder on an 11-Month certificate falls through the compute's second branch into "every other owner" while the rule puts them in the second tier.
+
+*Affected artifact and location.* `cd.extended.yaml`, `extended_policies[cd_ext_overdue_term_renewal_rate].compute[relationship_figure]`, `extended_policies[cd_ext_partial_early_withdrawal_penalty].compute[applied_rate]`, `extended_policies[cd_ext_term_restoring_add_on].compute[qualifying_checking]`, against the matching `rule` sentences.
+
+*Bears on.* Neither task 0 (12-Month Certificate) nor task 1 (18-Month Bump-Up Certificate) instantiates a tier whose qualifying list differs from the hard-coded set, so neither task's scored value moves. The defect is a defect of the charter, which the rendered KB will carry.
+
+---
+
+**CG-1a — SOURCE-POLICY RED. Tier 2 of `lost_principal_measure` is stated one way in the `rule` and a different way in `factors[].ladder` and `compute`.**
+
+*Symptom.* The middle tier of the ladder that measures "the principal the term has lost" is three different things depending on which face of the policy is read.
+
+*Root cause.* A tier present in one face of the policy and absent from the other.
+
+*Evidence.*
+- `rule`: "*where the owner has an auto loan at the bank that is not past due and principal was taken out only once in those months, it is the principal that withdrawal removed, **less any credit back posted in them***"
+- `factors[lost_principal_measure].ladder[1].method`: "*the loss is the principal that withdrawal removed **together with every entry booked for it in those months**"* (no credit back subtracted)
+- `compute[lost_principal]`: `… else ((withdrawn_principal_year + entries_booked_year) if (auto_loan_standing == 'active' and withdrawals_in_year == 1) else …)`
+
+*Demonstrated consequence.* On task 1's own ledger, restricted to the single May withdrawal (6,000.00) with the entry of 130.15 booked for it and no reversal: the `rule` sentence yields a loss of **6,000.00**, the ladder and the compute yield **6,130.15**. The two faces of one policy give two different restoring deposits, 130.15 apart, for the same records. Because tier 1 also carries the entries, the rule's tier 2 is additionally the only tier of the three in which an entry booked in the window is *not* counted, which is the opposite of what the prerequisite edge's `effect` asserts the binding does.
+
+*Affected artifact and location.* `cd.extended.yaml`, `extended_policies[cd_ext_term_restoring_add_on].rule` (the "measured as follows" sentence) against `factors[lost_principal_measure].ladder[1]` and `compute[lost_principal]`.
+
+*Bears on.* Task 1. Task 1's world takes tier 1 (two withdrawals in the twelve months), so its scored number is not moved by this defect; the defect is that the policy cannot be read consistently.
+
+---
+
+**CG-2 — Observation. "Holds an active savings or money market account" is implemented as "savings balance greater than zero" in three places, and "holds an active checking account whose balance is below …" as "balance above zero and below …" in a fourth.**
+
+*Evidence.* `cd_ext_overdue_term_renewal_rate.compute[jumbo_figure]` tier 1: `… and savings_balance > 0`, against the rule's "whose owner holds an active savings or money market account". `cd_ext_omitted_withdrawal_entry.compute[added_days]`: `deposit_balance_for_allowance > 0` / `== 0`, against "the owner holds an active savings or money market account" / "holds no such account". `cd_ext_partial_early_withdrawal_penalty.compute[rounded_penalty]` tier 2: `checking_balance > 0 and checking_balance < P('partial_withdrawal_min_amount')`, against "the owner holds an active checking account whose balance is below the smallest partial withdrawal the tier accepts".
+
+*Why an observation and not a red light.* An owner with an active account of exactly 0.00 is placed on the fall-through tier by the compute and on a graded tier by the rule. Neither task world contains a zero-balance active account (task 0 savings 118,600.00; task 1 savings 41,300.00, checking 12,480.22), so no consequence can be demonstrated on a scored value here.
+
+*Bears on.* Both tasks, as a reading risk only.
+
+---
+
+**CG-3 — SOURCE-POLICY RED. `penalty_basis_measure` says "in the month now running" and computes a rolling one-month window, and the charter's own convention makes the two readings different.**
+
+*Symptom.* The tier-selecting condition "interest has been credited to the certificate in the month now running" is implemented as `SUM('cd_transactions','amount', within_months=1, …) > 0`, which by the engine's `MONTHS()` convention reaches back roughly one month from the frozen date and therefore into the previous calendar month.
+
+*Root cause.* The rule names a period ("the month now running") where every other window in the same charter is written as a rolling span and implemented as one. In this same policy the author writes "in the twelve months before this one" for `within_months=12` and "in the three months before the withdrawal" for `within_months=3`. "The month now running" is deliberately not of that form, and base `cd_evt_interest` fixes the calendar month as the crediting period ("on the last calendar day of each month"), so a reader has every reason to read it as the current calendar month.
+
+*Evidence.*
+- rule: "*where interest has been credited to the certificate in the month now running and the rate of the term now running stands above the tier's published standard interest rate, the basis is the sum the withdrawal removes less that credited interest*"
+- compute: `interest_credited_this_month: SUM('cd_transactions','amount', within_months=1, date_field='posted_date', event_type='cd_interest_compound')`
+- base `cd_evt_interest`: "*Accrued interest is credited according to interest_crediting_frequency: under monthly, on the last calendar day of each month …*"
+- engine semantics, `skills/erl-task-instantiate/scripts/check_compute.py` `_within`/`MONTHS`: a row dated 2026-05-28 has `MONTHS('2026-05-28','2026-06-12') = 0` and is therefore inside `within_months=1`.
+
+*Demonstrated consequence.* Demonstrated against task 0's world in `0.md` §`policy_self_consistency`: the compute's reading puts the customer on tier 1 and the calendar-month reading puts the same customer on tier 2, giving a penalty basis of 102,751.01 against 110,554.59 and a scored penalty of 687.42 against 739.62.
+
+*Affected artifact and location.* `cd.extended.yaml`, `extended_policies[cd_ext_partial_early_withdrawal_penalty].rule` (the graded-basis sentence) and `compute[interest_credited_this_month]`; `compute_basis[interest_credited_this_month]` quotes the rule sentence verbatim and therefore certifies an equivalence that does not hold.
+
+*Bears on.* Task 0.
+
+---
+
+**CG-4 — SOURCE-POLICY RED. Tiers 2 and 3 of `entry_principal_measure` overlap as the rule states them, and the compute silently narrows tier 2 to break the tie.**
+
+*Symptom.* An owner who holds no active card and for whom interest was credited in fewer than each of the three months satisfies the stated condition of both tier 2 and tier 3.
+
+*Evidence.*
+- rule: "*where the owner holds such a card opened after the term began, **or interest was credited in fewer than each of those three months**, it is the principal taken out by early partial withdrawals in those three months less the interest credited in them; **where the owner holds no active card**, it is the principal taken out by early partial withdrawals in those three months.*"
+- compute: `entry_principal: … ((withdrawn_principal_recent - interest_credited_recent) if (**card_held == 1** and (card_before_term == 0 or interest_months_recent < 3)) else withdrawn_principal_recent)` — the `card_held == 1` conjunct appears in no sentence of the rule.
+
+*Demonstrated consequence.* For an owner with no active card and two of the three months credited, the rule's tier 2 gives "principal removed **less** the interest credited" and the rule's tier 3 gives "principal removed" — two different bases for the same records, with no sentence of the charter choosing between them. On task 1's figures those two bases would be 5,210.17 and 6,000.00, an entry of 130.15 against 149.88. The compute resolves the tie by a condition that is not in the rule, so a reader of the policy cannot reproduce it.
+
+*Affected artifact and location.* `cd.extended.yaml`, `extended_policies[cd_ext_omitted_withdrawal_entry].rule` (the "measured as follows" sentence) and `compute[entry_principal]`; the ladder in `factors[entry_principal_measure]` repeats the rule's overlapping wording.
+
+*Bears on.* Task 1. Task 1's owner does hold an active card, so its scored number is not moved; the ladder is nonetheless not pairwise disjoint as stated.
+
+---
+
+**CG-5 — Observation. The extended renewal rule re-anchors the published rate and the bonus evaluation on "the day the new term is recorded", while base `cd_rate_and_bonuses` anchors them on the maturity date and the renewal date, and that base sentence is not named in `overwrite`.**
+
+*Evidence.* base `cd_rate_and_bonuses`: "*On renewal the rate follows renewal_rate_basis: the target tier's published standard rates **on the maturity date**, with both bonuses re-evaluated **on the renewal date** when relationship_bonus_on_renewal is true.*" Extended rule: "*… is carried into a new term whatever the day the bank comes to record it, and the new term's figures are those of the day it is recorded*" and "*the relationship figure and the jumbo figure the certificate earns **on the day the new term is recorded***". `overwrite` names three other base sentences and not this one.
+
+*Why an observation and not a red light.* The charter publishes exactly one `standard_interest_rate` and one `standard_apy` per tier with no rate calendar, so the two anchors select the same published figures and no quantity can be shown to differ on that limb. The bonus-evaluation limb does move the window ends; on task 0's world the shift from 2026-05-28 to 2026-06-12 changes the checking-deposit count from 4 to 5 and the twelve-month card spend from 6,912.70 to 7,341.60, neither of which crosses a tier boundary, so no scored value differs.
+
+*Bears on.* Task 0.
+
+---
+
+**CG-6 — Observation. "Interest was credited in each of the three months" is implemented as a row count over a rolling three-month window, not as a count of distinct months.**
+
+*Evidence.* rule, `cd_ext_omitted_withdrawal_entry`: "*interest was credited to the certificate in each of the three months before the entry is booked*"; compute: `interest_months_recent: COUNT('cd_transactions', within_months=3, date_field='posted_date', event_type='cd_interest_compound')` and the tier tests `interest_months_recent >= 3`. Two credits falling in one month would satisfy the compute and not the rule; conversely a certificate crediting at maturity rather than monthly could have three rows spanning more than three months.
+
+*Why an observation.* On task 1's ledger the four qualifying rows fall in four distinct months (2026-04, 2026-05, 2026-06, 2026-07), so both readings select the same tier.
+
+*Bears on.* Task 1.
+
+---
+
+**CG-7 — Observation. The largest partial withdrawal the extended rule permits leaves the certificate below the minimum balance the inherited base sentence requires, once the penalty is also taken from principal.**
+
+*Evidence.* extended rule: "*The largest sum a single partial withdrawal may remove is the principal standing on the certificate less the balance the tier requires to remain after a partial withdrawal.*" and "*the penalty is deducted from the principal that remains*". base `cd_evt_early_withdrawal`, inherited and not named in `overwrite`: "*Partial withdrawals are allowed only … leaving at least minimum_balance_after_partial … a request breaking any of these is declined, never converted.*"
+
+*Why an observation.* Read as a test on the withdrawal itself, the two sentences agree: the withdrawal leaves exactly `minimum_balance_after_partial`, and the penalty is a separate later deduction. The alternative reading (the test is on the principal that finally stands) would make the largest permitted sum self-referential. The extended sentence is explicit enough to pin the first reading, so no second defensible *amount* follows; the terminal principal nonetheless ends below the tier minimum.
+
+*Bears on.* Task 0.
+
+---
+
+**CG-8 — Observation. One tool docstring positions a read against the consultation.**
+
+*Evidence.* `confirm_term_add_on_1e70ab4d`, `Args.customer_id`: "*taken from the customer profile lookup made at the start of the call*". No task tool is named and no write is ordered against another write; the phrase points at a shared read tool and at the consultation, not at a step of the problem tree. The other three docstrings' uses of "before"/"afterwards" all describe the preparation of an argument or the tool's own after-state.
+
+---
+
+**CG-9 — Observation. Two writes of this difficulty create `cd_penalty` rows, and edge 2's state-form sentence resolves only once the reader notices that one of them cannot attach an entry to an existing withdrawal.**
+
+*Evidence.* `confirm_partial_withdrawal_44cc2957` creates a `cd_withdrawal` row and, in the same call, a `cd_penalty` row whose `source_item_id` is the withdrawal it just minted; `credit_mischarged_penalty_7001af6d` takes `source_item_id` as an argument and attaches the entry to a withdrawal already on the ledger. The waited-on state — "*every early partial withdrawal standing on its ledger carries the entry owed*" — can be made to hold for a withdrawal already standing only by the second tool, so the hop is single-valued; but the reader must reason from the argument list rather than from the sentence alone.
+
+---
+
+**CG-10 — Observation. Task 1's seeded `auto_loans` row contradicts the auto product's own charter in fields the factors do not read.**
+
+*Evidence.* `initial_state.auto_loans` (task 1): `original_principal` 21,400.00, `funded_date` 2026-03-20, `interest_rate` 8.74, `monthly_payment` 442.18, `principal_balance` 18,962.31, with three `auto_payment` rows of 442.18 on 2026-04-20, 2026-05-20 and 2026-06-20. Under `blueprint/products/auto.yaml` `auto_evt_payment_allocation` ("Each payment is applied in payment_allocation_order: first to fees_due, then to interest accrued through the credit date, then to principal"), three payments totalling 1,326.54 with roughly 155.87 of monthly interest each cannot reduce principal by 2,437.69; the largest possible reduction is 1,326.54, to 20,073.46. The seeded rate also does not reconstruct from the Used Vehicle Loan's `base_apr_by_term[60] = 7.99`, credit grade B adder 1.50 and `autopay_discount_pct` 0.25 (which give 9.24, not 8.74).
+
+*Why an observation and not a red light.* The only auto fields any factor reads are `auto_loans.status` (`'active'`) and the count of `auto_transactions` rows with `event_type = 'auto_payment'` (3). Both are present, internally consistent and consistent with the auto charter's lifecycle ("active" ⇄ "delinquent" transitions make `status == 'active'` a faithful rendering of "an auto loan at the bank that is not past due"). No scored value depends on the contradicting fields.
+
+---
+
+**CG-11 — Observation. Task 1's seeded `card_accounts.last_statement_date` (2026-07-12) is later than `frozen_time` (2026-07-08).**
+
+*Evidence.* `initial_state.card_accounts` (task 1): `last_statement_date: "2026-07-12"`, `statement_closing_day: 12`, `payment_due_date: "2026-08-06"`; `frozen_time: "2026-07-08 09:12:00 EDT"`. A *last* statement dated four days in the future is not a state the world can be in. No factor of either policy reads `last_statement_date`.
+
+---
+
+**CG-12 — Observation. Two aggregate bindings carry no window where their rule sentence names one.**
+
+*Evidence.* `cd_ext_overdue_term_renewal_rate.compute[grace_window_deposits]` and `[grace_window_withdrawals]` are `SUM(…)` with no `within_months`, against a rule that says "*where a deposit was posted to the certificate **in the days after its maturity***"; they are scoped only by `deposit_kind='grace_add_on'` / `withdrawal_kind='grace_period'`, so grace rows of an *earlier* grace period would be counted too. `cd_ext_term_restoring_add_on.compute[add_ons_this_term]` uses `within_months=12` against a rule that says "*what has already been added **in this term***"; on an 18-Month, 36-Month or 60-Month term older than twelve months the two differ.
+
+*Why observations.* Task 0 holds exactly one `grace_add_on` row and no `grace_period` withdrawal; task 1 holds no `term_add_on` row at all and is eight months into its term. Neither divergence moves a scored value.
+
+---
+
+### closing_checklist
+
+Written after both tasks' `source_gt_comparison` sections were appended. **This difficulty does not close.** The checklist is recorded item by item with its actual status rather than as a pass.
+
+| item | status |
+| --- | --- |
+| per-task audit files correspond one-to-one with the tasks, `_difficulty.md` sits alongside them | ✔ `0.md`, `1.md`, `_difficulty.md` in `env/regional_retail_bank/audits/policy_task/cd_maturity_withdrawals_and_renewals/` |
+| old revisions traceable | ✔ first audit of this difficulty; no prior revision to preserve |
+| every comparison section carries a PASS | ✘ task 0: SOURCE-POLICY / SOURCE-CHAIN / SOURCE-FACTOR / SOURCE-TASK RED. task 1: SOURCE-POLICY / SOURCE-FACTOR / SOURCE-TASK RED, problem tree PASS |
+| this difficulty's extended policies fully covered | ✔ all four, {cd_ext_overdue_term_renewal_rate, cd_ext_partial_early_withdrawal_penalty} ∪ {cd_ext_omitted_withdrawal_entry, cd_ext_term_restoring_add_on} |
+| the M tasks' scopes pairwise disjoint over the whole problem tree | ✔ disjoint in policies and in task tools |
+| task tools and GT closed | ✔ each task's two task tools are exactly the two `target_tool`s of the policies it claims; every gold argument traces to a policy sentence or a persona line |
+| each task tool uses an independently generated, frozen uuid8 | ✔ `3666596b`, `44cc2957`, `7001af6d`, `1e70ab4d` — distinct, no shared prefix, not sequential, not batch-derived |
+| every task's tree: one to three prerequisite problems | ✔ one each |
+| at least max(n−1, 1) `value_input` edges | ✔ one each, against a floor of one |
+| at least one problem resolved by an `owner=user` tool | ✔ task 0 `confirm_partial_withdrawal_44cc2957`, task 1 `confirm_term_add_on_1e70ab4d` |
+| no cycle; the difficulty's edges together still a DAG | ✔ two edges, four nodes, two disjoint components |
+| every computation declares a self-sufficient baseline giving a definite number different from gold | ✔ 4.22 vs 4.14; 1,052.00 vs 687.42; 117.76 vs 130.15; 14,500.00 vs 15,375.00 |
+| four to six factors per computation, 2 `parameter`, 2 `method`, 2 multi-source, 2 cross-difficulty | ✔ 4/5/4/5 factors; counts in `factor_ladders` above |
+| every ladder at least three tiers stated in full in its rule | ✘ three tiers everywhere, but see **CG-1**, **CG-1a**, **CG-3** and **CG-4**: four ladders are not stated in the rule as they are implemented, and one is not pairwise disjoint as stated |
+| every factor proved to bear weight on its task's world against an honest baseline | ✔ all eighteen factor substitutions moved the scored value; every `baseline` matches what `baseline.rule` states for its input |
+| a genuine near-miss per computation | ✔ renewal (two checking deposits outside the window, decisive), penalty (the 2026-04-30 credit outside the one-month window, decisive), entry (the 2026-02-19 withdrawal and the 2026-03-31 credit outside the three-month window, decisive); ✘ restoring add-on — see `1.md` **F-12** |
+| instantiation-stage gates re-run once on the final form | not run: the brief instructs this auditor to cite the supplied gate snapshot and not to run the gates. **This item is outstanding and is owed on whatever final form follows from these findings.** |
+
+#### summary of red lights, by where they must be settled
+
+| id | where | bears on |
+| --- | --- | --- |
+| CG-1 | charter (three compute expressions vs their rule sentences) | neither task's scored values; the rendered KB |
+| CG-1a | charter (`cd_ext_term_restoring_add_on` tier 2, three faces disagree) | task 1 (`1.md` F-9); no scored value moves |
+| CG-3 | charter (`cd_ext_partial_early_withdrawal_penalty`, "the month now running") | task 0 (`0.md` F-1): penalty 687.42 vs 739.62 |
+| CG-4 | charter (`cd_ext_omitted_withdrawal_entry`, tiers 2 and 3 overlap) | task 1 (`1.md` F-9); no scored value moves |
+| F-2 | `tasks/0.json` `prerequisite_closure.order_uniqueness` | task 0: terminal principal 313.89 vs 220.89 |
+| F-3 | `tasks/0.json` `design_rationale` | task 0: an interest credit of 304.23 that is not in the world; an interest total of 4,038.17 that does not close the ledger |
+| F-10 | `tasks/1.json` `design_rationale` | task 1: three interest credits named where four are used |
+| F-11 | `tasks/1.json` `initial_state.cd_transactions.606b2279-…` | task 1: a crediting date the charter forbids, load-bearing on 130.15/15,375.00 |
+
+Observations that demonstrate no consequence — CG-2, CG-5, CG-6, CG-7, CG-8, CG-9, CG-10, CG-11, CG-12, and the per-task F-4, F-5, F-6, F-8, F-12, F-13, F-14 — are recorded in their files and are not grounds for rework.
+
+---
+
+## revision_9
+
+Re-audit round 9, by the auditor of revision_8, in the same session. **Revisions 1-8 above are untouched**, including revision_8's blind text, which is not edited to accommodate anything found here. Pre-append sha256 of this file: `58718c94f16fed44804b16c9d7b8938cddf2743c3617636ab52e0c7350e6bd8c` (1712 lines).
+
+**This round is not blind.** Revision_8 revealed both GTs, so this round verifies the rework item by item rather than re-deriving from a masked view. Every figure below is this auditor's own recomputation of the charter's `compute` on the current worlds through the engine's own primitives, compared afterwards with the artifacts' proof fields.
+
+### inputs_and_movement
+
+| artifact | revision_8 sha256 | revision_9 sha256 | moved? |
+| --- | --- | --- | --- |
+| `cd.extended.yaml` | `0dfc2c4b2268b0b7f7fea4bbf14884e02f359195ef1a8efd8060bd58705638a3` | `1a01b8ab9834474275425b160f75ee50727930d248afcff719cdcc095bf37fc4` | **yes** |
+| `task_tools.py` | `7fd301983c9fd6de17f3ece522baed38ff73ec078d2c349b9afaac2fc45a7398` | `7fd301983c9fd6de17f3ece522baed38ff73ec078d2c349b9afaac2fc45a7398` | no |
+| `blueprint/products/cd.yaml` | `7a14550e7c6bc9cfc2f59401c8032dd5371b4809ce2874ec58315695dc044aa8` | `7a14550e7c6bc9cfc2f59401c8032dd5371b4809ce2874ec58315695dc044aa8` | no |
+| masked view `0.json` | `5d0d55b782…b971b2d5` | `5d0d55b782…b971b2d5` | no |
+| masked view `1.json` | `7ec8744fde…f4d5bb52` | `a85e728c38ce668efe9ef1c5acd613e5f335344461b60b0a6ac539f7964e2006` | **yes** |
+| `tasks/0.json` | — | `dc1dbe69f98517dfdb16eaa195a47e92e231b821fb628657085e0e069be59661` | proof fields only |
+| `tasks/1.json` | — | `0dc71414e27989177eef16861c9c30760ea95ad2936e740c30d829c5083784bb` | world + gold + proof |
+
+The base section of `cd.extended.yaml` was re-compared key by key against `blueprint/products/cd.yaml` and is still **verbatim identical** on all ten keys. Policy ids, `target_tool`s, `computes` bindings and all four uuid8s (`3666596b`, `44cc2957`, `7001af6d`, `1e70ab4d`) are unchanged, and `task_tools.py` is byte-identical, so `action_binding_and_uuids` carries forward by reference on unchanged inputs: the four tool bodies still validate nothing, refuse nothing and name no other tool.
+
+Gate snapshot re-run by the coordinator after the rework is cited, not re-run here: EXTENDED / TASK TOOL CONTRACT / REPLAY / SOLVABILITY / COMPUTE / GROUNDING / SCOPE all OK. The two movements the coordinator flagged are interpreted under `history_depth` below.
+
+### item verdicts
+
+| item | round-8 verdict | claim | revision_9 verdict |
+| --- | --- | --- | --- |
+| CG-3 / F-1 | SOURCE-POLICY + SOURCE-TASK RED | closed | **CLOSED** |
+| F-11 | SOURCE-TASK RED | closed | **CLOSED** |
+| CG-1 | SOURCE-POLICY RED | closed | **CLOSED** |
+| CG-1a | SOURCE-POLICY RED | closed | **CLOSED** |
+| CG-4 | SOURCE-POLICY RED | closed | **CLOSED** |
+| F-2 | SOURCE-CHAIN RED | closed | **CLOSED** |
+| F-3 | SOURCE-FACTOR RED | closed | **CLOSED** |
+| F-9 | SOURCE-POLICY RED (inherited CG-1a + CG-4) | closed | **CLOSED**, consequentially |
+| F-10 | SOURCE-FACTOR RED | closed | **CLOSED** |
+| F-13 (the false cross-task sentence it found itself) | observation | closed | **CLOSED** |
+| CG-6 | observation | incidentally closed on task 1's world | **accurate**; the charter-level wording is unchanged, so the observation stands at charter scope |
+| CG-2, CG-5, CG-7 to CG-12, F-4 to F-8, F-12, F-14 | observations | not acted on | **confirmed not acted on**; none has regressed into a consequence |
+| — | — | — | **CG-13, new to this report**: five ladder fall-throughs stated as positive conditions rather than "otherwise". Pre-existing in the revision_8 charter and **missed by this auditor in round 8**; not introduced by the rework |
+
+**No regression was found.** Task 0's world is byte-identical and its four scored parameters are unchanged; both problem trees, both prerequisite sentences, both `owner=user` writes, both baselines and all eighteen factor substitutions were re-run and still hold.
+
+---
+
+#### CG-3 / F-1 — CLOSED
+
+*What changed.* The rule's tier condition "interest has been credited to the certificate **in the month now running**" is now "interest has been credited to the certificate **in the one month counted back from the day the principal leaves**", with the matching consequent "the basis is the sum the withdrawal removes **less the interest credited in that one month**" and the second tier's "no interest has been credited **in that one month**". The binding was renamed `interest_credited_this_month` -> `interest_credited_one_month`. The `factors[penalty_basis_measure].ladder`, the `compute_basis[charged_basis]` quotation and the `overwrite[1].replaced_by` text all carry the new wording; each was checked to be a verbatim substring of the `rule`.
+
+*Test 1 — is the rolling reading the one the world is scored on?* Yes. Recomputed on task 0's post-renewal world: the 2026-05-28 credit of 303.58 is inside `within_months=1` (`MONTHS('2026-05-28','2026-06-12') = 0`), tier 1 holds, `charged_basis` = 103,054.59 − 303.58 = 102,751.01, and the scored penalty is **687.42** — which is `computations[1].expected`. The rework did not move task 0's gold to suit the new wording; it worded the rule to the figure already scored.
+
+*Test 2 — is the competing reading now unavailable from the rule's words?* Yes. "The one month counted back from the day the principal leaves" names a span of one month anchored on the withdrawal day and counted backwards. It cannot be read as "the calendar month of June", which was the reading that produced 739.62. Round 8's second answer is gone: there is no sentence of the policy from which a reader can reach 110,554.59.
+
+*Test 3 — does the new wording conflict with base `cd_evt_interest`, and if so is it declared?* **No conflict.** The base sentence — "*Accrued interest is credited according to interest_crediting_frequency: under monthly, on the last calendar day of each month and on the maturity date for the final partial month*" — fixes **when a crediting row may be posted**. The extended sentence fixes **which posted rows are summed** when grading a penalty basis. They govern different quantities and can both hold at once: task 0's ledger posts on month-ends and on the maturity date, exactly as base requires, and the extended window then selects one of those rows. No base sentence anywhere states that a penalty basis is measured over a calendar month, so nothing of base is superseded and no `overwrite` entry is owed for it. The `overwrite` entry that *is* owed — replacing base's "The penalty basis is the principal the request removes…" — is present and its `replaced_by` is the new graded sentence verbatim.
+
+*Residual, recorded as observation **O-9.1** below:* a one-day boundary difference between "one month counted back" and the engine's `MONTHS()` convention.
+
+---
+
+#### F-11 — CLOSED
+
+*What changed.* The world, not the wording. `tasks/1.json` `initial_state.cd_transactions` no longer contains the `cd_interest_compound` row posted 2026-07-08 for period 2026-07. The ledger now holds twelve rows.
+
+*Legality of the rebuilt ledger, checked field by field, not only on the date I named.*
+
+- **Crediting dates.** Eight `cd_interest_compound` rows: 2025-11-30, 2025-12-31, 2026-01-31, 2026-02-28, 2026-03-31, 2026-04-30, 2026-05-31, 2026-06-30. Every one is the last calendar day of its month, which is what base `cd_evt_interest` requires under `interest_crediting_frequency: monthly` and what the `cd_interest_compound` event definition permits ("*Crediting date: the last calendar day of the month, the maturity date, or the closure date*"). The first, 2025-11-30, is the month-end of the term's opening partial month (term start 2025-11-14) — correct, not an extra. No row is dated the maturity date (2027-05-14, in the future) or a closure date (the certificate is open). **No illegal crediting date remains.**
+- **`interest_period` values** run 2025-11 through 2026-06 with no gap and no duplicate, matching the grain "one row per certificate per interest period".
+- **`rate_applied`** is 3.98 on every credit, which is the rate the certificate has carried since term start.
+- **Arithmetic closure.** 84,000.00 opening + 1,968.19 interest (155.71 + 284.47 + 285.43 + 249.23 + 257.94 + 250.47 + 232.48, and 155.71+…+232.48 recomputed = 1,968.19) − 8,500.00 − 6,000.00 withdrawn − 166.83 penalty = **71,301.36**, which is exactly `cd_certificates.principal_balance`. The seed closes to the cent. Interest accrued since 2026-06-30 is simply not yet credited, which is the correct state under base.
+- **Withdrawals.** Two `early_partial` rows, 8,500.00 on 2026-02-19 and 6,000.00 on 2026-05-21, both ≥ `partial_withdrawal_min_amount` 500.00, both leaving more than `minimum_balance_after_partial` 2,500.00, two in the term against `max_partial_withdrawals_per_term` 2 — at the cap, not over it. Both carry `destination: official_check` with an empty `counterparty_account_id`, which is what the rule requires of a withdrawal paid by official check.
+- **The one existing penalty.** 166.83 on 2026-02-19, `penalty_days` 180 (the tier's published days), `rate_applied` 3.98, `source_item_id` naming the 2026-02-19 withdrawal, posted the same business day as that withdrawal. 8,500.00 × 3.98 / 100 × 180 / 365 = 166.834 -> 166.83 — the base formula exactly, which is right for a penalty booked before the owner held a savings account, an auto loan or a card.
+- **The defect the task turns on is intact.** The 2026-05-21 withdrawal (`e6862990-9880-4478-aa33-c50e6a0e2273`) is named by no `cd_penalty` row's `source_item_id`; the only penalty names `606b2279-…`, the 2026-02-19 withdrawal. The ledger ids were reissued in the rebuild and the closure's `evidence` list was updated to the new ids, which this auditor checked row by row.
+- **Certificate self-consistency.** 18-Month Bump-Up standard 3.83 + 0.15 relationship = `interest_rate` 3.98; standard APY 3.90 + 0.15 = `apy` 4.05; `jumbo_bonus_applied` false against an opening deposit of 84,000.00 below the 100,000.00 threshold. All three reconstruct.
+- **Everything outside the certificate is unchanged**: the checking, savings, card and auto holdings and all of their ledger rows are identical to revision_8, so every cross-difficulty factor reads the same evidence it read before.
+
+*Both scored values moved, to exactly the charter-legal figures revision_8 predicted.* `entry_amount` 130.15 -> **131.51** and `deposit_amount` 15,375.00 -> **15,376.00**; revision_8 §F-11 wrote "*a reader who applies `cd_evt_interest` … reaches `entry_principal` 5,264.59, an entry of **131.51**, and a restoring deposit of **15,376.00***". The two readings that round 8 showed were both live have collapsed into one, because the record a reader would have had to overrule is gone. **This is the legitimate direction of fix: the world was made legal, not the rule bent around it.**
+
+---
+
+#### CG-1 — CLOSED
+
+*What changed.* All three sites that hard-coded `{Interest Checking, Premier Checking, Private Client Checking}` now read the per-variant parameter:
+
+- `cd_ext_partial_early_withdrawal_penalty.compute[applied_rate]`: `… if (checking_tier in P('relationship_qualifying_checking_tiers') and checking_opened_before_term == 1) else (P('standard_interest_rate') if ((checking_tier or '') != '' and checking_tier not in P('relationship_qualifying_checking_tiers') and checking_opened_before_term == 1) else F('interest_rate'))`
+- `cd_ext_term_restoring_add_on.compute[qualifying_checking]`: `1 if (checking_tier_held in P('relationship_qualifying_checking_tiers')) else 0`
+- `cd_ext_overdue_term_renewal_rate.compute[relationship_figure]` second tier, and `factors[relationship_figure_grade].baseline`, both now `… in P('relationship_qualifying_checking_tiers')`
+
+A sweep over `extended_policies` confirms **no `Interest Checking` literal remains anywhere**. The only surviving literal checking-tier names are `Premier Checking` / `Private Client Checking` in the renewal's first tier, which the rule itself names literally ("*an owner who holds an active Premier Checking or Private Client Checking account*") — correct to hard-code, because that tier is a closed set the rule states, not the per-variant list.
+
+*Six-tier agreement, verified exhaustively.* For every one of the six certificate variants × seven checking states (the six checking tiers plus "no active checking account"), this auditor compared the tier the **rule** prescribes with the tier the **compute** selects, for `applied_rate` and for `qualifying_checking`: **0 mismatches in 42 cells each.** The case that convicted the old code now agrees: on an 11-Month No-Penalty Certificate, whose `relationship_qualifying_checking_tiers` is `[Premier Checking, Private Client Checking]`, an Interest Checking holder now falls to the non-qualifying tier under both faces.
+
+*Did the guard narrow the open set?* **No.** The rule's second tier is "*an owner **holding an active checking account** of a tier that does not qualify, opened before the term now running began*". The guard `(checking_tier or '') != ''` is precisely that rule's own "holding an active checking account" requirement — `CFIELD` returns `None` when the customer has no active checking account, and the rule sends such an owner to "every other owner" anyway. The set stays open through `not in P(…)`: it admits any checking tier absent from the certificate tier's list, including one added to the charter later, which a fixed enumeration could not.
+
+*Parameter safety.* All six certificate variants define `relationship_qualifying_checking_tiers` as a list, so no `in` test can be evaluated against `None`.
+
+---
+
+#### CG-1a — CLOSED
+
+The middle tier of `lost_principal_measure` now reads the same in all three faces. `rule`: "*where the owner has an auto loan at the bank that is not past due and principal was taken out only once in those months, it is the principal that withdrawal removed **together with every entry booked for it in those months***". `factors[lost_principal_measure].ladder[1].method`: the same clause. `compute[lost_principal]`: `(withdrawn_principal_year + entries_booked_year) if (auto_loan_standing == 'active' and withdrawals_in_year == 1)`. The rule's old "*less any credit back posted in them*" is gone from that tier. A verbatim check confirms every tier of this ladder is now a string of the `rule`. The round-8 split of 6,000.00 against 6,130.15 no longer exists: all three faces give "principal removed plus entries booked".
+
+#### CG-4 — CLOSED
+
+The second tier of `entry_principal_measure` now states the card-held conjunct the compute always had. `rule`: "*where the owner holds an active Piedmont Crescent card **and either** that card was opened after the term began **or** interest was credited in fewer than each of those three months, …*". Tiers 2 and 3 ("*where the owner holds no active card*") are now **pairwise disjoint**, and tiers 1–3 are jointly exhaustive: within card-held, tier 2's condition is the exact complement of tier 1's, and tier 3 takes the rest. The compute's `card_held == 1` conjunct is now a sentence of the rule, so a reader can reproduce the tie-break. The round-8 ambiguity between a base of 5,210.17 and one of 6,000.00 for a card-less owner is resolved.
+
+#### F-9 — CLOSED consequentially
+
+Task 1's inherited policy-self-consistency RED was CG-1a plus CG-4, both closed above, plus CG-1, closed above. Nothing of F-9 survives in its own right.
+
+---
+
+### findings (revision_9)
+
+**CG-13 — SOURCE-POLICY RED, new to this report, pre-existing in the artifacts. Five ladder fall-throughs are stated as positive conditions rather than as "otherwise", so the rule is silent on cells the compute nonetheless decides — and in three of them the compute hands the owner the value the rule reserves for someone else.**
+
+*Symptom.* Several ladders state their third tier as a specific negative situation ("where the owner holds no active card", "an owner who holds no active checking account of a qualifying tier", "where the owner holds no active savings or money market account") while the `factors[].ladder` writes "otherwise" and the `compute`'s final `else` catches everything the first two tiers missed. Between the first two tiers and that named third situation there are cells the rule does not reach.
+
+*Root cause.* A tier present in one face of the policy and absent from the other, in the sense of check 2.
+
+*Evidence, instance by instance, with the uncovered cell.*
+
+| policy | factor | rule's third tier | cell the rule never reaches | value the compute assigns there |
+| --- | --- | --- | --- | --- |
+| cd_ext_overdue_term_renewal_rate | `relationship_figure_grade` | "an owner who holds no active checking account of a qualifying tier earns nothing" | an active **Interest Checking** account with **at least six** deposits in the window, on any of the five certificate tiers that list Interest Checking as qualifying (verified: exactly 5 such cells across the 6 × 7 × 2 grid) | 0 |
+| cd_ext_omitted_withdrawal_entry | `entry_days_measure` | "where the owner holds no active savings or money market account, the days are the days the tier publishes" | an **active** savings or money market account whose balance is **below** the tier's `minimum_opening_deposit` | `P('early_withdrawal_penalty_days')` — the no-account value |
+| cd_ext_term_restoring_add_on | `restored_interest_span` | "where the owner holds no active checking account of a qualifying tier, no interest is added" | a **qualifying** checking account with **no** early partial withdrawal in the twelve months | 0 |
+| cd_ext_term_restoring_add_on | `restoration_rate_grade` | "an owner holding **no active card** earns it at the tier's published standard interest rate less the tier's relationship bonus points" | an **active card of a tier other than** Cash Rewards Visa or Travel Rewards Visa Signature with **at least** eight hundred dollars of purchases in the quarter | `P('standard_interest_rate') - P('relationship_apy_bonus')` — the **no-card** value |
+| cd_ext_term_restoring_add_on | `restoration_allowance_grade` | "where the owner holds no active savings or money market account, nothing is added" | balance at or above the tier's largest total add-on but `renewal_count` above zero; and an active account below the tier's `minimum_opening_deposit` | 0 — the no-account value |
+
+*Demonstrated consequence*, on the sharpest instance, `restoration_rate_grade`. Take an owner of an 18-Month Bump-Up Certificate holding an **active Secured Visa** with 900.00 of purchases posted in the three months before the deposit. The rule's first tier excludes them (wrong card tier); the second excludes them (their spend is not "less than eight hundred dollars"); the third names "*an owner holding no active card*", which they are not. The rule therefore yields **no rate at all**, while `compute[restoration_rate]` falls through to `P('standard_interest_rate') - P('relationship_apy_bonus')` = 3.83 − 0.15 = **3.68**, the figure the rule's own words reserve for an owner with no card. Two passages of one policy, one situation, different conclusions. The same shape holds for `entry_days_measure` and `restoration_allowance_grade`.
+
+*Bears on.* **Neither task's scored values.** Task 0's owner holds Interest Checking with five deposits (covered by the renewal ladder's second tier); task 1's owner holds a Cash Rewards Visa with 1,142.39 of quarterly purchases (first tier), an active savings balance of 41,300.00 against a `minimum_opening_deposit` of 2,500.00 and a `term_add_on_max_amount` of 25,000.00 with `renewal_count` 0 (first tiers), a qualifying Premier Checking account with two withdrawals in the year (first tier). Every uncovered cell is unoccupied in both worlds. The defect is a defect of the charter, which the rendered KB will carry.
+
+*Honesty note.* **This is not a regression and was not introduced by the rework.** The revision_8 charter carried the same five sentences with the same holes, and this auditor's round-8 `factor_ladders` check tested the tiers for pairwise disjointness but not for exhaustiveness, so the finding was missed. It is recorded here at charter scope, under the round in which it was found. The rework shows the fix pattern exists: `entry_principal_measure` was a sixth member of this family and CG-4's repair removed its hole by naming the complement explicitly.
+
+*Affected artifact and location.* `cd.extended.yaml`, `extended_policies[cd_ext_overdue_term_renewal_rate].rule` (the graded relationship sentence) against `factors[relationship_figure_grade].ladder[2]` and `compute[relationship_figure]`; `extended_policies[cd_ext_omitted_withdrawal_entry].rule` (the graded days sentence) against `factors[entry_days_measure].ladder[2]` and `compute[entry_days]`; `extended_policies[cd_ext_term_restoring_add_on].rule` (the graded interest-span, rate and allowance sentences) against the matching ladders and `compute[interest_days]`, `compute[restoration_rate]`, `compute[restoration_allowance]`.
+
+*Relation to previous revisions.* Not reported in revisions 1-8; present in the revision_8 artifacts and unchanged by the revision_9 rework.
+
+---
+
+**O-9.1 — Observation, new. "One month counted back" and the engine's month arithmetic disagree on one boundary day.**
+
+`_within` admits a row when `0 <= MONTHS(posted_date, NOW) < 1`, and `MONTHS` subtracts one when the later day-of-month is smaller than the earlier. On task 0's frozen date 2026-06-12 that makes the window **(2026-05-12, 2026-06-12]**: a credit posted 2026-05-13 is inside and one posted 2026-05-12 — exactly one month back — is outside, where the phrase "the one month counted back from the day the principal leaves" would naturally include it. No record in either world is dated on that boundary (task 0's nearest credits are 2026-04-30 and 2026-05-28), so no scored value can be shown to differ. Recorded because the new wording is otherwise exact, and this is the one day on which it is not.
+
+**O-9.2 — Observation, new. Task 1's tier-1 conditions now sit exactly on their thresholds.**
+
+With the 2026-07-08 credit removed, `interest_months_recent` is **3** against a tier condition of `>= 3`. Both `entry_principal_measure` and `entry_days_measure` take their first tier on the strength of that exact equality, where round 8 had a margin of one row. This is not a defect — it is the correct count under the charter, and the rule's own words are "interest was credited in each of the three months", which three credits in three distinct calendar months (2026-04, 2026-05, 2026-06) satisfy precisely. It is recorded because two factors now share one boundary: removing any single in-window credit would flip both.
+
+**O-9.3 — Observation. CG-6 is closed on task 1's world and open at charter scope.**
+
+The compute still counts **rows** (`COUNT(… within_months=3)`) where the rule says "credited in **each of the three months**". On the rebuilt ledger the three qualifying rows fall in three distinct calendar months, so the row count and the distinct-month count agree at 3 and the two readings select the same tier. The charter wording is unchanged, so the divergence remains available on a world where two credits fall in one month; it has simply lost its foothold here. The reworker's claim of an incidental closure is accurate as stated.
+
+---
+
+### history_depth (the coordinator's two flagged movements)
+
+*What the metric counts.* `history_rows_max` is the largest per-task total of **distinct rows of the certificate's own ledger** that the task's computations read, summed across its computations. Recomputed by this auditor on the handling-time worlds:
+
+| task | computation | own-ledger rows read | which rows |
+| --- | --- | --- | --- |
+| 0 | renewal | 1 | the grace add-on of 2026-06-02 |
+| 0 | penalty | 3 | the 2026-05-28 credit and the two 2025 partial withdrawals |
+| **1** | entry | **5** | the withdrawals of 2026-02-19 and 2026-05-21 and the credits of 2026-04-30, 2026-05-31, 2026-06-30 |
+| **1** | deposit | **4** | both withdrawals, the 2026-02-19 penalty and the entry booked on this call |
+
+Task 1 totals **9**, which is the suite maximum and the source of both movements: it was 10 in round 8, and the single row it lost is the 2026-07-08 credit — precisely the illegal row F-11 required to be removed. The replay closure 37 -> 36 and the seed rows 14 -> 13 are the same one row seen from two other angles. **There is no second, unexplained deletion**: this auditor enumerated the twelve remaining `cd_transactions` rows and matched every one against revision_8's dump.
+
+*Does the ledger still carry the history the task needs?* **Yes**, and the judgement does not rest on the metric's margin.
+
+- The entry computation still reads a two-withdrawal, three-credit ledger spanning 2026-02-19 to 2026-06-30, and its tiers are still decided by aggregates over that span rather than by inspection.
+- Its **near misses survive and are still decisive**, which is the substantive test. Recomputed: counting the 2026-03-31 credit, which sits just outside the three-month window (`MONTHS = 3`), moves the entry from **131.51 to 125.07**; counting the 2026-02-19 withdrawal, also just outside it (`MONTHS = 4`), moves it from **131.51 to 343.85**. A careless reader is still punished by the window, exactly as before.
+- The deposit computation's twelve-month window is untouched and still spans both withdrawals and the pre-existing penalty.
+- What was lost was not history the task needed but a row the charter forbade, and its removal made the ledger's arithmetic and its crediting dates simultaneously correct for the first time.
+
+The floor of 8 is now cleared by one rather than by two. That is a fact about how much margin a future edit has, not a defect in what is on disk; it is recorded so that any further row removal from task 1's certificate ledger is understood to breach the floor.
+
+---
+
+### closing_checklist (revision_9)
+
+| item | status |
+| --- | --- |
+| per-task audit files one-to-one with the tasks; `_difficulty.md` alongside | ✔ |
+| old revisions traceable | ✔ revisions 1-8 preserved verbatim; this round appended as `revision_9` |
+| every comparison section carries a PASS | ✘ **one outstanding**: policy self-consistency fails at charter scope on **CG-13** in both tasks' files. The problem tree, factor weight and unique-solution relationships now PASS for both tasks |
+| extended policies fully covered; scopes pairwise disjoint | ✔ unchanged |
+| task tools and GT closed; uuid8s independently generated and frozen | ✔ `task_tools.py` byte-identical to revision_8 |
+| one to three prerequisite problems, ≥ max(n−1,1) `value_input` edges, ≥1 `owner=user` write, no cycle | ✔ unchanged in both tasks; re-verified against the current `prerequisite` blocks and `evaluation_criteria` |
+| every edge bears weight | ✔ task 0: 687.42 against 779.11 with the renewal skipped. task 1: 15,376.00 against 15,244.00 with the entry skipped, a movement of 132.00 |
+| self-sufficient baseline giving a definite number different from gold | ✔ 4.22 vs 4.14; 1,052.00 vs 687.42; 117.76 vs 131.51; 14,500.00 vs 15,376.00 |
+| 4-6 factors, 2 `parameter`, 2 `method`, 2 multi-source, 2 cross-difficulty per computation | ✔ 4 / 5 / 4 / 5, counts unchanged |
+| every ladder at least three tiers stated in full in its rule | ✘ three tiers everywhere and every tier now substantively in the rule; **CG-13** is the residue — five fall-throughs are narrower in the rule than in the ladder |
+| every factor bears weight against an honest baseline | ✔ all eighteen substitutions re-run; every one moves the scored value, and every `baseline` is what `baseline.rule` states for its input |
+| a genuine near-miss per computation | ✔ for three of four; ✘ for the restoring add-on — **F-12** unchanged, still an observation |
+| instantiation-stage gates re-run once on the final form | ✔ re-run by the coordinator after the rework and cited above; interpreted under `history_depth` |
+
+**The difficulty does not close**, on one charter-scope item. Every defect that round 8 could demonstrate against a task world is closed: CG-3/F-1 and F-11, the two that put a second defensible answer on a scored parameter, are closed in the two legitimate directions — the rule reworded to the reading the world is scored on, and the world rebuilt to be legal — and CG-1, CG-1a, CG-4, F-2, F-3, F-9, F-10 and F-13 are closed in substance. What remains is **CG-13**, which no task instantiates, which was in the artifacts before this rework, and which this auditor did not raise in round 8.
+
+---
+
+## revision_10
+
+Re-audit round 10, by the auditor of revisions 8 and 9, in the same session. **Revisions 1-9 above are untouched**, including the round-8 blind text and the round-9 comparison. Pre-append sha256 of this file: `ebfbdaa4681649904c00a5dbc63070d97a91fd43ecbc36a250e9ce11cff62e2f` (1912 lines). Narrow round: **CG-13 was the only open RED**, and this round verifies it, tests for regression, and tests for anything new the repair introduced.
+
+### inputs_and_movement
+
+| artifact | revision_9 sha256 | revision_10 sha256 | moved? |
+| --- | --- | --- | --- |
+| `cd.extended.yaml` | `1a01b8ab9834474275425b160f75ee50727930d248afcff719cdcc095bf37fc4` | `460015ed17069989da7ade604b7a87c29ddebf90c791c149d5d506bf985a5683` | **yes** |
+| `task_tools.py` | `7fd301983c9fd6de17f3ece522baed38ff73ec078d2c349b9afaac2fc45a7398` | unchanged | no |
+| `blueprint/products/cd.yaml` | `7a14550e7c6bc9cfc2f59401c8032dd5371b4809ce2874ec58315695dc044aa8` | unchanged | no |
+| masked view `0.json` | `5d0d55b782…b971b2d5` | unchanged | no |
+| masked view `1.json` | `a85e728c38…7964e2006` | unchanged | no |
+| `tasks/0.json` | `dc1dbe69f9…9be59661` | `5493269e4560953ab7a1a10a11ab6278dff4a028b1ce949d8ef383adcae4fff2` | rationale only |
+| `tasks/1.json` | `0dc71414e2…5083784bb` | `a2ea96de5ec8c844b88ec40f3f5bb7587b9669cef42748ecabd39dc0cca4ca96` | rationale only |
+
+### the prose-only claim, tested rather than accepted
+
+- **Both masked views are byte-identical** to round 9, so no seeded row moved in either world. The round-9 reading of both worlds stands.
+- **Every `compute` expression in all four policies is character-for-character what revision_9 recorded**, across all 68 bindings, and every `params` block is unchanged.
+- **Every one of the 18 `factors[].ladder` entries is character-for-character unchanged**, `when` and `value`/`method` alike, as is every `baseline` binding, every `effect` label, every `decides` and every `cross_difficulty`. All 18 tier-2 `when` values were and remain `otherwise`.
+- **Every gold argument and every `computations` figure is unchanged** — re-derived independently below.
+- The base section of `cd.extended.yaml` is still verbatim identical to `blueprint/products/cd.yaml` on all ten keys.
+- What did change: **six fall-through clauses inside four `rule` strings**, and the `compute_basis` quotations and `overwrite.replaced_by` texts that carry those sentences. Every one of those links was re-checked: all `compute_basis` values are verbatim substrings of their `rule`, `compute_basis` keys match the binding list exactly, every `overwrite.replaced_by` is verbatim in the rule and every `superseded_clause` verbatim in its base rule, and both `prerequisite.policy_source` sentences are still verbatim in their own rule and still absent from the depended-on rule. Both `baseline.rule` blocks decompose into sentences that are all still verbatim in the rule, with `baseline.params` unchanged.
+
+**The prose-only claim holds.**
+
+### CG-13 — CLOSED
+
+*What changed, clause by clause.* Six fall-throughs were rewritten from a named negative situation to an explicit residual plus a gloss naming the variables the residual ignores:
+
+| policy | ladder | round-9 fall-through | round-10 fall-through |
+| --- | --- | --- | --- |
+| overdue_term_renewal_rate | `relationship_figure_grade` | "an owner who holds no active checking account of a qualifying tier earns nothing" | "**every other owner** earns nothing, whatever checking account they hold and however many deposits were posted to it" |
+| omitted_withdrawal_entry | `entry_days_measure` | "where the owner holds no active savings or money market account, the days are the days the tier publishes" | "**in every other case**, whatever savings or money market account the owner holds and whatever it holds in it, the days are the days the tier publishes" |
+| term_restoring_add_on | `lost_principal_measure` | "where the owner has no auto loan at the bank that is not past due, it is …" | "**in every other case**, whatever loans the owner has and however often principal was taken out, it is …" |
+| term_restoring_add_on | `restored_interest_span` | "where the owner holds no active checking account of a qualifying tier, no interest is added" | "**in every other case**, whatever checking account the owner holds and however often principal was taken out, no interest is added" |
+| term_restoring_add_on | `restoration_rate_grade` | "an owner holding no active card earns it at …" | "**every other owner**, whatever card they hold and whatever they have charged to it, earns it at …" |
+| term_restoring_add_on | `restoration_allowance_grade` | "where the owner holds no active savings or money market account, nothing is added" | "**in every other case**, whatever savings or money market account the owner holds and however many terms the certificate has run through, nothing is added" |
+
+*Is the sixth genuinely a member of the defect class?* **Yes.** `lost_principal_measure` was not in this auditor's round-9 list of five. Its tiers are "auto loan not past due **and** principal taken out more than once" and "auto loan not past due **and** principal taken out only once", so its old third tier, "where the owner has **no** auto loan at the bank that is not past due", left uncovered the cell **active auto loan with zero early partial withdrawals in the twelve months** — a cell the rule reached no verdict on while `compute[lost_principal]`'s final `else` decided it as `withdrawn_principal_year - credits_back_year`. That is exactly the shape of the other five. Revision_9 §CG-13 excluded it on the ground that the cell is business-vacuous (with no withdrawal there is no loss to restore); that was a judgement call about severity, not about membership, and the reworker is right to have repaired it. **This auditor's round-9 enumeration of five was one short.**
+
+*Is any of the six a widening that swallows a tier above?* **No, and this was tested, not reasoned.** "Every other owner" and "in every other case" are residual by construction: they are defined by exclusion from the tiers above, so they cannot overlap them. The trailing gloss ("whatever card they hold and whatever they have charged to it") states which variables the residual is indifferent to; it does not add an independent condition that could reach back over tier 0 or tier 1. And the tier-0 and tier-1 clauses of all six ladders are **textually unchanged** from revision_9, so whatever disjointness they had they still have.
+
+*The exhaustiveness sweep — this auditor's own, not the reworker's.* Round 8's ladder check tested pairwise disjointness and not exhaustiveness, which is how CG-13 survived seven revisions; no gate script tests it either. This round it was built from scratch. For each of the **18 ladders** across the four policies, the tier-0, tier-1 and tier-2 predicates were transcribed **from the rule's own clauses** — the residual tiers transcribed as residual, the positively-worded ones (`entry_principal_measure`, `added_days_grade`, `assembled_rate_rounding`) transcribed as written and **not** assumed to be complements — together with the branch the `compute` expression takes, and the whole variable space was enumerated. Domains include every checking tier and every card tier plus "no account", every certificate variant's own `relationship_qualifying_checking_tiers`, and boundary values on both sides of every threshold.
+
+```
+relationship_figure_grade      cells=168   overlap=0   gap=0   rule!=compute=0
+jumbo_figure_grade             cells=24    overlap=0   gap=0   rule!=compute=2   (CG-2)
+carried_principal_measure      cells=8     overlap=0   gap=0   rule!=compute=0
+assembled_rate_rounding        cells=6     overlap=0   gap=0   rule!=compute=0
+penalty_basis_measure          cells=8     overlap=0   gap=0   rule!=compute=0
+charged_rate_grade             cells=84    overlap=0   gap=0   rule!=compute=0
+charged_days_measure           cells=28    overlap=0   gap=0   rule!=compute=0
+charged_share_grade            cells=18    overlap=0   gap=0   rule!=compute=0
+charged_penalty_rounding       cells=10    overlap=0   gap=0   rule!=compute=2   (CG-2)
+entry_principal_measure        cells=8     overlap=0   gap=0   rule!=compute=0
+entry_rate_grade               cells=12    overlap=0   gap=0   rule!=compute=0
+entry_days_measure             cells=10    overlap=0   gap=0   rule!=compute=0
+added_days_grade               cells=8     overlap=0   gap=0   rule!=compute=0
+lost_principal_measure         cells=12    overlap=0   gap=0   rule!=compute=0
+restored_interest_span         cells=126   overlap=0   gap=0   rule!=compute=0
+restoration_rate_grade         cells=28    overlap=0   gap=0   rule!=compute=0
+restoration_allowance_grade    cells=14    overlap=0   gap=0   rule!=compute=0
+restoring_deposit_rounding     cells=6     overlap=0   gap=0   rule!=compute=0
+```
+
+**578 cells, 0 gaps, 0 overlaps.** Exhaustiveness and disjointness hold **together**, which is the trade the coordinator asked to be tested for: the repair bought exhaustiveness without spending disjointness. No narrow fall-through wording survives in any of the four policies.
+
+The seven ladders of the family — the six above plus `entry_principal_measure`, repaired in round 9 by CG-4 — now each pair an `otherwise` branch in `factors` with a rule clause that is its true complement. Two of the seven state that complement positively rather than as a residual (`entry_principal_measure`: "where the owner holds no active card"; and outside the family `added_days_grade`: "where the entry is booked within thirty days"), and the sweep confirms both are genuinely complete: their tier-1 clauses already cover the rest of the space, so no rewrite was owed and none was made.
+
+*The worked instance re-derived.* Revision_9's demonstration was an owner of an **18-Month Bump-Up Certificate** holding an **active Secured Visa** with 900.00 of purchases posted in the three months before the deposit. Re-derived on the current rule: tier 0 fails (the card is neither a Cash Rewards Visa nor a Travel Rewards Visa Signature); tier 1 fails (900.00 is not "less than eight hundred dollars"); tier 2 now reads "*every other owner, whatever card they hold and whatever they have charged to it, earns it at the tier's published standard interest rate less the tier's relationship bonus points*" and **applies**, giving 3.83 − 0.15 = **3.68**. `compute[restoration_rate]`'s final `else` gives **3.68**. The rule is no longer silent where the code is not, and — the other half of revision_9's finding — the fall-through no longer misdescribes itself: it no longer reserves 3.68 for "an owner holding no active card" while handing it to a card holder.
+
+**CG-13 is closed in substance, not renamed.**
+
+### no new defect
+
+- The only rule≠compute cells the sweep finds anywhere are the **four that are CG-2**, this auditor's standing round-8 observation, unchanged: `jumbo_figure_grade` tier 0 says "*whose owner **holds** an active savings or money market account*" while `compute[jumbo_figure]` tests `savings_balance > 0`, and `charged_penalty_rounding` tier 1 says "*the owner **holds** an active checking account whose balance is below …*" while `compute[rounded_penalty]` tests `checking_balance > 0`. An owner with an active account of exactly 0.00 lands on a different tier under each face. Neither task world contains a zero-balance active account, so no consequence can be demonstrated; it remains an observation. That the sweep re-derived CG-2 independently, and nothing else, is evidence the sweep is sensitive rather than vacuous.
+- **Multi-source counts are untouched.** The requirement bites on "every tier other than the fall-through", and only fall-throughs were rewritten, so no tier that carries the multi-source burden changed. Counts remain 3 / ≥4 / 4 / ≥4 multi-source factors per computation, against a floor of 2.
+- Factor structure is unchanged in every respect: 4 / 5 / 4 / 5 factors, 2 `parameter` and ≥2 `method` each, ≥2 `cross_difficulty` each, binding sets disjoint, no `decides` equal to `result`.
+- No new narrow, overlapping or self-contradicting clause was introduced anywhere; the six new sentences are the only prose the sweep had not already seen, and all six pass.
+
+### nothing regressed
+
+Re-derived independently on the two worlds, and compared afterwards with the artifacts:
+
+| quantity | revision_9 | revision_10 recomputation | GT now |
+| --- | --- | --- | --- |
+| T0 `new_interest_rate` / `new_apy` | 4.14 / 4.22 | 4.14 / 4.22 | 4.14 / 4.22 |
+| T0 `withdrawal_amount` / `penalty_amount` / `penalty_days` / `rate_applied` | 103,054.59 / 687.42 / 68 / 3.99 | identical | identical |
+| T0 renewal factor baselines, whole baseline | 4.17 / 4.09 / 4.19 / 4.13, 4.22 | identical | identical |
+| T0 penalty factor baselines, whole baseline | 689.45 / 713.26 / 909.82 / 763.80 / 687.41, 1,052.00 | identical | identical |
+| T0 edge skipped | 779.11 | 779.11 | 779.11 |
+| T1 `entry_amount` / `entry_days` | 131.51 / 235 | 131.51 / 235 | 131.51 / 235 |
+| T1 `deposit_amount` | 15,376.00 | 15,376.00 | 15,376.00 |
+| T1 entry factor baselines, whole baseline | 149.88 / 134.90 / 104.65 / 127.60, 117.76 | identical | identical |
+| T1 deposit factor baselines, whole baseline | 15,076.00 / 15,299.00 / 15,373.00 / 14,876.00 / 15,375.79, 14,500.00 | identical | identical |
+| T1 edge skipped | 15,244.00 | 15,244.00 | 15,244.00 |
+
+**No scored value moved, no ledger row was removed, and all eighteen factor substitutions still move their scored value.** Both problem trees, both state-form prerequisite sentences, both `owner=user` writes, both `db_closure_matches_initial_state` flags and both `charter_scope` blocks are unchanged; `task_tools.py` is byte-identical, so the uuid8s, the owners and the four unconditional tool bodies are too.
+
+The numeric prose corrected in round 9 is intact and no stale figure returned: task 0 still carries 336.15, 4,132.63 and 220.89 and carries none of 304.23, 4,038.17 or 313.89; task 1 carries 735.41, 5,264.59, 131.51, 15,376.00, 298.34, 14,798.34 and 71,301.36 and carries none of 789.83, 130.15, 15,375.00, 54.42, 296.98 or 14,796.98.
+
+*Two rationale factor cards updated, and true.* Task 0's `relationship_figure_grade` card and task 1's cards for `entry_days_measure`, `lost_principal_measure`, `restored_interest_span`, `restoration_rate_grade` and `restoration_allowance_grade` now describe their third tier as "every other owner / every other case, the fall-through the rule states as the complement of the two above". The sweep above is what makes that description true.
+
+*Observations not acted on, as claimed, each confirmed:* **O-9.1** — the `penalty_basis_measure` wording and `within_months=1` are both unchanged, so the one-day boundary stands. **O-9.2** — task 1's world is byte-identical, so `interest_months_recent` is still exactly 3 against a `>= 3` threshold and two factors still share that boundary. **O-9.3** — `interest_months_recent` is still a row `COUNT` against a rule that says "in each of the three months", so CG-6 is still closed on task 1's world and open at charter scope. CG-2, CG-5, CG-7 to CG-12, F-4 to F-8 and F-12 to F-14 are likewise unchanged; none has acquired a consequence.
+
+---
+
+### closing_checklist (revision_10)
+
+| item | status |
+| --- | --- |
+| per-task audit files one-to-one with the tasks; `_difficulty.md` alongside | ✔ |
+| old revisions traceable | ✔ revisions 1-9 preserved verbatim; this round appended as `revision_10` |
+| **every comparison section carries a PASS** | ✔ **both tasks, all four relationships** |
+| extended policies fully covered; scopes pairwise disjoint | ✔ {renewal, penalty} and {entry, add-on}, disjoint in policies and tools |
+| task tools and GT closed; uuid8s independently generated, frozen, unreused | ✔ `3666596b`, `44cc2957`, `7001af6d`, `1e70ab4d`; `task_tools.py` byte-identical since revision_8 |
+| one to three prerequisite problems, ≥ max(n−1,1) `value_input` edges, ≥1 `owner=user` write, no cycle; difficulty-wide DAG | ✔ one prerequisite and one `value_input` edge per task, `confirm_partial_withdrawal_44cc2957` and `confirm_term_add_on_1e70ab4d` owned by the customer, two disjoint acyclic components |
+| every edge bears weight | ✔ 687.42 vs 779.11; 15,376.00 vs 15,244.00 |
+| self-sufficient baseline giving a definite number different from gold | ✔ 4.22/4.14, 1,052.00/687.42, 117.76/131.51, 14,500.00/15,376.00 |
+| 4-6 factors, 2 `parameter`, 2 `method`, 2 multi-source, 2 cross-difficulty per computation | ✔ 4 / 5 / 4 / 5 |
+| **every ladder at least three tiers, pairwise disjoint and stated in full in its rule** | ✔ **578 cells swept, 0 gaps, 0 overlaps, 0 rule/compute disagreements beyond observation CG-2** |
+| every factor bears weight against an honest baseline | ✔ eighteen substitutions re-run this round |
+| a genuine near-miss per computation | ✔ for three of four. For the restoring add-on the criterion is met in form — the 900.00 card payment of 2026-06-06 is a record a careless reader would count and the rule excludes — but it flips no tier, which is **F-12**, carried as an observation and not as a red light. Stated here so the close-out does not pass over it |
+| instantiation-stage gates re-run once on the final form | ✔ re-run by the coordinator after this rework; every count identical to round 9 |
+
+## THE DIFFICULTY CLOSES.
+
+For both tasks: **policy self-consistency PASS, the problem tree holds PASS, factors bear weight PASS, unique solution PASS.**
+
+Across three rounds, thirteen red lights were raised and all thirteen are closed in substance: CG-1, CG-1a, CG-3/F-1, CG-4, CG-13, F-2, F-3, F-9, F-10, F-11 and F-13's false sentence at charter and task scope, and revisions 1-7's findings against the superseded generation of the artifacts. The two that put a second defensible answer on a scored parameter were closed in the two directions that actually remove the ambiguity rather than rename it — CG-3/F-1 by wording the rule to the reading the world is scored on, and F-11 by rebuilding the world to be legal under the charter it is scored against. What remains on record is a set of observations, none of which demonstrates a consequence on either task's world, and which per this skill are not grounds for rework: CG-2, CG-5 to CG-12, F-4 to F-8, F-12, F-14, O-9.1, O-9.2, O-9.3.

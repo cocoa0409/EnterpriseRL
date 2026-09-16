@@ -40,6 +40,19 @@ import re
 KINDS = ("state_gate", "value_input")
 FORMS = ("state", "action")
 EDGE_KEYS = ("problem", "kind", "gate", "form", "condition", "policy_source", "resolved_by", "effect")
+# Every task's problem tree has MIN..MAX prerequisite problems, the root not counted — exactly the count
+# draw_counts.py draws for the task (seeded by scenario, difficulty and task index; any acyclic shape) —
+# and at least max(n - 1, 1) of its edges are value_input for a tree of n prerequisite problems: state_gate
+# edges alone leave the terminal DB identical whichever order the writes take, so ordering is unobservable
+# to hash scoring, and the larger the tree the more of its edges must carry a value into a calculation.
+# check_solvability applies the same bounds task-side.
+MIN_PREREQ_PROBLEMS = 1
+MAX_PREREQ_PROBLEMS = 3
+
+
+def min_value_input_edges(n_prereq):
+    """The value_input floor of a tree with n_prereq prerequisite problems: max(n - 1, 1)."""
+    return max(int(n_prereq) - 1, 1)
 # Authoring-view leakage: `prerequisite` is general product law, never task narration.
 TASK_VIEW_WORDS = ("this task", "this problem", "the opening world", "the current world",
                    "this customer currently", "this seed")
@@ -287,8 +300,9 @@ def tree_closure(root, out):
     return seen
 
 
-def check_task_tree(tid, root, in_scope, ext, fails):
-    """Gate one task's problem tree: >=3 prerequisite problems, >=2 value_input edges, whole tree in scope."""
+def check_task_tree(tid, root, in_scope, ext, fails, expected=None):
+    """Gate one task's problem tree: exactly `expected` prerequisite problems when the draw is known (1 to 3
+    otherwise), >= max(n-1, 1) value_input edges, whole tree in scope."""
     idx = problem_index(ext)
     out = out_edges(ext)
     if root not in idx:
@@ -296,20 +310,27 @@ def check_task_tree(tid, root, in_scope, ext, fails):
         return
     tree = tree_closure(root, out)
     deps = tree - {root}
-    if len(deps) < 3:
-        fails.append(f"prereq {tid}: problem tree rooted at '{root}' has {len(deps)} prerequisite "
-                     "problem(s); at least 3 are required, the root not counted (any acyclic shape: chain, "
-                     "fan-out, diamond or a mix)")
+    n_dep = len(deps)
+    if expected is not None and n_dep != expected:
+        fails.append(f"prereq {tid}: problem tree rooted at '{root}' has {n_dep} prerequisite problem(s); the draw for "
+                     f"this task is {expected} (scripts/draw_counts.py) — design the tree to the drawn count, never "
+                     "the draw to the tree")
+    elif not (MIN_PREREQ_PROBLEMS <= n_dep <= MAX_PREREQ_PROBLEMS):
+        fails.append(f"prereq {tid}: problem tree rooted at '{root}' has {n_dep} prerequisite problem(s); "
+                     f"{MIN_PREREQ_PROBLEMS} to {MAX_PREREQ_PROBLEMS} are required, the root not counted (the count "
+                     "is drawn per task; any acyclic shape: chain, fan-out, diamond or a mix)")
     kinds = [e.get("kind")
              for n in tree
              for e in ((idx.get(n, (None, {}))[1] or {}).get("prerequisite") or [])
              if isinstance(e, dict) and e.get("problem") in tree]
     n_vi = kinds.count("value_input")
-    if kinds and n_vi < 2:
-        fails.append(f"prereq {tid}: problem tree rooted at '{root}' has {n_vi} value_input edge(s); at least 2 "
-                     "are required — state_gate edges alone leave the terminal DB identical whichever order "
-                     "the writes take, so ordering is unobservable to hash scoring, and a single value_input "
-                     "edge hangs the whole calculation test on one number")
+    need_vi = min_value_input_edges(n_dep)
+    if kinds and n_vi < need_vi:
+        fails.append(f"prereq {tid}: problem tree rooted at '{root}' has {n_vi} value_input edge(s); at least "
+                     f"{need_vi} are required for {n_dep} prerequisite problem(s) (max(n-1, 1)) — state_gate edges "
+                     "alone leave the terminal DB identical whichever order the writes take, so ordering is "
+                     "unobservable to hash scoring, and the larger the tree the more of its edges must carry a "
+                     "value into a calculation")
     outside = {n for n in tree if n not in in_scope}
     if outside:
         fails.append(f"prereq {tid}: problem(s) {sorted(outside)} are in this task's tree but not in its "

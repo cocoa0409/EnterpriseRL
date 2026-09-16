@@ -94,6 +94,18 @@ class TrackingDB:
                 out.append(row)
         return out
 
+    def fuzzy_find(self, table, **match):
+        """Mirror of DB.fuzzy_find: both sides normalised before comparison, so a
+        finder that matches on what a caller says aloud behaves here exactly as it
+        does at runtime."""
+        from erlbench.db import normalize
+        out = []
+        for rid, row in self.tables.get(table, {}).items():
+            if all(normalize(row.get(k)) == normalize(v) for k, v in match.items()):
+                self._mark(table, rid)
+                out.append(row)
+        return out
+
     def insert(self, table, row_id, row):
         if row_id in self.tables.get(table, {}):
             self._mark(table, row_id)

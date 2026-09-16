@@ -1,6 +1,7 @@
 """EXTENDED gate: verify <category>.extended.yaml is a compatible superset of the
-blueprint charter, its extended_policies are well-formed and machine-parseable, its
-every policy has a real cross-category factor that computes only for the primary category,
+blueprint charter, its extended_policies are well-formed and machine-parseable, every
+cross-category read is declared exactly and writes only the primary category, every task's
+factors include a multi-source and a cross-difficulty one,
 every prerequisite is stated by a prerequisite sentence in the blocked policy's own rule,
 every task's gold calls at least one owner=user task tool, and all policies are covered
 across the M task scopes.
@@ -27,12 +28,13 @@ Checks:
            fork at least tiers-1 times; a
            `baseline` for its `decides` binding; at least one binding reads history / a
            date span / another category (a tier is established from records, never read off
-           a field that names the outcome). Per policy: >= 2 parameter, >= 2 method, >= 2
-           multi-source (every tier beyond the fall-through combines >= 2 predicates over
-           distinct evidence by and / or), >= 2 `cross_difficulty` — their tier is decided from
-           another category's holding or ledger, and that category is among the policy's
-           declared cross_category. Whether each factor bears weight on a task's world is
-           check_compute's job (baseline substitution must change `result`).
+           a field that names the outcome). Per policy: >= 2 parameter, >= 1 method. Per task,
+           over the policies its charter_scope claims: >= 1 multi-source (every tier beyond the
+           fall-through combines >= 2 predicates over distinct evidence by and / or) and >= 1
+           `cross_difficulty` — its tier is decided from another category's holding or ledger,
+           and that category is among the policy's declared cross_category. Whether each factor
+           bears weight on a task's world is check_compute's job (baseline substitution must
+           change `result`).
   overwrite  extended MAY supersede base (they are successive versions of the same product law
            and extended wins on conflict) but ONLY clause by clause and only where declared:
            `overwrite` is required (write [] for none); each entry names a base_policy that
@@ -42,10 +44,11 @@ Checks:
            red light; declaration makes the override legal and traceable. Granularity is the
            clause: sentences not named stay in force and stay inherited. What is superseded is
            the handling clause, never a params VALUE — base numbers remain valid and base-homed.
-  crosscat EVERY extended_policy has a non-empty cross_category; its declarations exactly
-           match both the categories read by compute through EXISTS/CPARAM/CFIELD/XSUM/XCOUNT/
-           XMAX/XLATEST and inputs.cross_category; each category is REAL and != primary; and the policy's
-           target_tool writes ONLY primary-category tables (cross-category rule).
+  crosscat every extended_policy carries cross_category ([] where compute reads no other
+           category); its declarations exactly match both the categories read by compute through
+           EXISTS/CPARAM/CFIELD/XSUM/XCOUNT/XMAX/XLATEST and inputs.cross_category; each category
+           is REAL and != primary; and every policy's target_tool writes ONLY primary-category
+           tables (cross-category rule).
   cardinality a non-empty consecutive tasks/0.json..tasks/M-1.json set; the charter carries no
            `workflows` key and no task claims one (every problem is an extended_policy resolved
            by one target_tool call, and the order of a task's writes is entailed by its
@@ -67,12 +70,12 @@ Checks:
            problem's own target_tool as `resolved_by`, and its effect. A rule names no other
            problem's tool or id, and the depended-on rule never restates the prerequisite
            sentence. The whole edge set must be acyclic. Per task, the tree rooted at the
-           task's root problem must have >= 3 prerequisite PROBLEMS (any acyclic shape: chain,
-           fan-out, diamond or a mix), >= 2 of its edges `value_input` (state_gate edges alone
-           leave A-then-B and B-then-A with the SAME terminal DB, so the ordering is not
-           observable by hash scoring, and one value_input edge hangs the whole calculation
-           test on a single number), and every problem in the tree must be inside that task's
-           charter_scope.
+           task's root problem must have 1 to 3 prerequisite PROBLEMS (exactly the count
+           draw_counts.py draws for the task; any acyclic shape: chain, fan-out, diamond or a mix), >= max(n-1, 1) of its
+           edges `value_input` for n prerequisite problems (state_gate edges alone leave
+           A-then-B and B-then-A with the SAME terminal DB, so the ordering is not observable by
+           hash scoring, and the larger the tree the more of its edges must carry a value into a
+           calculation), and every problem in the tree must be inside that task's charter_scope.
   usertool every task's gold calls at least one owner=user task tool through
            unlock_user_discoverable_tool -> call_user_discoverable_tool: at least one problem
            of every tree is the customer's own write, handed over by the agent.
@@ -121,9 +124,10 @@ _FUNCS = {"F", "P", "K", "SUM", "COUNT", "MAX", "LATEST", "EXISTS", "CPARAM", "C
 _CONSTS = {"NOW", "HID", "CUST", "True", "False", "None"}
 _HIST = {"SUM", "COUNT", "MAX", "LATEST"}
 _CROSS = {"EXISTS", "CPARAM", "CFIELD"} | _XHIST
-from check_compute import (factor_shape_errors, MIN_FACTORS_PER_COMP, MIN_CROSS_FACTORS_PER_COMP,  # noqa: E402
+from check_compute import (factor_shape_errors, MIN_FACTORS_PER_COMP, MIN_CROSS_FACTORS_PER_TASK,  # noqa: E402
                            MIN_PARAM_FACTORS_PER_COMP, MIN_METHOD_FACTORS_PER_COMP,
-                           MAX_FACTORS_PER_COMP, MIN_MULTISOURCE_FACTORS_PER_COMP, multi_source)
+                           MAX_FACTORS_PER_COMP, MIN_MULTISOURCE_FACTORS_PER_TASK, multi_source)
+from draw_counts import draw_for_task  # noqa: E402
 
 
 def load_yaml(p):
@@ -448,62 +452,54 @@ def main():
                              "— a computation rests on 4 to 6 rules that each decide one of its inputs")
             n_param = sum(1 for f in factors if f.get("effect") == "parameter")
             n_method = sum(1 for f in factors if f.get("effect") == "method")
-            n_multi = sum(1 for f in factors if multi_source(ep, f))
             if n_param < MIN_PARAM_FACTORS_PER_COMP:
                 fails.append(f"{w}: only {n_param} effect=parameter factors (< {MIN_PARAM_FACTORS_PER_COMP})")
             if n_method < MIN_METHOD_FACTORS_PER_COMP:
                 fails.append(f"{w}: only {n_method} effect=method factors (< {MIN_METHOD_FACTORS_PER_COMP}) — at least "
-                             "two factors must change how a quantity is computed, not only which number enters it")
-            if n_multi < MIN_MULTISOURCE_FACTORS_PER_COMP:
-                fails.append(f"{w}: only {n_multi} multi-source factors (< {MIN_MULTISOURCE_FACTORS_PER_COMP}) — every "
-                             "tier of such a factor beyond the fall-through combines two conditions over distinct evidence by and / or")
+                             "one factor must change how a quantity is computed, in a way that line of business "
+                             "genuinely varies, not only which number enters it")
             xds = [f.get("cross_difficulty") for f in factors if f.get("cross_difficulty")]
-            if len(xds) < MIN_CROSS_FACTORS_PER_COMP:
-                fails.append(f"{w}: only {len(xds)} cross_difficulty factors (< {MIN_CROSS_FACTORS_PER_COMP}) — at "
-                             "least two factors must decide their tier from the customer's holdings or ledger "
-                             "in another difficulty")
             for xd in xds:
                 if xd == cat:
                     fails.append(f"{w}: a cross_difficulty factor names the primary category '{cat}'")
                 elif xd not in cats:
                     fails.append(f"{w}: cross_difficulty '{xd}' is not a known category")
-        cc = ep.get("cross_category") or []
+        cc = ep.get("cross_category")
+        if not isinstance(cc, list):
+            fails.append(f"{w}: cross_category is required — the list of the other categories compute reads, "
+                         "[] where it reads none")
+            cc = []
         cc_cats = set()
-        if not cc:
-            fails.append(f"{w}: cross_category must be non-empty (EVERY extended_policy needs a real "
-                         "cross-category factor)")
-        else:
+        if cc:
             cross_cat_count += 1
-            for entry in cc:
-                oc = entry.get("category") if isinstance(entry, dict) else entry
-                cc_cats.add(oc)
-                if oc not in cats:
-                    fails.append(f"{w}: cross_category '{oc}' is not a known category")
-                elif oc == cat:
-                    fails.append(f"{w}: cross_category names the primary category")
-            if compute_cross_refs != cc_cats:
-                fails.append(f"{w}: cross_category declarations {sorted(map(str, cc_cats))} must exactly "
-                             f"match compute's EXISTS/CPARAM/CFIELD/XSUM/XCOUNT/XMAX/XLATEST categories "
-                             f"{sorted(map(str, compute_cross_refs))} — declared-only dependencies are decoration")
-            for f in factors:
-                xd = f.get("cross_difficulty")
-                if xd and xd not in cc_cats:
-                    fails.append(f"{w}: factor '{f.get('id')}' is cross_difficulty='{xd}' but that category is not "
-                                 "declared in cross_category")
-            input_cc = {entry.get("category") if isinstance(entry, dict) else entry
-                        for entry in ((ep.get("inputs") or {}).get("cross_category") or [])}
-            if input_cc != cc_cats:
-                fails.append(f"{w}: inputs.cross_category {sorted(map(str, input_cc))} must exactly match "
-                             f"cross_category declarations {sorted(map(str, cc_cats))}")
-            # writes-only-primary: the policy's target tool may write ONLY primary tables
-            wt = writes.get(tgt, set())
-            bad = {t for t in wt if table_cat.get(t) not in (cat, None)}
-            if bad:
-                fails.append(f"{w}: cross-category policy's target_tool '{tgt}' writes non-primary tables {sorted(bad)} "
-                             f"(compute must target ONLY the primary category)")
-    if cross_cat_count != len(eps):
-        fails.append(f"only {cross_cat_count}/{len(eps)} extended_policies have cross-category factors "
-                     "(EVERY policy must have one)")
+        for entry in cc:
+            oc = entry.get("category") if isinstance(entry, dict) else entry
+            cc_cats.add(oc)
+            if oc not in cats:
+                fails.append(f"{w}: cross_category '{oc}' is not a known category")
+            elif oc == cat:
+                fails.append(f"{w}: cross_category names the primary category")
+        if compute_cross_refs != cc_cats:
+            fails.append(f"{w}: cross_category declarations {sorted(map(str, cc_cats))} must exactly "
+                         f"match compute's EXISTS/CPARAM/CFIELD/XSUM/XCOUNT/XMAX/XLATEST categories "
+                         f"{sorted(map(str, compute_cross_refs))} — a declared-only dependency is decoration, "
+                         "an undeclared read is hidden")
+        for f in factors:
+            xd = f.get("cross_difficulty")
+            if xd and xd not in cc_cats:
+                fails.append(f"{w}: factor '{f.get('id')}' is cross_difficulty='{xd}' but that category is not "
+                             "declared in cross_category")
+        input_cc = {entry.get("category") if isinstance(entry, dict) else entry
+                    for entry in ((ep.get("inputs") or {}).get("cross_category") or [])}
+        if input_cc != cc_cats:
+            fails.append(f"{w}: inputs.cross_category {sorted(map(str, input_cc))} must exactly match "
+                         f"cross_category declarations {sorted(map(str, cc_cats))}")
+        # writes-only-primary: the policy's target tool may write ONLY primary tables
+        wt = writes.get(tgt, set())
+        bad = {t for t in wt if table_cat.get(t) not in (cat, None)}
+        if bad:
+            fails.append(f"{w}: target_tool '{tgt}' writes non-primary tables {sorted(bad)} "
+                         f"(a policy's result drives a write in the primary category only)")
 
     # ---- no workflows: every problem is an extended_policy; order comes from prerequisite edges ----
     if "workflows" in extended:
@@ -601,6 +597,19 @@ def main():
         unknown_pids = set(scope_pids) - declared_ep_id_set
         if unknown_pids:
             fails.append(f"policy-closure {tid}: unknown extended policy ids {sorted(unknown_pids)}")
+        # ---- per-task floors: multi-source and cross-difficulty are asked of the task, not of every policy ----
+        scope_eps = [ep_by_id[p] for p in scope_pids if p in ep_by_id]
+        scope_factors = [(sp, f) for sp in scope_eps for f in (sp.get("factors") or []) if isinstance(f, dict)]
+        n_multi_task = sum(1 for sp, f in scope_factors if multi_source(sp, f))
+        n_cross_task = sum(1 for _sp, f in scope_factors if f.get("cross_difficulty"))
+        if scope_eps and n_multi_task < MIN_MULTISOURCE_FACTORS_PER_TASK:
+            fails.append(f"factors {tid}: only {n_multi_task} multi-source factors over this task's policies "
+                         f"(< {MIN_MULTISOURCE_FACTORS_PER_TASK}) — at least one factor of the task combines, on every "
+                         "tier beyond the fall-through, two conditions over distinct evidence by and / or")
+        if scope_eps and n_cross_task < MIN_CROSS_FACTORS_PER_TASK:
+            fails.append(f"factors {tid}: only {n_cross_task} cross_difficulty factors over this task's policies "
+                         f"(< {MIN_CROSS_FACTORS_PER_TASK}) — at least one factor of the task decides its tier from "
+                         "the customer's holdings or ledger in another difficulty")
         if tk.get("required_documents") != scope_pids:
             fails.append(f"policy-closure {tid}: required_documents must exactly equal "
                          "charter_scope.extended_policies in the same order")
@@ -638,7 +647,9 @@ def main():
             fails.append(f"prereq {tid}: missing prerequisite_closure.root_problem — every task is a problem "
                          "tree whose root is the problem the customer's surface request points at")
         else:
-            prereq_utils.check_task_tree(tid, root, set(scope_pids), extended, fails)
+            _idx = task_index(tp)
+            prereq_utils.check_task_tree(tid, root, set(scope_pids), extended, fails,
+                                         expected=draw_for_task(diff, _idx)["prerequisite_problems"] if _idx is not None else None)
 
         all_used_policies.update(set(scope_pids))
         scope_by_task[tid] = {"extended_policies": set(scope_pids), "task_tools": set(scope_tools)}
@@ -713,9 +724,9 @@ def main():
               "structurally valid, every prerequisite is stated by a prerequisite sentence (difficulty-wide "
               "cardinality/coverage deferred to final run)")
     else:
-        print("  [PASS] compatible charter; every policy has a real cross-category factor; every prerequisite is "
-              "stated by a prerequisite sentence; every task calls a customer's own tool; all policies are covered "
-              "across the suite with disjoint scopes")
+        print("  [PASS] compatible charter; cross-category reads declared exactly; every task has a multi-source and "
+              "a cross-difficulty factor; every prerequisite is stated by a prerequisite sentence; every task calls a "
+              "customer's own tool; all policies are covered across the suite with disjoint scopes")
     print("EXTENDED OK")
     sys.exit(0)
 

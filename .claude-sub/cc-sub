@@ -1,0 +1,376 @@
+#!/usr/bin/env python3
+"""cc-sub: launch Claude Code on whichever subscription account has the most headroom.
+
+Reads ~/.claude-sub/accounts.txt (name  token), probes every account with a 1-token
+Haiku request and reads the anthropic-ratelimit-unified-* response headers, then:
+  1. keeps accounts whose weekly (7d) remaining >= --min-weekly-left (default 75%)
+     and that are not currently rate-limited;
+  2. among those picks the one with the most 5h headroom (tie -> most weekly left);
+  3. falls back to the best not-rate-limited account if none meets the weekly bar.
+Everything runs isolated from ~/.claude (CLAUDE_CONFIG_DIR=~/.claude-sub) and with the
+ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL proxy setup from ~/.bashrc stripped out.
+
+Usage:
+  cc-sub [claude args...]           pick best account and start claude
+  cc-sub --list                     only print the table, don't launch
+  cc-sub --use 3 [claude args...]   force account "3"
+  cc-sub --min-weekly-left 50 ...   relax the weekly threshold to 50%
+
+Internal (wired into ~/.claude-sub/settings.json by the launcher):
+  cc-sub --statusline               status-line command: prints "acct · 5h · wk · model · ctx"
+  cc-sub --refresh NAME             background re-probe of one account -> status.json
+"""
+import concurrent.futures as cf
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+SELF = os.path.abspath(__file__)
+ACCOUNTS = os.path.join(HERE, "accounts.txt")
+STATUS = os.path.join(HERE, "status.json")          # last probe per account, for the status line
+LOCK = os.path.join(HERE, ".refresh.lock")
+PROXY = "http://proxy.msh.work:3128"          # the only egress that reaches api.anthropic.com
+NO_PROXY = "localhost,127.0.0.1,msh.team,msh.work"
+PROBE_MODEL = "claude-haiku-4-5-20251001"
+API = "https://api.anthropic.com/v1/messages"
+STRIP_ENV = ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL", "ANTHROPIC_AUTH_TOKEN")
+REFRESH_S = 300      # status line re-probes the active account this often (~22 tokens each)
+# Passed as --model unless the caller gives one. The /model picker never lists Fable and
+# rewrites settings.json's "model" whenever it is confirmed, so the CLI flag is the only
+# default that survives; in-session `/model <name>` still works for that session.
+DEFAULT_MODEL = "claude-fable-5-1"
+
+
+def load_accounts():
+    accts = []
+    with open(ACCOUNTS) as f:
+        for ln in f:
+            ln = ln.strip()
+            if not ln or ln.startswith("#"):
+                continue
+            name, tok = ln.split(None, 1)
+            accts.append((name, tok.strip()))
+    if not accts:
+        sys.exit(f"no accounts in {ACCOUNTS}")
+    return accts
+
+
+def probe(name, tok):
+    """Return dict with 5h/7d utilization (0..1) and reset epochs, or an error string."""
+    body = json.dumps({
+        "model": PROBE_MODEL, "max_tokens": 1,
+        "system": "You are Claude Code, Anthropic's official CLI for Claude.",
+        "messages": [{"role": "user", "content": "hi"}],
+    })
+    cmd = ["curl", "-sS", "-m", "25", "-x", PROXY, "-D", "-", "-o", "/dev/null", API,
+           "-H", f"Authorization: Bearer {tok}", "-H", "anthropic-version: 2023-06-01",
+           "-H", "anthropic-beta: oauth-2025-04-20", "-H", "Content-Type: application/json",
+           "-d", body]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        return {"name": name, "err": "timeout"}
+    if out.returncode != 0:
+        return {"name": name, "err": f"curl: {out.stderr.strip()[:60]}"}
+    hdr, code = {}, None
+    for line in out.stdout.splitlines():
+        if line.startswith("HTTP/") and "Connection established" not in line:
+            code = int(line.split()[1])
+        elif ":" in line:
+            k, v = line.split(":", 1)
+            hdr[k.strip().lower()] = v.strip()
+    g = lambda k: hdr.get(f"anthropic-ratelimit-unified-{k}")
+    if g("status") is None:
+        return {"name": name, "err": f"HTTP {code} (bad token?)"}
+    return {
+        "name": name, "code": code, "status": g("status"),
+        "u5": float(g("5h-utilization") or 0), "u7": float(g("7d-utilization") or 0),
+        "r5": int(g("5h-reset") or 0), "r7": int(g("7d-reset") or 0),
+        "ts": int(time.time()),
+    }
+
+
+def rel(ts, full=False):
+    """Time until epoch ts. full=True always spells out d/h/m ("0d10h46m") so that
+    weekly resets line up and 1d7h can't be misread as 10h46m."""
+    d = int(ts - time.time())
+    if d <= 0:
+        return "now"
+    h, m = divmod(d // 60, 60)
+    if full:
+        return f"{h//24}d{h%24:02d}h{m:02d}m"
+    return f"{h//24}d{h%24}h" if h >= 24 else f"{h}h{m:02d}m"
+
+
+def natkey(r):
+    """Sort account names numerically when they are numbers (1, 2, ..., 10), else by text."""
+    n = r["name"]
+    return (0, int(n), "") if n.isdigit() else (1, 0, n)
+
+
+# ---------------------------------------------------------------- status.json helpers
+
+def read_status():
+    try:
+        return json.load(open(STATUS))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def write_status(results):
+    """Merge probe results into status.json (atomic replace)."""
+    cur = read_status()
+    for r in results:
+        if "err" not in r:
+            cur[r["name"]] = r
+    tmp = STATUS + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(cur, f)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, STATUS)
+
+
+# ---------------------------------------------------------------- config bootstrap
+
+def ensure_config():
+    # a fresh CLAUDE_CONFIG_DIR runs the interactive onboarding (theme + login picker) even
+    # when CLAUDE_CODE_OAUTH_TOKEN is set; marking it done makes claude trust the env token
+    cfg_path = os.path.join(HERE, ".claude.json")
+    try:
+        cfg = json.load(open(cfg_path)) if os.path.exists(cfg_path) else {}
+    except json.JSONDecodeError:
+        cfg = {}
+    if not cfg.get("hasCompletedOnboarding"):
+        cfg["hasCompletedOnboarding"] = True
+        with open(cfg_path, "w") as f:
+            json.dump(cfg, f, indent=2)
+
+    # wire the status line in once; leave it alone if the user customised it afterwards
+    st_path = os.path.join(HERE, "settings.json")
+    try:
+        st = json.load(open(st_path)) if os.path.exists(st_path) else {}
+    except json.JSONDecodeError:
+        st = {}
+    if "statusLine" not in st:
+        st["statusLine"] = {"type": "command", "command": f"{SELF} --statusline", "padding": 0}
+        with open(st_path, "w") as f:
+            json.dump(st, f, indent=2)
+
+
+# ---------------------------------------------------------------- status line
+
+def colour(pct):
+    code = "32" if pct >= 50 else "33" if pct >= 20 else "31"
+    return f"\x1b[{code}m{pct:.0f}%\x1b[0m"
+
+
+def bar(pct, width=10):
+    n = round(pct / 100 * width)
+    return "▰" * n + "▱" * (width - n)
+
+
+# ---------------------------------------------------------------- report rendering
+
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+BOLD, DIM, RST = "\x1b[1m", "\x1b[2m", "\x1b[0m"
+BADGE = {                                    # anthropic-ratelimit-unified-status -> label
+    "allowed":         "\x1b[32m● ok\x1b[0m",
+    "allowed_warning": "\x1b[33m▲ near limit\x1b[0m",
+    "rejected":        "\x1b[31m✖ rate-limited\x1b[0m",
+}
+
+
+def vlen(s):
+    """Printable width of s, ignoring ANSI colour codes."""
+    return len(ANSI_RE.sub("", s))
+
+
+def pad(s, w, right=False):
+    fill = " " * max(0, w - vlen(s))
+    return fill + s if right else s + fill
+
+
+def cbar(pct, width=10):
+    """bar() with the filled part coloured green/yellow/red and the empty part dimmed."""
+    code = "32" if pct >= 50 else "33" if pct >= 20 else "31"
+    n = max(0, min(width, round(pct / 100 * width)))
+    return f"\x1b[{code}m{'▰' * n}{RST}{DIM}{'▱' * (width - n)}{RST}"
+
+
+def box(title, hdr, rows, widths):
+    """Print a box-drawn table (title above it) to stderr."""
+    rule = lambda l, m, r: l + m.join("─" * (w + 2) for w in widths) + r
+    line = lambda cells: "│" + "│".join(f" {pad(c, w)} " for c, w in zip(cells, widths)) + "│"
+    out = [title, rule("┌", "┬", "┐"), line(hdr), rule("├", "┼", "┤")]
+    out += [line(r) for r in rows]
+    out.append(rule("└", "┴", "┘"))
+    print("\n".join(out), file=sys.stderr)
+
+
+def cells(r, pick):
+    """One table row: acct | 5h bar % ↻reset | weekly bar % ↻reset | status badge."""
+    picked = r["name"] == pick
+    name = f"{BOLD}➜ {r['name']}{RST}" if picked else f"  {r['name']}"
+    l5, l7 = (1 - r["u5"]) * 100, (1 - r["u7"]) * 100
+    c5 = f"{cbar(l5)} {pad(colour(l5), 4, right=True)} ↻{rel(r['r5'])}"
+    c7 = f"{cbar(l7)} {pad(colour(l7), 4, right=True)} ↻{rel(r['r7'], full=True)}"
+    return [name, c5, c7, BADGE.get(r["status"], r["status"])]
+
+
+def print_report(res, ok, pick, min_weekly_left, fallback):
+    usable = sorted(ok, key=natkey)
+    rejected = sorted((r for r in res if "err" not in r and r not in ok), key=natkey)
+    errs = sorted((r for r in res if "err" in r), key=natkey)
+    hdr = ["acct", "5h left · reset", "week left · reset", "status"]
+    widths = [4, 22, 25, 14]
+    meets = sum(1 for r in ok if (1 - r["u7"]) * 100 >= min_weekly_left)
+
+    print(f"{BOLD}cc-sub{RST} {DIM}· {len(res)} accounts · probed {time.strftime('%H:%M:%S')} · "
+          f"{meets} with ≥ {min_weekly_left:.0f}% week left{RST}\n", file=sys.stderr)
+    if usable:
+        box(f"\x1b[1;32m● usable{RST} {DIM}({len(usable)}){RST}",
+            hdr, [cells(r, pick) for r in usable], widths)
+    if rejected:
+        if usable:
+            print(file=sys.stderr)
+        box(f"\x1b[1;31m✖ rate-limited{RST} {DIM}({len(rejected)}) · refused until the window resets{RST}",
+            hdr, [cells(r, pick) for r in rejected], widths)
+    if errs:
+        print(f"\n\x1b[1;31m✖ unreachable{RST} {DIM}({len(errs)}){RST}", file=sys.stderr)
+        for r in errs:
+            print(f"    {r['name']:<4} {DIM}{r['err']}{RST}", file=sys.stderr)
+    if fallback:
+        print(f"\n\x1b[33m! no account has ≥ {min_weekly_left:.0f}% weekly left · "
+              f"falling back to the best available{RST}", file=sys.stderr)
+
+
+def cmd_statusline():
+    try:
+        inp = json.load(sys.stdin)
+    except (json.JSONDecodeError, OSError):
+        inp = {}
+    name = os.environ.get("CC_SUB_ACCOUNT", "?")
+    r = read_status().get(name)
+    parts = [f"\x1b[1macct {name}\x1b[0m"]
+    if r:
+        age = time.time() - r["ts"]
+        left5, left7 = (1 - r["u5"]) * 100, (1 - r["u7"]) * 100
+        # unified-status: allowed | allowed_warning (usable, a window is past the warning
+        # threshold) | rejected (requests are being refused until the window resets)
+        if r["status"] == "rejected":
+            parts.append("\x1b[31;1mRATE-LIMITED\x1b[0m")
+        elif r["status"] == "allowed_warning":
+            parts.append("\x1b[33mnear limit\x1b[0m")
+        parts.append(f"5h {bar(left5)} {colour(left5)} ↻{rel(r['r5'])}")
+        parts.append(f"wk {colour(left7)} ↻{rel(r['r7'], full=True)}")
+        if age > 3 * REFRESH_S:
+            parts.append(f"\x1b[2m({int(age//60)}m old)\x1b[0m")
+        # kick a background re-probe when the sample is stale; the lock stops pile-ups
+        try:
+            lock_age = time.time() - os.path.getmtime(LOCK)
+        except OSError:
+            lock_age = 1e9
+        if age > REFRESH_S and lock_age > 60:
+            open(LOCK, "w").close()
+            subprocess.Popen([sys.executable, SELF, "--refresh", name], start_new_session=True,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+    else:
+        parts.append("\x1b[2mno usage sample yet\x1b[0m")
+    model = (inp.get("model") or {}).get("display_name")
+    if model:
+        parts.append(model)
+    ctx = (inp.get("context_window") or {}).get("used_percentage")
+    if ctx is not None:
+        parts.append(f"ctx {ctx:.0f}%")
+    print(" │ ".join(parts))
+
+
+def cmd_refresh(name):
+    tokens = dict(load_accounts())
+    if name in tokens:
+        write_status([probe(name, tokens[name])])
+
+
+# ---------------------------------------------------------------- launcher
+
+def main():
+    args = sys.argv[1:]
+    if args[:1] == ["--statusline"]:
+        return cmd_statusline()
+    if args[:1] == ["--refresh"] and len(args) > 1:
+        return cmd_refresh(args[1])
+
+    list_only, force, min_weekly_left = False, None, 75.0
+    rest = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--list":
+            list_only = True
+        elif a == "--use":
+            force = args[i + 1]; i += 1
+        elif a == "--min-weekly-left":
+            min_weekly_left = float(args[i + 1]); i += 1
+        else:
+            rest.append(a)
+        i += 1
+
+    accts = load_accounts()
+    tokens = dict(accts)
+    if force is not None and force not in tokens:
+        sys.exit(f"unknown account {force!r}; have: {', '.join(tokens)}")
+
+    print(f"probing {len(accts)} accounts ...", file=sys.stderr)
+    with cf.ThreadPoolExecutor(max_workers=len(accts)) as ex:
+        res = list(ex.map(lambda a: probe(*a), accts))
+    write_status(res)
+
+    ok = [r for r in res if "err" not in r and r["status"] in ("allowed", "allowed_warning")]
+    eligible = [r for r in ok if (1 - r["u7"]) * 100 >= min_weekly_left]
+    key = lambda r: (r["u5"], r["u7"])          # least used 5h, then least used weekly
+    pick, fallback = None, False
+    if force is not None:
+        pick = force
+    elif eligible:
+        pick = min(eligible, key=key)["name"]
+    elif ok:
+        pick, fallback = min(ok, key=key)["name"], True
+
+    print_report(res, ok, pick, min_weekly_left, fallback)
+
+    if list_only:
+        return
+    if pick is None:
+        sys.exit(f"\x1b[31m✖ every account is rate-limited or unreachable · nothing to launch{RST}")
+
+    ensure_config()
+
+    env = {k: v for k, v in os.environ.items() if k not in STRIP_ENV}
+    env.update({
+        "HTTPS_PROXY": PROXY, "HTTP_PROXY": PROXY, "NO_PROXY": NO_PROXY,
+        "CLAUDE_CONFIG_DIR": HERE,
+        "CLAUDE_CODE_OAUTH_TOKEN": tokens[pick],
+        "CC_SUB_ACCOUNT": pick,                 # read by --statusline (inherits claude's env)
+    })
+    picked = next((r for r in ok if r["name"] == pick), None)
+    detail = (f" · 5h {colour((1-picked['u5'])*100)} · week {colour((1-picked['u7'])*100)}"
+              if picked else "")
+    if not any(a == "--model" or a.startswith("--model=") for a in rest):
+        rest = ["--model", DEFAULT_MODEL, *rest]
+    model = rest[rest.index("--model") + 1] if "--model" in rest else "(from --model=)"
+    print(f"\n\x1b[1;32m➜ launching{RST} claude on account {BOLD}{pick}{RST}{detail} · {DIM}{model}{RST}",
+          file=sys.stderr)
+    # give the table a moment on screen before claude's UI takes over the terminal
+    if not rest or "-p" not in rest:
+        time.sleep(2)
+    print(file=sys.stderr)
+    os.execvpe("claude", ["claude", *rest], env)
+
+
+if __name__ == "__main__":
+    main()

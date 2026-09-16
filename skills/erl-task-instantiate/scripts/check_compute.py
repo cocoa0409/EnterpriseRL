@@ -53,21 +53,27 @@ combines >= 2 conditions over distinct evidence by AND or by OR — "gold card A
 the last 3 months") + an EFFECT, labelled:
   effect: parameter  the tier selects a VALUE that enters an otherwise fixed formula
                      (a rate, a fee, a threshold, an allowance)
-  effect: method     the tier selects HOW a quantity is computed — the operation applied, the
-                     base it acts on, the rounding mode / precision / moment, the day-count or
-                     window convention, the order of two operations, the moment of a cap, the
-                     aggregation used, a multiplier on an intermediate or on the result
-                     ("gold: overdue days halved and rounded down; silver: times 0.75 and
-                     rounded up; otherwise as booked")
+  effect: method     the tier selects HOW a quantity is computed — for reference, a multiplier
+                     on an intermediate or on the result, the day-count or window convention,
+                     the anchor the clock starts from, or the order candidates are tried in
+                     ("gold: overdue days halved; silver: times 0.75; otherwise as booked");
+                     the list is open: any way the calculation genuinely varies in that line
+                     of business qualifies, and nothing invented for difficulty's sake does;
+                     rounding, the acting base, operation order, cap moment and aggregation
+                     are fixed by the product and never selected by a tier; the rule states
+                     them only where the calculation would otherwise be ambiguous
   - the policy declares `factors`; every factor names bindings that exist in compute, one of
     them as `decides`; no binding belongs to two factors; `effect` is parameter | method; the
     ladder has >= 3 tiers, pairwise disjoint as stated (each `when` + `value` for a parameter
     factor, `when` + `method` for a method factor), and the factor's bindings fork at least
     (tiers - 1) times (disjointness is read, not machine-checked);
-  - 4 to 6 factors per computation (the count drawn uniformly at random per computation); >= 2
-    of them effect=parameter and >= 2 effect=method; >= 2 multi-source; >= 2 of them `cross_difficulty` (their tier is decided from
+  - 4 to 6 factors per computation (exactly the count draw_counts.py draws for the problem, the counts
+    over a task's computations equal to its draw as a multiset); >= 2
+    of them effect=parameter and >= 1 effect=method; and, over the computations of one TASK,
+    >= 1 multi-source factor and >= 1 `cross_difficulty` factor (its tier is decided from
     another category's holding or ledger, read through CFIELD/CPARAM/EXISTS/XSUM/XCOUNT/XMAX/
-    XLATEST on that category, and the world seeds that evidence for this customer);
+    XLATEST on that category, and the world seeds that evidence for this customer) — neither
+    is asked of every computation;
   - LOAD-BEARING: substituting the factor's `baseline` bindings (the standard method / default
     value the baseline document states) and recomputing MUST change `result`; the task's declared
     `factor_sensitivity[].baseline_result` must equal that recomputation; substituting EVERY
@@ -78,14 +84,18 @@ the last 3 months") + an EFFECT, labelled:
   There is deliberately NO requirement that some branch stay untriggered: an untriggered
   branch is invisible to the score, so it is not a difficulty and is never asked for.
 
-Difficulty thresholds (check_extended enforces a configurable M-task suite):
-  4 to 6 declared factors per computation: >= 2 parameter, >= 2 method, >= 2 cross-difficulty,
-  >= 2 multi-source, every ladder >= 3 tiers
+Difficulty thresholds (per computation and per task on every run; the suite-level ones only in the
+final, difficulty-wide run of this gate):
+  4 to 6 declared factors per computation — exactly the count draw_counts.py draws for the problem,
+  the counts over a task's computations equal to its draw — >= 2 parameter, >= 1 method,
+  every ladder >= 3 tiers
+  >= 1 multi-source factor and >= 1 cross-difficulty factor over the computations of each task
   >= 8 history rows reconciled (suite max)
   >= 5 if-else/fork branches (suite max)
-  >= 4 evaluation_criteria actions (suite mean)
-plus: EVERY extended_policy reads a cross-category VALUE (CPARAM/CFIELD/X-history, not a bare
-EXISTS) and that read is exercised by the task world, and >= 1 formula-forced write.
+  >= 4 if-else/fork branches and >= 4 evaluation_criteria actions (suite means)
+plus: in every task at least one computation reads a cross-category VALUE (CPARAM/CFIELD/X-history,
+not a bare EXISTS), every cross-category read a policy declares is exercised by the task world, and
+>= 1 formula-forced write.
 
 Usage (repo root):
   .venv/bin/python skills/erl-task-instantiate/scripts/check_compute.py env/<scenario>/tasks/<difficulty> [--task N]
@@ -102,17 +112,18 @@ import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from gate_utils import select_task_paths, split_task_flag
+from gate_utils import select_task_paths, split_task_flag, task_index
+from draw_counts import MAX_FACTORS_PER_COMP, MIN_FACTORS_PER_COMP, draw_for_task  # 4 to 6, drawn per problem
 
 # Suite-level metrics: means enforce breadth across M tasks; maxes enforce that the
 # suite contains at least one genuinely deep history and branch workload.
-MEANS = {"factors": 4.0, "branches": 4.0, "steps": 4.0}
-MIN_FACTORS_PER_COMP = 4            # every computed value rests on 4 to 6 declared, load-bearing factors
-MAX_FACTORS_PER_COMP = 6            # ... the count drawn uniformly at random per computation
-MIN_CROSS_FACTORS_PER_COMP = 2      # ... of which >= 2 decide their tier from ANOTHER difficulty's records
+MEANS = {"branches": 4.0, "steps": 4.0}   # (no factor mean: every computation carries exactly its drawn 4 to 6)
+# MIN_FACTORS_PER_COMP / MAX_FACTORS_PER_COMP (4 to 6) live in draw_counts.py, which draws each problem's count;
+# imported above and re-exported to check_extended.
 MIN_PARAM_FACTORS_PER_COMP = 2      # ... >= 2 whose effect selects a value (effect: parameter)
-MIN_METHOD_FACTORS_PER_COMP = 2     # ... >= 2 whose effect selects how a quantity is computed (effect: method)
-MIN_MULTISOURCE_FACTORS_PER_COMP = 2  # ... >= 2 whose every tier beyond the fall-through combines >= 2 distinct evidence sources (and / or)
+MIN_METHOD_FACTORS_PER_COMP = 1     # ... >= 1 whose effect selects how a quantity is computed (effect: method)
+MIN_CROSS_FACTORS_PER_TASK = 1      # over the computations of one task, >= 1 factor decides its tier from ANOTHER difficulty's records
+MIN_MULTISOURCE_FACTORS_PER_TASK = 1  # over the computations of one task, >= 1 factor whose every tier beyond the fall-through combines >= 2 distinct evidence sources (and / or)
 MIN_LADDER_TIERS = 3                # a factor partitions its input's space into >= 3 pairwise-disjoint tiers, the fall-through counted (the realistic shape)
 _EFFECTS = {"parameter", "method"}
 SUITE_MAX_HISTORY = 8              # at least one task must reconcile a substantial history
@@ -724,11 +735,22 @@ def main():
         comps = task.get("computations") or []
         initial = task.get("initial_state") or {}
         ft = task.get("frozen_time")
-        t_factors = t_xfactors = t_hist = t_branch = 0
+        t_factors = t_xfactors = t_multi = t_hist = t_branch = 0
+        t_cross_value = False   # some computation of this task reads a cross-category VALUE
         t_ok = True
         if not comps:
             fails.append(f"{tid}: no computations (every task needs >=1 formula-forced write)")
             t_ok = False
+        # ---- the drawn factor counts: one draw per problem of the tree, matched as a multiset ----
+        _idx = task_index(tp)
+        if _idx is not None:
+            drawn = sorted(draw_for_task(diff_dir, _idx)["factor_counts"])
+            realized = sorted(len((policies.get(c.get("policy_id")) or {}).get("factors") or []) for c in comps)
+            if realized != drawn:
+                fails.append(f"{tid}: factor counts {realized} over this task's computations != the task's draw {drawn} "
+                             f"(scripts/draw_counts.py {diff_dir} --task {_idx}: one drawn count per problem of the tree, "
+                             "root included; which problem takes which count is the author's choice) — design to the "
+                             "draw, never the draw to the design"); t_ok = False
         for c in comps:
             pid = c.get("policy_id")
             pol = policies.get(pid)
@@ -834,6 +856,8 @@ def main():
             n_param = sum(1 for f in factors if f.get("effect") == "parameter")
             n_method = sum(1 for f in factors if f.get("effect") == "method")
             n_multi = sum(1 for f in factors if multi_source(pol, f))
+            t_multi += n_multi
+            t_cross_value = t_cross_value or policy_has_cross_factor(pol)
             if factors and not (MIN_FACTORS_PER_COMP <= n_factors <= MAX_FACTORS_PER_COMP):
                 fails.append(f"{tid}: {pid} declares {n_factors} factors (outside {MIN_FACTORS_PER_COMP}..{MAX_FACTORS_PER_COMP}) — "
                              "every computation rests on 4 to 6 load-bearing rules"); t_ok = False
@@ -841,16 +865,8 @@ def main():
                 fails.append(f"{tid}: {pid} has only {n_param} effect=parameter factors (< {MIN_PARAM_FACTORS_PER_COMP})"); t_ok = False
             if factors and n_method < MIN_METHOD_FACTORS_PER_COMP:
                 fails.append(f"{tid}: {pid} has only {n_method} effect=method factors (< {MIN_METHOD_FACTORS_PER_COMP}) "
-                             "— at least two factors must change HOW a quantity is computed (operation, base, "
-                             "rounding, window, order, cap moment, multiplier), not only which number enters it"); t_ok = False
-            if factors and n_multi < MIN_MULTISOURCE_FACTORS_PER_COMP:
-                fails.append(f"{tid}: {pid} has only {n_multi} multi-source factors (< {MIN_MULTISOURCE_FACTORS_PER_COMP}) "
-                             "— every tier of such a factor beyond the fall-through combines two conditions over "
-                             "distinct evidence by and / or"); t_ok = False
-            if factors and n_cross_factors < MIN_CROSS_FACTORS_PER_COMP:
-                fails.append(f"{tid}: {pid} has only {n_cross_factors} cross-difficulty factors "
-                             f"(< {MIN_CROSS_FACTORS_PER_COMP}) — at least two factors must decide their tier "
-                             "from the customer's holdings or ledger in ANOTHER difficulty"); t_ok = False
+                             "— at least one factor must change HOW a quantity is computed, in a way that line "
+                             "of business genuinely varies, not only which number enters it"); t_ok = False
             for fid in declared_sens:
                 if fid not in {f.get("id") for f in factors}:
                     fails.append(f"{tid}: {pid} factor_sensitivity names unknown factor '{fid}'"); t_ok = False
@@ -907,6 +923,20 @@ def main():
                                      "when the history aggregates are zeroed) — the reconciliation is decorative"); t_ok = False
                 except Exception:  # noqa: BLE001
                     pass  # zeroing broke the compute -> history is clearly load-bearing
+        # ---- per-task floors: multi-source and cross-difficulty are asked of the task, not of every computation ----
+        if comps:
+            if t_multi < MIN_MULTISOURCE_FACTORS_PER_TASK:
+                fails.append(f"{tid}: only {t_multi} multi-source factors over this task's computations "
+                             f"(< {MIN_MULTISOURCE_FACTORS_PER_TASK}) — at least one factor of the task combines, on every "
+                             "tier beyond the fall-through, two conditions over distinct evidence by and / or"); t_ok = False
+            if t_xfactors < MIN_CROSS_FACTORS_PER_TASK:
+                fails.append(f"{tid}: only {t_xfactors} cross-difficulty factors over this task's computations "
+                             f"(< {MIN_CROSS_FACTORS_PER_TASK}) — at least one factor of the task decides its tier from "
+                             "the customer's holdings or ledger in ANOTHER difficulty"); t_ok = False
+            if not t_cross_value:
+                fails.append(f"{tid}: no computation of this task reads a cross-category VALUE via CPARAM/CFIELD/XSUM/"
+                             "XCOUNT/XMAX/XLATEST (a bare EXISTS can only switch the whole result on or off, which is "
+                             "how a base-pinned amount gets silently zeroed)"); t_ok = False
         # ---- PREREQUISITE: topological write order + value_input load-bearingness ----
         pc = task.get("prerequisite_closure") or {}
         pc_edges = [e for e in (pc.get("edges") or []) if isinstance(e, dict)]
@@ -979,11 +1009,6 @@ def main():
         if branch_max < SUITE_MAX_BRANCHES:
             fails.append(f"suite branches_max={branch_max} < {SUITE_MAX_BRANCHES} — "
                          "add a heavy conditional-fork task")
-    if cross_cat_policies != len(policies):
-        fails.append(f"only {cross_cat_policies}/{len(policies)} extended_policies read a cross-category "
-                     "VALUE via CPARAM/CFIELD/XSUM/XCOUNT/XMAX/XLATEST (EVERY policy must; a bare EXISTS can "
-                     "only switch the whole result on or off, which is how a base-pinned amount gets silently zeroed)")
-
     if fails:
         print("\n  [FAIL]")
         for f in fails[:60]:

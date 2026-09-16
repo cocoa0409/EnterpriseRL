@@ -28,7 +28,9 @@ import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from gate_utils import select_task_paths, split_task_flag
+from gate_utils import select_task_paths, split_task_flag, task_index
+from prereq_utils import MAX_PREREQ_PROBLEMS, MIN_PREREQ_PROBLEMS, min_value_input_edges
+from draw_counts import draw_for_task
 
 
 _CALL_WRAPPERS = {"call_agent_discoverable_tool", "call_user_discoverable_tool"}
@@ -1110,14 +1112,24 @@ def main():
                 fail("prerequisite_closure.root_problem is empty")
             edges = as_list(pc.get("edges"))
             dep_problems = {str(e.get("to") or "").strip() for e in edges if isinstance(e, dict)} - {"", str(root or "")}
-            if len(dep_problems) < 3:
-                fail(f"prerequisite_closure declares {len(dep_problems)} prerequisite problem(s); at least 3 are "
-                     "required, the root not counted (any acyclic shape: chain, fan-out, diamond or a mix)")
+            n_dep = len(dep_problems)
+            _idx = task_index(task_path)
+            expected = draw_for_task(target, _idx)["prerequisite_problems"] if _idx is not None else None
+            if expected is not None and n_dep != expected:
+                fail(f"prerequisite_closure declares {n_dep} prerequisite problem(s); the draw for this task is {expected} "
+                     f"(scripts/draw_counts.py {target} --task {_idx}) — design the tree to the drawn count, never the "
+                     "draw to the tree")
+            elif not (MIN_PREREQ_PROBLEMS <= n_dep <= MAX_PREREQ_PROBLEMS):
+                fail(f"prerequisite_closure declares {n_dep} prerequisite problem(s); {MIN_PREREQ_PROBLEMS} to "
+                     f"{MAX_PREREQ_PROBLEMS} are required, the root not counted (the count is drawn per task; any "
+                     "acyclic shape: chain, fan-out, diamond or a mix)")
             kinds = [e.get("kind") for e in edges if isinstance(e, dict)]
-            if edges and kinds.count("value_input") < 2:
-                fail(f"prerequisite_closure has {kinds.count('value_input')} value_input edge(s); at least 2 are "
-                     "required — state_gate edges alone leave the terminal DB identical whichever order the "
-                     "writes take, and a single value_input edge hangs the whole calculation test on one number")
+            need_vi = min_value_input_edges(n_dep)
+            if edges and kinds.count("value_input") < need_vi:
+                fail(f"prerequisite_closure has {kinds.count('value_input')} value_input edge(s); at least {need_vi} "
+                     f"are required for {n_dep} prerequisite problem(s) (max(n-1, 1)) — state_gate edges alone leave "
+                     "the terminal DB identical whichever order the writes take, and the larger the tree the more "
+                     "of its edges must carry a value into a calculation")
             for ei, e in enumerate(edges):
                 where = f"prerequisite_closure.edges[{ei}]"
                 if not isinstance(e, dict):

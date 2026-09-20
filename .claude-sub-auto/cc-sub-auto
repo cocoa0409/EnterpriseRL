@@ -1,0 +1,348 @@
+#!/usr/bin/env python3
+"""cc-sub-auto: cc-sub with hands-free account switching.
+
+Wraps ~/.claude-sub/cc-sub (same accounts.txt, same CLAUDE_CONFIG_DIR, same status line)
+but stays alive as a supervisor while claude runs:
+
+  * every --poll seconds it re-probes the ACTIVE account (1-token Haiku request);
+  * the moment that account reports `rejected` (5h or weekly window exhausted) it stops
+    claude, picks the account with the most headroom and resumes the SAME session
+    (`--resume <id>`), telling the model to carry on from where it was cut off;
+  * if every account is rate-limited it waits, re-probing every --wait seconds (sooner if
+    a 5h window is about to reset), and resumes as soon as one comes back;
+  * `-p` (headless) runs that die on a usage limit are re-run on another account too.
+
+Usage:
+  cc-sub-auto [claude args...]             pick best account, start claude, babysit it
+  cc-sub-auto --list                       only print the table
+  cc-sub-auto --use 3 [claude args...]     force account "3" for the FIRST launch
+  cc-sub-auto --min-weekly-left 50 ...     weekly threshold for picking (default 75%)
+  cc-sub-auto --poll 60 --wait 300 ...     probe cadence while running / while all limited
+
+Every switch is appended to ~/.claude-sub-auto/auto.log.
+"""
+import concurrent.futures as cf
+import importlib.util
+import os
+import re
+import signal
+import subprocess
+import sys
+import threading
+import time
+import uuid
+from importlib.machinery import SourceFileLoader
+
+HERE = os.path.dirname(os.path.abspath(__file__))              # ~/.claude-sub-auto
+SUB_DIR = os.path.expanduser("~/.claude-sub")                   # cc-sub install: accounts, sessions, status
+CC_SUB = os.path.join(SUB_DIR, "cc-sub")
+LOG = os.path.join(HERE, "auto.log")
+POLL_S = 60          # re-probe the active account this often while claude runs
+WAIT_S = 300         # re-probe everything this often while every account is limited
+TERM_GRACE_S = 10    # SIGTERM -> SIGKILL escalation
+RESUME_PROMPT = ("The previous request was cut off because the subscription account ran out of usage; "
+                 "cc-sub-auto has switched to another account and resumed this session. "
+                 "Continue the task you were working on from where it stopped. If the last tool call "
+                 "never returned a result, run it again. Do not redo work that is already complete.")
+BOLD, DIM, RST = "\x1b[1m", "\x1b[2m", "\x1b[0m"
+
+
+def load_ccsub():
+    """Import ~/.claude-sub/cc-sub as a module: probe(), load_accounts(), print_report(), ..."""
+    if not os.path.exists(CC_SUB):
+        sys.exit(f"cc-sub-auto needs {CC_SUB} (accounts, session store and probing live there)")
+    loader = SourceFileLoader("ccsub", CC_SUB)
+    spec = importlib.util.spec_from_loader("ccsub", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+def log(msg):
+    with open(LOG, "a") as f:
+        f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}  {msg}\n")
+
+
+def say(msg):
+    print(msg, file=sys.stderr)
+
+
+# ---------------------------------------------------------------- argument handling
+
+def value_flags():
+    """Which claude flags take a value, read from `claude --help` so it tracks the installed
+    version: (always, optional). Needed to tell a positional prompt from a flag value."""
+    try:
+        out = subprocess.run(["claude", "--help"], capture_output=True, text=True, timeout=20).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        out = ""
+    req, opt = set(), set()
+    for m in re.finditer(r"^\s+(?:(-[a-zA-Z]), )?(--[a-zA-Z-]+) (<|\[)", out, re.M):
+        s = req if m.group(3) == "<" else opt
+        s.add(m.group(2))
+        if m.group(1):
+            s.add(m.group(1))
+    return req - opt, opt
+
+
+def split_args(rest, req, opt):
+    """Separate the caller's claude args into (flags, positional prompt, session id, continue?).
+    Session-selection flags are taken out because the supervisor owns them."""
+    flags, pos, sid, cont = [], [], None, False
+    i = 0
+    while i < len(rest):
+        a = rest[i]
+        if a.startswith("--session-id="):
+            sid = a.split("=", 1)[1]; i += 1; continue
+        if a == "--session-id":
+            sid = rest[i + 1]; i += 2; continue
+        if a.startswith("--resume="):
+            sid = a.split("=", 1)[1]; cont = True; i += 1; continue
+        if a in ("-r", "--resume"):
+            cont = True
+            if i + 1 < len(rest) and not rest[i + 1].startswith("-"):
+                sid = rest[i + 1]; i += 2
+            else:
+                i += 1
+            continue
+        if a in ("-c", "--continue"):
+            cont = True; i += 1; continue
+        if a.startswith("-"):
+            flags.append(a)
+            if "=" not in a and a in req:
+                flags.append(rest[i + 1]); i += 2; continue
+            if "=" not in a and a in opt and i + 1 < len(rest) and not rest[i + 1].startswith("-"):
+                flags.append(rest[i + 1]); i += 2; continue
+            i += 1; continue
+        pos.append(a); i += 1
+    return flags, pos, sid, cont
+
+
+def parse_own(argv):
+    o = {"list": False, "use": None, "min_weekly_left": 75.0, "poll": POLL_S, "wait": WAIT_S}
+    rest, i = [], 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--list":
+            o["list"] = True
+        elif a == "--use":
+            o["use"] = argv[i + 1]; i += 1
+        elif a == "--min-weekly-left":
+            o["min_weekly_left"] = float(argv[i + 1]); i += 1
+        elif a == "--poll":
+            o["poll"] = max(15, int(argv[i + 1])); i += 1
+        elif a == "--wait":
+            o["wait"] = max(30, int(argv[i + 1])); i += 1
+        else:
+            rest.append(a)
+        i += 1
+    return o, rest
+
+
+# ---------------------------------------------------------------- probing and picking
+
+def probe_all(cs, accts):
+    with cf.ThreadPoolExecutor(max_workers=len(accts)) as ex:
+        res = list(ex.map(lambda a: cs.probe(*a), accts))
+    cs.write_status(res)
+    return res
+
+
+def choose(res, min_weekly_left, force=None, exclude=None):
+    """Same rule as cc-sub; `exclude` drops the account we are switching away from."""
+    ok = [r for r in res if "err" not in r and r["status"] in ("allowed", "allowed_warning")
+          and r["name"] != exclude]
+    eligible = [r for r in ok if (1 - r["u7"]) * 100 >= min_weekly_left]
+    key = lambda r: (r["u5"], r["u7"])
+    if force is not None:
+        return force, ok, False
+    if eligible:
+        return min(eligible, key=key)["name"], ok, False
+    if ok:
+        return min(ok, key=key)["name"], ok, True
+    return None, ok, False
+
+
+def wait_for_reset(cs, res, wait_s):
+    """Everything is limited or unreachable: sleep until the next probe (Ctrl+C quits)."""
+    resets = [r["r5"] for r in res if "err" not in r and r.get("r5")]
+    nxt = wait_s
+    note = ""
+    if resets:
+        soonest = min(resets)
+        nxt = int(min(wait_s, max(15, soonest - time.time() + 5)))
+        who = [r["name"] for r in res if "err" not in r and r.get("r5") == soonest]
+        note = f" · earliest 5h reset: acct {','.join(who)} in {cs.rel(soonest)}"
+    say(f"\n\x1b[33m! every account is rate-limited or unreachable · re-probing in {nxt}s{note} "
+        f"· Ctrl+C to quit{RST}")
+    log(f"all limited; waiting {nxt}s{note}")
+    time.sleep(nxt)
+
+
+# ---------------------------------------------------------------- session bookkeeping
+
+def latest_session(started):
+    """Newest transcript of this cwd written since `started` (for -c launches whose id we
+    did not choose)."""
+    slug = re.sub(r"[^A-Za-z0-9]", "-", os.getcwd())
+    d = os.path.join(SUB_DIR, "projects", slug)
+    try:
+        files = [(os.path.getmtime(p), p) for p in os.listdir(d) if p.endswith(".jsonl")
+                 for p in [os.path.join(d, p)]]
+    except OSError:
+        return None
+    files = [f for f in files if f[0] >= started - 5]
+    if not files:
+        return None
+    return os.path.splitext(os.path.basename(max(files)[1]))[0]
+
+
+def tty_reset():
+    if sys.stdin.isatty():
+        subprocess.run(["stty", "sane"], stdin=sys.stdin, check=False)
+    print(RST, end="", file=sys.stderr, flush=True)
+
+
+# ---------------------------------------------------------------- running claude
+
+def run_claude(cs, args, name, tok, poll_s):
+    """Run claude on account `name`; poll that account while it runs. Returns
+    (returncode, killed_by_us, last_probe)."""
+    env = {k: v for k, v in os.environ.items() if k not in cs.STRIP_ENV}
+    env.update({
+        "HTTPS_PROXY": cs.PROXY, "HTTP_PROXY": cs.PROXY, "NO_PROXY": cs.NO_PROXY,
+        "CLAUDE_CONFIG_DIR": SUB_DIR,
+        "CLAUDE_CODE_OAUTH_TOKEN": tok,
+        "CC_SUB_ACCOUNT": name,
+    })
+    state = {"killed": False, "last": None}
+    stop = threading.Event()
+
+    # Ctrl+C belongs to claude (first press cancels, second quits); the supervisor must
+    # survive it. SIG_IGN is inherited across exec, so the child resets it to default.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    child = subprocess.Popen(["claude", *args], env=env,
+                             preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+
+    def watch():
+        while not stop.wait(poll_s):
+            r = cs.probe(name, tok)
+            if "err" in r:
+                continue
+            cs.write_status([r])
+            state["last"] = r
+            if r["status"] == "rejected":
+                state["killed"] = True
+                log(f"acct {name} rejected while running (5h reset {cs.rel(r['r5'])}, "
+                    f"week reset {cs.rel(r['r7'], full=True)}); stopping claude")
+                child.terminate()
+                try:
+                    child.wait(timeout=TERM_GRACE_S)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                return
+
+    t = threading.Thread(target=watch, daemon=True)
+    t.start()
+    try:
+        rc = child.wait()
+    finally:
+        stop.set()
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+    t.join(timeout=TERM_GRACE_S + 5)
+    tty_reset()
+    return rc, state["killed"], state["last"]
+
+
+def main():
+    cs = load_ccsub()
+    o, rest = parse_own(sys.argv[1:])
+    req, opt = value_flags()
+    flags, pos, sid, cont = split_args(rest, req, opt)
+    if not any(f == "--model" or f.startswith("--model=") for f in flags):
+        flags = ["--model", cs.DEFAULT_MODEL, *flags]
+    headless = "-p" in flags or "--print" in flags
+    model = flags[flags.index("--model") + 1] if "--model" in flags else "(from --model=)"
+
+    accts = cs.load_accounts()
+    tokens = dict(accts)
+    if o["use"] is not None and o["use"] not in tokens:
+        sys.exit(f"unknown account {o['use']!r}; have: {', '.join(tokens)}")
+
+    force, exclude, attempt = o["use"], None, 0
+    while True:
+        say(f"probing {len(accts)} accounts ...")
+        res = probe_all(cs, accts)
+        pick, ok, fallback = choose(res, o["min_weekly_left"], force, exclude)
+        cs.print_report(res, ok, pick, o["min_weekly_left"], fallback)
+        if o["list"]:
+            return
+        if pick is None:
+            wait_for_reset(cs, res, o["wait"])
+            continue
+        force = None                        # --use pins the first launch only
+
+        cs.ensure_config()
+        if attempt == 0:
+            if cont and sid:
+                args = ["--resume", sid, *flags, *pos]
+            elif cont:
+                args = ["--continue", *flags, *pos]          # id resolved after exit
+            else:
+                sid = sid or str(uuid.uuid4())
+                args = ["--session-id", sid, *flags, *pos]
+        else:
+            tail = pos if (headless and pos) else [RESUME_PROMPT]
+            args = ["--resume", sid, *flags, *tail]
+
+        picked = next((r for r in ok if r["name"] == pick), None)
+        detail = (f" · 5h {cs.colour((1 - picked['u5']) * 100)} · week {cs.colour((1 - picked['u7']) * 100)}"
+                  if picked else "")
+        verb = "launching" if attempt == 0 else "resuming"
+        say(f"\n\x1b[1;32m➜ {verb}{RST} claude on account {BOLD}{pick}{RST}{detail} · {DIM}{model}{RST}")
+        say(f"{DIM}  auto-switch on · probing acct {pick} every {o['poll']}s · log: {LOG}{RST}")
+        log(f"{verb} on acct {pick} · session {sid or '(latest)'} · attempt {attempt}")
+        if not headless:
+            time.sleep(2)
+        say("")
+
+        started = time.time()
+        rc, killed, last = run_claude(cs, args, pick, tokens[pick], o["poll"])
+        if sid is None:
+            sid = latest_session(started)
+
+        # Why did claude stop? A completed headless run is never restarted; anything else
+        # is re-checked against the account's live limit status.
+        if headless and rc == 0 and not killed:
+            sys.exit(0)
+        r = last if killed else cs.probe(pick, tokens[pick])
+        if "err" not in r:
+            cs.write_status([r])
+        limited = "err" not in r and r["status"] == "rejected"
+        if not limited:
+            log(f"claude exited rc={rc} on acct {pick}; account not limited · done")
+            sys.exit(rc)
+        if sid is None:
+            say("\x1b[31m✖ acct limited but no session transcript found to resume{RST}")
+            sys.exit(rc or 1)
+
+        say(f"\n\x1b[33m▲ account {pick} is rate-limited{RST} {DIM}(5h reset {cs.rel(r['r5'])} · "
+            f"week reset {cs.rel(r['r7'], full=True)}){RST} · switching and resuming session {DIM}{sid}{RST}")
+        if not killed and not headless:
+            # claude quit on its own (probably the user); give them a way out
+            say(f"{DIM}  resuming on another account in 3s · Ctrl+C to quit instead{RST}")
+            try:
+                time.sleep(3)
+            except KeyboardInterrupt:
+                say("\nquit")
+                sys.exit(rc)
+        log(f"switch away from acct {pick} (rc={rc}, killed={killed}) · resume {sid}")
+        exclude, attempt = pick, attempt + 1
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        say("\nquit")
+        sys.exit(130)

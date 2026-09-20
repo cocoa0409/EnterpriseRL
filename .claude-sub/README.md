@@ -177,3 +177,7 @@ acct 7 │ near limit │ 5h ▰▰▰▰▰▱▱▱▱▱ 47% ↻2h23m │ wk 
   本目录位于 git 仓库内且未被 `.gitignore` 覆盖，提交前务必确认没把它加进去
   （建议在仓库 `.gitignore` 加一行 `.claude-sub/accounts.txt`）。
 - 改 `cc-sub` 或 `accounts.txt` 前先备份到 `~/.claude-sub/backups/`，脚本自身不会自动备份。
+
+## 想要限流时自动换号？
+
+见 `../.claude-sub-auto/README.md`：`cc-sub-auto` 复用本目录的账号清单和配置目录，运行中盯着当前账号，额度用尽时自动换号并 `--resume` 同一会话。

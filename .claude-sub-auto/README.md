@@ -37,7 +37,11 @@ cc-sub-auto --poll 60             # 运行中多久探测一次当前账号，�
 cc-sub-auto --wait 300            # 全部账号限流时多久重探一次，默认 300 秒（下限 30）
 cc-sub-auto -c                    # 接续本目录最近的会话，之后照常自动换号
 cc-sub-auto -p "..."              # 无头模式；撞限流退出后自动换号重跑
+cc-sub-auto --model claude-fable-5-1 --effort max   # 覆盖默认模型 / effort
 ```
+
+不带 `--model` / `--effort` 时默认传 `--model claude-opus-5-5 --effort high`（脚本里的 `DEFAULT_MODEL` /
+`DEFAULT_EFFORT`，与 `cc-sub` 默认的 Fable 5.1 不同）。会话内 `/model` 照常可用。
 
 其余参数原样透传给 `claude`。`--session-id` / `--resume` / `-c` 由 `cc-sub-auto` 接管：
 第一次启动它自己生成一个会话 id 传给 `claude --session-id`，之后每次换号都 `--resume` 这个 id，

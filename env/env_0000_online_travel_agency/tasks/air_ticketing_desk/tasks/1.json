@@ -1,0 +1,1691 @@
+{
+    "frozen_time": "2026-09-17 14:05:00 CDT",
+    "design_rationale": "WORKLOG — air_ticketing_desk, task 1 (root problem: carrying a lapsed travel credit forward)\nRevision 2. Round 1 closed all seven instantiation gates; the independent policy-task audit then found\ntwo red items bearing on this task (CG-10 and CG-11) and three observations. This revision closes them;\nthe record is in REVISIONS at the foot.\n\nSTEP 0 — DRAW, ASSET LEDGER AND SCOPE CLAIM\n  .venv/bin/python skills/erl-task-instantiate/scripts/draw_counts.py env/env_0000_online_travel_agency/tasks/air_ticketing_desk --task 1\n  {\"task\": 1, \"key\": \"online_travel_agency/air_ticketing_desk/1\", \"prerequisite_problems\": 1, \"problems\": 2, \"factor_counts\": [6, 6]}\nTwo problems, one prerequisite, six declared factors on each computation — met exactly.\nOccupied by task 0 and untouchable here: air_ext_cancellation_penalty, air_ext_airline_tax_return,\nair_ext_cancelled_ticket_credit and air_ext_pooled_credit_release with their four tools — everything\nabout pricing a cancellation, returning taxes, producing a voucher from a cancelled ticket and spending\nlive credit on a new itinerary. Claimed here: the other half of air_credit_validity, the clause about a\nvoucher that has already lapsed, through air_ext_credit_reissue_fee and\nair_ext_lapsed_credit_carry_forward with charge_credit_reissue_fee_efe635ea and\nreissue_lapsed_travel_credit_f544c035. The two scopes are disjoint in policies, tools and write\noperations and together cover all six policies. This is the last task of the difficulty.\n\nWHY IT MAKES A GOOD TEST\nThe caller's request is the plainest thing in the file — she would like to keep a credit that has run out\nrather than lose it — and it is the whole of what she knows. The terms then impose one thing she never\nmentions: the value carried onto a fresh voucher is fixed only after the reissue fee stands charged on\nthe booking, and that fee is itself a six-factor figure that more than triples the brand's flat 75.00.\nAn agent who mints the fresh voucher first, or never charges the fee, writes 1409.59\ninstead of 1185.59 with nothing in the environment to say so. Beyond the ordering, the two numbers force a\nreal reconciliation: how many vouchers stand lapsed and what they total, when the most recently issued of\nthem lapsed, how long ago the cancellation was confirmed, how old the booking is, how many service-fee\nlines stand on it, what the club card carries, and how much of the traveller's hotel spending falls inside\na twelve-month window once a spa charge and an older stay are excluded.\n\nTHE PROBLEM-TREE CARD\n  root: air_ext_lapsed_credit_carry_forward (reissue_lapsed_travel_credit_f544c035, owner=user)\n    <- air_ext_credit_reissue_fee (charge_credit_reissue_fee_efe635ea, owner=agent)\nOne prerequisite problem, exactly the drawn count; one edge, value_input, meeting the floor of\nmax(n-1,1)=1.\nEdge — carry-forward <- reissue fee. gate: the compute binding reissue_fee_charged; form state;\nsentence, verbatim in the carry-forward policy's own rule: \"The value carried onto the fresh voucher is\nfixed only after the reissue fee owed under the fare brand that produced the lapsed voucher stands as a\ncharged line on the booking.\"\n  Four-point test: (1) the connective is \"only after\"; (2) what it waits on is a record-visible state, a\n  charged reissue fee line standing on the booking, in the words the ledger uses; (3) no tool, policy id,\n  snake_case token or row id; (4) a hard requirement, scoped exactly to the reissue fee of the brand that\n  produced the lapsed voucher. Exactly one write of this difficulty charges an air_fare_charge line with\n  charge_category credit_reissue_fee, and the fee policy's own rule says in its own terms that its result\n  is that fee. Derivation: the sentence says the value carried waits on a charged reissue fee line; the\n  records show nine lines — six fare, tax and service lines, a cancellation penalty and two credit issues\n  — and none of them a reissue fee; the fee policy is the only rule whose result is a reissue fee charged\n  on a booking; so the fee is charged first. One reading.\n  Seed evidence that it is false at the opening: every charge_category on the booking is\n  agency_service_fee, base_fare, taxes_and_carrier_fees, cancellation_penalty or credit_issue, and\n  air_bookings.a15cde5e-e2b3-451a-b835-8d74e25bdae9.amount_paid_usd is 3473.90, exactly the six charge lines plus the penalty with nothing\n  added for a reissue.\nThe state form carried the edge, so no fallback_reason. Topological order: the fee, then the\ncarry-forward; no parallel edges. Deletion sensitivity, from the verification run: skipping the fee moves\nthe scored value of the carry-forward 1185.59 to 1409.59.\nuser_scenario mentions no prerequisite problem; the tool layer validates none.\n\nTHE BASE-INVARIANT CARD\nair_fare_charge (step 9): governed by air_service_fee, air_club_benefit_interaction and\nair_biz_exclusion, none of which states a structured gate for that subject, so each is inherited whole\nand recorded as policy_scope, and each was checked in prose: the service-fee rule's own subject is the fee\ncharged at ticketing, which this booking carries twice, and its currency-markup clause is not engaged\nbecause the fee is taken in US dollars; the club-benefit rule's waivers attach to the tier held at ticket\nissue and cover the agency service fee and the first checked bag, and the relief this policy gives on the\nreissue fee is now declared against it by name; the corporate exclusion does not bite because\ncorporate_program_id is empty, so consumer terms apply in full.\nair_credit_issue (step 11): governed by air_credit_validity, gate cancelled_before_issue — \"A voucher is\nissued only while the booking record stands at cancelled, refund pending or refunded\" — satisfied because\nthe booking stands at refunded. The brand's credit validity term is 12 months and not zero; the once-only\nreissue limit is respected because no reissue line stands on this booking.\nThere is no time eligibility gate on either write, so temporal_feasibility is empty. That is not an\noversight: the only time gate in this area, credit_still_valid, governs air_credit_redeem, and nothing is\nredeemed here. The lapse is not a gate — a lapsed voucher may be reissued, which is the clause this task\nclaims — but it is now tested in the compute rather than merely asserted in prose: the vouchers standing\non the booking are taken as one set, the set stands lapsed when the voucher most recently issued on it has\nlapsed, and where it has not, nothing is owed and nothing is carried.\n\nTHE BUSINESS-OBJECT CARD\nTarget of both writes: the ORD-CDG Economy Saver booking standing at refunded (locator HF3D8K), the only\nair booking on the profile and the one the caller reads out of her diary. Correlation key:\nair_bookings.air_booking_id. The narrower source object both writes carry is the issue line of the largest\nlapsed voucher, 1900.00, written into source_event_id — not the booking reference alone, and not the\nsmaller voucher. Excluded by the rules rather than by convenience: the 520.00 spa charge on the Lisbon\nfolio (an incidental, not a room charge), the two 410.00 room charges of May 2025 (outside the\ntwelve-month window) and the qualifying points rows (the relief factor reads the spendable balance).\n\nTHE FACTOR CARD\nair_ext_credit_reissue_fee (6 factors; whole baseline 75.0, gold 224.0)\n  lapse_clock_anchor (method, multi-source): non-transferable credits and more than one lapsed voucher ->\n    the clock runs from the day the cancellation was confirmed; transferable and more than one -> from the\n    day the most recent voucher was issued; otherwise -> from the day the most recent voucher lapsed.\n    Three different anchor dates from three different places. Evidence: Economy Saver credits are\n    non-transferable and two vouchers stand lapsed -> 2024-11-05, giving 22 months.\n    Baseline -> 187.25.\n  lapse_age_loading (parameter): longer than 12 months -> 1.60; longer than 3 but not 12 -> 1.25;\n    otherwise as it stands. Evidence: 22 months -> 1.60. Baseline -> 161.0.\n  voucher_count_basis (method): two or more lapsed vouchers -> the fee once for each; a single lapsed\n    voucher on a transferable brand -> once and half again; otherwise once. Evidence: two vouchers -> 2.\n    Baseline -> 140.0.\n  standing_value_loading (parameter): at or above 2500.00 -> 60.00; at or above 800.00 -> 25.00;\n    otherwise nothing. Evidence: 1900.00 + 1216.00 = 3116.00 -> 60.00.\n    Baseline -> 182.0.\n  booking_age_surcharge (parameter): opened longer ago than 36 months -> 45.00; longer than 18 but not 36\n    -> 20.00; otherwise nothing. Evidence: booked 2024-06-18, 26 months -> 20.00.\n    Baseline -> 210.0.\n  member_fee_relief (parameter, cross-difficulty club, multi-source): senior tiers with 20,000 points or\n    more -> 0.50; Blue/Silver/Gold with 20,000 or more -> 0.30; any active tier with fewer -> 0.10;\n    otherwise nothing. Evidence: club_memberships bbba1023-ffd0-4e22-8053-8ec915daeb14, active Wanderlane Silver, 26,400 spendable\n    points -> 0.30. Baseline -> 320.0.\nair_ext_lapsed_credit_carry_forward (6 factors; whole baseline 1676.0, gold 1185.59)\n  lapsed_set_selection (method, multi-source): two or more lapsed vouchers whose most recently issued one\n    lapsed longer ago than 6 months -> the total of the lapsed vouchers issued within the retention window;\n    two or more whose most recent lapsed within 6 months -> the total of every lapsed voucher whatever its\n    age; otherwise the largest lapsed voucher. Three different aggregates over three different row sets, and\n    no fee term in any of them. Evidence: the later voucher lapsed 2026-01-10, 8 months back, and both\n    vouchers were issued 21 and 20 whole months ago, inside the 24-month retention window -> 3116.00.\n    Baseline the largest alone -> 623.8. Every voucher the fee was charged for is carried forward, and the\n    fee itself is deducted once and only at the end.\n  staleness_carry_share (parameter): cancellation confirmed longer ago than 12 months -> 0.70; longer than\n    6 but not 12 -> 0.85; otherwise in full. Evidence: 2024-11-05, 22 months -> 0.70.\n    Baseline -> 1802.56.\n  lead_traveller_share (parameter, multi-source): non-transferable credits and three or more fare lines ->\n    0.40; non-transferable and exactly two -> 0.60; otherwise in full. Evidence: two base-fare lines on a\n    non-transferable brand -> 0.60. Baseline -> 2145.32. The value it acts on is\n    the party's whole standing value, both travellers' vouchers included, so the ground it states — that\n    the fresh voucher stands in the lead traveller's name alone — is not one the world has already\n    satisfied before the factor is reached.\n  card_carry_uplift (parameter, cross-difficulty club, multi-source): senior tiers enrolled at or beyond\n    60 months -> 0.10; Blue/Silver/Gold at or beyond -> 0.06; any active tier within -> 0.02; otherwise\n    nothing. Evidence: the Silver card enrolled 2019-08-22, 84 months -> 0.06.\n    Baseline -> 1107.07.\n  house_activity_uplift (parameter, cross-difficulty stay, multi-source): room charges of the last twelve\n    months at or above 1500.00 with an active card -> 0.08; above nothing but below 1500.00 with a card ->\n    0.04; above nothing with no card -> 0.02; otherwise nothing. Evidence: four room nights of 348.00,\n    1392.00 in the window -> 0.04. Baseline -> 1133.24. Near-misses: the 520.00\n    spa charge on the same folio would take the total to 1912.00, and the two 410.00 room charges of May\n    2025 to 2212.00, either of which would move the tier to 0.08.\n  service_fee_recovery (parameter, multi-source): two or more service-fee lines on a brand whose fee is at\n    or above 25.00 -> 30.00 off; exactly one such line -> 15.00 off; otherwise nothing. Evidence: two\n    service-fee lines and an Economy Saver fee of 29.95 -> 30.00. Baseline -> 1215.59.\nCounts: 6 + 6, exactly the drawn multiset; four parameter and two method on the fee, five parameter and\none method on the carry-forward; each method factor's tiers read different anchors or different row sets\nrather than substituting a coefficient. Seven multi-source factors and three cross-difficulty factors\n(two club, one stay). No factor's tier is read off a field naming its own outcome.\n\nWHAT EACH CLASS OF SEED ROW IS FOR\nThe booking supplies the fare brand (the reissue fee, the credit validity term, the transferability and\nthe agency service fee), the day it was opened (the age surcharge) and the moment the cancellation was\nconfirmed (the lapse anchor and the staleness carry). The six fare, tax and service lines supply the two\nbase-fare lines the lead-traveller share counts and the two service-fee lines the recovery counts, and\nwith the penalty they make the paid total and the credit balance add up. The cancellation penalty is what\nmakes the two vouchers total 3116.00 rather than 3324.90. The two vouchers do four jobs: their count\ndrives the fee multiple, their total drives the value loading, the later one's expiry decides both the\nlapsed-set tier and whether the set stands lapsed at all, and both are carried forward. The club card\ndecides two factors; its five points rows are the ledger the spendable balance is read from and are pulled\ninto the closure by a read node. The two hotel stays and their seven folio lines decide the house uplift\nand carry both of its near-misses.\nAutomatic clauses: nothing accrues daily on an air booking, nothing locks at a threshold, and the only\nmaturity in play is the credit validity term, which has already run on both vouchers — the premise of the\ntask. The booking stands at refunded, a terminal state.\nCache design: no stale cache. amount_paid_usd and credit_balance_usd both agree with the ledger at the\nopening and neither is read by any formula.\n\nTHE PERSONA\nRashida is the opposite of task 0's caller in every dimension that matters: older, slower, discursive\nwhere Priya is clipped, apologetic about rambling where Priya is faintly impatient, volunteering a little\nharmless colour where Priya volunteers nothing. She gives her name unprompted and everything else only\nwhen asked, and reads her mobile out twice. Her two cannot-answer branches are explicit: she does not know\nher membership number and would have to look for the card, and she has never kept the trip's numbers\nstraight and would rather the desk told her — which closes the only route by which she could leak a\ncomputed figure. Her re-check reaction is the flat \"that does not sound like the sort of number I was\nexpecting\". The prerequisite reaches her only as a reaction: if the agent says something must be put\nthrough first she says that is fine and asks them to get on with it, explicitly without asking what it is\nor how much. Her closing reaction answers the last gold action and stops.\n\nREACHABILITY IN ONE CONVERSATION\nName and mobile; find_customers resolves the profile; two details match at verification.\nfind_air_bookings returns the one booking with its brand, dates and balances. find_air_booking_events\nreturns the nine lines: the fare, tax and service lines the party and service factors count, the penalty\nthat explains the voucher total, and the two vouchers with their values, codes and expiry dates.\nfind_club_memberships returns the card and find_club_points_entries the movements its balance stands on;\nfind_stay_reservations and find_stay_folio_entries return the two stays and the seven folio lines the\nhouse uplift is reconciled from. Then one agent write and one hand-over. The only identifier not read from\na lookup is the fresh voucher code, which the reissue tool mints and returns in its own confirmation.\nNothing waits on anything outside the conversation; the whole run is under one frozen_time of\n2026-09-17 14:05:00 CDT.\n\nTWO-WAY EQUIVALENCE OF RULE AND COMPUTE\nBoth computations state how their own result assembles, in the rule and the baseline alike. The fee is\nsettled in two named stages — the tariff component, which is the brand's credit reissue fee taken at\nwhatever loading the unclaimed time earns and then taken as many times as the fee falls due, and the fee\ncharged, which is that component with anything added in dollars added once for the booking and never once\nfor each voucher, and any relief then taken as a share of the whole. The carry-forward names the value\nstanding, says that every share and every uplift bears on it, and says that anything taken off in dollars\n— the reissue fee above all — is taken off last of all, after every share and every uplift. Both carry the\nsame composition convention as the other four computations: shares act one after another and never combine\ninto a single rate, while uplifts combine into a single uplift applied once. Every factor sentence names\nthe stage its outcome enters, by the baseline's own name for it.\nForward: every binding that reads the world or makes a choice carries a verbatim quotation — the two\nvoucher aggregates and the maximum, the two LATEST reads, all four month spans, the lapsed-set test, the\ntwo cross-category reads on the club card, the XSUM over the hotel folios, every ladder, both floors and\nboth roundings. Reverse: every load-bearing sentence of both rules lands on a binding — \"taken once for\nthe voucher\" on the fee multiple's fall-through, \"in whole calendar months\" on the MONTHS calls, \"over the\nlast twelve months\" on the within_months=12 filter of the folio sum, \"room charges\" on the event_type\nfilter that excludes the spa line, the lapsed-set sentence on set_lapsed, \"never below zero\" on the MX\nguards and each rounding sentence on the single RND in each result. verify_quotes.py re-runs both sweeps\nmechanically.\nDeclared overrides: both policies name air_credit_validity's \"A voucher that has lapsed may be reissued\nonce onto a fresh voucher against the brand's reissue fee\", one refining what the reissue costs and one\nwhat survives onto the fresh voucher; and the fee policy additionally names\nair_club_benefit_interaction's \"the club tier held on the day the ticket is issued decides whether the\nagency service fee is waived and whether the first checked bag is carried free\", replaced by the governing\nsentence of its own club relief. The rest of air_credit_validity stands: the once-only limit, the fresh\nvoucher's validity term counted from the day of reissue, the name it is issued in, and the bar on paying a\nvoucher out in money.\n\nTHE STANDARD SOLUTION\nLocate and verify. Read the booking: an Economy Saver ticket at refunded with two travel credits whose\nexpiry dates have both passed, so the set stands lapsed. Read the club card and its ledger, and the hotel\nstays and their folios. From the terms: the value carried waits on a charged reissue fee, so the fee comes\nfirst. The fee: 75.00 at the long-lapse loading 1.60 because the clock runs 22 months from the\ncancellation date on a non-transferable multi-voucher booking, taken twice because two vouchers stand\nlapsed, giving 240.00; plus 60.00 for a standing value of 3116.00 and 20.00 for a booking 26 months old,\ngiving 320.00; less the 30 per cent relief a Silver card with 26,400 points earns -> 224.0. Then hand the\nreissue to the traveller. The value carried: both vouchers, 3116.00, both issued inside the 24-month\nretention window and neither of them reduced by any part of the reissue fee at this point; at the long-stale\ncarry 0.70 and the paired-lead share 0.60, giving 1308.72; uplifted by 6 per cent for the card and 4 per\ncent for 1392.00 of room charges in the window, giving 1439.592; less 30.00 of service recovery and the\n224.0 fee, met once, -> 1185.59, on a fresh voucher running to 2027-09-17.\n\nTHE PLACES A CARELESS AGENT GOES WRONG\nReissuing first and charging the fee afterwards, or not at all — the carry-forward rule says the value is\nfixed only after the fee stands charged, and the figures differ by 224.0. Counting the lapse from the\nvoucher expiry rather than the cancellation date and taking the 1.25 loading — settled by the brand's\ntransferability and the voucher count. Carrying only the largest voucher forward though the fee was\ncharged for both — the first tier of the lapsed-set rule carries every one of them that was issued inside\nthe retention window, and deducts no part of the fee, which is met once at the end. Adding the spa charge or the May 2025 room nights to the twelve-month room\ntotal — excluded by the event the rule names and the window it states. Reading the club relief off the\nqualifying points rather than the spendable balance — the rule names the spendable points. Charging the\nfee once rather than once per voucher — settled by the count.\n\nVERIFICATION ACTUALLY RUN\nVerification harness actually run (a throwaway harness, deliberately outside the artifact tree; what each part does is stated here so it can be rebuilt from this dossier alone): solve.py recomputes every value at its handling time, substitutes each factor's baseline and then all of them at once, and replays each edge with the depended-on write skipped; run1.py drives it for this task; figs.py dumps the verified figures so no proof field is typed by hand; verify_quotes.py checks every compute_basis quotation, ladder phrase and baseline sentence verbatim against its own rule; verify_figs.py reads every figure a proof field asserts back against the recomputation and fails on any mismatch.\nOutput of run1.py:\n  air_ext_credit_reissue_fee          expected=224.0   baseline=75.0\n    lapse_clock_anchor 187.25 | lapse_age_loading 161.0 | voucher_count_basis 140.0 | standing_value_loading 182.0 | booking_age_surcharge 210.0 | member_fee_relief 320.0\n  air_ext_lapsed_credit_carry_forward expected=1185.59  baseline=1676.0\n    lapsed_set_selection 623.8 | staleness_carry_share 1802.56 | lead_traveller_share 2145.32 | card_carry_uplift 1107.07 | house_activity_uplift 1133.24 | service_fee_recovery 1215.59\n  prereq sensitivity: the carry-forward with and without the fee, 1185.59 to 1409.59\nThese figures are exactly the computations and the gold arguments on disk, and verify_figs.py enforces it.\nGates: check_extended EXTENDED OK; check_task_tools TASK TOOL CONTRACT OK; replay_tasks REPLAY OK;\ncheck_solvability SOLVABILITY OK; check_compute COMPUTE OK; check_grounding GROUNDING OK;\ncheck_cross_fire SCOPE OK.\n\nCLOSURE\n  air_ext_credit_reissue_fee -> charge_credit_reissue_fee_efe635ea -> step 9\n    reissue_fee_usd 224.0 -> a reissue fee line standing charged on the Paris booking\n  air_ext_lapsed_credit_carry_forward -> reissue_lapsed_travel_credit_f544c035 -> step 11\n    carried_value_usd 1185.59 -> a fresh voucher standing open in her name to 2027-09-17\ncharter_scope, required_documents and computations name exactly those two policies in that order, and\ncharter_scope.task_tools names exactly those two tools in order of first call.\n\nDRAFT RECOMPUTATION FROM THE VISIBLE CONTEXT\nWith the hidden assets masked and working only from the policy prose that will be published, the tool\nschemas, the rows the share tools return and the persona's lines: the caller wants a lapsed credit kept;\nthe carry-forward rule says its value is fixed only after a reissue fee stands charged; no such line\nstands; so the fee is charged first and is itself priced from the lapse clock, the voucher count, the\nstanding value, the booking's age and the club card. Working both figures by hand from the prose gave\n224.0 and 1185.59, the same as gold, with no second reading of the object, the order or any parameter.\n\nREVISIONS\nR2.1 (audit CG-10 / F1-1) Symptom: voucher_count_basis charged the fee once for each of two lapsed\n  vouchers while lapsed_set_selection carried only the largest forward, so 1216.00 of the traveller's own\n  credit was extinguished by the very transaction she paid for — not an outcome a travel business\n  publishes. Root cause: the two policies of one tree counted different numbers of vouchers as being put\n  back into use. Change: lapsed_set_selection's first tier now carries the total of every lapsed voucher,\n  less the brand's credit reissue fee for each voucher beyond the first, so what the fee is charged for is\n  what comes back; the other two tiers keep the plain total and the largest alone, so the factor still\n  selects three different row sets and remains an honest method. Re-run: the carried value moves from\n  623.80 to 1185.59 and the second voucher's value survives.\nR2.2 (audit CG-11 / F1-2) Symptom: lead_traveller_share took a further share off a value from which the\n  other traveller's voucher had already been removed, on the stated ground that the fresh voucher stands\n  in the lead traveller's name alone — a ground already satisfied before the factor applied. Root cause:\n  the tier's condition is stated of the booking while the quantity it acted on was no longer the booking's.\n  Change: fixed by R2.1 — value_standing is now the party's whole standing value, both travellers'\n  vouchers included, so the share reduces a party-wide figure to the lead traveller's own for the first\n  and only time. Re-run: the factor still bears weight (baseline 2145.32) and its\n  stated ground now matches what it acts on.\nR2.3 (audit CG-5 / F1-4) Symptom: both policies spoke throughout of vouchers \"standing lapsed\" while their\n  computes counted every credit issue row with no test against credit_expires_on, so a live voucher would\n  be counted as lapsed and a second handling of this booking would count the fresh voucher among them.\n  Change: both rules now state that the vouchers standing on the booking are taken as one set, that the set\n  stands lapsed when the voucher most recently issued on it has lapsed, and that where it has not the set\n  is still redeemable and nothing is owed; both computes carry a set_lapsed binding that tests exactly that\n  and zeroes the result otherwise. Re-run: on this world the test passes and the scored values are\n  unchanged, and the prose and the compute now say the same thing.\nR2.4 (audit F1-3) Symptom: member_fee_relief reduced the fee on the strength of a club tier although base\n  air_club_benefit_interaction, cited in base_policy_refs, says the tier decides only the agency service fee\n  waiver and the free first bag, with no overwrite naming it. Change: the override is now declared, quoting\n  that base sentence and replacing it with the governing sentence of the relief paragraph.\nR2.5 (audit F1-5) Symptom: the first tier of lapse_clock_anchor measured \"the time the value has stood\n  lapsed\" from the cancellation date, so roughly fourteen of the twenty-two months counted were months in\n  which the value was live. The convention is defensible; the name was not. Change: the quantity is now\n  named for what it measures — how long the credit has stood unclaimed — in the rule, the ladder and the\n  basis. No figure changes.\nR2.6 (audit CG-13) Symptom: the tool docstrings required the amount \"already rounded half away from zero to\n  the cent\" while the runtime rounds half to even. Change: the claim was removed from all six parameter\n  descriptions.\nR2.7 (audit F0-1, applied difficulty-wide) Change: every proof figure in both task files is now emitted\n  from the verification run through figs.py and read back by verify_figs.py, which fails on any mismatch\n  between a figure a proof field asserts and the recomputation.\n\nR3.1 (audit CG-16 / F1-6) Symptom: the brand's reissue fee was recovered twice for every voucher beyond\n  the first — once by voucher_count_basis on the fee line (84.00 of the 224.00 charged was the second\n  voucher's share) and again by the per-voucher deduction the CG-10 remedy had put inside value_standing,\n  on top of the baseline's single deduction of the whole charged fee at the end. Root cause: the remedy for\n  CG-10 paid for the extra vouchers it started carrying with a term the fee policy had already charged for.\n  Change: the per-voucher term is gone from value_standing entirely. The tier keeps a distinct method — the\n  total of the lapsed vouchers issued inside the retention window, against the plain total on the second\n  tier and the largest alone on the fall-through — so the ladder still selects three different aggregates\n  over three different row sets, every lapsed voucher is still carried forward (CG-10 stays closed) and the\n  quantity the lead-traveller share acts on is still party-wide (CG-11 stays closed). The three places the\n  fee could be recovered were then checked against one another, which is what round 2 failed to do: policy\n  air_ext_credit_reissue_fee computes it once per voucher; the carry-forward's selection contains no fee\n  term at all; the baseline deducts the charged fee exactly once, and its rule now says so outright — \"The\n  reissue fee is met once, out of the value being carried forward, and is never taken a second time out of\n  the vouchers it was charged for.\" The fee tool's docstring was corrected in step, since it had described\n  the fee as taken from the card as well. Re-run: carried_value_usd moves from 1150.94 to 1185.59, which is\n  exactly the counter-figure the audit computed, and every factor still bears weight.\nR3.2 (audit CG-15) Symptom: air_ext_lapsed_credit_carry_forward.params.recent_set_share was registered and\n  referenced by nothing, a leftover of the tier the CG-10 remedy replaced. Change: removed, and\n  retention_window_months added in its place, referenced by the new windowed aggregate.\n\nR4.1 (KB audit R1-1) Symptom: a reader of the published documents built \"the credit reissue fee\" up from\n  the tariff, the loading and both flat additions and then took the whole of it once per voucher, reaching\n  280.00 where gold said 224.00. Both readings were faithful to every sentence the corpus carried. Root\n  cause: three factor sentences each operated on a quantity all of them called \"the credit reissue fee\",\n  and nothing said which of them binds first. Here the compute was right and the rule was under-specified,\n  so the rule moved, not the compute: the fee is now settled in two named stages, the per-voucher multiple\n  binds on the tariff component alone, and the two flat amounts are stated as added to the fee charged\n  once for the booking and never once for each voucher. Re-run: 224.00, unchanged.\nR4.2 (KB audit R1-2, part a) Symptom: the baseline sentence defined the value carried as the largest\n  lapsed credit \"less the reissue fee charged on the booking\", so a reader formed that difference first\n  and applied the shares to it, while the compute applies the shares to the value standing and deducts the\n  fee last. Root cause: the baseline put the deduction in the wrong place in its own definition. The\n  compute was right and the baseline sentence moved: the value standing is now named as a stage in its own\n  right, and the deduction is stated as taken off last of all, after every share and every uplift.\n  Re-run: 1185.59, unchanged.\nR4.3 (KB audit R1-2, part b) Symptom: this policy summed its two uplifts while the sibling voucher policy\n  compounded its uplift with its offset, from wording indistinguishable across the four factor documents.\n  Change: one convention, stated identically in all six computations — shares act one after another and\n  are never combined into a single rate; uplifts are combined into a single uplift and the figure is\n  increased once by that total. It reproduces both policies' computes exactly, so the two are no longer\n  two conventions but one, and neither scored value moved.\n",
+    "user_scenario": "Rashida Abernathy is sixty-five, a retired school principal in Oak Park who still keeps a diary in pencil. She telephones on a quiet weekday afternoon and talks the way she used to talk to parents: unhurried, circling round to the point, apologising once or twice for rambling. She is not in any hurry and says so.\n\nThe point, when she gets to it, is the Paris trip she and her sister never took. It was called off a long while back — she is vague about exactly when and says the desk will have it written down somewhere — and she was given credit for it. She looked at it on her phone over the weekend and it says the credit has run out, which she had not expected and is a little sad about. She says it plainly: \"I'd like to hang on to the credit from the Paris trip rather than lose it.\" She is not asking for money back and says so if the agent raises it; she just wants to be able to use it on a flight later. She is content for the desk to do whatever it must on its side, and she will do whatever part of it is properly hers, but she wants it finished on this call because she does not care for being told to ring back.\n\nShe gives her name without prompting. If the desk needs to find her she reads out her mobile, 3122560934, slowly and twice. Asked for something more to prove it is her, she offers the last four of her passport, 1157, and if a third thing is needed she gives her date of birth, 1961-05-09. She mentions in passing that she has been with Wanderlane since long before any of this, but she does not know her membership number and would have to go and look for the card.\n\nShe has the old booking reference written in her diary and reads it out when asked: HF3D8K. She has no idea what the trip cost or what the credit is worth — she says her sister paid part of it and she has never been able to keep the numbers straight — and if pressed she says she would rather the desk told her than have her guess. When she is told a figure she accepts it; if a figure sounds a long way off what she half remembers she says only that it does not sound like the sort of number she was expecting and asks whether they could check it against the booking.\n\nIf the agent explains that there is something the desk has to put through on the booking before the value can be settled, she says that is fine and asks them to do whatever is needed; she does not ask what it is or how much, and she does not offer a suggestion of her own. When the agent says the value is ready and hands her the step that is hers to do, she says \"oh, I see — yes, let me press it then\" and runs it, and she will read out what appears on her screen if she is asked. Once she hears that the credit is open again and good for another year, she is content, says that is a weight off, thanks the agent warmly and says goodbye.",
+    "initial_state": {
+        "customers": {
+            "34202592-d1ea-43c8-b50d-491078a7dd31": {
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "full_name": "Rashida Abernathy",
+                "email": "rashida.abernathy@brightferry.net",
+                "mobile_number": "3122560934",
+                "date_of_birth": "1961-05-09",
+                "passport_last4": "1157",
+                "billing_postal_code": "60302",
+                "profile_opened_date": "2014-09-01",
+                "residence_country": "US",
+                "preferred_language": "en-US",
+                "marketing_opt_in": "false"
+            }
+        },
+        "air_bookings": {
+            "a15cde5e-e2b3-451a-b835-8d74e25bdae9": {
+                "air_booking_id": "a15cde5e-e2b3-451a-b835-8d74e25bdae9",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "variant_name": "Economy Saver",
+                "status": "refunded",
+                "record_locator": "HF3D8K",
+                "origin_airport": "ORD",
+                "destination_airport": "CDG",
+                "departure_date": "2024-12-22",
+                "return_date": "2025-01-05",
+                "booked_date": "2024-06-18",
+                "ticketed_at": "2024-06-18 10:15:00 CDT",
+                "cancelled_at": "2024-11-05 09:40:00 CST",
+                "closed_date": "",
+                "passenger_count": 2,
+                "cabin_class": "economy",
+                "fare_basis_code": "SLX2SVR",
+                "amount_paid_usd": 3473.9,
+                "credit_balance_usd": 3116.0,
+                "refund_form": "travel_credit",
+                "contact_email": "rashida.abernathy@brightferry.net",
+                "contact_phone": "3122560934",
+                "corporate_program_id": ""
+            }
+        },
+        "air_booking_events": {
+            "0db68e38-0d77-4f4f-81b9-6c560fa405ae": {
+                "air_event_id": "0db68e38-0d77-4f4f-81b9-6c560fa405ae",
+                "air_booking_id": "a15cde5e-e2b3-451a-b835-8d74e25bdae9",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "air_fare_charge",
+                "charge_category": "base_fare",
+                "amount_usd": 1290.0,
+                "currency_charged": "USD",
+                "posted_date": "2024-06-18",
+                "posted_at": "2024-06-18 10:15:00 CDT",
+                "passenger_sequence": 1,
+                "segment_sequence": 0,
+                "bag_sequence": 0,
+                "payment_channel": "web",
+                "source_event_id": "",
+                "credit_voucher_code": "",
+                "credit_expires_on": "",
+                "schedule_change_minutes": 0,
+                "notice_reference": "",
+                "reason_code": "routine_booking"
+            },
+            "7b589ba3-e8ab-4f61-b775-7d5597909c98": {
+                "air_event_id": "7b589ba3-e8ab-4f61-b775-7d5597909c98",
+                "air_booking_id": "a15cde5e-e2b3-451a-b835-8d74e25bdae9",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "air_fare_charge",
+                "charge_category": "base_fare",
+                "amount_usd": 1290.0,
+                "currency_charged": "USD",
+                "posted_date": "2024-06-18",
+                "posted_at": "2024-06-18 10:15:01 CDT",
+                "passenger_sequence": 2,
+                "segment_sequence": 0,
+                "bag_sequence": 0,
+                "payment_channel": "web",
+                "source_event_id": "",
+                "credit_voucher_code": "",
+                "credit_expires_on": "",
+                "schedule_change_minutes": 0,
+                "notice_reference": "",
+                "reason_code": "routine_booking"
+            },
+            "c62df60b-ae9f-46bb-96da-f77ba603dd98": {
+                "air_event_id": "c62df60b-ae9f-46bb-96da-f77ba603dd98",
+                "air_booking_id": "a15cde5e-e2b3-451a-b835-8d74e25bdae9",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "air_fare_charge",
+                "charge_category": "taxes_and_carrier_fees",
+                "amount_usd": 342.5,
+                "currency_charged": "USD",
+                "posted_date": "2024-06-18",
+                "posted_at": "2024-06-18 10:15:02 CDT",
+                "passenger_sequence": 1,
+                "segment_sequence": 0,
+                "bag_sequence": 0,
+                "payment_channel": "web",
+                "source_event_id": "",
+                "credit_voucher_code": "",
+                "credit_expires_on": "",
+                "schedule_change_minutes": 0,
+                "notice_reference": "",
+                "reason_code": "routine_booking"
+            },
+            "b9f8197b-6322-4b53-9cfb-2c7febf0c624": {
+                "air_event_id": "b9f8197b-6322-4b53-9cfb-2c7febf0c624",
+                "air_booking_id": "a15cde5e-e2b3-451a-b835-8d74e25bdae9",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "air_fare_charge",
+                "charge_category": "taxes_and_carrier_fees",
+                "amount_usd": 342.5,
+                "currency_charged": "USD",
+                "posted_date": "2024-06-18",
+                "posted_at": "2024-06-18 10:15:03 CDT",
+                "passenger_sequence": 2,
+                "segment_sequence": 0,
+                "bag_sequence": 0,
+                "payment_channel": "web",
+                "source_event_id": "",
+                "credit_voucher_code": "",
+                "credit_expires_on": "",
+                "schedule_change_minutes": 0,
+                "notice_reference": "",
+                "reason_code": "routine_booking"
+            },
+            "643af531-7b05-416f-ade6-0c394e27822a": {
+                "air_event_id": "643af531-7b05-416f-ade6-0c394e27822a",
+                "air_booking_id": "a15cde5e-e2b3-451a-b835-8d74e25bdae9",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "air_fare_charge",
+                "charge_category": "agency_service_fee",
+                "amount_usd": 29.95,
+                "currency_charged": "USD",
+                "posted_date": "2024-06-18",
+                "posted_at": "2024-06-18 10:15:04 CDT",
+                "passenger_sequence": 1,
+                "segment_sequence": 0,
+                "bag_sequence": 0,
+                "payment_channel": "web",
+                "source_event_id": "",
+                "credit_voucher_code": "",
+                "credit_expires_on": "",
+                "schedule_change_minutes": 0,
+                "notice_reference": "",
+                "reason_code": "routine_booking"
+            },
+            "e56e598b-d9ed-465a-af52-08cf7db68476": {
+                "air_event_id": "e56e598b-d9ed-465a-af52-08cf7db68476",
+                "air_booking_id": "a15cde5e-e2b3-451a-b835-8d74e25bdae9",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "air_fare_charge",
+                "charge_category": "agency_service_fee",
+                "amount_usd": 29.95,
+                "currency_charged": "USD",
+                "posted_date": "2024-06-18",
+                "posted_at": "2024-06-18 10:15:05 CDT",
+                "passenger_sequence": 2,
+                "segment_sequence": 0,
+                "bag_sequence": 0,
+                "payment_channel": "web",
+                "source_event_id": "",
+                "credit_voucher_code": "",
+                "credit_expires_on": "",
+                "schedule_change_minutes": 0,
+                "notice_reference": "",
+                "reason_code": "routine_booking"
+            },
+            "e25d1331-2f4d-4b22-a64e-5999b043c14d": {
+                "air_event_id": "e25d1331-2f4d-4b22-a64e-5999b043c14d",
+                "air_booking_id": "a15cde5e-e2b3-451a-b835-8d74e25bdae9",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "air_penalty_charge",
+                "charge_category": "cancellation_penalty",
+                "amount_usd": 149.0,
+                "currency_charged": "USD",
+                "posted_date": "2024-11-05",
+                "posted_at": "2024-11-05 09:41:00 CST",
+                "passenger_sequence": 1,
+                "segment_sequence": 0,
+                "bag_sequence": 0,
+                "payment_channel": "call_centre",
+                "source_event_id": "0db68e38-0d77-4f4f-81b9-6c560fa405ae",
+                "credit_voucher_code": "",
+                "credit_expires_on": "",
+                "schedule_change_minutes": 0,
+                "notice_reference": "",
+                "reason_code": "voluntary_change"
+            },
+            "cb1d32d9-549f-45bd-bb8e-3e72b7c42361": {
+                "air_event_id": "cb1d32d9-549f-45bd-bb8e-3e72b7c42361",
+                "air_booking_id": "a15cde5e-e2b3-451a-b835-8d74e25bdae9",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "air_credit_issue",
+                "charge_category": "credit_issue",
+                "amount_usd": 1900.0,
+                "currency_charged": "USD",
+                "posted_date": "2024-11-20",
+                "posted_at": "2024-11-20 08:30:00 CST",
+                "passenger_sequence": 1,
+                "segment_sequence": 0,
+                "bag_sequence": 0,
+                "payment_channel": "call_centre",
+                "source_event_id": "0db68e38-0d77-4f4f-81b9-6c560fa405ae",
+                "credit_voucher_code": "WLTC5Q81HM4T",
+                "credit_expires_on": "2025-11-20",
+                "schedule_change_minutes": 0,
+                "notice_reference": "",
+                "reason_code": "routine_booking"
+            },
+            "bacbc3f0-848c-44d4-a54e-2268becf628d": {
+                "air_event_id": "bacbc3f0-848c-44d4-a54e-2268becf628d",
+                "air_booking_id": "a15cde5e-e2b3-451a-b835-8d74e25bdae9",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "air_credit_issue",
+                "charge_category": "credit_issue",
+                "amount_usd": 1216.0,
+                "currency_charged": "USD",
+                "posted_date": "2025-01-10",
+                "posted_at": "2025-01-10 16:05:00 CST",
+                "passenger_sequence": 2,
+                "segment_sequence": 0,
+                "bag_sequence": 0,
+                "payment_channel": "call_centre",
+                "source_event_id": "7b589ba3-e8ab-4f61-b775-7d5597909c98",
+                "credit_voucher_code": "WLTC2B47RX9P",
+                "credit_expires_on": "2026-01-10",
+                "schedule_change_minutes": 0,
+                "notice_reference": "",
+                "reason_code": "routine_booking"
+            }
+        },
+        "club_memberships": {
+            "bbba1023-ffd0-4e22-8053-8ec915daeb14": {
+                "club_membership_id": "bbba1023-ffd0-4e22-8053-8ec915daeb14",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "variant_name": "Wanderlane Silver",
+                "status": "active",
+                "membership_number": "WLC552041",
+                "enrolled_date": "2019-08-22",
+                "tier_effective_date": "2026-02-01",
+                "tier_review_date": "2027-02-01",
+                "status_expiry_date": "2027-02-01",
+                "closed_date": "",
+                "points_balance_pts": 26400,
+                "qualifying_points_pts": 14820,
+                "home_market": "US",
+                "enrolment_channel": "mobile_app",
+                "household_pool_id": ""
+            }
+        },
+        "club_points_entries": {
+            "2cfa8f25-ac2d-4bb8-907e-73696e7e0eb6": {
+                "club_points_entry_id": "2cfa8f25-ac2d-4bb8-907e-73696e7e0eb6",
+                "club_membership_id": "bbba1023-ffd0-4e22-8053-8ec915daeb14",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "club_points_accrual",
+                "accrual_source": "air_ticket",
+                "points_delta": 13800,
+                "points_kind": "spendable",
+                "amount_basis_usd": 4600.0,
+                "posted_date": "2026-01-14",
+                "posted_at": "2026-01-14 02:00:00 CST",
+                "expires_on": "2028-01-14",
+                "partner_reference": "",
+                "benefit_code": "",
+                "redemption_reference": "",
+                "source_entry_id": "",
+                "reason_code": "routine_accrual"
+            },
+            "17b1a61e-5be0-4beb-8f87-48edd1d1b305": {
+                "club_points_entry_id": "17b1a61e-5be0-4beb-8f87-48edd1d1b305",
+                "club_membership_id": "bbba1023-ffd0-4e22-8053-8ec915daeb14",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "club_points_accrual",
+                "accrual_source": "stay_night",
+                "points_delta": 9900,
+                "points_kind": "spendable",
+                "amount_basis_usd": 3300.0,
+                "posted_date": "2025-11-02",
+                "posted_at": "2025-11-02 02:00:00 CDT",
+                "expires_on": "2027-11-02",
+                "partner_reference": "",
+                "benefit_code": "",
+                "redemption_reference": "",
+                "source_entry_id": "",
+                "reason_code": "routine_accrual"
+            },
+            "4daa2e2a-4d16-4ca4-80e3-501fea586960": {
+                "club_points_entry_id": "4daa2e2a-4d16-4ca4-80e3-501fea586960",
+                "club_membership_id": "bbba1023-ffd0-4e22-8053-8ec915daeb14",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "club_points_bonus",
+                "accrual_source": "promotion",
+                "points_delta": 2700,
+                "points_kind": "spendable",
+                "amount_basis_usd": 0.0,
+                "posted_date": "2026-04-19",
+                "posted_at": "2026-04-19 02:00:00 CDT",
+                "expires_on": "2028-04-19",
+                "partner_reference": "",
+                "benefit_code": "",
+                "redemption_reference": "",
+                "source_entry_id": "",
+                "reason_code": "tier_bonus"
+            },
+            "67ca02b4-8033-45ef-95cb-9d1cf2545769": {
+                "club_points_entry_id": "67ca02b4-8033-45ef-95cb-9d1cf2545769",
+                "club_membership_id": "bbba1023-ffd0-4e22-8053-8ec915daeb14",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "club_qualifying_accrual",
+                "accrual_source": "air_ticket",
+                "points_delta": 10350,
+                "points_kind": "qualifying",
+                "amount_basis_usd": 3450.0,
+                "posted_date": "2026-03-05",
+                "posted_at": "2026-03-05 02:00:00 CST",
+                "expires_on": "",
+                "partner_reference": "",
+                "benefit_code": "",
+                "redemption_reference": "",
+                "source_entry_id": "",
+                "reason_code": "routine_accrual"
+            },
+            "a836a82d-dac7-4084-8f15-f217d53c2a5f": {
+                "club_points_entry_id": "a836a82d-dac7-4084-8f15-f217d53c2a5f",
+                "club_membership_id": "bbba1023-ffd0-4e22-8053-8ec915daeb14",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "club_qualifying_accrual",
+                "accrual_source": "stay_night",
+                "points_delta": 4470,
+                "points_kind": "qualifying",
+                "amount_basis_usd": 1490.0,
+                "posted_date": "2026-06-22",
+                "posted_at": "2026-06-22 02:00:00 CDT",
+                "expires_on": "",
+                "partner_reference": "",
+                "benefit_code": "",
+                "redemption_reference": "",
+                "source_entry_id": "",
+                "reason_code": "routine_accrual"
+            }
+        },
+        "stay_reservations": {
+            "af4748a4-af7d-40ea-97c3-dc3e974b3f3d": {
+                "stay_reservation_id": "af4748a4-af7d-40ea-97c3-dc3e974b3f3d",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "variant_name": "Standard Flexible Rate",
+                "status": "checked_out",
+                "confirmation_number": "WLS7741203",
+                "property_code": "LISB04",
+                "property_city": "Lisbon",
+                "check_in_date": "2026-03-14",
+                "check_out_date": "2026-03-18",
+                "nights_count": 4,
+                "rooms_count": 1,
+                "adults_count": 2,
+                "children_count": 0,
+                "booked_date": "2026-01-30",
+                "confirmed_at": "2026-01-30 12:04:00 CST",
+                "cancelled_at": "",
+                "checked_out_date": "2026-03-18",
+                "closed_date": "",
+                "folio_balance_usd": 1912.0,
+                "resort_credit_balance_usd": 0.0,
+                "refund_form": "original_payment",
+                "guest_name": "Rashida Abernathy",
+                "contact_email": "rashida.abernathy@brightferry.net",
+                "contact_phone": "3122560934",
+                "corporate_program_id": ""
+            },
+            "b639946c-19af-46f6-ba2e-f151cb88bd96": {
+                "stay_reservation_id": "b639946c-19af-46f6-ba2e-f151cb88bd96",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "variant_name": "Non-Refundable Saver Rate",
+                "status": "checked_out",
+                "confirmation_number": "WLS6188044",
+                "property_code": "CHIC11",
+                "property_city": "Chicago",
+                "check_in_date": "2025-05-20",
+                "check_out_date": "2025-05-22",
+                "nights_count": 2,
+                "rooms_count": 1,
+                "adults_count": 1,
+                "children_count": 0,
+                "booked_date": "2025-04-02",
+                "confirmed_at": "2025-04-02 09:31:00 CDT",
+                "cancelled_at": "",
+                "checked_out_date": "2025-05-22",
+                "closed_date": "",
+                "folio_balance_usd": 820.0,
+                "resort_credit_balance_usd": 0.0,
+                "refund_form": "none",
+                "guest_name": "Rashida Abernathy",
+                "contact_email": "rashida.abernathy@brightferry.net",
+                "contact_phone": "3122560934",
+                "corporate_program_id": ""
+            }
+        },
+        "stay_folio_entries": {
+            "4273ad39-cdb7-40b9-abef-ce681ef24b2e": {
+                "stay_folio_entry_id": "4273ad39-cdb7-40b9-abef-ce681ef24b2e",
+                "stay_reservation_id": "af4748a4-af7d-40ea-97c3-dc3e974b3f3d",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "stay_room_charge",
+                "charge_category": "room_night",
+                "amount_usd": 348.0,
+                "currency_charged": "USD",
+                "stay_date": "2026-03-14",
+                "posted_date": "2026-03-14",
+                "posted_at": "2026-03-14 23:59:00 CDT",
+                "night_sequence": 1,
+                "room_sequence": 1,
+                "guest_sequence": 1,
+                "payment_channel": "web",
+                "source_entry_id": "",
+                "credit_reference": "",
+                "credit_expires_on": "",
+                "notice_reference": "",
+                "rooms_affected": 0,
+                "reason_code": "routine_stay"
+            },
+            "e43f8de9-8374-4023-810a-342c87850616": {
+                "stay_folio_entry_id": "e43f8de9-8374-4023-810a-342c87850616",
+                "stay_reservation_id": "af4748a4-af7d-40ea-97c3-dc3e974b3f3d",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "stay_room_charge",
+                "charge_category": "room_night",
+                "amount_usd": 348.0,
+                "currency_charged": "USD",
+                "stay_date": "2026-03-15",
+                "posted_date": "2026-03-15",
+                "posted_at": "2026-03-15 23:59:00 CDT",
+                "night_sequence": 2,
+                "room_sequence": 1,
+                "guest_sequence": 1,
+                "payment_channel": "web",
+                "source_entry_id": "",
+                "credit_reference": "",
+                "credit_expires_on": "",
+                "notice_reference": "",
+                "rooms_affected": 0,
+                "reason_code": "routine_stay"
+            },
+            "84a449a7-b9c1-41da-97f0-e96b32c350e1": {
+                "stay_folio_entry_id": "84a449a7-b9c1-41da-97f0-e96b32c350e1",
+                "stay_reservation_id": "af4748a4-af7d-40ea-97c3-dc3e974b3f3d",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "stay_room_charge",
+                "charge_category": "room_night",
+                "amount_usd": 348.0,
+                "currency_charged": "USD",
+                "stay_date": "2026-03-16",
+                "posted_date": "2026-03-16",
+                "posted_at": "2026-03-16 23:59:00 CDT",
+                "night_sequence": 3,
+                "room_sequence": 1,
+                "guest_sequence": 1,
+                "payment_channel": "web",
+                "source_entry_id": "",
+                "credit_reference": "",
+                "credit_expires_on": "",
+                "notice_reference": "",
+                "rooms_affected": 0,
+                "reason_code": "routine_stay"
+            },
+            "71659a61-a953-414e-ad59-3fb9c3305d12": {
+                "stay_folio_entry_id": "71659a61-a953-414e-ad59-3fb9c3305d12",
+                "stay_reservation_id": "af4748a4-af7d-40ea-97c3-dc3e974b3f3d",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "stay_room_charge",
+                "charge_category": "room_night",
+                "amount_usd": 348.0,
+                "currency_charged": "USD",
+                "stay_date": "2026-03-17",
+                "posted_date": "2026-03-17",
+                "posted_at": "2026-03-17 23:59:00 CDT",
+                "night_sequence": 4,
+                "room_sequence": 1,
+                "guest_sequence": 1,
+                "payment_channel": "web",
+                "source_entry_id": "",
+                "credit_reference": "",
+                "credit_expires_on": "",
+                "notice_reference": "",
+                "rooms_affected": 0,
+                "reason_code": "routine_stay"
+            },
+            "c59d2a1c-c96a-4ab1-a617-f4a4e89d785b": {
+                "stay_folio_entry_id": "c59d2a1c-c96a-4ab1-a617-f4a4e89d785b",
+                "stay_reservation_id": "af4748a4-af7d-40ea-97c3-dc3e974b3f3d",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "stay_incidental_charge",
+                "charge_category": "incidental_spa",
+                "amount_usd": 520.0,
+                "currency_charged": "USD",
+                "stay_date": "2026-03-17",
+                "posted_date": "2026-03-17",
+                "posted_at": "2026-03-17 19:12:00 CDT",
+                "night_sequence": 4,
+                "room_sequence": 1,
+                "guest_sequence": 1,
+                "payment_channel": "property_front_desk",
+                "source_entry_id": "",
+                "credit_reference": "",
+                "credit_expires_on": "",
+                "notice_reference": "",
+                "rooms_affected": 0,
+                "reason_code": "guest_request"
+            },
+            "c716a491-3599-4f44-9ea0-69ea5a8285ff": {
+                "stay_folio_entry_id": "c716a491-3599-4f44-9ea0-69ea5a8285ff",
+                "stay_reservation_id": "b639946c-19af-46f6-ba2e-f151cb88bd96",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "stay_room_charge",
+                "charge_category": "room_night",
+                "amount_usd": 410.0,
+                "currency_charged": "USD",
+                "stay_date": "2025-05-20",
+                "posted_date": "2025-05-20",
+                "posted_at": "2025-05-20 23:59:00 CDT",
+                "night_sequence": 1,
+                "room_sequence": 1,
+                "guest_sequence": 1,
+                "payment_channel": "web",
+                "source_entry_id": "",
+                "credit_reference": "",
+                "credit_expires_on": "",
+                "notice_reference": "",
+                "rooms_affected": 0,
+                "reason_code": "routine_stay"
+            },
+            "b2b66ff7-4b23-4fdd-bdb6-c0c5209d6467": {
+                "stay_folio_entry_id": "b2b66ff7-4b23-4fdd-bdb6-c0c5209d6467",
+                "stay_reservation_id": "b639946c-19af-46f6-ba2e-f151cb88bd96",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "stay_room_charge",
+                "charge_category": "room_night",
+                "amount_usd": 410.0,
+                "currency_charged": "USD",
+                "stay_date": "2025-05-21",
+                "posted_date": "2025-05-21",
+                "posted_at": "2025-05-21 23:59:00 CDT",
+                "night_sequence": 2,
+                "room_sequence": 1,
+                "guest_sequence": 1,
+                "payment_channel": "web",
+                "source_entry_id": "",
+                "credit_reference": "",
+                "credit_expires_on": "",
+                "notice_reference": "",
+                "rooms_affected": 0,
+                "reason_code": "routine_stay"
+            }
+        }
+    },
+    "db_closure": {
+        "air_booking_events": {
+            "7b589ba3-e8ab-4f61-b775-7d5597909c98": {
+                "air_event_id": "7b589ba3-e8ab-4f61-b775-7d5597909c98",
+                "air_booking_id": "a15cde5e-e2b3-451a-b835-8d74e25bdae9",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "air_fare_charge",
+                "charge_category": "base_fare",
+                "amount_usd": 1290.0,
+                "currency_charged": "USD",
+                "posted_date": "2024-06-18",
+                "posted_at": "2024-06-18 10:15:01 CDT",
+                "passenger_sequence": 2,
+                "segment_sequence": 0,
+                "bag_sequence": 0,
+                "payment_channel": "web",
+                "source_event_id": "",
+                "credit_voucher_code": "",
+                "credit_expires_on": "",
+                "schedule_change_minutes": 0,
+                "notice_reference": "",
+                "reason_code": "routine_booking"
+            },
+            "b9f8197b-6322-4b53-9cfb-2c7febf0c624": {
+                "air_event_id": "b9f8197b-6322-4b53-9cfb-2c7febf0c624",
+                "air_booking_id": "a15cde5e-e2b3-451a-b835-8d74e25bdae9",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "air_fare_charge",
+                "charge_category": "taxes_and_carrier_fees",
+                "amount_usd": 342.5,
+                "currency_charged": "USD",
+                "posted_date": "2024-06-18",
+                "posted_at": "2024-06-18 10:15:03 CDT",
+                "passenger_sequence": 2,
+                "segment_sequence": 0,
+                "bag_sequence": 0,
+                "payment_channel": "web",
+                "source_event_id": "",
+                "credit_voucher_code": "",
+                "credit_expires_on": "",
+                "schedule_change_minutes": 0,
+                "notice_reference": "",
+                "reason_code": "routine_booking"
+            },
+            "bacbc3f0-848c-44d4-a54e-2268becf628d": {
+                "air_event_id": "bacbc3f0-848c-44d4-a54e-2268becf628d",
+                "air_booking_id": "a15cde5e-e2b3-451a-b835-8d74e25bdae9",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "air_credit_issue",
+                "charge_category": "credit_issue",
+                "amount_usd": 1216.0,
+                "currency_charged": "USD",
+                "posted_date": "2025-01-10",
+                "posted_at": "2025-01-10 16:05:00 CST",
+                "passenger_sequence": 2,
+                "segment_sequence": 0,
+                "bag_sequence": 0,
+                "payment_channel": "call_centre",
+                "source_event_id": "7b589ba3-e8ab-4f61-b775-7d5597909c98",
+                "credit_voucher_code": "WLTC2B47RX9P",
+                "credit_expires_on": "2026-01-10",
+                "schedule_change_minutes": 0,
+                "notice_reference": "",
+                "reason_code": "routine_booking"
+            },
+            "c62df60b-ae9f-46bb-96da-f77ba603dd98": {
+                "air_event_id": "c62df60b-ae9f-46bb-96da-f77ba603dd98",
+                "air_booking_id": "a15cde5e-e2b3-451a-b835-8d74e25bdae9",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "air_fare_charge",
+                "charge_category": "taxes_and_carrier_fees",
+                "amount_usd": 342.5,
+                "currency_charged": "USD",
+                "posted_date": "2024-06-18",
+                "posted_at": "2024-06-18 10:15:02 CDT",
+                "passenger_sequence": 1,
+                "segment_sequence": 0,
+                "bag_sequence": 0,
+                "payment_channel": "web",
+                "source_event_id": "",
+                "credit_voucher_code": "",
+                "credit_expires_on": "",
+                "schedule_change_minutes": 0,
+                "notice_reference": "",
+                "reason_code": "routine_booking"
+            },
+            "643af531-7b05-416f-ade6-0c394e27822a": {
+                "air_event_id": "643af531-7b05-416f-ade6-0c394e27822a",
+                "air_booking_id": "a15cde5e-e2b3-451a-b835-8d74e25bdae9",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "air_fare_charge",
+                "charge_category": "agency_service_fee",
+                "amount_usd": 29.95,
+                "currency_charged": "USD",
+                "posted_date": "2024-06-18",
+                "posted_at": "2024-06-18 10:15:04 CDT",
+                "passenger_sequence": 1,
+                "segment_sequence": 0,
+                "bag_sequence": 0,
+                "payment_channel": "web",
+                "source_event_id": "",
+                "credit_voucher_code": "",
+                "credit_expires_on": "",
+                "schedule_change_minutes": 0,
+                "notice_reference": "",
+                "reason_code": "routine_booking"
+            },
+            "e56e598b-d9ed-465a-af52-08cf7db68476": {
+                "air_event_id": "e56e598b-d9ed-465a-af52-08cf7db68476",
+                "air_booking_id": "a15cde5e-e2b3-451a-b835-8d74e25bdae9",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "air_fare_charge",
+                "charge_category": "agency_service_fee",
+                "amount_usd": 29.95,
+                "currency_charged": "USD",
+                "posted_date": "2024-06-18",
+                "posted_at": "2024-06-18 10:15:05 CDT",
+                "passenger_sequence": 2,
+                "segment_sequence": 0,
+                "bag_sequence": 0,
+                "payment_channel": "web",
+                "source_event_id": "",
+                "credit_voucher_code": "",
+                "credit_expires_on": "",
+                "schedule_change_minutes": 0,
+                "notice_reference": "",
+                "reason_code": "routine_booking"
+            },
+            "cb1d32d9-549f-45bd-bb8e-3e72b7c42361": {
+                "air_event_id": "cb1d32d9-549f-45bd-bb8e-3e72b7c42361",
+                "air_booking_id": "a15cde5e-e2b3-451a-b835-8d74e25bdae9",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "air_credit_issue",
+                "charge_category": "credit_issue",
+                "amount_usd": 1900.0,
+                "currency_charged": "USD",
+                "posted_date": "2024-11-20",
+                "posted_at": "2024-11-20 08:30:00 CST",
+                "passenger_sequence": 1,
+                "segment_sequence": 0,
+                "bag_sequence": 0,
+                "payment_channel": "call_centre",
+                "source_event_id": "0db68e38-0d77-4f4f-81b9-6c560fa405ae",
+                "credit_voucher_code": "WLTC5Q81HM4T",
+                "credit_expires_on": "2025-11-20",
+                "schedule_change_minutes": 0,
+                "notice_reference": "",
+                "reason_code": "routine_booking"
+            },
+            "0db68e38-0d77-4f4f-81b9-6c560fa405ae": {
+                "air_event_id": "0db68e38-0d77-4f4f-81b9-6c560fa405ae",
+                "air_booking_id": "a15cde5e-e2b3-451a-b835-8d74e25bdae9",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "air_fare_charge",
+                "charge_category": "base_fare",
+                "amount_usd": 1290.0,
+                "currency_charged": "USD",
+                "posted_date": "2024-06-18",
+                "posted_at": "2024-06-18 10:15:00 CDT",
+                "passenger_sequence": 1,
+                "segment_sequence": 0,
+                "bag_sequence": 0,
+                "payment_channel": "web",
+                "source_event_id": "",
+                "credit_voucher_code": "",
+                "credit_expires_on": "",
+                "schedule_change_minutes": 0,
+                "notice_reference": "",
+                "reason_code": "routine_booking"
+            },
+            "e25d1331-2f4d-4b22-a64e-5999b043c14d": {
+                "air_event_id": "e25d1331-2f4d-4b22-a64e-5999b043c14d",
+                "air_booking_id": "a15cde5e-e2b3-451a-b835-8d74e25bdae9",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "air_penalty_charge",
+                "charge_category": "cancellation_penalty",
+                "amount_usd": 149.0,
+                "currency_charged": "USD",
+                "posted_date": "2024-11-05",
+                "posted_at": "2024-11-05 09:41:00 CST",
+                "passenger_sequence": 1,
+                "segment_sequence": 0,
+                "bag_sequence": 0,
+                "payment_channel": "call_centre",
+                "source_event_id": "0db68e38-0d77-4f4f-81b9-6c560fa405ae",
+                "credit_voucher_code": "",
+                "credit_expires_on": "",
+                "schedule_change_minutes": 0,
+                "notice_reference": "",
+                "reason_code": "voluntary_change"
+            }
+        },
+        "stay_folio_entries": {
+            "84a449a7-b9c1-41da-97f0-e96b32c350e1": {
+                "stay_folio_entry_id": "84a449a7-b9c1-41da-97f0-e96b32c350e1",
+                "stay_reservation_id": "af4748a4-af7d-40ea-97c3-dc3e974b3f3d",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "stay_room_charge",
+                "charge_category": "room_night",
+                "amount_usd": 348.0,
+                "currency_charged": "USD",
+                "stay_date": "2026-03-16",
+                "posted_date": "2026-03-16",
+                "posted_at": "2026-03-16 23:59:00 CDT",
+                "night_sequence": 3,
+                "room_sequence": 1,
+                "guest_sequence": 1,
+                "payment_channel": "web",
+                "source_entry_id": "",
+                "credit_reference": "",
+                "credit_expires_on": "",
+                "notice_reference": "",
+                "rooms_affected": 0,
+                "reason_code": "routine_stay"
+            },
+            "c59d2a1c-c96a-4ab1-a617-f4a4e89d785b": {
+                "stay_folio_entry_id": "c59d2a1c-c96a-4ab1-a617-f4a4e89d785b",
+                "stay_reservation_id": "af4748a4-af7d-40ea-97c3-dc3e974b3f3d",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "stay_incidental_charge",
+                "charge_category": "incidental_spa",
+                "amount_usd": 520.0,
+                "currency_charged": "USD",
+                "stay_date": "2026-03-17",
+                "posted_date": "2026-03-17",
+                "posted_at": "2026-03-17 19:12:00 CDT",
+                "night_sequence": 4,
+                "room_sequence": 1,
+                "guest_sequence": 1,
+                "payment_channel": "property_front_desk",
+                "source_entry_id": "",
+                "credit_reference": "",
+                "credit_expires_on": "",
+                "notice_reference": "",
+                "rooms_affected": 0,
+                "reason_code": "guest_request"
+            },
+            "4273ad39-cdb7-40b9-abef-ce681ef24b2e": {
+                "stay_folio_entry_id": "4273ad39-cdb7-40b9-abef-ce681ef24b2e",
+                "stay_reservation_id": "af4748a4-af7d-40ea-97c3-dc3e974b3f3d",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "stay_room_charge",
+                "charge_category": "room_night",
+                "amount_usd": 348.0,
+                "currency_charged": "USD",
+                "stay_date": "2026-03-14",
+                "posted_date": "2026-03-14",
+                "posted_at": "2026-03-14 23:59:00 CDT",
+                "night_sequence": 1,
+                "room_sequence": 1,
+                "guest_sequence": 1,
+                "payment_channel": "web",
+                "source_entry_id": "",
+                "credit_reference": "",
+                "credit_expires_on": "",
+                "notice_reference": "",
+                "rooms_affected": 0,
+                "reason_code": "routine_stay"
+            },
+            "71659a61-a953-414e-ad59-3fb9c3305d12": {
+                "stay_folio_entry_id": "71659a61-a953-414e-ad59-3fb9c3305d12",
+                "stay_reservation_id": "af4748a4-af7d-40ea-97c3-dc3e974b3f3d",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "stay_room_charge",
+                "charge_category": "room_night",
+                "amount_usd": 348.0,
+                "currency_charged": "USD",
+                "stay_date": "2026-03-17",
+                "posted_date": "2026-03-17",
+                "posted_at": "2026-03-17 23:59:00 CDT",
+                "night_sequence": 4,
+                "room_sequence": 1,
+                "guest_sequence": 1,
+                "payment_channel": "web",
+                "source_entry_id": "",
+                "credit_reference": "",
+                "credit_expires_on": "",
+                "notice_reference": "",
+                "rooms_affected": 0,
+                "reason_code": "routine_stay"
+            },
+            "b2b66ff7-4b23-4fdd-bdb6-c0c5209d6467": {
+                "stay_folio_entry_id": "b2b66ff7-4b23-4fdd-bdb6-c0c5209d6467",
+                "stay_reservation_id": "b639946c-19af-46f6-ba2e-f151cb88bd96",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "stay_room_charge",
+                "charge_category": "room_night",
+                "amount_usd": 410.0,
+                "currency_charged": "USD",
+                "stay_date": "2025-05-21",
+                "posted_date": "2025-05-21",
+                "posted_at": "2025-05-21 23:59:00 CDT",
+                "night_sequence": 2,
+                "room_sequence": 1,
+                "guest_sequence": 1,
+                "payment_channel": "web",
+                "source_entry_id": "",
+                "credit_reference": "",
+                "credit_expires_on": "",
+                "notice_reference": "",
+                "rooms_affected": 0,
+                "reason_code": "routine_stay"
+            },
+            "e43f8de9-8374-4023-810a-342c87850616": {
+                "stay_folio_entry_id": "e43f8de9-8374-4023-810a-342c87850616",
+                "stay_reservation_id": "af4748a4-af7d-40ea-97c3-dc3e974b3f3d",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "stay_room_charge",
+                "charge_category": "room_night",
+                "amount_usd": 348.0,
+                "currency_charged": "USD",
+                "stay_date": "2026-03-15",
+                "posted_date": "2026-03-15",
+                "posted_at": "2026-03-15 23:59:00 CDT",
+                "night_sequence": 2,
+                "room_sequence": 1,
+                "guest_sequence": 1,
+                "payment_channel": "web",
+                "source_entry_id": "",
+                "credit_reference": "",
+                "credit_expires_on": "",
+                "notice_reference": "",
+                "rooms_affected": 0,
+                "reason_code": "routine_stay"
+            },
+            "c716a491-3599-4f44-9ea0-69ea5a8285ff": {
+                "stay_folio_entry_id": "c716a491-3599-4f44-9ea0-69ea5a8285ff",
+                "stay_reservation_id": "b639946c-19af-46f6-ba2e-f151cb88bd96",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "stay_room_charge",
+                "charge_category": "room_night",
+                "amount_usd": 410.0,
+                "currency_charged": "USD",
+                "stay_date": "2025-05-20",
+                "posted_date": "2025-05-20",
+                "posted_at": "2025-05-20 23:59:00 CDT",
+                "night_sequence": 1,
+                "room_sequence": 1,
+                "guest_sequence": 1,
+                "payment_channel": "web",
+                "source_entry_id": "",
+                "credit_reference": "",
+                "credit_expires_on": "",
+                "notice_reference": "",
+                "rooms_affected": 0,
+                "reason_code": "routine_stay"
+            }
+        },
+        "club_points_entries": {
+            "67ca02b4-8033-45ef-95cb-9d1cf2545769": {
+                "club_points_entry_id": "67ca02b4-8033-45ef-95cb-9d1cf2545769",
+                "club_membership_id": "bbba1023-ffd0-4e22-8053-8ec915daeb14",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "club_qualifying_accrual",
+                "accrual_source": "air_ticket",
+                "points_delta": 10350,
+                "points_kind": "qualifying",
+                "amount_basis_usd": 3450.0,
+                "posted_date": "2026-03-05",
+                "posted_at": "2026-03-05 02:00:00 CST",
+                "expires_on": "",
+                "partner_reference": "",
+                "benefit_code": "",
+                "redemption_reference": "",
+                "source_entry_id": "",
+                "reason_code": "routine_accrual"
+            },
+            "a836a82d-dac7-4084-8f15-f217d53c2a5f": {
+                "club_points_entry_id": "a836a82d-dac7-4084-8f15-f217d53c2a5f",
+                "club_membership_id": "bbba1023-ffd0-4e22-8053-8ec915daeb14",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "club_qualifying_accrual",
+                "accrual_source": "stay_night",
+                "points_delta": 4470,
+                "points_kind": "qualifying",
+                "amount_basis_usd": 1490.0,
+                "posted_date": "2026-06-22",
+                "posted_at": "2026-06-22 02:00:00 CDT",
+                "expires_on": "",
+                "partner_reference": "",
+                "benefit_code": "",
+                "redemption_reference": "",
+                "source_entry_id": "",
+                "reason_code": "routine_accrual"
+            },
+            "2cfa8f25-ac2d-4bb8-907e-73696e7e0eb6": {
+                "club_points_entry_id": "2cfa8f25-ac2d-4bb8-907e-73696e7e0eb6",
+                "club_membership_id": "bbba1023-ffd0-4e22-8053-8ec915daeb14",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "club_points_accrual",
+                "accrual_source": "air_ticket",
+                "points_delta": 13800,
+                "points_kind": "spendable",
+                "amount_basis_usd": 4600.0,
+                "posted_date": "2026-01-14",
+                "posted_at": "2026-01-14 02:00:00 CST",
+                "expires_on": "2028-01-14",
+                "partner_reference": "",
+                "benefit_code": "",
+                "redemption_reference": "",
+                "source_entry_id": "",
+                "reason_code": "routine_accrual"
+            },
+            "4daa2e2a-4d16-4ca4-80e3-501fea586960": {
+                "club_points_entry_id": "4daa2e2a-4d16-4ca4-80e3-501fea586960",
+                "club_membership_id": "bbba1023-ffd0-4e22-8053-8ec915daeb14",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "club_points_bonus",
+                "accrual_source": "promotion",
+                "points_delta": 2700,
+                "points_kind": "spendable",
+                "amount_basis_usd": 0.0,
+                "posted_date": "2026-04-19",
+                "posted_at": "2026-04-19 02:00:00 CDT",
+                "expires_on": "2028-04-19",
+                "partner_reference": "",
+                "benefit_code": "",
+                "redemption_reference": "",
+                "source_entry_id": "",
+                "reason_code": "tier_bonus"
+            },
+            "17b1a61e-5be0-4beb-8f87-48edd1d1b305": {
+                "club_points_entry_id": "17b1a61e-5be0-4beb-8f87-48edd1d1b305",
+                "club_membership_id": "bbba1023-ffd0-4e22-8053-8ec915daeb14",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "event_type": "club_points_accrual",
+                "accrual_source": "stay_night",
+                "points_delta": 9900,
+                "points_kind": "spendable",
+                "amount_basis_usd": 3300.0,
+                "posted_date": "2025-11-02",
+                "posted_at": "2025-11-02 02:00:00 CDT",
+                "expires_on": "2027-11-02",
+                "partner_reference": "",
+                "benefit_code": "",
+                "redemption_reference": "",
+                "source_entry_id": "",
+                "reason_code": "routine_accrual"
+            }
+        },
+        "air_bookings": {
+            "a15cde5e-e2b3-451a-b835-8d74e25bdae9": {
+                "air_booking_id": "a15cde5e-e2b3-451a-b835-8d74e25bdae9",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "variant_name": "Economy Saver",
+                "status": "refunded",
+                "record_locator": "HF3D8K",
+                "origin_airport": "ORD",
+                "destination_airport": "CDG",
+                "departure_date": "2024-12-22",
+                "return_date": "2025-01-05",
+                "booked_date": "2024-06-18",
+                "ticketed_at": "2024-06-18 10:15:00 CDT",
+                "cancelled_at": "2024-11-05 09:40:00 CST",
+                "closed_date": "",
+                "passenger_count": 2,
+                "cabin_class": "economy",
+                "fare_basis_code": "SLX2SVR",
+                "amount_paid_usd": 3473.9,
+                "credit_balance_usd": 3116.0,
+                "refund_form": "travel_credit",
+                "contact_email": "rashida.abernathy@brightferry.net",
+                "contact_phone": "3122560934",
+                "corporate_program_id": ""
+            }
+        },
+        "stay_reservations": {
+            "b639946c-19af-46f6-ba2e-f151cb88bd96": {
+                "stay_reservation_id": "b639946c-19af-46f6-ba2e-f151cb88bd96",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "variant_name": "Non-Refundable Saver Rate",
+                "status": "checked_out",
+                "confirmation_number": "WLS6188044",
+                "property_code": "CHIC11",
+                "property_city": "Chicago",
+                "check_in_date": "2025-05-20",
+                "check_out_date": "2025-05-22",
+                "nights_count": 2,
+                "rooms_count": 1,
+                "adults_count": 1,
+                "children_count": 0,
+                "booked_date": "2025-04-02",
+                "confirmed_at": "2025-04-02 09:31:00 CDT",
+                "cancelled_at": "",
+                "checked_out_date": "2025-05-22",
+                "closed_date": "",
+                "folio_balance_usd": 820.0,
+                "resort_credit_balance_usd": 0.0,
+                "refund_form": "none",
+                "guest_name": "Rashida Abernathy",
+                "contact_email": "rashida.abernathy@brightferry.net",
+                "contact_phone": "3122560934",
+                "corporate_program_id": ""
+            },
+            "af4748a4-af7d-40ea-97c3-dc3e974b3f3d": {
+                "stay_reservation_id": "af4748a4-af7d-40ea-97c3-dc3e974b3f3d",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "variant_name": "Standard Flexible Rate",
+                "status": "checked_out",
+                "confirmation_number": "WLS7741203",
+                "property_code": "LISB04",
+                "property_city": "Lisbon",
+                "check_in_date": "2026-03-14",
+                "check_out_date": "2026-03-18",
+                "nights_count": 4,
+                "rooms_count": 1,
+                "adults_count": 2,
+                "children_count": 0,
+                "booked_date": "2026-01-30",
+                "confirmed_at": "2026-01-30 12:04:00 CST",
+                "cancelled_at": "",
+                "checked_out_date": "2026-03-18",
+                "closed_date": "",
+                "folio_balance_usd": 1912.0,
+                "resort_credit_balance_usd": 0.0,
+                "refund_form": "original_payment",
+                "guest_name": "Rashida Abernathy",
+                "contact_email": "rashida.abernathy@brightferry.net",
+                "contact_phone": "3122560934",
+                "corporate_program_id": ""
+            }
+        },
+        "club_memberships": {
+            "bbba1023-ffd0-4e22-8053-8ec915daeb14": {
+                "club_membership_id": "bbba1023-ffd0-4e22-8053-8ec915daeb14",
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "variant_name": "Wanderlane Silver",
+                "status": "active",
+                "membership_number": "WLC552041",
+                "enrolled_date": "2019-08-22",
+                "tier_effective_date": "2026-02-01",
+                "tier_review_date": "2027-02-01",
+                "status_expiry_date": "2027-02-01",
+                "closed_date": "",
+                "points_balance_pts": 26400,
+                "qualifying_points_pts": 14820,
+                "home_market": "US",
+                "enrolment_channel": "mobile_app",
+                "household_pool_id": ""
+            }
+        },
+        "customers": {
+            "34202592-d1ea-43c8-b50d-491078a7dd31": {
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "full_name": "Rashida Abernathy",
+                "email": "rashida.abernathy@brightferry.net",
+                "mobile_number": "3122560934",
+                "date_of_birth": "1961-05-09",
+                "passport_last4": "1157",
+                "billing_postal_code": "60302",
+                "profile_opened_date": "2014-09-01",
+                "residence_country": "US",
+                "preferred_language": "en-US",
+                "marketing_opt_in": "false"
+            }
+        }
+    },
+    "db_closure_matches_initial_state": true,
+    "solvability_contract": {
+        "request_binding_version": 1,
+        "request_alignment": [
+            {
+                "claim": "The traveller wants the lapsed travel credit from the Paris trip kept rather than lost, and wants it finished on this call.",
+                "evidence": [
+                    "user_scenario:I'd like to hang on to the credit from the Paris trip rather than lose it.",
+                    "user_scenario:she wants it finished on this call because she does not care for being told to ring back"
+                ]
+            },
+            {
+                "claim": "She is not asking for money back, only to be able to use the value on a flight later.",
+                "evidence": [
+                    "user_scenario:She is not asking for money back and says so if the agent raises it; she just wants to be able to use it on a flight later."
+                ]
+            },
+            {
+                "claim": "She authorises the desk to do its own part and will do the part that is properly hers.",
+                "evidence": [
+                    "user_scenario:She is content for the desk to do whatever it must on its side, and she will do whatever part of it is properly hers"
+                ]
+            }
+        ],
+        "gold_actions": [
+            {
+                "step": 9,
+                "business_effect": "The fee for putting the booking's lapsed travel credit back into use is charged to the traveller and stands as its own line on the booking.",
+                "request_binding": {
+                    "action_semantics": "Two travel credit vouchers stand on a cancelled booking with expiry dates already past, so the fee the charter attaches to putting lapsed value back into use is owed on the record; it is a reissue fee rather than a change fee, a name-correction fee or a penalty, because nothing about the itinerary is being reworked and the booking is already settled.",
+                    "intent_source": {
+                        "kind": "initial_state",
+                        "evidence": [
+                            "initial_state.air_booking_events.cb1d32d9-549f-45bd-bb8e-3e72b7c42361.credit_expires_on",
+                            "initial_state.air_booking_events.bacbc3f0-848c-44d4-a54e-2268becf628d.credit_expires_on"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "the fee owed for putting a lapsed travel credit back into use",
+                        "evidence": [
+                            "initial_state.air_booking_events.cb1d32d9-549f-45bd-bb8e-3e72b7c42361.credit_expires_on",
+                            "initial_state.air_bookings.a15cde5e-e2b3-451a-b835-8d74e25bdae9.credit_balance_usd"
+                        ],
+                        "action_arg": "reissue_fee_usd",
+                        "value": 224.0
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "performed_by_this_tool",
+                    "fact": "The fee is charged here and now against a credit line already standing on the booking; nothing outside the environment has to happen for it.",
+                    "evidence": [
+                        "initial_state.air_booking_events.cb1d32d9-549f-45bd-bb8e-3e72b7c42361.amount_usd",
+                        "initial_state.air_bookings.a15cde5e-e2b3-451a-b835-8d74e25bdae9.status"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "air_service_fee",
+                        "eligibility_id": "policy_scope",
+                        "condition": "This policy governs the write in question but states no structured eligibility gate for it.",
+                        "evidence": [
+                            "initial_state.air_bookings.a15cde5e-e2b3-451a-b835-8d74e25bdae9.variant_name",
+                            "initial_state.air_booking_events.643af531-7b05-416f-ade6-0c394e27822a.charge_category"
+                        ],
+                        "satisfied": true,
+                        "evidence_bindings": []
+                    },
+                    {
+                        "policy_id": "air_club_benefit_interaction",
+                        "eligibility_id": "policy_scope",
+                        "condition": "This policy governs the write in question but states no structured eligibility gate for it.",
+                        "evidence": [
+                            "initial_state.air_bookings.a15cde5e-e2b3-451a-b835-8d74e25bdae9.variant_name",
+                            "initial_state.air_bookings.a15cde5e-e2b3-451a-b835-8d74e25bdae9.ticketed_at"
+                        ],
+                        "satisfied": true,
+                        "evidence_bindings": []
+                    },
+                    {
+                        "policy_id": "air_biz_exclusion",
+                        "eligibility_id": "policy_scope",
+                        "condition": "This policy governs the write in question but states no structured eligibility gate for it.",
+                        "evidence": [
+                            "initial_state.air_bookings.a15cde5e-e2b3-451a-b835-8d74e25bdae9.corporate_program_id",
+                            "initial_state.air_bookings.a15cde5e-e2b3-451a-b835-8d74e25bdae9.variant_name"
+                        ],
+                        "satisfied": true,
+                        "evidence_bindings": []
+                    }
+                ]
+            },
+            {
+                "step": 11,
+                "business_effect": "A fresh travel credit voucher stands open in the traveller's name for the value carried forward, redeemable for another validity term.",
+                "request_binding": {
+                    "action_semantics": "The traveller asks to keep the value of a credit that has run out rather than lose it, which is a reissue of her own lapsed voucher onto a fresh one, not a refund to her card and not a redemption against a booking; the reissue spends her own once-only right, so she performs it herself.",
+                    "intent_source": {
+                        "kind": "user_scenario",
+                        "evidence": [
+                            "user_scenario:I'd like to hang on to the credit from the Paris trip rather than lose it."
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "hang on to the credit from the Paris trip rather than lose it",
+                        "evidence": [
+                            "user_scenario:I'd like to hang on to the credit from the Paris trip rather than lose it."
+                        ],
+                        "action_arg": "carried_value_usd",
+                        "value": 1185.59
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "established_by_prior_tool",
+                    "fact": "The reissue fee the value carried is measured net of was charged earlier in this same conversation and its line reference was returned to the agent then.",
+                    "evidence": [
+                        "prior_step:9"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "air_credit_validity",
+                        "eligibility_id": "cancelled_before_issue",
+                        "condition": "A voucher is issued only while the booking record stands at cancelled, refund pending or refunded.",
+                        "evidence": [
+                            "initial_state.air_bookings.a15cde5e-e2b3-451a-b835-8d74e25bdae9.status",
+                            "initial_state.air_bookings.a15cde5e-e2b3-451a-b835-8d74e25bdae9.air_booking_id"
+                        ],
+                        "satisfied": true,
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "air_bookings.air_booking_id",
+                                "source": "initial_state.air_bookings.a15cde5e-e2b3-451a-b835-8d74e25bdae9.air_booking_id",
+                                "action_arg": "air_booking_id"
+                            }
+                        ]
+                    }
+                ]
+            }
+        ],
+        "temporal_feasibility": [],
+        "required_user_inputs": [
+            {
+                "information": "The traveller's name, needed to find the profile before anything is read.",
+                "source": "user_scenario:Rashida Abernathy"
+            },
+            {
+                "information": "The mobile number on the profile, used both to find her and as one of the details checked at verification.",
+                "source": "user_scenario:3122560934"
+            },
+            {
+                "information": "A second detail held on file for the identity check.",
+                "source": "user_scenario:she offers the last four of her passport, 1157"
+            },
+            {
+                "information": "Which booking the credit came from.",
+                "source": "user_scenario:She has the old booking reference written in her diary and reads it out when asked: HF3D8K."
+            },
+            {
+                "information": "What she actually wants done, and that she wants it done on this call.",
+                "source": "user_scenario:I'd like to hang on to the credit from the Paris trip rather than lose it."
+            },
+            {
+                "information": "Whether the desk may act for her and what she must do herself.",
+                "source": "user_scenario:She is content for the desk to do whatever it must on its side, and she will do whatever part of it is properly hers"
+            },
+            {
+                "information": "Her club membership number, which a real agent might ask for and which she cannot supply.",
+                "source": "user_scenario:she does not know her membership number and would have to go and look for the card"
+            },
+            {
+                "information": "What the trip cost or what the credit is worth, which a real agent might ask and which she declines to guess at.",
+                "source": "user_scenario:she would rather the desk told her than have her guess"
+            }
+        ],
+        "seed_consistency": [
+            {
+                "row": "initial_state.air_bookings.a15cde5e-e2b3-451a-b835-8d74e25bdae9",
+                "policy_id": "air_ticketing",
+                "check": "The Paris booking was opened 2024-06-18 for a 2024-12-22 departure, 187 days ahead against the Economy Saver advance-purchase distance of 14 days; the return on 2025-01-05 is 14 nights later, inside the brand's minimum of 2 nights and maximum of 90 days; two travellers is below the brand's group threshold of 10. It was ticketed the day it was opened, consistent with a brand whose hold window is zero. Its paid total 3473.90 is exactly the sum of its six charge lines and the penalty, and its open credit balance 3116.00 is exactly the two voucher issues.",
+                "evidence": [
+                    "initial_state.air_bookings.a15cde5e-e2b3-451a-b835-8d74e25bdae9.booked_date",
+                    "initial_state.air_bookings.a15cde5e-e2b3-451a-b835-8d74e25bdae9.departure_date",
+                    "initial_state.air_bookings.a15cde5e-e2b3-451a-b835-8d74e25bdae9.amount_paid_usd",
+                    "initial_state.air_bookings.a15cde5e-e2b3-451a-b835-8d74e25bdae9.credit_balance_usd"
+                ]
+            },
+            {
+                "row": "initial_state.air_booking_events.0db68e38-0d77-4f4f-81b9-6c560fa405ae",
+                "policy_id": "air_service_fee",
+                "check": "A base-fare line of 1290.00 for traveller 1, posted on the ticketing day at the ticketing moment, consistent with a brand that collects fare, taxes and service fee together at issue.",
+                "evidence": [
+                    "initial_state.air_booking_events.0db68e38-0d77-4f4f-81b9-6c560fa405ae.amount_usd",
+                    "initial_state.air_booking_events.0db68e38-0d77-4f4f-81b9-6c560fa405ae.posted_date",
+                    "initial_state.air_bookings.a15cde5e-e2b3-451a-b835-8d74e25bdae9.variant_name"
+                ]
+            },
+            {
+                "row": "initial_state.air_booking_events.7b589ba3-e8ab-4f61-b775-7d5597909c98",
+                "policy_id": "air_service_fee",
+                "check": "The matching base-fare line of 1290.00 for traveller 2, posted one second later so the two lines are distinguishable by their posting moments.",
+                "evidence": [
+                    "initial_state.air_booking_events.7b589ba3-e8ab-4f61-b775-7d5597909c98.amount_usd",
+                    "initial_state.air_booking_events.7b589ba3-e8ab-4f61-b775-7d5597909c98.posted_date",
+                    "initial_state.air_bookings.a15cde5e-e2b3-451a-b835-8d74e25bdae9.variant_name"
+                ]
+            },
+            {
+                "row": "initial_state.air_booking_events.c62df60b-ae9f-46bb-96da-f77ba603dd98",
+                "policy_id": "air_service_fee",
+                "check": "Taxes and carrier fees of 342.50 for traveller 1, taken in US dollars at ticketing.",
+                "evidence": [
+                    "initial_state.air_booking_events.c62df60b-ae9f-46bb-96da-f77ba603dd98.amount_usd",
+                    "initial_state.air_booking_events.c62df60b-ae9f-46bb-96da-f77ba603dd98.posted_date",
+                    "initial_state.air_bookings.a15cde5e-e2b3-451a-b835-8d74e25bdae9.variant_name"
+                ]
+            },
+            {
+                "row": "initial_state.air_booking_events.b9f8197b-6322-4b53-9cfb-2c7febf0c624",
+                "policy_id": "air_service_fee",
+                "check": "The matching tax line of 342.50 for traveller 2.",
+                "evidence": [
+                    "initial_state.air_booking_events.b9f8197b-6322-4b53-9cfb-2c7febf0c624.amount_usd",
+                    "initial_state.air_booking_events.b9f8197b-6322-4b53-9cfb-2c7febf0c624.posted_date",
+                    "initial_state.air_bookings.a15cde5e-e2b3-451a-b835-8d74e25bdae9.variant_name"
+                ]
+            },
+            {
+                "row": "initial_state.air_booking_events.643af531-7b05-416f-ade6-0c394e27822a",
+                "policy_id": "air_service_fee",
+                "check": "The Economy Saver agency service fee of 29.95 for traveller 1, charged once per traveller at ticketing exactly as the service-fee rule provides.",
+                "evidence": [
+                    "initial_state.air_booking_events.643af531-7b05-416f-ade6-0c394e27822a.amount_usd",
+                    "initial_state.air_booking_events.643af531-7b05-416f-ade6-0c394e27822a.posted_date",
+                    "initial_state.air_bookings.a15cde5e-e2b3-451a-b835-8d74e25bdae9.variant_name"
+                ]
+            },
+            {
+                "row": "initial_state.air_booking_events.e56e598b-d9ed-465a-af52-08cf7db68476",
+                "policy_id": "air_service_fee",
+                "check": "The same 29.95 service fee for traveller 2, the second of the two the brand charges on this booking.",
+                "evidence": [
+                    "initial_state.air_booking_events.e56e598b-d9ed-465a-af52-08cf7db68476.amount_usd",
+                    "initial_state.air_booking_events.e56e598b-d9ed-465a-af52-08cf7db68476.posted_date",
+                    "initial_state.air_bookings.a15cde5e-e2b3-451a-b835-8d74e25bdae9.variant_name"
+                ]
+            },
+            {
+                "row": "initial_state.air_booking_events.e25d1331-2f4d-4b22-a64e-5999b043c14d",
+                "policy_id": "air_penalty",
+                "check": "A cancellation penalty of 149.00 posted 2024-11-05, the Economy Saver flat cancellation penalty, withheld once on a cancellation confirmed 47 days before the 2024-12-22 departure and so well inside the brand's cancellation deadline; no no-show penalty stands beside it, which is what the charter requires.",
+                "evidence": [
+                    "initial_state.air_booking_events.e25d1331-2f4d-4b22-a64e-5999b043c14d.amount_usd",
+                    "initial_state.air_booking_events.e25d1331-2f4d-4b22-a64e-5999b043c14d.posted_date",
+                    "initial_state.air_bookings.a15cde5e-e2b3-451a-b835-8d74e25bdae9.variant_name"
+                ]
+            },
+            {
+                "row": "initial_state.air_booking_events.cb1d32d9-549f-45bd-bb8e-3e72b7c42361",
+                "policy_id": "air_credit_validity",
+                "check": "A travel credit issue of 1900.00 for traveller 1, posted 2024-11-20 with a 2025-11-20 expiry, which is the Economy Saver credit validity term of 12 calendar months counted from the issue date.",
+                "evidence": [
+                    "initial_state.air_booking_events.cb1d32d9-549f-45bd-bb8e-3e72b7c42361.amount_usd",
+                    "initial_state.air_booking_events.cb1d32d9-549f-45bd-bb8e-3e72b7c42361.posted_date",
+                    "initial_state.air_bookings.a15cde5e-e2b3-451a-b835-8d74e25bdae9.variant_name"
+                ]
+            },
+            {
+                "row": "initial_state.air_booking_events.bacbc3f0-848c-44d4-a54e-2268becf628d",
+                "policy_id": "air_credit_validity",
+                "check": "A travel credit issue of 1216.00 for traveller 2, posted 2025-01-10 with a 2026-01-10 expiry on the same 12-month term; the second traveller's claim settled later, which is why the two vouchers carry different issue and expiry dates. The two together, 3116.00, are exactly the fare, tax and service lines of 3324.90 less the 149.00 penalty and the 59.90 of agency service fee the charter does not return.",
+                "evidence": [
+                    "initial_state.air_booking_events.bacbc3f0-848c-44d4-a54e-2268becf628d.amount_usd",
+                    "initial_state.air_booking_events.bacbc3f0-848c-44d4-a54e-2268becf628d.posted_date",
+                    "initial_state.air_bookings.a15cde5e-e2b3-451a-b835-8d74e25bdae9.variant_name"
+                ]
+            }
+        ]
+    },
+    "evaluation_criteria": [
+        {
+            "owner": "agent",
+            "tool": "find_customers",
+            "arguments": {
+                "full_name": "Rashida Abernathy",
+                "mobile_number": "3122560934"
+            },
+            "objective": "Find the traveller profile the call is about and read its reference number, which every other lookup needs.",
+            "necessity": "Without the profile reference neither the air booking nor the club card nor the hotel folios can be reached, so no input of either computation is available."
+        },
+        {
+            "owner": "agent",
+            "tool": "verify_traveller_identity",
+            "arguments": {
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31",
+                "mobile_number": "3122560934",
+                "passport_last4": "1157"
+            },
+            "objective": "Establish in session that the caller is the traveller on the profile before anything on the account is read or moved.",
+            "necessity": "No account detail may be discussed and no value moved until this passes; it gates every later read and write."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_air_bookings",
+            "arguments": {
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31"
+            },
+            "objective": "Read the traveller's air bookings and find the Paris booking the travel credit came from.",
+            "necessity": "Supplies the fare brand, the passenger count, the day the booking was opened and the moment the cancellation was confirmed, which four factors across the two computations read."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_air_booking_events",
+            "arguments": {
+                "air_booking_id": "a15cde5e-e2b3-451a-b835-8d74e25bdae9"
+            },
+            "objective": "Read the booking's money and credit ledger: the fare, tax and service lines, the cancellation penalty and the two travel credit vouchers with their values and expiry dates.",
+            "necessity": "The voucher count, the value standing, the largest voucher, the most recent expiry and the service-fee line count are all reconciled from these rows, and the largest voucher's line is the object both writes are filed against."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_club_memberships",
+            "arguments": {
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31"
+            },
+            "objective": "Read the traveller club card: its tier, its status, the spendable points standing on it and the date it was enrolled.",
+            "necessity": "The points balance decides the relief tier on the fee and the enrolment date decides the card-uplift tier on the value carried."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_club_points_entries",
+            "arguments": {
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31"
+            },
+            "objective": "Read the club points ledger so the spendable points standing on the card can be totalled from the movements themselves rather than taken off the card's own summary figure.",
+            "necessity": "The spendable points total is what decides the relief tier on the reissue fee, and the ledger is the authority for it."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_stay_reservations",
+            "arguments": {
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31"
+            },
+            "objective": "Read the traveller's hotel reservations so the folios carrying her room charges can be reached.",
+            "necessity": "Identifies which stays the room charges of the last twelve months belong to, which the house-uplift factor rests on."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_stay_folio_entries",
+            "arguments": {
+                "customer_id": "34202592-d1ea-43c8-b50d-491078a7dd31"
+            },
+            "objective": "Read the hotel folio lines so the room charges posted in the last twelve months can be totalled apart from the other folio charges.",
+            "necessity": "That total decides the house-uplift tier on the value carried onto the fresh voucher."
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "charge_credit_reissue_fee_efe635ea"
+            },
+            "objective": "Unlock charge_credit_reissue_fee_efe635ea so the write it performs can be made.",
+            "necessity": "The first half of the unlock/call pair; it has no effect on the records and happens once for this tool."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "charge_credit_reissue_fee_efe635ea",
+                "arguments": {
+                    "air_booking_id": "a15cde5e-e2b3-451a-b835-8d74e25bdae9",
+                    "source_event_id": "cb1d32d9-549f-45bd-bb8e-3e72b7c42361",
+                    "passenger_sequence": 1,
+                    "reissue_fee_usd": 224.0
+                }
+            },
+            "objective": "Charge the traveller the fee for putting the lapsed travel credit on this booking back into use, filed against the largest lapsed voucher line.",
+            "necessity": "The credit-reissue-fee policy alone produces reissue_fee_usd, and the fee line it posts is what the value carried onto the fresh voucher is later measured net of.",
+            "argument_uniqueness_tracing": {
+                "air_booking_id": "Value a15cde5e-e2b3-451a-b835-8d74e25bdae9. Basis: the policy rule states 'The reissue fee charged for putting a lapsed travel credit back into use is the credit reissue fee of the fare brand that produced the voucher, taken once for the voucher.' Uniqueness: The traveller's Paris booking is the only air booking on this profile, reached from the air booking lookup keyed on the traveller reference, and she reads out its locator HF3D8K; there is no second candidate.",
+                "source_event_id": "Value cb1d32d9-549f-45bd-bb8e-3e72b7c42361. Basis: the policy rule states 'The fee is filed against the issue line of the largest lapsed voucher standing on the booking and carries the traveller position of that line.' Uniqueness: two travel credit lines stand on the booking, of 1900.00 and 1216.00; the larger is the first, so every correct agent reads the same line off the event lookup.",
+                "passenger_sequence": "Value 1. Basis: the policy rule states 'The fee is filed against the issue line of the largest lapsed voucher standing on the booking and carries the traveller position of that line.' Uniqueness: the 1900.00 voucher line carries passenger position 1, so 1 is the only value consistent with the rule; position 2 belongs to the smaller voucher, which the rule does not select.",
+                "reissue_fee_usd": "Value 224.00. The credit reissue fee of Economy Saver is 75.00. The lapse clock: the vouchers standing on the booking are one set and the set stands lapsed, because the voucher most recently issued on it lapsed on 2026-01-10, before the handling date. The brand makes credits non-transferable and two vouchers stand lapsed on the booking, so how long the credit has stood unclaimed runs from the day the cancellation was confirmed, 2024-11-05, to the handling date, which is 22 whole calendar months. The lapse loading: 22 months is longer than the 12-month long-lapse term, so the long-lapse loading 1.60 applies and the fee becomes 120.00. The voucher count basis: two vouchers stand lapsed, so the fee is taken once for each, giving 240.00. The value loading: the two vouchers stand together at 1900.00 + 1216.00 = 3116.00, at or above the 2500.00 high-value band, so 60.00 is added. The booking age surcharge: the booking was opened 2024-06-18, 26 whole calendar months before the handling date, longer ago than the 18-month older-booking term but not longer ago than the 36-month archived-booking term, so 20.00 is added, giving 320.00. The member relief: the traveller holds an active Wanderlane Silver card with 26,400 spendable points standing on it, at or above the 20,000 points band, so the member-fee relief 0.30 applies: 320.00 x 0.70 = 224.00. Rounded to two decimal places: 224.00."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "reissue_lapsed_travel_credit_f544c035"
+            },
+            "objective": "Unlock reissue_lapsed_travel_credit_f544c035 so the write it performs can be made.",
+            "necessity": "The first half of the unlock/call pair; it has no effect on the records and happens once for this tool."
+        },
+        {
+            "owner": "user",
+            "tool": "call_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "reissue_lapsed_travel_credit_f544c035",
+                "arguments": {
+                    "air_booking_id": "a15cde5e-e2b3-451a-b835-8d74e25bdae9",
+                    "source_event_id": "cb1d32d9-549f-45bd-bb8e-3e72b7c42361",
+                    "passenger_sequence": 1,
+                    "credit_expires_on": "2027-09-17",
+                    "carried_value_usd": 1185.59
+                }
+            },
+            "objective": "The traveller carries the value of her lapsed travel credit onto a fresh voucher standing in her own name, open for another validity term.",
+            "necessity": "The lapsed-credit-carry-forward policy alone produces carried_value_usd; the reissue spends the traveller's own once-only right, so she runs the step herself once the agent unlocks and hands it over.",
+            "argument_uniqueness_tracing": {
+                "air_booking_id": "Value a15cde5e-e2b3-451a-b835-8d74e25bdae9. Basis: the policy rule states 'The value standing is the largest lapsed travel credit standing on the booking.' Uniqueness: The traveller's Paris booking is the only air booking on this profile, reached from the air booking lookup keyed on the traveller reference, and she reads out its locator HF3D8K; there is no second candidate.",
+                "source_event_id": "Value cb1d32d9-549f-45bd-bb8e-3e72b7c42361. Basis: the policy rule states 'The fresh voucher is filed against the issue line of the largest lapsed voucher standing on the booking, carries the traveller position of that line, and runs for the same validity term as the voucher it replaces, counted from the day it is reissued.' Uniqueness: of the two travel credit lines on the booking, 1900.00 and 1216.00, the larger is the first.",
+                "passenger_sequence": "Value 1. Basis: the policy rule states 'The fresh voucher is filed against the issue line of the largest lapsed voucher standing on the booking, carries the traveller position of that line, and runs for the same validity term as the voucher it replaces, counted from the day it is reissued.' Uniqueness: that line carries passenger position 1.",
+                "credit_expires_on": "Value 2027-09-17. Basis: the policy rule states 'The fresh voucher is filed against the issue line of the largest lapsed voucher standing on the booking, carries the traveller position of that line, and runs for the same validity term as the voucher it replaces, counted from the day it is reissued.', and the base charter rule air_agg_credit_pooling states 'Credit validity is counted in whole calendar months from the voucher issue date, and where the issue day does not exist in the expiry month the voucher lapses on the last day of that month.' Uniqueness: the Economy Saver credit validity term is 12 calendar months and the fresh voucher is issued on the handling date 2026-09-17, so it runs to 2027-09-17; the 17th exists in September, so the last-day-of-month fallback does not apply.",
+                "carried_value_usd": "Value 1185.59. The lapsed set: the vouchers standing on the booking are one set and the set stands lapsed, the voucher most recently issued on it having lapsed on 2026-01-10. Two vouchers stand lapsed and that most recent one lapsed 8 whole calendar months before the handling date, longer ago than the 6-month long-lapse term, so the value standing is the total of the lapsed vouchers issued within the 24-month retention window — both of them, posted 2024-11-20 and 2025-01-10, 21 and 20 whole calendar months before the handling date — that is 1900.00 + 1216.00 = 3116.00. No part of the reissue fee is taken off here; it is met once, at the end. The staleness carry: the cancellation was confirmed 2024-11-05, 22 whole calendar months ago, longer ago than the 12-month long-stale term, so the long-stale carry 0.70 applies, giving 2181.20. The lead-traveller share: Economy Saver makes credits non-transferable and exactly two base-fare lines stand on the booking, so the paired-lead share 0.60 applies, giving 1308.72. The card uplift: the traveller holds an active Wanderlane Silver card enrolled 2019-08-22, 84 whole months before the handling date and so at or beyond the 60-month long-membership term, so 0.06 is added. The house uplift: room charges posted to her hotel stays in the last twelve months total 4 x 348.00 = 1392.00 (the 520.00 spa charge of 2026-03-17 is not a room charge, and the 2 x 410.00 room charges of May 2025 fall outside the window), which is above nothing but below the 1500.00 house-spend band, and an active card stands on the profile, so 0.04 is added: 1308.72 x 1.10 = 1439.592. The service recovery: two agency service fee lines stand on the booking and the Economy Saver agency service fee of 29.95 is at or above the 25.00 service-fee band, so 30.00 is taken off. The reissue fee charged on the booking, 224.00, is met out of the value once: 1439.592 - 30.00 - 224.00 = 1185.592. Rounded to two decimal places: 1185.59."
+            }
+        }
+    ],
+    "computations": [
+        {
+            "policy_id": "air_ext_credit_reissue_fee",
+            "target_holding_id": "a15cde5e-e2b3-451a-b835-8d74e25bdae9",
+            "step": 9,
+            "arg": "reissue_fee_usd",
+            "expected": 224.0,
+            "factor_trace": [
+                "lapse_clock_anchor (method. Evidence: Economy Saver credits are non-transferable and the two issue lines cb1d32d9-549f-45bd-bb8e-3e72b7c42361 and bacbc3f0-848c-44d4-a54e-2268becf628d stand lapsed. Tier counts the lapse from the day the cancellation was confirmed, 2024-11-05, giving 22 months. Baseline: counted from the day the voucher most recently issued on the booking lapsed, 2026-01-10, which gives 8 months of unclaimed time and a standard loading, and which would give 187.25. Tier taken: the fare brand that produced the vouchers makes credits non-transferable and more than one voucher stands lapsed on the booking.)",
+                "lapse_age_loading (parameter. Evidence: 22 whole calendar months against a 12-month long-lapse term. Tier selects the long-lapse loading 1.60. Baseline: the credit reissue fee is taken as it stands (1.00), which would give 161.0. Tier taken: the credit has stood unclaimed for longer than the long-lapse term.)",
+                "voucher_count_basis (method. Evidence: the two issue lines cb1d32d9-549f-45bd-bb8e-3e72b7c42361 (1900.00, lapsed 2025-11-20) and bacbc3f0-848c-44d4-a54e-2268becf628d (1216.00, lapsed 2026-01-10). Tier applies the rule that the fee is taken once for each voucher, giving 2. Baseline: the fee is taken once, which would give 140.0. Tier taken: two or more vouchers stand lapsed on the booking.)",
+                "standing_value_loading (parameter. Evidence: 1900.00 + 1216.00 = 3116.00 against a 2500.00 band. Tier selects the high-value loading 60.00. Baseline: nothing is added for the value standing, which would give 182.0. Tier taken: the lapsed vouchers stand together at or above the high-value band.)",
+                "booking_age_surcharge (parameter. Evidence: booked_date 2024-06-18, 26 whole calendar months before the handling date, against terms of 18 and 36 months. Tier selects the older-booking surcharge 20.00. Baseline: nothing is added for the age of the booking, which would give 210.0. Tier taken: the booking was opened longer ago than the older-booking term but not longer ago than the archived-booking term.)",
+                "member_fee_relief (parameter, cross-difficulty on club. Evidence: club_memberships bbba1023-ffd0-4e22-8053-8ec915daeb14 is an active Wanderlane Silver card carrying 26,400 spendable points against a 20,000 band. Tier selects the member-fee relief 0.30. Baseline: no relief is given, which would give 320.0. Tier taken: the traveller holds an active traveller club card of the Blue, Silver or Gold tiers and the spendable points standing on the card are at or above the points band.)",
+                "lapse_months (no factor): the whole calendar months from the anchor the clock factor selects to the handling date, 22 here.",
+                "result (no factor): the loaded fee, taken per voucher, with the value and age loadings added and the relief applied, floored at zero and rounded to two decimal places."
+            ],
+            "baseline_result": 75.0,
+            "factor_sensitivity": [
+                {
+                    "factor": "lapse_clock_anchor",
+                    "tier_taken": "the fare brand that produced the vouchers makes credits non-transferable and more than one voucher stands lapsed on the booking",
+                    "baseline_result": 187.25
+                },
+                {
+                    "factor": "lapse_age_loading",
+                    "tier_taken": "the credit has stood unclaimed for longer than the long-lapse term",
+                    "baseline_result": 161.0
+                },
+                {
+                    "factor": "voucher_count_basis",
+                    "tier_taken": "two or more vouchers stand lapsed on the booking",
+                    "baseline_result": 140.0
+                },
+                {
+                    "factor": "standing_value_loading",
+                    "tier_taken": "the lapsed vouchers stand together at or above the high-value band",
+                    "baseline_result": 182.0
+                },
+                {
+                    "factor": "booking_age_surcharge",
+                    "tier_taken": "the booking was opened longer ago than the older-booking term but not longer ago than the archived-booking term",
+                    "baseline_result": 210.0
+                },
+                {
+                    "factor": "member_fee_relief",
+                    "tier_taken": "the traveller holds an active traveller club card of the Blue, Silver or Gold tiers and the spendable points standing on the card are at or above the points band",
+                    "baseline_result": 320.0
+                }
+            ]
+        },
+        {
+            "policy_id": "air_ext_lapsed_credit_carry_forward",
+            "target_holding_id": "a15cde5e-e2b3-451a-b835-8d74e25bdae9",
+            "step": 11,
+            "arg": "carried_value_usd",
+            "expected": 1185.59,
+            "factor_trace": [
+                "lapsed_set_selection (method, multi-source. Evidence: two issue lines, cb1d32d9-549f-45bd-bb8e-3e72b7c42361 at 1900.00 and the other at 1216.00, the later of them lapsing 2026-01-10, 8 whole months before the handling date against a 6-month term; both were issued within the 24-month retention window. Tier takes the value standing as the total of the lapsed vouchers issued inside that window, 3116.00, so every voucher the fee was charged for is carried forward and no part of that fee is deducted a second time here. The second tier would take the total of every lapsed voucher whatever its age, and the fall-through only the largest. Baseline: the largest lapsed voucher alone, which would give 623.8. Tier taken: two or more vouchers stand lapsed on the booking and the voucher most recently issued on it lapsed longer ago than the long-lapse term.)",
+                "staleness_carry_share (parameter. Evidence: cancelled_at 2024-11-05, 22 whole calendar months before the handling date, against a 12-month term. Tier selects the long-stale carry 0.70. Baseline: the value carried is taken in full (1.00), which would give 1802.56. Tier taken: the booking's cancellation was confirmed longer ago than the long-stale term.)",
+                "lead_traveller_share (parameter. Evidence: Economy Saver credits are non-transferable and the base-fare lines 0db68e38-0d77-4f4f-81b9-6c560fa405ae and 7b589ba3-e8ab-4f61-b775-7d5597909c98 stand on the booking. Tier selects the paired-lead share 0.60. Baseline: the value carried is taken in full, which would give 2145.32. Tier taken: the fare brand that produced the lapsed voucher makes credits non-transferable and exactly two base-fare lines stand on the booking.)",
+                "card_carry_uplift (parameter, cross-difficulty on club. Evidence: club_memberships bbba1023-ffd0-4e22-8053-8ec915daeb14 is an active Wanderlane Silver card enrolled 2019-08-22, 84 whole months before the handling date against a 60-month term. Tier selects the member-carry uplift 0.06. Baseline: no card uplift, which would give 1107.07. Tier taken: the traveller holds an active traveller club card of the Blue, Silver or Gold tiers and the card was enrolled at or beyond the long-membership term.)",
+                "house_activity_uplift (parameter, cross-difficulty on stay. Evidence: the four room-night lines 4273ad39-cdb7-40b9-abef-ce681ef24b2e, e43f8de9-8374-4023-810a-342c87850616, 84a449a7-b9c1-41da-97f0-e96b32c350e1 and 71659a61-a953-414e-ad59-3fb9c3305d12 on reservation af4748a4-af7d-40ea-97c3-dc3e974b3f3d total 1392.00 inside the twelve-month window, against a 1500.00 band; the spa charge c59d2a1c-c96a-4ab1-a617-f4a4e89d785b is not a room charge and the two May 2025 room charges on reservation b639946c-19af-46f6-ba2e-f151cb88bd96 fall outside the window. Tier selects the light-house uplift 0.04. Baseline: no house uplift, which would give 1133.24. Tier taken: room charges posted to the traveller's hotel stays over the last twelve months stand above nothing but below the house-spend band and an active traveller club card stands on the profile.)",
+                "service_fee_recovery (parameter. Evidence: the agency service fee lines 643af531-7b05-416f-ade6-0c394e27822a and e56e598b-d9ed-465a-af52-08cf7db68476, and an Economy Saver agency service fee of 29.95 against a 25.00 band. Tier selects the party service recovery 30.00. Baseline: nothing is taken off for the agency service fee, which would give 1215.59. Tier taken: two or more agency service fee lines stand on the booking and the agency service fee of the fare brand held is at or above the service-fee band.)",
+                "reissue_fee_charged (no factor): the reissue fee line raised one step earlier, 224.00, read back off the ledger.",
+                "club_months (no factor): the whole calendar months since the card was enrolled, 84 here, nil when no active card stands on the profile.",
+                "result (no factor): the value standing, shared and staled, uplifted by the card and the house, less the service recovery and the reissue fee, floored at zero and rounded to two decimal places."
+            ],
+            "baseline_result": 1676.0,
+            "factor_sensitivity": [
+                {
+                    "factor": "lapsed_set_selection",
+                    "tier_taken": "two or more vouchers stand lapsed on the booking and the voucher most recently issued on it lapsed longer ago than the long-lapse term",
+                    "baseline_result": 623.8
+                },
+                {
+                    "factor": "staleness_carry_share",
+                    "tier_taken": "the booking's cancellation was confirmed longer ago than the long-stale term",
+                    "baseline_result": 1802.56
+                },
+                {
+                    "factor": "lead_traveller_share",
+                    "tier_taken": "the fare brand that produced the lapsed voucher makes credits non-transferable and exactly two base-fare lines stand on the booking",
+                    "baseline_result": 2145.32
+                },
+                {
+                    "factor": "card_carry_uplift",
+                    "tier_taken": "the traveller holds an active traveller club card of the Blue, Silver or Gold tiers and the card was enrolled at or beyond the long-membership term",
+                    "baseline_result": 1107.07
+                },
+                {
+                    "factor": "house_activity_uplift",
+                    "tier_taken": "room charges posted to the traveller's hotel stays over the last twelve months stand above nothing but below the house-spend band and an active traveller club card stands on the profile",
+                    "baseline_result": 1133.24
+                },
+                {
+                    "factor": "service_fee_recovery",
+                    "tier_taken": "two or more agency service fee lines stand on the booking and the agency service fee of the fare brand held is at or above the service-fee band",
+                    "baseline_result": 1215.59
+                }
+            ]
+        }
+    ],
+    "prerequisite_closure": {
+        "root_problem": "air_ext_lapsed_credit_carry_forward",
+        "edges": [
+            {
+                "from": "air_ext_lapsed_credit_carry_forward",
+                "to": "air_ext_credit_reissue_fee",
+                "kind": "value_input",
+                "gate": "reissue_fee_charged",
+                "form": "state",
+                "condition": "A reissue fee line stands charged on the booking at the moment the value carried onto the fresh voucher is worked out.",
+                "policy_source": "The value carried onto the fresh voucher is fixed only after the reissue fee owed under the fare brand that produced the lapsed voucher stands as a charged line on the booking.",
+                "resolved_by": "charge_credit_reissue_fee_efe635ea",
+                "unresolved_at_frozen_time": {
+                    "why_false": "At frozen time the booking carries nine ledger lines: six fare, tax and service lines, one cancellation penalty and two travel credit issues. Not one of them is a reissue fee, so the reissue fee charged on the booking is nil; the booking's paid total of 3473.90 is exactly the sum of its six charge lines and the penalty, with nothing added for a reissue.",
+                    "evidence": [
+                        "initial_state.air_booking_events.643af531-7b05-416f-ade6-0c394e27822a.charge_category = agency_service_fee",
+                        "initial_state.air_booking_events.e25d1331-2f4d-4b22-a64e-5999b043c14d.charge_category = cancellation_penalty",
+                        "initial_state.air_booking_events.cb1d32d9-549f-45bd-bb8e-3e72b7c42361.charge_category = credit_issue",
+                        "initial_state.air_bookings.a15cde5e-e2b3-451a-b835-8d74e25bdae9.amount_paid_usd = 3473.9"
+                    ],
+                    "flips_to_true_by": "Once the fee write lands, a reissue fee line of 224.00 stands charged on the booking and the reissue_fee_charged binding of the carry-forward computation takes 224.00 instead of 0.00, met once out of the value carried."
+                }
+            }
+        ],
+        "resolution_order": [
+            "air_ext_credit_reissue_fee",
+            "air_ext_lapsed_credit_carry_forward"
+        ],
+        "order_uniqueness": "The tree has a single prerequisite and therefore a single order: the fee is charged, then the value is carried forward. There are no parallel edges to reorder. The order is not a matter of convention either: the carry-forward rule states outright that its result is fixed only after the reissue fee stands as a charged line, and skipping the fee changes the scored value, so the two writes do not commute and no second terminal state exists.",
+        "edge_load_bearing": [
+            {
+                "edge": "air_ext_lapsed_credit_carry_forward -> air_ext_credit_reissue_fee",
+                "skipped_effect": "Skipping the reissue-fee write and replaying everything else moves the scored value of air_ext_lapsed_credit_carry_forward from 1185.59 to 1409.59. The figure is the recomputation itself, not one carried forward from another step."
+            }
+        ],
+        "no_user_hint": "The persona raises one thing: that she would like to hang on to the credit from the Paris trip rather than lose it. It nowhere mentions a fee, a charge or anything that has to be put through first, and nowhere asks whether something is outstanding. Her only line touching the prerequisite is the passive one that follows the agent raising it — she says that is fine, asks them to do whatever is needed, and explicitly does not ask what it is or how much.",
+        "tools_do_not_block": "Neither task tool validates the prerequisite. reissue_lapsed_travel_credit_f544c035 looks up the booking only to copy its customer reference onto the fresh line and then calls ctx.create unconditionally; it never looks for a reissue fee line, refuses nothing and hints at nothing, and would mint a fresh voucher of whatever value it is given on the opening world just as faithfully. charge_credit_reissue_fee_efe635ea likewise posts its line without inspecting anything about the vouchers. The whole consequence of skipping the fee falls on the terminal hash."
+    },
+    "charter_scope": {
+        "extended_policies": [
+            "air_ext_credit_reissue_fee",
+            "air_ext_lapsed_credit_carry_forward"
+        ],
+        "task_tools": [
+            "charge_credit_reissue_fee_efe635ea",
+            "reissue_lapsed_travel_credit_f544c035"
+        ]
+    },
+    "required_documents": [
+        "air_ext_credit_reissue_fee",
+        "air_ext_lapsed_credit_carry_forward"
+    ]
+}

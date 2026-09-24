@@ -25,7 +25,7 @@ Tokenization (``_tokenize``): lowercase, then walk the text emitting
   deterministic and reproducible for the frozen scaffold.
   - KB_search: BM25Okapi scoring (k1=1.5, b=0.75, epsilon=0.25 idf-floor — the
     standard Okapi formula), returns the top 10 documents by score (no score
-    threshold), each formatted with rank / title / ID / score / FULL content.
+    threshold), each formatted with rank / title / score / FULL content.
   - grep: regex over each document's content, case-insensitive; an invalid
     regex falls back to a literal (escaped) match; score = number of matches;
     top 10, same full-content formatting.
@@ -176,6 +176,6 @@ class KnowledgeBase:
     @staticmethod
     def _format(hits: List[Tuple[Document, float]]) -> str:
         return "\n".join(
-            f"{i}. {d.title}\n   ID: {d.id}\n   Score: {score:.4f}\n   Content: {d.content}\n"
+            f"{i}. {d.title}\n   Score: {score:.4f}\n   Content: {d.content}\n"
             for i, (d, score) in enumerate(hits, 1)
         )

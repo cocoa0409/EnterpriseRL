@@ -460,7 +460,7 @@ def build_argparser() -> argparse.ArgumentParser:
     # (the only path where Bedrock's gpt-6-astra accepts tools + reasoning effort).
     p.add_argument("--agent-llm", default=os.environ.get("AGENT_LLM", "openai/responses/openai.gpt-6-astra"))
     p.add_argument("--user-llm", default=os.environ.get("USER_LLM", "openai/responses/openai.gpt-5.4"))
-    # Per-role reasoning effort (used only for gpt/claude ids via args_for).
+    # Per-role reasoning effort, formatted for the API route via args_for.
     p.add_argument("--agent-effort", default=os.environ.get("AGENT_EFFORT", "high"))
     p.add_argument("--user-effort", default=os.environ.get("USER_EFFORT", "medium"))
     # Full llm-args override as a JSON string; empty -> derived from the model id.

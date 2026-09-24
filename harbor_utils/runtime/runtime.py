@@ -2,11 +2,11 @@
 
     db_schema.json        table -> fields
     db.json               the database at the start of the conversation
-    knowledge_base/       the knowledge base, one document per file (<id>.json:
-                          {"id", "title", "content"}), indexed in file-name order
+    knowledge_base/       the knowledge base, one Markdown file per document (<title>.md),
+                          containing only its content, indexed in filename order
     share_tools.py        tools listed to their owner (the agent or the customer)
-    task_tools/*.py       discoverable tools, in several modules: named only in the knowledge
-                          base, reached through unlock_*_discoverable_tool +
+    task_tools.py         discoverable tools named in the knowledge base,
+                          reached through unlock_*_discoverable_tool +
                           call_*_discoverable_tool
     episode.json          the frozen "now", the customer simulator's system prompt, and the
                           integrity fingerprints of the files above
@@ -56,22 +56,10 @@ def load_episode() -> dict:
 
 
 def load_documents() -> list:
-    """The knowledge base in index order: the documents of knowledge_base/, by file name."""
+    """Read Markdown content, taking the title and runtime identifier from the filename."""
     kb_dir = TASK_DIR / "knowledge_base"
-    docs = []
-    for fn in sorted(os.listdir(kb_dir)):
-        if fn.endswith(".json"):
-            with open(kb_dir / fn, encoding="utf-8") as f:
-                d = json.load(f)
-            docs.append(Document(id=d["id"], title=d.get("title", d["id"]), content=d["content"]))
-    return docs
-
-
-def task_tool_modules() -> list:
-    """The modules of task_tools/, each loaded as its own module. Tool names are unique across
-    them and discoverable tools are resolved by name, so their order does not matter."""
-    return sorted(fn[:-3] for fn in os.listdir(TASK_DIR / "task_tools")
-                  if fn.endswith(".py") and not fn.startswith("."))
+    return [Document(id=path.name, title=path.stem, content=path.read_text(encoding="utf-8"))
+            for path in sorted(kb_dir.glob("*.md"))]
 
 
 def _import(path: Path, name: str):
@@ -90,9 +78,7 @@ def world() -> tuple[list, KnowledgeBase, dict]:
     global _WORLD
     if _WORLD is None:
         specs = collect_specs(_import(TASK_DIR / "share_tools.py", "share_tools"), "share")
-        for name in task_tool_modules():
-            specs += collect_specs(_import(TASK_DIR / "task_tools" / f"{name}.py",
-                                           f"task_tools_{name}"), "task")
+        specs += collect_specs(_import(TASK_DIR / "task_tools.py", "task_tools"), "task")
         _WORLD = (specs, KnowledgeBase(load_documents()), read_json("db_schema.json"))
     return _WORLD
 

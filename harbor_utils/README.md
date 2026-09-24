@@ -9,6 +9,7 @@ any scenario the rollout can run converts the same way.
 ```bash
 uv run python harbor_utils/convert.py                  # every task of every scenario -> harbor_tasks/
 uv run python harbor_utils/convert.py --selftest       # + offline end-to-end checks
+uv run python harbor_utils/convert.py --factor-hint-in-baseline  # + factor titles in baseline docs
 uv run python harbor_utils/convert.py --tasks 'regional_retail_bank/auto_loan_payment_servicing/*'
 uv run python harbor_utils/convert.py --scenarios env/metro_gym_chain --out /tmp/gym_tasks
 ```
@@ -16,6 +17,11 @@ uv run python harbor_utils/convert.py --scenarios env/metro_gym_chain --out /tmp
 Selectors (`--tasks`, globs allowed): `scenario/difficulty/index`, `difficulty/index`, or a
 task dir name. Re-running replaces the task dirs it wrote (and earlier names of the same task)
 and rewrites `harbor_erl_agent/` and both READMEs.
+
+`--factor-hint-in-baseline` appends `\n\nSee also:\n` and a Markdown unordered list of factor
+document titles to each baseline document's content, matching `meta.policy_id` and using
+`meta.role` to identify baseline/factor documents. Baselines without matching factors are
+unchanged. This is off by default and does not modify the source documents under `env/`.
 
 ## How a task runs
 
@@ -52,18 +58,19 @@ task always gets the same name, across re-runs and output dirs.
 
 ```
 instruction.md                 the agent's system prompt
+user_simulator.md              exact copy of episode.json's user_system_prompt, for reference
 task.toml
 environment/
   db_schema.json               table -> fields
   db.json                      the database at the start of the conversation
-  knowledge_base/<id>.json     the knowledge base, one document per file ({id, title, content})
+  knowledge_base/<title>.md    the knowledge base, plain document content without JSON or ids
   share_tools.py               the tools listed to their owner (agent or customer)
-  task_tools/task_tools_<uuid8>.py   the discoverable tools of EVERY difficulty, one module each
+  task_tools.py               the discoverable tools of EVERY difficulty, merged as ordinary Python code
   episode.json                 frozen "now", the customer simulator's prompt, integrity hashes
   runtime/                     runtime.py (world + Session), erlbench/ (runtime modules only)
   requirements.txt, Dockerfile the image: the world + the packages the conversation needs
 tests/      test.sh, grade.py, expected.json (reference actions, expected DB hash)
-solution/   solve.sh, oracle.py, oracle_calls.json, design_rationale.json
+solution/   solve.sh, oracle.py, oracle_calls.json
 ```
 
 How each file is derived:
@@ -71,15 +78,16 @@ How each file is derived:
 | file | from |
 |---|---|
 | `db.json` | union of **every** task's `initial_state`, overlaid with this task's (`rollout.runner.merged_initial_state` + `DB.overlay`, as `ScenarioWorld.engine_for`) |
-| `knowledge_base/` | **every** product's docs (`erlbench.loader`), one file per doc named by its id; `meta` (authoring provenance) dropped. Indexed in file-name order — for all current scenarios identical to the loader's order; a warning is printed if a scenario ever differs (only equal-score result order can change) |
+| `knowledge_base/` | **every** product's docs (`erlbench.loader`), one `<title>.md` file containing only `content`. No JSON wrapper, source id or metadata. The runtime takes titles from filenames and indexes in filename order; filenames serve as internal identifiers. Search/grep return titles, scores and full content without ids. Invalid or duplicate title filenames cause conversion to fail instead of overwriting documents |
 | `share_tools.py` | `blueprint/share_tools.py` without module docstring and comments |
-| `task_tools/task_tools_<uuid8>.py` | every difficulty's `task_tools.py`, without module docstring and comments; the 8 hex digits are a UUID5 of (scenario, difficulty), so the name does not reveal the difficulty but is the same in every task and run. Each is loaded as its own module; tool names must be unique across share and task tools (checked), so load order cannot matter. `design_rationale.json` maps each discoverable tool to its file |
+| `task_tools.py` | every difficulty's cleaned source merged directly into a single Python file, with identical imports deduplicated and future imports at the top. Tool names already have unique UUID suffixes; function bodies are preserved and AST-checked |
 | `runtime/erlbench/` | the erlbench runtime modules (`db`, `determinism`, `tools`, `kb`, `engine`, `scoring`) without docstrings/comments — except the base meta tools' docstrings, which are their LLM-facing descriptions; `loader`/`validate` (authoring) are not shipped |
 | `requirements.txt` | the repo's runtime dependencies (`pyproject.toml`) and their whole closure, pinned to the repo environment's versions — what the local rollout runs with |
 | `instruction.md` / `episode.json` | `rollout.prompts.build_agent_prompt` / `build_user_prompt` |
+| `user_simulator.md` | exact copy of `episode.json`'s `user_system_prompt`, saved at the task root for reference |
 | `tests/expected.json` | `evaluation_criteria` as `{owner, tool, arguments}` + `replay` hash |
 | `solution/oracle_calls.json` | `evaluation_criteria` as live tool calls |
-| `solution/design_rationale.json` | the task's structured design, verbatim: `computations`, `prerequisite_closure` → `prerequisite_tree`, `solvability_contract` → `solvability`, `evaluation_criteria` (with objective / necessity / argument tracing) → `reference_solution`, the customer brief; plus `policies` / `workflows` / `discoverable_tools` → the knowledge-base documents (and files) that carry them. The source's free-text `design_rationale` (the authoring worklog) is not shipped |
+| `task.toml` metadata | `related_knowledge_base_documents`: every `<title>.md` filename whose `meta.policy_id` belongs to `charter_scope.extended_policies`, relative to `environment/knowledge_base/`. `difficulty`: `EASY` for `len(prerequisite_closure.resolution_order) <= 2`, `MEDIUM` for 3, `HARD` for >=4; also added to task keywords |
 
 Function docstrings in the tool files are kept verbatim: a tool's docstring **is** its
 description. Every cleaned Python file is checked to be AST-identical to its source minus
@@ -107,7 +115,7 @@ no reward, so harbor shows a verifier error instead of a silent 0.
 
 Before writing, per scenario: the packed world, loaded in a fresh interpreter by the task's
 own `runtime/runtime.py`, must define exactly the source's tools (names, owners, rw, kinds,
-descriptions, schemas, order), knowledge base, schema and both tool lists. Per task: the DB
+descriptions, schemas, order), knowledge base (with any requested factor hints), schema and both tool lists. Per task: the DB
 survives its JSON round trip; the reference actions, executed **live** through the engine's
 routing, succeed call by call and reach the reference replay's hash.
 

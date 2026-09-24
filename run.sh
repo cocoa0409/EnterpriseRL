@@ -103,9 +103,9 @@ export MAX_CONCURRENCY
 # id, and pass it verbatim via --agent-llm-args / --user-llm-args (rollout uses it as-is,
 # bypassing args_for; the nested `reasoning` key survives litellm.drop_params and reaches
 # completion()):
-#   * openai/responses/<gpt|claude|o*>    -> {"reasoning": {"effort": E}}   (nested; honored)
-#   * other gpt/claude (chat completions) -> {"reasoning_effort": E}         (flat; honored there)
-#   * everything else (e.g. kimi)         -> no reasoning key
+#   * responses/ routes -> {"reasoning": {"effort": E}}
+#   * other routes      -> {"reasoning_effort": E}
+#   * empty effort      -> no reasoning key
 # Set AGENT_LLM_ARGS / USER_LLM_ARGS in the env to override this and pass raw JSON instead.
 _derive_args() {  # $1=model  $2=effort  $3=temperature  $4=max_tokens  -> prints litellm-args JSON
   M="$1" E="$2" T="$3" MT="$4" python3 - <<'PY'
@@ -113,8 +113,7 @@ import os, json
 m   = os.environ["M"].lower()
 eff = os.environ["E"].strip()
 args = {"temperature": float(os.environ["T"]), "max_tokens": int(os.environ["MT"])}
-is_reasoning = any(k in m for k in ("gpt", "claude", "/o1", "/o3", "/o4"))
-if is_reasoning and eff:
+if eff:
     if "responses/" in m:
         args["reasoning"] = {"effort": eff}     # Responses API: nested object, honored by the proxy
     else:

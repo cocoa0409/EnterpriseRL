@@ -9,22 +9,23 @@ One erlbench task becomes one Harbor task directory, laid out by what the task I
 it was produced:
 
     task.toml, instruction.md          harbor config; the agent's system prompt
+    user_simulator.md                  a record of the customer simulator's system prompt
     environment/
       db_schema.json                   table -> fields
       db.json                          the database at the start of the conversation: the
                                        union of every task's initial_state, overlaid with this one's
-      knowledge_base/<doc id>.json     every product's documents in one directory, one per file
+      knowledge_base/<title>.md        every product's documents, as plain Markdown content
       share_tools.py                   the directly listed tools
-      task_tools/task_tools_<uuid8>.py each difficulty's discoverable tools, one module each
+      task_tools.py                    all discoverable tools, merged as ordinary Python code
       episode.json                     frozen "now", customer-simulator prompt, integrity hashes
       runtime/                         the engine (erlbench runtime) and runtime.py, which builds
                                        the world and records a conversation over it
       requirements.txt, Dockerfile     the image: the world + the packages the conversation needs
     tests/     grade.py + expected.json      (reference actions, expected DB hash)
     solution/  oracle.py + oracle_calls.json (reference actions as live calls)
-               design_rationale.json         the task's design: computations, prerequisite
-                                             tree, solvability, annotated reference solution,
-                                             policy -> KB documents
+
+task.toml metadata lists every document of charter_scope.extended_policies and labels the
+task EASY (<=2), MEDIUM (3), or HARD (>=4) by prerequisite_closure.resolution_order length.
 
 The directory name is ``<scenario>__<difficulty>__<index>__<uuid8>``; the 8 hex digits are a
 UUID derived from (scenario, difficulty, index), so re-converting keeps every task's name.
@@ -40,8 +41,8 @@ Every task carries its own copy of the whole scenario world, so no task depends 
 the functions the local rollout uses (``load_scenario``, ``merged_initial_state``,
 ``_company_name``, ``rollout.prompts``, ``erlbench.scoring.replay``).
 
-The tool files (share_tools.py and each task_tools/ module, loaded as its own module — tool
-names are unique, so load order cannot matter) and the erlbench runtime are shipped without
+The tool files (share_tools.py and the merged task_tools.py) and the erlbench runtime are
+shipped without
 module docstrings and comments (they describe the authoring pipeline, not the task); function
 docstrings stay (a tool's docstring is its description), and each cleaned file is proven
 AST-identical to its source minus exactly the removed docstrings.
@@ -50,9 +51,10 @@ Conversion refuses to write a task unless
 
   * the packed world, loaded in a fresh interpreter by the task's own runtime, defines
     exactly the source scenario's tools (names, owners, descriptions, schemas, order), the
-    same knowledge base (ids, titles, contents), schema and tool lists. The knowledge base is
-    indexed in file-name (= document id) order; where that differs from the source's index
-    order a warning says so (it only affects the order of equal-score search results);
+    same knowledge-base titles and contents (plus any requested factor hints), schema and
+    tool lists. Markdown filenames replace source document ids internally; search results
+    show titles, scores and content. Documents are indexed in filename order; where that
+    differs from the source's order a warning says so (only equal-score results can reorder);
   * the seeded database survives its JSON round trip bit for bit;
   * the reference actions, executed LIVE through the engine's own routing, succeed call by
     call and reach the reference replay's database hash.
@@ -80,6 +82,7 @@ import tempfile
 import tokenize
 import tomllib
 import uuid
+from dataclasses import replace
 from pathlib import Path
 
 # Loading a scenario imports its tool modules; never leave bytecode next to them.
@@ -94,7 +97,7 @@ if str(REPO) not in sys.path:
 from erlbench.db import DB  # noqa: E402
 from erlbench.determinism import Clock  # noqa: E402
 from erlbench.engine import AGENT_BASE, BASE_SCHEMAS, USER_BASE, Engine  # noqa: E402
-from erlbench.kb import KnowledgeBase  # noqa: E402
+from erlbench.kb import Document, KnowledgeBase  # noqa: E402
 from erlbench.loader import Scenario, load_scenario  # noqa: E402
 from erlbench.scoring import replay  # noqa: E402
 from rollout.orchestrator import NORMAL_TERMINATIONS  # noqa: E402
@@ -168,19 +171,6 @@ TASK_TOOLS_DOC = ("Discoverable tools of {company}\n\nListed to no one: each is 
                   "unlock_user_discoverable_tool, then\ncall_agent_discoverable_tool / "
                   "call_user_discoverable_tool.")
 
-# Fields of a source task.json and where they go in solution/design_rationale.json.
-DESIGN_FIELDS = {
-    "computations": "computations",
-    "prerequisite_closure": "prerequisite_tree",
-    "solvability_contract": "solvability",
-    "evaluation_criteria": "reference_solution",
-}
-# Source fields that are world data or authoring bookkeeping, not design. The source's
-# free-text `design_rationale` is the authoring worklog (it narrates the pipeline), so it is
-# not shipped; the structured fields above carry the design.
-NOT_DESIGN = {"frozen_time", "user_scenario", "initial_state", "db_closure",
-              "db_closure_matches_initial_state", "charter_scope", "required_documents",
-              "task_index", "design_rationale"}
 TASK_NAME_NAMESPACE = uuid.UUID("5d8b5c0e-7a3f-4f4e-9a52-6f0c2b8e1d47")
 
 
@@ -300,32 +290,30 @@ def pack_share_tools(src: str, company: str) -> str:
     return clean_python(src, module_doc=SHARE_TOOLS_DOC.format(company=company), what="share_tools.py")
 
 
-def task_tools_file(scenario: str, difficulty: str) -> str:
-    """``task_tools_<uuid8>.py``: the 8 hex digits are a UUID5 of (scenario, difficulty), so the
-    name says nothing about the difficulty yet stays the same in every task and every run."""
-    return f"task_tools_{uuid.uuid5(TASK_NAME_NAMESPACE, f'{scenario}/{difficulty}/task_tools').hex[:8]}.py"
-
-
 def pack_task_tools(sc: Scenario, dst: Path, company: str) -> None:
-    """Every difficulty's task_tools.py as ``task_tools/task_tools_<uuid8>.py``, cleaned like
-    share_tools.py: without its module docstring and comments (a neutral docstring instead),
-    proven AST-identical otherwise. Each stays its own module. Discoverable tools are listed to
-    no one and resolved by name, so the order the modules load in cannot matter — provided no
-    tool name is defined twice, which is checked here."""
-    names = [s.name for s in sc.specs]
-    twice = sorted({n for n in names if names.count(n) > 1})
-    if twice:
-        raise ConversionError(f"{sc.name}: tools defined more than once: {twice}")
+    """Merge UUID-named tools as ordinary Python code, deduplicating identical imports."""
     doc = TASK_TOOLS_DOC.format(company=company if company.endswith(".") else company + ".")
-    dst.mkdir(parents=True, exist_ok=True)
+    future_imports, body, seen_imports = [], [], set()
     for difficulty, path in _task_tools_sources(sc):
         src = path.read_text(encoding="utf-8")
         _check_imports(ast.parse(src), f"task tools of {difficulty}")
-        target = dst / task_tools_file(sc.name, difficulty)
-        if target.exists():
-            raise ConversionError(f"{sc.name}: two difficulties map to {target.name}")
-        target.write_text(clean_python(src, module_doc=doc, what=f"task tools of {difficulty}"),
-                          encoding="utf-8")
+        cleaned = clean_python(src, what=f"task tools of {difficulty}")
+        for node in ast.parse(cleaned).body:
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                key = ast.dump(node)
+                if key in seen_imports:
+                    continue
+                seen_imports.add(key)
+                if isinstance(node, ast.ImportFrom) and node.module == "__future__":
+                    future_imports.append(node)
+                    continue
+            body.append(node)
+    merged = ast.Module(body=[ast.Expr(ast.Constant(doc))] + future_imports + body,
+                        type_ignores=[])
+    code = ast.unparse(merged) + "\n"
+    if ast.dump(ast.parse(code)) != ast.dump(merged):
+        raise ConversionError(f"{sc.name}: merging changed the tool code")
+    _write(dst, code)
 
 
 def package_library(dst: Path) -> None:
@@ -374,16 +362,37 @@ def _task_tools_sources(sc: Scenario) -> list[tuple[str, Path]]:
     return parts
 
 
-def packed_documents(sc: Scenario) -> list:
-    """The knowledge base as packed: one file per document, named by its id, indexed in
-    file-name order."""
-    ids = [d.id for d in sc.docs]
-    bad = [i for i in ids if not re.fullmatch(r"[A-Za-z0-9_.-]+", i or "") or i.startswith(".")]
-    if bad:
-        raise ConversionError(f"{sc.name}: document ids unusable as file names: {bad[:5]}")
-    if len(set(ids)) != len(ids):
-        raise ConversionError(f"{sc.name}: duplicate knowledge-base document ids")
-    return sorted(sc.docs, key=lambda d: f"{d.id}.json")
+def document_filename(d: Document) -> str:
+    """Use the title verbatim; reject titles that cannot safely name a Markdown file."""
+    name = f"{d.title}.md"
+    if (not d.title or any(c in d.title for c in '/\\\0')
+            or len(name.encode("utf-8")) > 255):
+        raise ConversionError(f"document {d.id!r}: title cannot be used as a filename: {d.title!r}")
+    return name
+
+
+def packed_documents(sc: Scenario, *, factor_hint_in_baseline: bool = False) -> list[Document]:
+    """Markdown documents in filename order, using filenames as runtime identifiers.
+    Optionally append same-policy factor titles to baseline content."""
+    filenames = [document_filename(d).casefold() for d in sc.docs]
+    if len(set(filenames)) != len(filenames):
+        raise ConversionError(f"{sc.name}: duplicate knowledge-base title filenames")
+    docs = [replace(d, id=document_filename(d)) for d in sorted(sc.docs, key=document_filename)]
+    if not factor_hint_in_baseline:
+        return docs
+    factor_titles: dict[str, list[str]] = {}
+    for d in docs:
+        policy_id = d.meta.get("policy_id")
+        if d.meta.get("role") == "factor" and policy_id:
+            factor_titles.setdefault(policy_id, []).append(d.title)
+    hinted = []
+    for d in docs:
+        titles = factor_titles.get(d.meta.get("policy_id"), [])
+        if d.meta.get("role") == "baseline" and titles:
+            d = replace(d, content=d.content + "\n\nSee also:\n" +
+                        "\n".join(f"- {title}" for title in titles))
+        hinted.append(d)
+    return hinted
 
 
 def harness_requirements() -> str:
@@ -413,18 +422,19 @@ def harness_requirements() -> str:
             "# dependencies), pinned; installed with --no-deps.\n" + "\n".join(lines) + "\n")
 
 
-def pack_world(sc: Scenario, company: str, staged: Path) -> None:
+def pack_world(sc: Scenario, company: str, staged: Path, *,
+               factor_hint_in_baseline: bool = False) -> list[Document]:
     """Write the scenario-level part of every task's environment/ into ``staged`` and prove,
-    in a fresh interpreter running the packed runtime, that it is the source world."""
+    in a fresh interpreter running the packed runtime, that it is the source world with
+    any requested factor hints. Return the packed documents in index order."""
     bdir = Path(sc.root) / "blueprint"
     share_src = (bdir / "share_tools.py").read_text(encoding="utf-8") if (bdir / "share_tools.py").exists() else ""
     (staged / "share_tools.py").parent.mkdir(parents=True, exist_ok=True)
     (staged / "share_tools.py").write_text(pack_share_tools(share_src, company), encoding="utf-8")
-    pack_task_tools(sc, staged / "task_tools", company)
-    docs = packed_documents(sc)
+    pack_task_tools(sc, staged / "task_tools.py", company)
+    docs = packed_documents(sc, factor_hint_in_baseline=factor_hint_in_baseline)
     for d in docs:
-        _dump(staged / "knowledge_base" / f"{d.id}.json",
-              {"id": d.id, "title": d.title, "content": d.content}, indent=2)
+        _write(staged / "knowledge_base" / document_filename(d), d.content)
     _dump(staged / "db_schema.json", sc.db_schema)
     package_library(staged / "runtime" / "erlbench")
     shutil.copyfile(RUNTIME / "runtime.py", staged / "runtime" / "runtime.py")
@@ -437,16 +447,17 @@ def pack_world(sc: Scenario, company: str, staged: Path) -> None:
         raise ConversionError(f"{sc.name}: the packed world does not load: {proc.stderr[-3000:]}")
     packed, source = json.loads(proc.stdout), _source_signature(sc)
     source["docs"] = [[d.id, d.title, d.content] for d in docs]     # compared in packed order
-    # Tool names are unique (pack_task_tools), so the tools compare by name; the order that
+    # Tool names have unique UUID suffixes, so the tools compare by name; the order that
     # is visible — share tools in the tool lists — is compared exactly under "tool_lists".
     for sig in (packed, source):
         sig["specs"] = sorted(sig["specs"], key=lambda s: s[0])
     for key in source:
         if packed.get(key) != source[key]:
             raise ConversionError(f"{sc.name}: the packed world's {key} differs from the source scenario")
-    if [d.id for d in docs] != [d.id for d in sc.docs]:
-        print(f"    WARN {sc.name}: the knowledge base is indexed in document-id order, not the "
+    if [d.title for d in docs] != [d.title for d in sc.docs]:
+        print(f"    WARN {sc.name}: the knowledge base is indexed in title-filename order, not the "
               "source's order (only the order of equal-score search results can differ)")
+    return docs
 
 
 # ─────────────────────────────────────────────────────────────────────────────────────────
@@ -515,81 +526,15 @@ def oracle_plan(reference: list, registry: dict) -> list:
     return calls
 
 
-def _unique(items) -> list:
-    out = []
-    for x in items:
-        if x and x not in out:
-            out.append(x)
-    return out
-
-
-def _referenced_task_tools(reference: list, registry: dict) -> list:
-    names = []
-    for a in reference:
-        tool, args = a.get("tool") or a.get("name"), a.get("arguments") or {}
-        if tool in ("call_agent_discoverable_tool", "call_user_discoverable_tool",
-                    "unlock_agent_discoverable_tool", "unlock_user_discoverable_tool"):
-            tool = args.get("tool_name")
-        if tool in registry and registry[tool].kind == "task":
-            names.append(tool)
-    return names
-
-
-def design_record(sc: Scenario, task: dict, name: str, category: str, index: int,
-                  company: str) -> dict:
-    """solution/design_rationale.json: the task's design, traceable to the task's own files.
-
-    The source's structured design fields verbatim (computations, prerequisite tree,
-    solvability, annotated reference solution), plus an index from every
-    policy, workflow and discoverable tool the task involves to the knowledge-base documents
-    (environment/knowledge_base/<id>.json) that carry it, and every discoverable tool to the
-    environment/task_tools/ module that defines it."""
-    def ref(d) -> dict:
-        return {"id": d.id, "title": d.title, "file": f"environment/knowledge_base/{d.id}.json"}
-
-    module_of = {path.resolve(): difficulty for difficulty, path in _task_tools_sources(sc)}
-    tool_files = {}
-    for s in sc.specs:
-        difficulty = module_of.get(Path(s.func.__code__.co_filename).resolve())
-        if s.kind == "task" and difficulty:
-            tool_files[s.name] = f"environment/task_tools/{task_tools_file(sc.name, difficulty)}"
-
-    by_policy, by_workflow = {}, {}
-    for d in sc.docs:
-        meta = d.meta or {}
-        if meta.get("policy_id"):
-            by_policy.setdefault(meta["policy_id"], []).append(ref(d))
-        if meta.get("workflow"):
-            by_workflow.setdefault(meta["workflow"], []).append(ref(d))
-    registry = {s.name: s for s in sc.specs}
-    scope = task.get("charter_scope") or {}
-    required = list(task.get("required_documents") or [])
-    reference = task.get("evaluation_criteria") or []
-    policies = _unique(required + list(scope.get("extended_policies") or [])
-                       + [c.get("policy_id") for c in task.get("computations") or []])
-    tools = _unique(list(scope.get("task_tools") or []) + _referenced_task_tools(reference, registry))
-
-    record = {
-        "task_id": name, "scenario": sc.name, "category": category, "task_index": index,
-        "company": company, "frozen_time": task.get("frozen_time"),
-        "customer_brief": task.get("user_scenario", ""),
-        "policies": [{"policy_id": p, "required": p in required,
-                      "knowledge_base_documents": by_policy.get(p, [])} for p in policies],
-        "workflows": [{"workflow_id": w, "knowledge_base_documents": by_workflow.get(w, [])}
-                      for w in scope.get("workflows") or []],
-        "discoverable_tools": [{"tool": t, "owner": registry[t].owner if t in registry else None,
-                                "file": tool_files.get(t),
-                                "knowledge_base_documents": [ref(d) for d in sc.docs
-                                                             if t in d.content]}
-                               for t in tools],
+def task_annotations(sc: Scenario, task: dict) -> dict:
+    """Task metadata: resolution length and every document of the scoped policies."""
+    count = len(task["prerequisite_closure"]["resolution_order"])
+    policies = set((task.get("charter_scope") or {}).get("extended_policies") or [])
+    return {
+        "difficulty": "EASY" if count <= 2 else "MEDIUM" if count == 3 else "HARD",
+        "related_knowledge_base_documents": sorted(document_filename(d) for d in sc.docs
+                                                   if d.meta.get("policy_id") in policies),
     }
-    for src_key, dst_key in DESIGN_FIELDS.items():
-        if src_key in task:
-            record[dst_key] = task[src_key]
-    extra = {k: v for k, v in task.items() if k not in DESIGN_FIELDS and k not in NOT_DESIGN}
-    if extra:
-        record["other_design_notes"] = extra
-    return record
 
 
 def _toml_str(s: str) -> str:
@@ -597,8 +542,16 @@ def _toml_str(s: str) -> str:
 
 
 def render_task_toml(name: str, meta: dict, opts) -> str:
-    keywords = ["erlbench", "customer-service", "user-simulator", meta["scenario"], meta["category"]]
-    meta_lines = "\n".join(f"{k} = {json.dumps(v, ensure_ascii=False)}" for k, v in meta.items())
+    keywords = ["erlbench", "customer-service", "user-simulator", meta["scenario"],
+                meta["category"], meta["difficulty"]]
+    meta_lines = []
+    for key, value in meta.items():
+        if isinstance(value, list) and value:
+            encoded = "[\n" + "".join(f"  {_toml_str(item)},\n" for item in value) + "]"
+        else:
+            encoded = json.dumps(value, ensure_ascii=False)
+        meta_lines.append(f"{key} = {encoded}")
+    meta_lines = "\n".join(meta_lines)
     description = (f"Customer-service conversation at {meta['company']}: an agent serves a "
                    "simulated customer with the company's knowledge base and tools. Scored by "
                    "the final state of the database, when the customer ends the call normally.")
@@ -642,8 +595,7 @@ COPY requirements.txt /opt/task/requirements.txt
 RUN pip install --no-cache-dir --no-deps -r /opt/task/requirements.txt
 
 WORKDIR /opt/task
-COPY db_schema.json db.json share_tools.py episode.json /opt/task/
-COPY task_tools /opt/task/task_tools
+COPY db_schema.json db.json share_tools.py task_tools.py episode.json /opt/task/
 COPY knowledge_base /opt/task/knowledge_base
 COPY runtime /opt/task/runtime
 # The world must build and match the integrity fingerprints in episode.json.
@@ -736,10 +688,12 @@ def convert_task(sc: Scenario, staged: Path, kb: KnowledgeBase, merged: dict, co
     env = tdir / "environment"
     shutil.copytree(staged, env, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     _dump(env / "db.json", tables)
+    user_system_prompt = build_user_prompt(task.get("user_scenario", ""))
+    _write(tdir / "user_simulator.md", user_system_prompt)
     _dump(env / "episode.json", {
         "task_id": name, "scenario": sc.name, "category": difficulty, "task_index": index,
         "frozen_time": ft,
-        "user_system_prompt": build_user_prompt(task.get("user_scenario", "")),
+        "user_system_prompt": user_system_prompt,
         "integrity": rt.fingerprints(probe),
     })
     _write(env / "Dockerfile", DOCKERFILE)
@@ -764,12 +718,13 @@ def convert_task(sc: Scenario, staged: Path, kb: KnowledgeBase, merged: dict, co
     _write(tdir / "solution" / "solve.sh", SOLVE_SH, executable=True)
     _dump(tdir / "solution" / "oracle_calls.json",
           {"task_id": name, "termination": ORACLE_TERMINATION, "calls": plan})
-    _dump(tdir / "solution" / "design_rationale.json",
-          design_record(sc, task, name, difficulty, index, company), indent=2)
 
     specs = list(sc.specs)
     meta = {
         "benchmark": "erlbench",
+        "author_name": "Joe Ray",
+        "author_email": "joe@kultalab.com",
+        "copyright": "Copyright (c) Joe Ray. All rights reserved.",
         "scenario": sc.name, "category": difficulty, "task_index": index,
         "company": company, "frozen_time": ft,
         "harness": "erl_agent:ErlAgent",
@@ -779,6 +734,7 @@ def convert_task(sc: Scenario, staged: Path, kb: KnowledgeBase, merged: dict, co
         "n_knowledge_base_documents": len(probe.kb.docs),
         "n_db_rows": sum(len(rows) for rows in tables.values()),
         "n_reference_actions": len(reference),
+        **task_annotations(sc, task),
     }
     text = render_task_toml(name, meta, opts)
     tomllib.loads(text)
@@ -913,40 +869,44 @@ Per trial it writes, under the trial's `agent/`: `transcript.json`, `agent_traje
 DATASET_README = """\
 # erlbench — customer-service tasks for Harbor
 
+Author: Joe Ray (joe@kultalab.com). All rights reserved.
+
 Each task is a live customer-service conversation. An **agent** (the model under test)
 serves a **simulated customer** (an LLM playing the brief in the task) at a fictional
 company, using the company's knowledge base and tools; the task is scored by the **final
 state of the company database**.
 
-Every directory here is one task, `<scenario>__<category>__<index>__<uuid8>`, carrying its
-company's whole world (all tools, the full knowledge base, the full database); no task
-depends on another. The tasks run with the erlbench harness, `harbor_erl_agent/`, delivered
-beside this directory.
+Each task directory contains the company's tools, knowledge base and database. Tasks are
+self-contained and run with the erlbench harness in `harbor_erl_agent/`, beside this
+directory.
 
 ## Layout of a task
 
 ```
 instruction.md           the agent's system prompt
-task.toml
+user_simulator.md        the customer simulator's system prompt
+task.toml                task identity, difficulty, related documents and runtime settings
 environment/
   db_schema.json         the database schema (table -> fields)
   db.json                the database at the start of the conversation
-  knowledge_base/        the knowledge base, one document per file (<id>.json): policies,
+  knowledge_base/        Markdown documents (<title>.md) containing only content: policies,
                          procedures, fee tables, the names of the discoverable tools
   share_tools.py         tools listed to their owner (the agent or the customer)
-  task_tools/            discoverable tools, in several modules: named only in the knowledge
-                         base, reached through unlock_*_discoverable_tool +
+  task_tools.py          discoverable tools named in the knowledge base,
+                         reached through unlock_*_discoverable_tool +
                          call_*_discoverable_tool
   episode.json           the frozen "now", the customer simulator's prompt, integrity hashes
   runtime/               the engine (erlbench runtime) and runtime.py, which builds the world
                          and records a conversation over it
   requirements.txt       the Python packages the conversation needs (installed in the image)
 tests/                   the verifier (reference actions, expected database hash)
-solution/                the reference solution (oracle) and design_rationale.json — how the
-                         task is designed: computations, prerequisite tree, solvability, the
-                         annotated reference solution, the policies involved and the
-                         knowledge-base documents and tool modules that carry them
+solution/                the reference solution: solve.sh, oracle.py and oracle_calls.json
 ```
+
+In `task.toml`, `[metadata].related_knowledge_base_documents` lists the documents relevant
+to the task, with filenames relative to `environment/knowledge_base/`.
+`[metadata].difficulty` is `EASY`, `MEDIUM` or `HARD`; this label also appears in the task
+keywords.
 
 ## The conversation
 
@@ -1164,6 +1124,8 @@ def main(argv: list[str] | None = None) -> int:
                    help="where the harness goes (delivered beside the dataset)")
     p.add_argument("--no-background", action="store_true",
                    help="omit the company background from the agent prompt (as rollout --no-background)")
+    p.add_argument("--factor-hint-in-baseline", action="store_true",
+                   help="append a See also list of the same policy's factor document titles to baseline documents")
     p.add_argument("--agent-timeout-sec", type=float, default=3600.0)
     p.add_argument("--verifier-timeout-sec", type=float, default=600.0)
     p.add_argument("--build-timeout-sec", type=float, default=1200.0)
@@ -1203,15 +1165,15 @@ def main(argv: list[str] | None = None) -> int:
         with tempfile.TemporaryDirectory() as tmp:
             staged = Path(tmp) / "environment"
             try:
-                pack_world(sc, company, staged)
+                docs = pack_world(sc, company, staged,
+                                  factor_hint_in_baseline=opts.factor_hint_in_baseline)
             except ConversionError as e:
                 failed += [(task_dir_name(sc.name, d, i), str(e)) for d, i, _ in picked]
                 print(f"  FAIL {sc.name}: {e}")
                 if not opts.keep_going:
                     raise
                 continue
-            docs = packed_documents(sc)
-            kb = sc.kb() if [x.id for x in docs] == [x.id for x in sc.docs] else KnowledgeBase(docs)
+            kb = KnowledgeBase(docs)
             for d, i, t in picked:
                 try:
                     rec = convert_task(sc, staged, kb, merged, company, background, d, i, t, out, opts)

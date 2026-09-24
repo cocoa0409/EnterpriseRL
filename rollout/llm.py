@@ -56,16 +56,14 @@ DEFAULT_LLM_MAX_TOKENS = 32 * 1024
 
 def args_for(model: str, effort: str, temperature: float = 1.0,
              max_tokens: int = DEFAULT_LLM_MAX_TOKENS) -> dict:
-    """Pick llm-args by model id: gpt/claude models take a reasoning effort; everything
-    else (e.g. kimi) takes only ``temperature`` + ``max_tokens``. ``drop_params`` cleans up
-    any residual mismatch, so this only needs to be approximately right.
+    """Pass the requested effort using the API route's parameter format.
 
     For ``openai/responses/*`` litellm DROPS a flat ``reasoning_effort``; only the nested
     ``reasoning={"effort": ...}`` object reaches the server, so that shape is used there
     (mirrors ``_derive_args`` in run.sh, which normally passes these via --*-llm-args)."""
     m = model.lower()
     args = {"temperature": temperature, "max_tokens": max_tokens}
-    if ("gpt" in m or "claude" in m) and effort:
+    if effort:
         if "responses/" in m:
             args["reasoning"] = {"effort": effort}
         else:
@@ -116,6 +114,13 @@ class LLMClient:
         self.model = model
         self.model_id = model            # kept for parity with earlier code / display
         self.args = dict(args or {})     # temperature / reasoning_effort / max_tokens / api_base / api_key / timeout
+        # Custom model IDs may be absent from LiteLLM's capability map.
+        # Preserve an explicitly requested effort instead of silently dropping it.
+        if "reasoning_effort" in self.args:
+            allowed = list(self.args.get("allowed_openai_params") or [])
+            if "reasoning_effort" not in allowed:
+                allowed.append("reasoning_effort")
+            self.args["allowed_openai_params"] = allowed
         self.max_attempts = max_attempts  # <= 0 -> retry forever
         # This client's own loop is the retry mechanism, so litellm's inner retry is
         # off by default (num_retries=0) — it also avoids litellm importing tenacity.

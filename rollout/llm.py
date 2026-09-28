@@ -51,7 +51,7 @@ try:  # httpx is a litellm dependency; guard just in case.
 except Exception:  # noqa: BLE001
     pass
 
-DEFAULT_LLM_MAX_TOKENS = 32 * 1024
+DEFAULT_LLM_MAX_TOKENS = 64 * 1024
 
 
 def args_for(model: str, effort: str, temperature: float = 1.0,

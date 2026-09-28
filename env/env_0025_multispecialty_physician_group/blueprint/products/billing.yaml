@@ -1,0 +1,1488 @@
+# Policy charter: Patient Financial Account (the guarantor billing account of one patient).
+# Path: env/env_0025_multispecialty_physician_group/blueprint/products/billing.yaml
+
+category: billing
+display_name: Patient Financial Account
+
+binding:
+  holding_table: billing_accounts
+  event_tables: [billing_transactions]
+  intake_tables: [billing_cases]
+  status_field: status
+  variant_field: variant_name
+  quantity_fields: {patient_balance: patient_balance}
+
+lifecycle:
+  states: [registered, active, billing_hold, precollection, collections, closed]
+  transitions:
+    - {from: registered, to: active, by: agent, means: "Coverage on file is verified with the payer (or the uninsured attestation is recorded) and the account starts receiving patient-responsibility postings and statements."}
+    - {from: active, to: billing_hold, by: agent, means: "Statements, late fees and escalation are paused while a balance dispute, insurance review, hardship review or estate review is open."}
+    - {from: precollection, to: billing_hold, by: agent, means: "A dispute or review opened during the final-notice period pauses the escalation to an outside agency."}
+    - {from: billing_hold, to: active, by: agent, means: "The review that placed the hold is resolved and the ordinary statement cycle resumes."}
+    - {from: active, to: precollection, by: system, means: "The final notice is issued after the tier's series of statements has gone unpaid."}
+    - {from: precollection, to: active, by: agent, means: "The account is brought current during the final-notice period: the past-due balance is paid down below the placement minimum or enrolled in a payment plan."}
+    - {from: precollection, to: collections, by: system, means: "The past-due balance is placed with the group's outside collection agency after the final-notice period expires."}
+    - {from: collections, to: active, by: agent, means: "The agency placement is recalled because the balance was paid in full, insurance paid it, or it was placed in error."}
+    - {from: active, to: closed, by: user, means: "The patient closes the financial account on leaving the practice; only the patient can confirm the closure, and it lands first as an account-closure case."}
+
+accounts:
+  - key: patient_balance
+    unit: USD
+    meaning: "Amount the patient (guarantor) owes the group after insurance adjudication; charges and reversed payments raise it, payments, copays and adjustments lower it, and a refund of a credit brings a negative (credit) balance back toward zero."
+
+parameter_schema:
+  statement_cycle_days: "Calendar days between two consecutive patient statements while a balance is owed; integer, days."
+  statements_before_final_notice: "Number of consecutive statements that may go unpaid before the final notice is issued; integer, count."
+  final_notice_to_collections_days: "Calendar days from the final notice to placement with the outside collection agency; integer, days."
+  collections_min_balance_usd: "Minimum past-due balance that may be placed with the collection agency; below it the balance stays in-house; USD."
+  small_balance_writeoff_usd: "Remaining balance at or below which the account's residual is administratively written off at the final-notice step instead of escalating; USD."
+  prompt_pay_discount_pct: "Discount percentage granted when the patient pays a charge's full remaining balance inside the prompt-pay window; percent, 2 decimals; 0.00 means not offered."
+  prompt_pay_window_days: "Calendar days, counted from the posting date of the charge, within which a full payment earns the prompt-pay discount; integer, days."
+  prompt_pay_min_balance_usd: "Minimum remaining balance of a charge for the prompt-pay discount to apply; USD."
+  self_pay_discount_pct: "Uninsured discount applied to the gross fee-schedule charge of a self-pay service at posting; percent, 2 decimals; 0.00 means not applicable."
+  copay_collect_at_checkin: "Whether the fixed copay printed on the insurance card is collected at check-in; boolean."
+  deductible_estimate_collect_pct: "Share of the estimated deductible or coinsurance for the visit collected at the time of service; percent, 2 decimals."
+  pos_estimate_cap_usd: "Maximum amount collected at the time of service toward an estimated deductible, coinsurance or self-pay estimate for one encounter; USD."
+  returned_payment_fee_usd: "Fee posted when a check or ACH payment is returned unpaid by the bank; USD."
+  returned_payments_before_restriction: "Number of returned payments within the restriction look-back after which check and ACH are no longer accepted; integer, count."
+  returned_payment_restriction_months: "Rolling look-back, in calendar months, over which returned payments are counted and during which the check/ACH restriction then lasts; integer, months."
+  refund_threshold_usd: "Minimum credit balance that is refunded to the payer of the credit; smaller credits remain on the account for future charges; USD."
+  credit_balance_hold_days: "Calendar days a credit balance is held before refund, to let pending insurance claims and crossovers finish; integer, days."
+  refund_processing_business_days: "Business days (Monday-Friday excluding group holidays) to issue an approved refund after the hold ends; integer."
+  insurance_pending_hold_days: "Calendar days after the date of service during which the patient is not statemented for a charge whose claim is still pending with the payer; integer, days."
+  timely_filing_days: "Payer filing limit: calendar days after the date of service within which a claim must be filed with this tier's payer; 0 means no payer to bill; integer, days."
+  balance_billing_permitted: "Whether the patient may be billed above the payer-determined patient responsibility; boolean."
+  noncovered_waiver_required: "Whether a signed advance notice of non-coverage (ABN or payer waiver) must be on file before a non-covered service is billed to the patient; boolean."
+  hardship_adjustment_max_pct: "Maximum percentage of a charge's remaining balance that an approved financial-hardship review may adjust off; percent, 2 decimals."
+  hardship_review_business_days: "Business days to decide a complete financial-hardship application; integer."
+  dispute_window_days: "Calendar days after the statement date that first billed a charge within which the patient may dispute that charge; integer, days."
+  dispute_hold_max_days: "Maximum calendar days an account may stay on billing hold for one dispute before the hold must be released; integer, days."
+  itemized_statement_fee_usd: "Fee for an itemized statement of services; USD."
+  itemized_statement_business_days: "Business days to deliver a requested itemized statement; integer."
+  late_fee_usd: "Late fee posted once per past-due statement when no payment is received by the late-fee day; USD; 0.00 means not charged."
+  late_fee_after_days: "Calendar days after a statement date after which an unpaid statement balance is past due for the late fee; integer, days."
+  late_fee_max_per_12_months: "Maximum late fees posted on one account in the rolling 12 months; integer, count."
+  late_fee_partial_payment_pct: "Share of a statement balance which, paid before the late-fee day, prevents the late fee; percent, 2 decimals."
+  coverage_reverification_days: "Calendar days after the last eligibility verification after which coverage must be re-verified before the next posting to the payer; integer, days."
+  card_on_file_required: "Whether a payment card must be kept on file for post-adjudication balances; boolean."
+  card_on_file_max_auto_charge_usd: "Maximum amount charged automatically to the card on file for one encounter's post-adjudication balance; USD; 0.00 means no automatic charging."
+  card_on_file_notice_days: "Calendar days of advance notice given before the card on file is charged; integer, days."
+  gfe_required: "Whether a Good Faith Estimate must be issued for scheduled services (No Surprises Act uninsured/self-pay estimate); boolean."
+  gfe_dispute_threshold_usd: "Amount by which the billed total for an encounter must exceed its Good Faith Estimate for the patient to be eligible for the billed-versus-estimate dispute; USD."
+  gfe_dispute_window_days: "Calendar days after the date of the first bill for the encounter within which the patient may start the billed-versus-estimate dispute; integer, days."
+  gfe_delivery_business_days_short_lead: "Business days within which the Good Faith Estimate is delivered when the service is scheduled 3 to 9 business days ahead; integer."
+  gfe_delivery_business_days_long_lead: "Business days within which the Good Faith Estimate is delivered when the service is scheduled 10 or more business days ahead; integer."
+  statement_delivery_default: "Default statement delivery channel for a new account (paperless or mail); enum string."
+  secondary_claim_billing: "Whether a secondary coverage on file is billed before the remaining balance becomes patient responsibility; boolean."
+  copay_hardship_waiver_permitted: "Whether a copay may be waived case by case on an approved documented financial hardship; boolean."
+  payment_allocation_order: "Order in which an undesignated payment is applied across open charges; enum string."
+  hsa_fsa_card_accepted: "Whether HSA/FSA debit cards are accepted as a payment method; boolean."
+  estate_hold_days: "Calendar days the account of a deceased patient stays on estate-review hold before statements go to the estate representative; integer, days."
+  collections_recall_on_insurance_payment: "Whether an agency placement is recalled when a late insurance payment reduces the placed balance; boolean."
+  cob_response_days: "Calendar days the patient has to return a coordination-of-benefits questionnaire requested by the payer before the pended charge becomes patient responsibility; integer, days."
+  account_closure_zero_balance_required: "Whether the account must carry a zero balance before a closure request can take effect; boolean."
+
+variants:
+  - name: Medicaid Managed Care Account
+    rank: 1
+    entry_gate: {coverage_type: medicaid_managed_care, eligibility_verified: true, plan_contracted_with_group: true}
+    parameters:
+      statement_cycle_days: 30
+      statements_before_final_notice: 3
+      final_notice_to_collections_days: 30
+      collections_min_balance_usd: 75.00
+      small_balance_writeoff_usd: 4.99
+      prompt_pay_discount_pct: 0.00
+      prompt_pay_window_days: 30
+      prompt_pay_min_balance_usd: 100.00
+      self_pay_discount_pct: 0.00
+      copay_collect_at_checkin: false
+      deductible_estimate_collect_pct: 0.00
+      pos_estimate_cap_usd: 0.00
+      returned_payment_fee_usd: 0.00
+      returned_payments_before_restriction: 2
+      returned_payment_restriction_months: 12
+      refund_threshold_usd: 1.00
+      credit_balance_hold_days: 60
+      refund_processing_business_days: 10
+      insurance_pending_hold_days: 60
+      timely_filing_days: 180
+      balance_billing_permitted: false
+      noncovered_waiver_required: true
+      hardship_adjustment_max_pct: 100.00
+      hardship_review_business_days: 10
+      dispute_window_days: 60
+      dispute_hold_max_days: 45
+      itemized_statement_fee_usd: 0.00
+      itemized_statement_business_days: 5
+      late_fee_usd: 0.00
+      late_fee_after_days: 45
+      late_fee_max_per_12_months: 0
+      late_fee_partial_payment_pct: 50.00
+      coverage_reverification_days: 30
+      card_on_file_required: false
+      card_on_file_max_auto_charge_usd: 0.00
+      card_on_file_notice_days: 0
+      gfe_required: false
+      gfe_dispute_threshold_usd: 0.00
+      gfe_dispute_window_days: 0
+      gfe_delivery_business_days_short_lead: 0
+      gfe_delivery_business_days_long_lead: 0
+      statement_delivery_default: mail
+      secondary_claim_billing: true
+      copay_hardship_waiver_permitted: false
+      payment_allocation_order: oldest_service_date_first
+      hsa_fsa_card_accepted: true
+      estate_hold_days: 90
+      collections_recall_on_insurance_payment: true
+      cob_response_days: 30
+      account_closure_zero_balance_required: true
+  - name: Self-Pay Account
+    rank: 2
+    entry_gate: {coverage_type: none, uninsured_attestation_signed: true}
+    parameters:
+      statement_cycle_days: 28
+      statements_before_final_notice: 3
+      final_notice_to_collections_days: 30
+      collections_min_balance_usd: 50.00
+      small_balance_writeoff_usd: 9.99
+      prompt_pay_discount_pct: 15.00
+      prompt_pay_window_days: 30
+      prompt_pay_min_balance_usd: 50.00
+      self_pay_discount_pct: 35.00
+      copay_collect_at_checkin: false
+      deductible_estimate_collect_pct: 100.00
+      pos_estimate_cap_usd: 400.00
+      returned_payment_fee_usd: 30.00
+      returned_payments_before_restriction: 2
+      returned_payment_restriction_months: 12
+      refund_threshold_usd: 1.00
+      credit_balance_hold_days: 30
+      refund_processing_business_days: 10
+      insurance_pending_hold_days: 0
+      timely_filing_days: 0
+      balance_billing_permitted: true
+      noncovered_waiver_required: false
+      hardship_adjustment_max_pct: 100.00
+      hardship_review_business_days: 7
+      dispute_window_days: 60
+      dispute_hold_max_days: 45
+      itemized_statement_fee_usd: 0.00
+      itemized_statement_business_days: 5
+      late_fee_usd: 15.00
+      late_fee_after_days: 45
+      late_fee_max_per_12_months: 4
+      late_fee_partial_payment_pct: 50.00
+      coverage_reverification_days: 90
+      card_on_file_required: false
+      card_on_file_max_auto_charge_usd: 0.00
+      card_on_file_notice_days: 0
+      gfe_required: true
+      gfe_dispute_threshold_usd: 400.00
+      gfe_dispute_window_days: 120
+      gfe_delivery_business_days_short_lead: 1
+      gfe_delivery_business_days_long_lead: 3
+      statement_delivery_default: paperless
+      secondary_claim_billing: false
+      copay_hardship_waiver_permitted: false
+      payment_allocation_order: oldest_service_date_first
+      hsa_fsa_card_accepted: true
+      estate_hold_days: 90
+      collections_recall_on_insurance_payment: true
+      cob_response_days: 30
+      account_closure_zero_balance_required: true
+  - name: Medicare Part B Account
+    rank: 3
+    entry_gate: {coverage_type: medicare_part_b, eligibility_verified: true, group_participating: true}
+    parameters:
+      statement_cycle_days: 30
+      statements_before_final_notice: 4
+      final_notice_to_collections_days: 30
+      collections_min_balance_usd: 50.00
+      small_balance_writeoff_usd: 4.99
+      prompt_pay_discount_pct: 0.00
+      prompt_pay_window_days: 30
+      prompt_pay_min_balance_usd: 100.00
+      self_pay_discount_pct: 0.00
+      copay_collect_at_checkin: true
+      deductible_estimate_collect_pct: 0.00
+      pos_estimate_cap_usd: 0.00
+      returned_payment_fee_usd: 30.00
+      returned_payments_before_restriction: 2
+      returned_payment_restriction_months: 12
+      refund_threshold_usd: 1.00
+      credit_balance_hold_days: 60
+      refund_processing_business_days: 10
+      insurance_pending_hold_days: 30
+      timely_filing_days: 365
+      balance_billing_permitted: false
+      noncovered_waiver_required: true
+      hardship_adjustment_max_pct: 100.00
+      hardship_review_business_days: 10
+      dispute_window_days: 60
+      dispute_hold_max_days: 45
+      itemized_statement_fee_usd: 0.00
+      itemized_statement_business_days: 5
+      late_fee_usd: 0.00
+      late_fee_after_days: 45
+      late_fee_max_per_12_months: 0
+      late_fee_partial_payment_pct: 50.00
+      coverage_reverification_days: 365
+      card_on_file_required: false
+      card_on_file_max_auto_charge_usd: 0.00
+      card_on_file_notice_days: 0
+      gfe_required: false
+      gfe_dispute_threshold_usd: 0.00
+      gfe_dispute_window_days: 0
+      gfe_delivery_business_days_short_lead: 0
+      gfe_delivery_business_days_long_lead: 0
+      statement_delivery_default: mail
+      secondary_claim_billing: true
+      copay_hardship_waiver_permitted: true
+      payment_allocation_order: oldest_service_date_first
+      hsa_fsa_card_accepted: true
+      estate_hold_days: 90
+      collections_recall_on_insurance_payment: true
+      cob_response_days: 45
+      account_closure_zero_balance_required: true
+  - name: Medicare Advantage Account
+    rank: 4
+    entry_gate: {coverage_type: medicare_advantage, eligibility_verified: true, plan_contracted_with_group: true}
+    parameters:
+      statement_cycle_days: 30
+      statements_before_final_notice: 4
+      final_notice_to_collections_days: 30
+      collections_min_balance_usd: 50.00
+      small_balance_writeoff_usd: 4.99
+      prompt_pay_discount_pct: 0.00
+      prompt_pay_window_days: 30
+      prompt_pay_min_balance_usd: 100.00
+      self_pay_discount_pct: 0.00
+      copay_collect_at_checkin: true
+      deductible_estimate_collect_pct: 0.00
+      pos_estimate_cap_usd: 0.00
+      returned_payment_fee_usd: 30.00
+      returned_payments_before_restriction: 2
+      returned_payment_restriction_months: 12
+      refund_threshold_usd: 1.00
+      credit_balance_hold_days: 60
+      refund_processing_business_days: 10
+      insurance_pending_hold_days: 45
+      timely_filing_days: 180
+      balance_billing_permitted: false
+      noncovered_waiver_required: true
+      hardship_adjustment_max_pct: 100.00
+      hardship_review_business_days: 10
+      dispute_window_days: 60
+      dispute_hold_max_days: 45
+      itemized_statement_fee_usd: 0.00
+      itemized_statement_business_days: 5
+      late_fee_usd: 0.00
+      late_fee_after_days: 45
+      late_fee_max_per_12_months: 0
+      late_fee_partial_payment_pct: 50.00
+      coverage_reverification_days: 90
+      card_on_file_required: false
+      card_on_file_max_auto_charge_usd: 0.00
+      card_on_file_notice_days: 0
+      gfe_required: false
+      gfe_dispute_threshold_usd: 0.00
+      gfe_dispute_window_days: 0
+      gfe_delivery_business_days_short_lead: 0
+      gfe_delivery_business_days_long_lead: 0
+      statement_delivery_default: mail
+      secondary_claim_billing: true
+      copay_hardship_waiver_permitted: true
+      payment_allocation_order: oldest_service_date_first
+      hsa_fsa_card_accepted: true
+      estate_hold_days: 90
+      collections_recall_on_insurance_payment: true
+      cob_response_days: 30
+      account_closure_zero_balance_required: true
+  - name: Commercial HMO/EPO Account
+    rank: 5
+    entry_gate: {coverage_type: commercial_hmo_epo, eligibility_verified: true, plan_contracted_with_group: true, pcp_assigned_in_group: true}
+    parameters:
+      statement_cycle_days: 30
+      statements_before_final_notice: 3
+      final_notice_to_collections_days: 30
+      collections_min_balance_usd: 50.00
+      small_balance_writeoff_usd: 4.99
+      prompt_pay_discount_pct: 5.00
+      prompt_pay_window_days: 30
+      prompt_pay_min_balance_usd: 100.00
+      self_pay_discount_pct: 0.00
+      copay_collect_at_checkin: true
+      deductible_estimate_collect_pct: 0.00
+      pos_estimate_cap_usd: 0.00
+      returned_payment_fee_usd: 30.00
+      returned_payments_before_restriction: 2
+      returned_payment_restriction_months: 12
+      refund_threshold_usd: 1.00
+      credit_balance_hold_days: 45
+      refund_processing_business_days: 10
+      insurance_pending_hold_days: 45
+      timely_filing_days: 90
+      balance_billing_permitted: false
+      noncovered_waiver_required: true
+      hardship_adjustment_max_pct: 75.00
+      hardship_review_business_days: 10
+      dispute_window_days: 60
+      dispute_hold_max_days: 45
+      itemized_statement_fee_usd: 0.00
+      itemized_statement_business_days: 5
+      late_fee_usd: 10.00
+      late_fee_after_days: 45
+      late_fee_max_per_12_months: 3
+      late_fee_partial_payment_pct: 50.00
+      coverage_reverification_days: 90
+      card_on_file_required: false
+      card_on_file_max_auto_charge_usd: 0.00
+      card_on_file_notice_days: 0
+      gfe_required: false
+      gfe_dispute_threshold_usd: 0.00
+      gfe_dispute_window_days: 0
+      gfe_delivery_business_days_short_lead: 0
+      gfe_delivery_business_days_long_lead: 0
+      statement_delivery_default: paperless
+      secondary_claim_billing: true
+      copay_hardship_waiver_permitted: true
+      payment_allocation_order: oldest_service_date_first
+      hsa_fsa_card_accepted: true
+      estate_hold_days: 90
+      collections_recall_on_insurance_payment: true
+      cob_response_days: 30
+      account_closure_zero_balance_required: true
+  - name: Commercial PPO/POS Account
+    rank: 6
+    entry_gate: {coverage_type: commercial_ppo_pos, eligibility_verified: true, plan_contracted_with_group: true}
+    parameters:
+      statement_cycle_days: 30
+      statements_before_final_notice: 3
+      final_notice_to_collections_days: 30
+      collections_min_balance_usd: 50.00
+      small_balance_writeoff_usd: 4.99
+      prompt_pay_discount_pct: 5.00
+      prompt_pay_window_days: 30
+      prompt_pay_min_balance_usd: 100.00
+      self_pay_discount_pct: 0.00
+      copay_collect_at_checkin: true
+      deductible_estimate_collect_pct: 50.00
+      pos_estimate_cap_usd: 250.00
+      returned_payment_fee_usd: 30.00
+      returned_payments_before_restriction: 2
+      returned_payment_restriction_months: 12
+      refund_threshold_usd: 1.00
+      credit_balance_hold_days: 45
+      refund_processing_business_days: 10
+      insurance_pending_hold_days: 45
+      timely_filing_days: 180
+      balance_billing_permitted: false
+      noncovered_waiver_required: false
+      hardship_adjustment_max_pct: 75.00
+      hardship_review_business_days: 10
+      dispute_window_days: 60
+      dispute_hold_max_days: 45
+      itemized_statement_fee_usd: 0.00
+      itemized_statement_business_days: 5
+      late_fee_usd: 10.00
+      late_fee_after_days: 45
+      late_fee_max_per_12_months: 3
+      late_fee_partial_payment_pct: 50.00
+      coverage_reverification_days: 90
+      card_on_file_required: false
+      card_on_file_max_auto_charge_usd: 0.00
+      card_on_file_notice_days: 0
+      gfe_required: false
+      gfe_dispute_threshold_usd: 0.00
+      gfe_dispute_window_days: 0
+      gfe_delivery_business_days_short_lead: 0
+      gfe_delivery_business_days_long_lead: 0
+      statement_delivery_default: paperless
+      secondary_claim_billing: true
+      copay_hardship_waiver_permitted: true
+      payment_allocation_order: oldest_service_date_first
+      hsa_fsa_card_accepted: true
+      estate_hold_days: 90
+      collections_recall_on_insurance_payment: true
+      cob_response_days: 30
+      account_closure_zero_balance_required: true
+  - name: High-Deductible Health Plan Account
+    rank: 7
+    entry_gate: {coverage_type: commercial_hdhp, eligibility_verified: true, plan_contracted_with_group: true, card_on_file_enrolled: true}
+    parameters:
+      statement_cycle_days: 30
+      statements_before_final_notice: 3
+      final_notice_to_collections_days: 30
+      collections_min_balance_usd: 50.00
+      small_balance_writeoff_usd: 4.99
+      prompt_pay_discount_pct: 7.50
+      prompt_pay_window_days: 30
+      prompt_pay_min_balance_usd: 100.00
+      self_pay_discount_pct: 0.00
+      copay_collect_at_checkin: false
+      deductible_estimate_collect_pct: 50.00
+      pos_estimate_cap_usd: 500.00
+      returned_payment_fee_usd: 30.00
+      returned_payments_before_restriction: 2
+      returned_payment_restriction_months: 12
+      refund_threshold_usd: 1.00
+      credit_balance_hold_days: 45
+      refund_processing_business_days: 10
+      insurance_pending_hold_days: 45
+      timely_filing_days: 180
+      balance_billing_permitted: false
+      noncovered_waiver_required: false
+      hardship_adjustment_max_pct: 75.00
+      hardship_review_business_days: 10
+      dispute_window_days: 60
+      dispute_hold_max_days: 45
+      itemized_statement_fee_usd: 0.00
+      itemized_statement_business_days: 5
+      late_fee_usd: 10.00
+      late_fee_after_days: 45
+      late_fee_max_per_12_months: 3
+      late_fee_partial_payment_pct: 50.00
+      coverage_reverification_days: 90
+      card_on_file_required: true
+      card_on_file_max_auto_charge_usd: 750.00
+      card_on_file_notice_days: 5
+      gfe_required: false
+      gfe_dispute_threshold_usd: 0.00
+      gfe_dispute_window_days: 0
+      gfe_delivery_business_days_short_lead: 0
+      gfe_delivery_business_days_long_lead: 0
+      statement_delivery_default: paperless
+      secondary_claim_billing: true
+      copay_hardship_waiver_permitted: false
+      payment_allocation_order: oldest_service_date_first
+      hsa_fsa_card_accepted: true
+      estate_hold_days: 90
+      collections_recall_on_insurance_payment: true
+      cob_response_days: 30
+      account_closure_zero_balance_required: true
+
+events:
+  - type: billing_account_opened
+    target: billing_accounts
+    mutation: create
+    meaning: "A Patient Financial Account is opened for a newly registered (or returning, previously closed) patient under the financial class of the coverage presented at registration."
+    grain: "One row per financial account opened for one patient."
+    fields:
+      customer_id: "The patient the account belongs to."
+      variant_name: "Financial class of the coverage presented at registration (official tier name)."
+      status: "Always registered on opening."
+      opened_date: "Date the account is opened (handling date)."
+      payer_name: "Insurance payer name exactly as printed on the card; empty for the Self-Pay Account."
+      member_number: "Member number exactly as printed on the card; empty for the Self-Pay Account."
+      coverage_effective_date: "Effective date printed on the card or returned by the payer; the opening date for the Self-Pay Account."
+      statement_delivery: "Statement channel, defaulting to the tier's statement_delivery_default."
+    triggers: []
+  - type: billing_account_activated
+    target: billing_accounts
+    mutation: {transition: {from: registered, to: active}}
+    meaning: "The payer confirms eligibility (or the uninsured attestation is recorded) and the account starts receiving postings and statements."
+    grain: "One row per transaction."
+    fields:
+      status: "Set to active."
+      coverage_verified_date: "Date eligibility was verified (handling date)."
+      copay_primary_usd: "Primary care copay returned by the payer eligibility response."
+      copay_specialist_usd: "Specialist copay returned by the payer eligibility response."
+      deductible_remaining_usd: "Remaining individual deductible returned by the payer eligibility response."
+    triggers: []
+  - type: billing_coverage_updated
+    target: billing_accounts
+    mutation: update
+    meaning: "The coverage on file changes (new payer, new plan, move between insurance and self-pay) or is re-verified with the payer."
+    grain: "One row per transaction."
+    fields:
+      variant_name: "Financial class of the coverage now primary (official tier name)."
+      payer_name: "Payer name exactly as printed on the new card; empty when moving to self-pay."
+      member_number: "Member number exactly as printed on the new card; empty when moving to self-pay."
+      coverage_effective_date: "Effective date of the coverage now primary."
+      coverage_verified_date: "Date of this verification (handling date)."
+      copay_primary_usd: "Primary care copay of the coverage now primary."
+      copay_specialist_usd: "Specialist copay of the coverage now primary."
+      deductible_remaining_usd: "Remaining deductible of the coverage now primary."
+    triggers: []
+  - type: billing_hardship_status_updated
+    target: billing_accounts
+    mutation: update
+    meaning: "The outcome of a financial-hardship review is recorded on the account: the approved adjustment percentage and the date through which it applies."
+    grain: "One row per transaction."
+    fields:
+      hardship_approved_pct: "Adjustment percentage approved by the hardship review (0.00 when denied)."
+      hardship_approved_through: "Last date of service covered by the approval."
+    triggers: []
+  - type: billing_hold_placed
+    target: billing_accounts
+    mutation: {transition: [{from: active, to: billing_hold}, {from: precollection, to: billing_hold}]}
+    meaning: "Statements, late fees and escalation are paused while a dispute or review is open."
+    grain: "One row per transaction."
+    fields:
+      status: "Set to billing_hold."
+      hold_reason: "Why the account is held (balance_dispute, insurance_review, hardship_review, estate_review)."
+      hold_started_date: "Date the hold starts (handling date)."
+    triggers: []
+  - type: billing_hold_released
+    target: billing_accounts
+    mutation: {transition: {from: billing_hold, to: active}}
+    meaning: "The review behind the hold is resolved (or its maximum duration has run) and the statement cycle resumes."
+    grain: "One row per transaction."
+    fields:
+      status: "Set to active."
+      hold_reason: "Reset to none."
+    triggers: []
+  - type: billing_final_notice_issued
+    target: billing_accounts
+    mutation: {transition: {from: active, to: precollection}}
+    meaning: "The final notice is issued after the tier's series of statements went unpaid."
+    grain: "One row per transaction."
+    fields:
+      status: "Set to precollection."
+      final_notice_date: "Date the final notice is issued."
+    triggers: []
+  - type: billing_account_brought_current
+    target: billing_accounts
+    mutation: {transition: {from: precollection, to: active}}
+    meaning: "During the final-notice period the past-due balance is paid down below the placement minimum or enrolled in a payment plan."
+    grain: "One row per transaction."
+    fields:
+      status: "Set to active."
+      final_notice_date: "Cleared to empty."
+    triggers: []
+  - type: billing_collections_placed
+    target: billing_accounts
+    mutation: {transition: {from: precollection, to: collections}}
+    meaning: "The past-due balance is placed with the outside collection agency."
+    grain: "One row per transaction."
+    fields:
+      status: "Set to collections."
+      collections_placed_date: "Date of placement."
+    triggers: []
+  - type: billing_collections_recalled
+    target: billing_accounts
+    mutation: {transition: {from: collections, to: active}}
+    meaning: "The agency placement is recalled (paid in full, paid by insurance, or placed in error)."
+    grain: "One row per transaction."
+    fields:
+      status: "Set to active."
+      collections_placed_date: "Cleared to empty."
+    triggers: []
+  - type: billing_account_closed
+    target: billing_accounts
+    mutation: {transition: {from: active, to: closed}}
+    meaning: "The patient's confirmed closure takes effect on a zero-balance account."
+    grain: "One row per transaction."
+    fields:
+      status: "Set to closed."
+      closed_date: "Date the closure takes effect."
+    triggers: []
+  - type: billing_charge_posted
+    target: billing_transactions
+    meaning: "A patient-responsibility amount is posted to the account: a copay, deductible or coinsurance after adjudication, a self-pay or non-covered service, or a fee (no-show, late cancellation, records, telehealth, membership, late fee, returned payment)."
+    grain: "One row per charge line: one line category of one encounter, or one fee occurrence on one posting date."
+    distinguish_by: [encounter_number, line_category, service_date, txn_date]
+    fields:
+      txn_date: "Posting date."
+      service_date: "Date of service the charge belongs to; for fees, the date of the occurrence that caused the fee."
+      encounter_number: "Encounter the charge belongs to; empty for account-level fees (late fee, returned payment fee)."
+      line_category: "What the charge is for."
+      amount: "Charge amount, positive."
+      estimate_amount: "Estimate given before the service for this encounter (Good Faith Estimate for self-pay, insurance estimate otherwise); 0.00 when none."
+      source_category: "Product line that generated the charge."
+      signed_waiver_date: "Date of the signed advance notice of non-coverage for a non-covered service; empty when none."
+      channel: "Where the charge was posted from."
+    account: patient_balance
+    direction: in
+    triggers: []
+  - type: billing_copay_collected
+    target: billing_transactions
+    meaning: "The copay (or time-of-service estimate) for an encounter is collected at check-in or at booking."
+    grain: "One row per collection applied to one charge on one date."
+    distinguish_by: [applies_to_txn_id, txn_date, payment_method]
+    fields:
+      txn_date: "Collection date."
+      encounter_number: "Encounter the collection is for."
+      applies_to_txn_id: "The copay or estimate charge this collection is applied to."
+      amount: "Amount collected, positive."
+      payment_method: "How it was paid."
+      channel: "Where it was collected."
+    account: patient_balance
+    direction: out
+    triggers: []
+  - type: billing_payment_posted
+    target: billing_transactions
+    meaning: "A patient payment (portal, phone, mail, card on file, payment-plan installment) is applied to one open charge."
+    grain: "One row per payment allocation to one charge on one date; a payment covering several charges posts one row per charge."
+    distinguish_by: [applies_to_txn_id, txn_date, payment_method, amount]
+    fields:
+      txn_date: "Payment date."
+      applies_to_txn_id: "The charge this allocation is applied to."
+      encounter_number: "Encounter of that charge; empty for account-level fees."
+      amount: "Amount applied, positive."
+      payment_method: "How it was paid."
+      channel: "Where it was received."
+    account: patient_balance
+    direction: out
+    triggers: []
+  - type: billing_adjustment_posted
+    target: billing_transactions
+    meaning: "A contractual or courtesy reduction of a charge: prompt-pay or self-pay discount, hardship adjustment, small-balance write-off, correction, timely-filing or authorization-denial write-off, retroactive-coverage rebill, estimate-dispute adjustment, fee-prohibition reversal, appointment fee waiver."
+    grain: "One row per adjustment code applied to one charge."
+    distinguish_by: [applies_to_txn_id, adjustment_code]
+    fields:
+      txn_date: "Adjustment date."
+      applies_to_txn_id: "The charge being adjusted."
+      adjustment_code: "Why the charge is reduced."
+      amount: "Adjustment amount, positive."
+    account: patient_balance
+    direction: out
+    triggers: []
+  - type: billing_refund_issued
+    target: billing_transactions
+    meaning: "A credit balance is refunded to the payer of the payment that created it."
+    grain: "One row per refund of the credit created by one payment."
+    distinguish_by: [applies_to_txn_id, txn_date]
+    fields:
+      txn_date: "Refund issue date."
+      applies_to_txn_id: "The payment row whose overpayment created the credit."
+      amount: "Refund amount, positive."
+      payment_method: "Method the refund is issued to (the original method; check when the original was cash)."
+    account: patient_balance
+    direction: in
+    triggers: []
+  - type: billing_payment_reversed
+    target: billing_transactions
+    meaning: "A posted payment is reversed because the check or ACH debit was returned unpaid or the card payment was charged back."
+    grain: "One row per reversed payment row."
+    distinguish_by: [applies_to_txn_id]
+    fields:
+      txn_date: "Date the bank return or chargeback is posted."
+      applies_to_txn_id: "The payment row reversed."
+      amount: "Reversed amount, positive."
+      payment_method: "Method of the reversed payment."
+    account: patient_balance
+    direction: in
+    triggers:
+      - event: billing:billing_charge_posted
+        when: {payment_method: [check, ach]}
+        map: {txn_date: txn_date, service_date: txn_date, line_category: returned_payment_fee, source_category: billing, channel: system}
+  - type: billing_statement_issued
+    target: billing_transactions
+    meaning: "A patient statement is issued for the balance owed."
+    grain: "One row per statement issued on one account on one date."
+    distinguish_by: [statement_sequence, txn_date]
+    fields:
+      txn_date: "Statement date."
+      statement_sequence: "Position of this statement in the current unpaid series (1 = first)."
+      amount: "Statement balance, positive."
+      channel: "Delivery channel of the statement (system for paperless, mail for paper)."
+    triggers: []
+
+measures:
+  - id: billing_msr_charge_remaining
+    window: "The whole life of one charge row, up to the handling date."
+    measure: "For one billing_charge_posted row: its amount, minus the amounts of every billing_copay_collected, billing_payment_posted and billing_adjustment_posted row whose applies_to_txn_id is that charge, plus the amounts of every billing_payment_reversed row that reverses one of those payments."
+  - id: billing_msr_unpaid_statements
+    window: "From the later of the account's activation and its most recent billing_payment_posted or billing_copay_collected row, up to the handling date."
+    measure: "Count of billing_statement_issued rows on the account dated inside the window."
+  - id: billing_msr_returned_payments
+    window: "Rolling window of the tier's returned_payment_restriction_months calendar months ending on the handling date (same day-of-month fallback to the month's last day)."
+    measure: "Count of billing_payment_reversed rows on the account whose payment_method is check or ach and whose txn_date falls inside the window."
+  - id: billing_msr_late_fees_12m
+    window: "Rolling 12 calendar months ending on the handling date."
+    measure: "Count of billing_charge_posted rows on the account with line_category late_fee and txn_date inside the window."
+  - id: billing_msr_encounter_billed_total
+    window: "The whole life of one encounter's charges, up to the handling date."
+    measure: "For one encounter_number: the sum of the amounts of its billing_charge_posted rows, minus the amounts of billing_adjustment_posted rows with adjustment_code self_pay_discount applied to those charges."
+
+policies:
+  - id: billing_agg_multi_holding
+    subject: [billing_account_opened]
+    rule: >-
+      A patient holds exactly one Patient Financial Account, which carries the patient-responsibility
+      charges of every service the patient receives from the group whatever the financial class.
+      The patient holds no billing account whose status is anything other than closed.
+      A change of insurance, a move between insurance and self-pay, or a new membership is recorded on the
+      existing account through a coverage update and never through a second account. A patient whose only
+      account is closed and who returns to the practice is opened a new account; the closed account, its
+      balance history and its hold history are not reused. A guarantor paying for several family members
+      does not merge their accounts: each patient keeps one account in the patient's own name.
+    eligibility:
+      - id: no_open_account
+        applies_to: [billing_account_opened]
+        kind: dedup
+        condition: "The patient holds no billing account whose status is anything other than closed."
+        evidence_fields: [billing_accounts.customer_id, billing_accounts.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[billing_accounts.customer_id]]
+          action_bindings: {billing_accounts.customer_id: customer_id}
+        dedup_contract:
+          table: billing_accounts
+          mode: separate_record
+          object_bindings: {customer_id: customer_id}
+          duplicate_filters: {status: [registered, active, billing_hold, precollection, collections]}
+          distinct_fields: []
+    params: {max_per_customer: 1}
+
+  - id: billing_coverage_verification
+    subject: [billing_account_activated, billing_coverage_updated]
+    rule: >-
+      The tier recorded on the account is the financial class of the patient's primary coverage as verified
+      with the payer, and the tier that governs a charge is the tier whose coverage was in force on that
+      charge's date of service. An account is activated once the payer's eligibility response confirms the
+      coverage (or, for the Self-Pay Account, once the uninsured attestation is signed), and the copays and
+      remaining deductible returned by the payer are recorded with the verification date. When a patient
+      reports new or changed insurance, the payer name and member number are recorded exactly as printed on
+      the card, the tier becomes the financial class whose entry gate the new coverage meets, and the
+      coverage_effective_date is the effective date on the card; a patient who reports losing all coverage
+      moves to the Self-Pay Account from the date coverage ended. A coverage update is recorded only while
+      the account is open. The account status is registered, active, billing_hold, precollection or
+      collections when the coverage update is recorded. Coverage must be re-verified, by a coverage update
+      that sets coverage_verified_date to the handling date, whenever more than the tier's
+      coverage_reverification_days have passed since coverage_verified_date and a new charge is about to be
+      billed to the payer. A patient-described plan that matches no tier's entry gate (for example an
+      out-of-state Medicaid plan or a plan not contracted with the group) is not recorded as insured; the
+      account stays on its current tier and the services are handled as self-pay unless the patient
+      presents a qualifying coverage.
+    eligibility:
+      - id: account_open_for_update
+        applies_to: [billing_coverage_updated]
+        kind: state
+        condition: "The account status is registered, active, billing_hold, precollection or collections when the coverage update is recorded."
+        evidence_fields: [billing_accounts.status, billing_accounts.billing_account_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[billing_accounts.billing_account_id]]
+          action_bindings: {billing_accounts.billing_account_id: billing_account_id}
+        state_contract:
+          field: billing_accounts.status
+          allowed: [registered, active, billing_hold, precollection, collections]
+    params:
+      per_tier:
+        Medicaid Managed Care Account: {coverage_reverification_days: "=coverage_reverification_days"}
+        Self-Pay Account: {coverage_reverification_days: "=coverage_reverification_days"}
+        Medicare Part B Account: {coverage_reverification_days: "=coverage_reverification_days"}
+        Medicare Advantage Account: {coverage_reverification_days: "=coverage_reverification_days"}
+        Commercial HMO/EPO Account: {coverage_reverification_days: "=coverage_reverification_days"}
+        Commercial PPO/POS Account: {coverage_reverification_days: "=coverage_reverification_days"}
+        High-Deductible Health Plan Account: {coverage_reverification_days: "=coverage_reverification_days"}
+
+  - id: billing_retro_coverage_rebill
+    subject: [billing_adjustment_posted]
+    rule: >-
+      When a patient reports coverage that was already in force on the date of service of a charge that was
+      posted as self-pay or as patient responsibility under a different payer, the group rebills the claim
+      to the newly reported payer and removes the charge from the patient's balance with one adjustment
+      coded retro_coverage_rebill equal to the charge's remaining balance (billing_msr_charge_remaining).
+      The new coverage must first be recorded on the account by a coverage update. The newly reported
+      coverage's effective date on the account is on or before the date of service of the charge.
+      The handling date is no later than the new tier's timely-filing limit counted from the date of
+      service of the charge. The filing limit is counted in calendar days starting the day after the date
+      of service, and a handling date that falls exactly on the last day of the limit still qualifies.
+      The limit is the timely_filing_days of the tier the account holds after the coverage update; a tier
+      whose timely_filing_days is 0 has no payer to rebill and never qualifies. A charge already rebilled
+      once is not rebilled again. A charge outside the limit stays patient responsibility (the self-pay
+      discount already applied to it stands), and the patient may pursue the insurer directly; the group
+      does not refile late. Payments already applied to a rebilled charge become a credit handled under
+      billing_credit_balance_refund.
+    eligibility:
+      - id: coverage_in_force_on_dos
+        applies_to: [billing_adjustment_posted]
+        kind: caller_fact
+        condition: "The newly reported coverage's effective date on the account is on or before the date of service of the charge."
+        evidence_fields: [billing_accounts.coverage_effective_date, billing_transactions.service_date, billing_transactions.billing_txn_id]
+        evidence_contract:
+          authority: mixed
+          timing: pre_action
+          correlation_keys: [[billing_transactions.billing_txn_id]]
+          action_bindings: {billing_transactions.billing_txn_id: applies_to_txn_id}
+      - id: within_filing_limit
+        applies_to: [billing_adjustment_posted]
+        kind: time
+        condition: "The handling date is no later than the new tier's timely-filing limit counted from the date of service of the charge."
+        evidence_fields: [billing_transactions.service_date, billing_transactions.billing_txn_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[billing_transactions.billing_txn_id]]
+          action_bindings: {billing_transactions.billing_txn_id: applies_to_txn_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the date of service of the charge"
+          anchor_source: billing_transactions.service_date
+          relation: not_after
+          duration_source: variants.timely_filing_days
+          unit: calendar_days
+          counting_rule: "The filing limit is counted in calendar days starting the day after the date of service, and a handling date that falls exactly on the last day of the limit still qualifies."
+          boundary: inclusive
+      - id: not_already_rebilled
+        applies_to: [billing_adjustment_posted]
+        kind: dedup
+        condition: "A charge already rebilled once is not rebilled again."
+        evidence_fields: [billing_transactions.applies_to_txn_id, billing_transactions.adjustment_code]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[billing_transactions.applies_to_txn_id]]
+          action_bindings: {billing_transactions.applies_to_txn_id: applies_to_txn_id}
+        dedup_contract:
+          table: billing_transactions
+          mode: separate_record
+          object_bindings: {applies_to_txn_id: applies_to_txn_id}
+          duplicate_filters: {adjustment_code: [retro_coverage_rebill]}
+          distinct_fields: []
+    formula:
+      amount: billing_msr_charge_remaining
+    measures: [billing_msr_charge_remaining]
+
+  - id: billing_statement_escalation
+    subject: [billing_statement_issued, billing_final_notice_issued, billing_collections_placed]
+    rule: >-
+      While a balance is owed, a statement is issued every statement_cycle_days of the account's tier,
+      numbered by statement_sequence within the current unpaid series; any payment or copay collection
+      restarts the series. Statements are issued only while the account status is active or precollection.
+      Charges whose claim is still pending with the payer are left off statements until
+      insurance_pending_hold_days after their date of service, and charges enrolled in an active payment
+      plan are never statemented or escalated while the plan is active or delinquent. When
+      billing_msr_unpaid_statements reaches the tier's statements_before_final_notice, the final notice is
+      issued and the account moves to precollection; if at that moment the remaining past-due balance is at
+      or below small_balance_writeoff_usd it is written off with adjustment code small_balance_writeoff
+      instead and no final notice is issued. The final notice was issued at least the tier's final-notice
+      period before the placement date. The final-notice period is counted in calendar days starting the
+      day after the final notice date, and placement is allowed on the day the period ends, not before.
+      Placement additionally requires a past-due balance at or above collections_min_balance_usd; a smaller
+      balance stays in precollection and keeps receiving statements. An account on billing hold is never
+      statemented, noticed or placed. Enrolling the past-due balance in a payment plan, or paying it below
+      collections_min_balance_usd, during the final-notice period returns the account to active.
+    eligibility:
+      - id: statement_only_when_billable
+        applies_to: [billing_statement_issued]
+        kind: state
+        condition: "Statements are issued only while the account status is active or precollection."
+        evidence_fields: [billing_accounts.status, billing_accounts.billing_account_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[billing_accounts.billing_account_id]]
+          action_bindings: {billing_accounts.billing_account_id: billing_account_id}
+        state_contract:
+          field: billing_accounts.status
+          allowed: [active, precollection]
+      - id: final_notice_period_elapsed
+        applies_to: [billing_collections_placed]
+        kind: time
+        condition: "The final notice was issued at least the tier's final-notice period before the placement date."
+        evidence_fields: [billing_accounts.final_notice_date, billing_accounts.billing_account_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[billing_accounts.billing_account_id]]
+          action_bindings: {billing_accounts.billing_account_id: billing_account_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "The final notice was issued"
+          anchor_source: billing_accounts.final_notice_date
+          relation: not_before
+          duration_source: variants.final_notice_to_collections_days
+          unit: calendar_days
+          counting_rule: "The final-notice period is counted in calendar days starting the day after the final notice date, and placement is allowed on the day the period ends, not before."
+          boundary: inclusive
+    params:
+      per_tier:
+        Medicaid Managed Care Account: {statement_cycle_days: "=statement_cycle_days", statements_before_final_notice: "=statements_before_final_notice", collections_min_balance_usd: "=collections_min_balance_usd"}
+        Self-Pay Account: {statement_cycle_days: "=statement_cycle_days", statements_before_final_notice: "=statements_before_final_notice", collections_min_balance_usd: "=collections_min_balance_usd"}
+        Medicare Part B Account: {statement_cycle_days: "=statement_cycle_days", statements_before_final_notice: "=statements_before_final_notice", collections_min_balance_usd: "=collections_min_balance_usd"}
+        Medicare Advantage Account: {statement_cycle_days: "=statement_cycle_days", statements_before_final_notice: "=statements_before_final_notice", collections_min_balance_usd: "=collections_min_balance_usd"}
+        Commercial HMO/EPO Account: {statement_cycle_days: "=statement_cycle_days", statements_before_final_notice: "=statements_before_final_notice", collections_min_balance_usd: "=collections_min_balance_usd"}
+        Commercial PPO/POS Account: {statement_cycle_days: "=statement_cycle_days", statements_before_final_notice: "=statements_before_final_notice", collections_min_balance_usd: "=collections_min_balance_usd"}
+        High-Deductible Health Plan Account: {statement_cycle_days: "=statement_cycle_days", statements_before_final_notice: "=statements_before_final_notice", collections_min_balance_usd: "=collections_min_balance_usd"}
+    formula:
+      final_notice_due: billing_msr_unpaid_statements >= statements_before_final_notice
+    measures: [billing_msr_unpaid_statements]
+
+  - id: billing_prompt_pay_discount
+    subject: [billing_adjustment_posted]
+    rule: >-
+      A patient who pays the full remaining balance of one charge inside the tier's prompt-pay window
+      receives the tier's prompt_pay_discount_pct off that remaining balance, posted as one adjustment coded
+      prompt_pay_discount on the charge; the settling payment is the remaining balance less the discount.
+      The payment is received no later than the tier's prompt-pay window counted from the posting date of
+      the charge. The window is counted in calendar days starting the day after the posting date, and a
+      payment received on the last day of the window qualifies. The charge's remaining balance
+      (billing_msr_charge_remaining) is at least the tier's prompt_pay_min_balance_usd. The tier is the one
+      in force on the charge's date of service; a tier whose prompt_pay_discount_pct is 0.00 (Medicaid
+      Managed Care, Medicare Part B and Medicare Advantage accounts) never grants it. A charge receives the
+      prompt-pay discount at most once. A partial payment earns nothing. Stacking: on a self-pay service the
+      discount is computed on the remaining balance after the self-pay discount; the prompt-pay discount and
+      a hardship adjustment are mutually exclusive on the same charge, so a charge that already carries a
+      hardship_adjustment receives no prompt-pay discount; fees (no-show, late cancellation, late fee,
+      returned payment, records, membership) never earn it; and a charge enrolled in a payment plan earns no
+      prompt-pay discount even if the plan is paid off early. The account status is active, billing_hold or
+      precollection when the discount is posted.
+    eligibility:
+      - id: paid_inside_window
+        applies_to: [billing_adjustment_posted]
+        kind: time
+        condition: "The payment is received no later than the tier's prompt-pay window counted from the posting date of the charge."
+        evidence_fields: [billing_transactions.txn_date, billing_transactions.billing_txn_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[billing_transactions.billing_txn_id]]
+          action_bindings: {billing_transactions.billing_txn_id: applies_to_txn_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the posting date of the charge"
+          anchor_source: billing_transactions.txn_date
+          relation: not_after
+          duration_source: params.prompt_pay_window_days
+          unit: calendar_days
+          counting_rule: "The window is counted in calendar days starting the day after the posting date, and a payment received on the last day of the window qualifies."
+          boundary: inclusive
+      - id: once_per_charge
+        applies_to: [billing_adjustment_posted]
+        kind: dedup
+        condition: "A charge receives the prompt-pay discount at most once."
+        evidence_fields: [billing_transactions.applies_to_txn_id, billing_transactions.adjustment_code]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[billing_transactions.applies_to_txn_id]]
+          action_bindings: {billing_transactions.applies_to_txn_id: applies_to_txn_id}
+        dedup_contract:
+          table: billing_transactions
+          mode: separate_record
+          object_bindings: {applies_to_txn_id: applies_to_txn_id}
+          duplicate_filters: {adjustment_code: [prompt_pay_discount]}
+          distinct_fields: []
+      - id: account_not_placed
+        applies_to: [billing_adjustment_posted]
+        kind: state
+        condition: "The account status is active, billing_hold or precollection when the discount is posted."
+        evidence_fields: [billing_accounts.status, billing_accounts.billing_account_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[billing_accounts.billing_account_id]]
+          action_bindings: {billing_accounts.billing_account_id: billing_account_id}
+        state_contract:
+          field: billing_accounts.status
+          allowed: [active, billing_hold, precollection]
+    params:
+      per_tier:
+        Medicaid Managed Care Account: {prompt_pay_discount_pct: "=prompt_pay_discount_pct", prompt_pay_window_days: "=prompt_pay_window_days", prompt_pay_min_balance_usd: "=prompt_pay_min_balance_usd"}
+        Self-Pay Account: {prompt_pay_discount_pct: "=prompt_pay_discount_pct", prompt_pay_window_days: "=prompt_pay_window_days", prompt_pay_min_balance_usd: "=prompt_pay_min_balance_usd"}
+        Medicare Part B Account: {prompt_pay_discount_pct: "=prompt_pay_discount_pct", prompt_pay_window_days: "=prompt_pay_window_days", prompt_pay_min_balance_usd: "=prompt_pay_min_balance_usd"}
+        Medicare Advantage Account: {prompt_pay_discount_pct: "=prompt_pay_discount_pct", prompt_pay_window_days: "=prompt_pay_window_days", prompt_pay_min_balance_usd: "=prompt_pay_min_balance_usd"}
+        Commercial HMO/EPO Account: {prompt_pay_discount_pct: "=prompt_pay_discount_pct", prompt_pay_window_days: "=prompt_pay_window_days", prompt_pay_min_balance_usd: "=prompt_pay_min_balance_usd"}
+        Commercial PPO/POS Account: {prompt_pay_discount_pct: "=prompt_pay_discount_pct", prompt_pay_window_days: "=prompt_pay_window_days", prompt_pay_min_balance_usd: "=prompt_pay_min_balance_usd"}
+        High-Deductible Health Plan Account: {prompt_pay_discount_pct: "=prompt_pay_discount_pct", prompt_pay_window_days: "=prompt_pay_window_days", prompt_pay_min_balance_usd: "=prompt_pay_min_balance_usd"}
+    formula:
+      when: prompt_pay_discount_pct > 0 and billing_msr_charge_remaining >= prompt_pay_min_balance_usd
+      amount: round(billing_msr_charge_remaining * prompt_pay_discount_pct / 100, 2)
+    measures: [billing_msr_charge_remaining]
+
+  - id: billing_self_pay_discount
+    subject: [billing_charge_posted, billing_adjustment_posted]
+    rule: >-
+      A service whose date of service falls while the account holds the Self-Pay Account tier is posted at
+      the gross fee-schedule amount with line category self_pay_visit (or noncovered_service), and on the
+      same posting date the tier's self_pay_discount_pct is taken off it by one adjustment coded
+      self_pay_discount. Tiers whose self_pay_discount_pct is 0.00 never receive it. The self-pay discount
+      applies only to service lines (self_pay_visit and noncovered_service); fees of any kind are posted at
+      their stated amount without it. It is computed before any prompt-pay discount or hardship adjustment
+      and is not reversed when the patient later obtains coverage, unless the charge is rebilled under
+      billing_retro_coverage_rebill (which removes the whole remaining balance).
+    eligibility: []
+    params:
+      per_tier:
+        Medicaid Managed Care Account: {self_pay_discount_pct: "=self_pay_discount_pct"}
+        Self-Pay Account: {self_pay_discount_pct: "=self_pay_discount_pct"}
+        Medicare Part B Account: {self_pay_discount_pct: "=self_pay_discount_pct"}
+        Medicare Advantage Account: {self_pay_discount_pct: "=self_pay_discount_pct"}
+        Commercial HMO/EPO Account: {self_pay_discount_pct: "=self_pay_discount_pct"}
+        Commercial PPO/POS Account: {self_pay_discount_pct: "=self_pay_discount_pct"}
+        High-Deductible Health Plan Account: {self_pay_discount_pct: "=self_pay_discount_pct"}
+    formula:
+      when: self_pay_discount_pct > 0 and line_category in ["self_pay_visit", "noncovered_service"]
+      amount: round(billing_msr_charge_remaining * self_pay_discount_pct / 100, 2)
+    measures: [billing_msr_charge_remaining]
+
+  - id: billing_time_of_service_collection
+    subject: [billing_copay_collected]
+    rule: >-
+      At check-in, when the tier's copay_collect_at_checkin is true, the copay recorded on the account is
+      collected for the encounter according to the copay class of the visit type (the appointment rules'
+      copay_class): copay_primary_usd for class primary, copay_specialist_usd for class specialist, and
+      nothing for class none. When the tier's deductible_estimate_collect_pct is above 0.00, the group also collects that
+      share of the encounter's estimate_amount, capped at pos_estimate_cap_usd and, for insured tiers, never
+      more than the deductible_remaining_usd on the account. For the Self-Pay Account a booking deposit
+      already applied to the encounter under the appointment rules counts toward that cap. A tier whose
+      copay_collect_at_checkin is false and whose deductible_estimate_collect_pct is 0.00 collects nothing
+      at check-in; Medicaid Managed Care patients are never asked for payment at the time of service. A copay
+      may be waived only case by case, only where the tier's copay_hardship_waiver_permitted is true and the
+      account carries an unexpired hardship approval (hardship_approved_through on or after the date of
+      service); a routine or courtesy waiver is never granted. Collection is recorded against the copay or
+      estimate charge of the same encounter.
+    eligibility: []
+    params:
+      per_tier:
+        Medicaid Managed Care Account: {deductible_estimate_collect_pct: "=deductible_estimate_collect_pct", pos_estimate_cap_usd: "=pos_estimate_cap_usd"}
+        Self-Pay Account: {deductible_estimate_collect_pct: "=deductible_estimate_collect_pct", pos_estimate_cap_usd: "=pos_estimate_cap_usd"}
+        Medicare Part B Account: {deductible_estimate_collect_pct: "=deductible_estimate_collect_pct", pos_estimate_cap_usd: "=pos_estimate_cap_usd"}
+        Medicare Advantage Account: {deductible_estimate_collect_pct: "=deductible_estimate_collect_pct", pos_estimate_cap_usd: "=pos_estimate_cap_usd"}
+        Commercial HMO/EPO Account: {deductible_estimate_collect_pct: "=deductible_estimate_collect_pct", pos_estimate_cap_usd: "=pos_estimate_cap_usd"}
+        Commercial PPO/POS Account: {deductible_estimate_collect_pct: "=deductible_estimate_collect_pct", pos_estimate_cap_usd: "=pos_estimate_cap_usd"}
+        High-Deductible Health Plan Account: {deductible_estimate_collect_pct: "=deductible_estimate_collect_pct", pos_estimate_cap_usd: "=pos_estimate_cap_usd"}
+    formula:
+      estimate_collect_usd: min(round(estimate_amount * deductible_estimate_collect_pct / 100, 2), pos_estimate_cap_usd)
+
+  - id: billing_payment_application
+    subject: [billing_payment_posted]
+    rule: >-
+      A payment is applied to open charges in the tier's payment_allocation_order (oldest date of service
+      first, and among charges of the same date the lower txn_date first), one allocation per charge, each
+      allocation never exceeding that charge's remaining balance. A payment is applied to a specific
+      encounter only when the patient names that encounter's encounter number. Any part of a payment
+      exceeding everything owed stays on the account as a credit handled by billing_credit_balance_refund.
+      Card, HSA/FSA card (where hsa_fsa_card_accepted is true), cash at the front desk, card on file, check
+      and ACH are accepted, except that check and ACH are refused while billing_msr_returned_payments is at
+      or above the tier's returned_payments_before_restriction. On the High-Deductible Health Plan Account,
+      where card_on_file_required is true, the post-adjudication balance of an encounter is charged to the
+      card on file up to card_on_file_max_auto_charge_usd, and only once card_on_file_notice_days have passed
+      since the charge was posted; any excess over that cap is statemented normally. Payment-plan
+      installments are applied to the charges enrolled in that plan, oldest first.
+    eligibility:
+      - id: designated_encounter
+        applies_to: [billing_payment_posted]
+        kind: caller_fact
+        condition: "A payment is applied to a specific encounter only when the patient names that encounter's encounter number."
+        evidence_fields: [billing_transactions.encounter_number, billing_transactions.billing_txn_id]
+        evidence_contract:
+          authority: caller_statement
+          timing: pre_action
+          correlation_keys: [[billing_transactions.billing_txn_id]]
+          action_bindings: {billing_transactions.billing_txn_id: applies_to_txn_id}
+    params:
+      per_tier:
+        Medicaid Managed Care Account: {card_on_file_max_auto_charge_usd: "=card_on_file_max_auto_charge_usd", card_on_file_notice_days: "=card_on_file_notice_days"}
+        Self-Pay Account: {card_on_file_max_auto_charge_usd: "=card_on_file_max_auto_charge_usd", card_on_file_notice_days: "=card_on_file_notice_days"}
+        Medicare Part B Account: {card_on_file_max_auto_charge_usd: "=card_on_file_max_auto_charge_usd", card_on_file_notice_days: "=card_on_file_notice_days"}
+        Medicare Advantage Account: {card_on_file_max_auto_charge_usd: "=card_on_file_max_auto_charge_usd", card_on_file_notice_days: "=card_on_file_notice_days"}
+        Commercial HMO/EPO Account: {card_on_file_max_auto_charge_usd: "=card_on_file_max_auto_charge_usd", card_on_file_notice_days: "=card_on_file_notice_days"}
+        Commercial PPO/POS Account: {card_on_file_max_auto_charge_usd: "=card_on_file_max_auto_charge_usd", card_on_file_notice_days: "=card_on_file_notice_days"}
+        High-Deductible Health Plan Account: {card_on_file_max_auto_charge_usd: "=card_on_file_max_auto_charge_usd", card_on_file_notice_days: "=card_on_file_notice_days"}
+    measures: [billing_msr_returned_payments]
+
+  - id: billing_credit_balance_refund
+    subject: [billing_refund_issued]
+    rule: >-
+      A credit arises when payments and adjustments applied to the account exceed the charges, most often
+      when insurance pays after the patient already paid an estimate. Before any refund the credit is
+      applied to any other open charge on the account, oldest date of service first, and only what remains
+      is refundable. The credit balance has been held for at least the tier's credit hold period counted
+      from the posting date of the payment that created the credit. The hold is counted in calendar days
+      starting the day after that posting date, and the refund may be issued on the day the hold ends. A
+      remaining credit of at least refund_threshold_usd is refunded, within refund_processing_business_days
+      after the hold ends, to the method of that payment (a cash payment is refunded by check); a smaller
+      credit stays on the account for future charges. A payment's credit is refunded at most once. The
+      account status is active, billing_hold or closed when the refund is issued. A credit on an account in
+      collections is first reported to the agency and refunded only after recall.
+    eligibility:
+      - id: credit_hold_elapsed
+        applies_to: [billing_refund_issued]
+        kind: time
+        condition: "The credit balance has been held for at least the tier's credit hold period counted from the posting date of the payment that created the credit."
+        evidence_fields: [billing_transactions.txn_date, billing_transactions.billing_txn_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[billing_transactions.billing_txn_id]]
+          action_bindings: {billing_transactions.billing_txn_id: applies_to_txn_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the posting date of the payment that created the credit"
+          anchor_source: billing_transactions.txn_date
+          relation: not_before
+          duration_source: variants.credit_balance_hold_days
+          unit: calendar_days
+          counting_rule: "The hold is counted in calendar days starting the day after that posting date, and the refund may be issued on the day the hold ends."
+          boundary: inclusive
+      - id: refund_once
+        applies_to: [billing_refund_issued]
+        kind: dedup
+        condition: "A payment's credit is refunded at most once."
+        evidence_fields: [billing_transactions.applies_to_txn_id, billing_transactions.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[billing_transactions.applies_to_txn_id]]
+          action_bindings: {billing_transactions.applies_to_txn_id: applies_to_txn_id}
+        dedup_contract:
+          table: billing_transactions
+          mode: separate_record
+          object_bindings: {applies_to_txn_id: applies_to_txn_id}
+          duplicate_filters: {event_type: [billing_refund_issued]}
+          distinct_fields: []
+      - id: refundable_status
+        applies_to: [billing_refund_issued]
+        kind: state
+        condition: "The account status is active, billing_hold or closed when the refund is issued."
+        evidence_fields: [billing_accounts.status, billing_accounts.billing_account_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[billing_accounts.billing_account_id]]
+          action_bindings: {billing_accounts.billing_account_id: billing_account_id}
+        state_contract:
+          field: billing_accounts.status
+          allowed: [active, billing_hold, closed]
+    params:
+      per_tier:
+        Medicaid Managed Care Account: {credit_balance_hold_days: "=credit_balance_hold_days", refund_threshold_usd: "=refund_threshold_usd"}
+        Self-Pay Account: {credit_balance_hold_days: "=credit_balance_hold_days", refund_threshold_usd: "=refund_threshold_usd"}
+        Medicare Part B Account: {credit_balance_hold_days: "=credit_balance_hold_days", refund_threshold_usd: "=refund_threshold_usd"}
+        Medicare Advantage Account: {credit_balance_hold_days: "=credit_balance_hold_days", refund_threshold_usd: "=refund_threshold_usd"}
+        Commercial HMO/EPO Account: {credit_balance_hold_days: "=credit_balance_hold_days", refund_threshold_usd: "=refund_threshold_usd"}
+        Commercial PPO/POS Account: {credit_balance_hold_days: "=credit_balance_hold_days", refund_threshold_usd: "=refund_threshold_usd"}
+        High-Deductible Health Plan Account: {credit_balance_hold_days: "=credit_balance_hold_days", refund_threshold_usd: "=refund_threshold_usd"}
+
+  - id: billing_returned_payment
+    subject: [billing_payment_reversed, billing_charge_posted]
+    rule: >-
+      When a check or ACH payment is returned unpaid, or a card payment is charged back, the payment row is
+      reversed in full, restoring the balance of the charge it had been applied to. A returned check or ACH
+      payment also posts the tier's returned_payment_fee_usd as a charge with line category
+      returned_payment_fee (no fee is posted when that amount is 0.00, and no fee is posted for a card
+      chargeback). Once billing_msr_returned_payments reaches the tier's returned_payments_before_restriction,
+      the account accepts only card, HSA/FSA card or cash until the look-back no longer contains that many
+      returned payments. A reversed payment is reversed once only.
+      The look-back and the restriction both run returned_payment_restriction_months calendar months.
+    eligibility:
+      - id: reverse_once
+        applies_to: [billing_payment_reversed]
+        kind: dedup
+        condition: "A reversed payment is reversed once only."
+        evidence_fields: [billing_transactions.applies_to_txn_id, billing_transactions.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[billing_transactions.applies_to_txn_id]]
+          action_bindings: {billing_transactions.applies_to_txn_id: applies_to_txn_id}
+        dedup_contract:
+          table: billing_transactions
+          mode: separate_record
+          object_bindings: {applies_to_txn_id: applies_to_txn_id}
+          duplicate_filters: {event_type: [billing_payment_reversed]}
+          distinct_fields: []
+    params:
+      per_tier:
+        Medicaid Managed Care Account: {returned_payment_fee_usd: "=returned_payment_fee_usd", returned_payments_before_restriction: "=returned_payments_before_restriction"}
+        Self-Pay Account: {returned_payment_fee_usd: "=returned_payment_fee_usd", returned_payments_before_restriction: "=returned_payments_before_restriction"}
+        Medicare Part B Account: {returned_payment_fee_usd: "=returned_payment_fee_usd", returned_payments_before_restriction: "=returned_payments_before_restriction"}
+        Medicare Advantage Account: {returned_payment_fee_usd: "=returned_payment_fee_usd", returned_payments_before_restriction: "=returned_payments_before_restriction"}
+        Commercial HMO/EPO Account: {returned_payment_fee_usd: "=returned_payment_fee_usd", returned_payments_before_restriction: "=returned_payments_before_restriction"}
+        Commercial PPO/POS Account: {returned_payment_fee_usd: "=returned_payment_fee_usd", returned_payments_before_restriction: "=returned_payments_before_restriction"}
+        High-Deductible Health Plan Account: {returned_payment_fee_usd: "=returned_payment_fee_usd", returned_payments_before_restriction: "=returned_payments_before_restriction"}
+    measures: [billing_msr_returned_payments]
+
+  - id: billing_review_hold
+    subject: [billing_hold_placed, billing_hold_released]
+    rule: >-
+      An account is placed on billing hold when a review that could change what the patient owes is opened:
+      a balance dispute, an insurance review (a claim the patient says was billed to the wrong payer or is
+      awaiting a coordination-of-benefits questionnaire), a financial-hardship review, or an estate review
+      after the patient's death. A balance dispute is accepted only for a charge first statemented recently.
+      The dispute is raised no later than the tier's dispute window counted from the date of the first
+      statement issued after the disputed charge was posted. The window is counted in calendar days starting
+      the day after that statement date, and a dispute raised on the last day still qualifies. A hold for
+      any reason requires an open billing case of the matching type. The patient has an open billing case of
+      the type that matches the hold reason. A hold is released when that case is decided, and a
+      balance-dispute hold is released no later than dispute_hold_max_days after hold_started_date even if
+      the case is still open; an estate-review hold runs estate_hold_days. A coordination-of-benefits hold
+      that is not answered within cob_response_days leaves the pended charge as patient responsibility on
+      release. While on hold the account receives no statements, late fees, final notice or placement.
+    eligibility:
+      - id: dispute_window
+        applies_to: [billing_hold_placed]
+        kind: time
+        condition: "The dispute is raised no later than the tier's dispute window counted from the date of the first statement issued after the disputed charge was posted."
+        evidence_fields: [billing_transactions.txn_date, billing_transactions.billing_txn_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[billing_transactions.billing_txn_id]]
+          action_bindings: {billing_transactions.billing_txn_id: billing_txn_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the date of the first statement issued after the disputed charge was posted"
+          anchor_source: billing_transactions.txn_date
+          relation: not_after
+          duration_source: variants.dispute_window_days
+          unit: calendar_days
+          counting_rule: "The window is counted in calendar days starting the day after that statement date, and a dispute raised on the last day still qualifies."
+          boundary: inclusive
+      - id: matching_case_open
+        applies_to: [billing_hold_placed]
+        kind: authorization
+        condition: "The patient has an open billing case of the type that matches the hold reason."
+        evidence_fields: [billing_cases.case_type, billing_cases.case_status, billing_cases.billing_case_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[billing_cases.billing_case_id]]
+          action_bindings: {billing_cases.billing_case_id: billing_case_id}
+    params:
+      per_tier:
+        Medicaid Managed Care Account: {dispute_window_days: "=dispute_window_days", dispute_hold_max_days: "=dispute_hold_max_days", estate_hold_days: "=estate_hold_days", cob_response_days: "=cob_response_days"}
+        Self-Pay Account: {dispute_window_days: "=dispute_window_days", dispute_hold_max_days: "=dispute_hold_max_days", estate_hold_days: "=estate_hold_days", cob_response_days: "=cob_response_days"}
+        Medicare Part B Account: {dispute_window_days: "=dispute_window_days", dispute_hold_max_days: "=dispute_hold_max_days", estate_hold_days: "=estate_hold_days", cob_response_days: "=cob_response_days"}
+        Medicare Advantage Account: {dispute_window_days: "=dispute_window_days", dispute_hold_max_days: "=dispute_hold_max_days", estate_hold_days: "=estate_hold_days", cob_response_days: "=cob_response_days"}
+        Commercial HMO/EPO Account: {dispute_window_days: "=dispute_window_days", dispute_hold_max_days: "=dispute_hold_max_days", estate_hold_days: "=estate_hold_days", cob_response_days: "=cob_response_days"}
+        Commercial PPO/POS Account: {dispute_window_days: "=dispute_window_days", dispute_hold_max_days: "=dispute_hold_max_days", estate_hold_days: "=estate_hold_days", cob_response_days: "=cob_response_days"}
+        High-Deductible Health Plan Account: {dispute_window_days: "=dispute_window_days", dispute_hold_max_days: "=dispute_hold_max_days", estate_hold_days: "=estate_hold_days", cob_response_days: "=cob_response_days"}
+
+  - id: billing_hardship_adjustment
+    subject: [billing_hardship_status_updated, billing_adjustment_posted]
+    rule: >-
+      A financial-hardship application is decided by the business office within
+      hardship_review_business_days of a complete application; the decision is recorded on the account as
+      hardship_approved_pct and hardship_approved_through. Each open charge whose date of service is on or
+      before hardship_approved_through is then reduced by one adjustment coded hardship_adjustment equal to
+      the lower of the approved percentage and the tier's hardship_adjustment_max_pct, applied to the
+      charge's remaining balance. The account's approved hardship percentage is above 0.00 and the charge's
+      date of service is on or before hardship_approved_through. A charge that already received the
+      prompt-pay discount is excluded (the two are mutually exclusive on one charge), and a charge receives
+      one hardship adjustment at most. A patient's own statement of hardship never substitutes for the
+      recorded decision. Charges enrolled in an active payment plan are adjusted too, and the plan's
+      remaining balance is reduced by the same amount.
+    eligibility:
+      - id: approval_on_record
+        applies_to: [billing_adjustment_posted]
+        kind: authorization
+        condition: "The account's approved hardship percentage is above 0.00 and the charge's date of service is on or before hardship_approved_through."
+        evidence_fields: [billing_accounts.hardship_approved_pct, billing_accounts.hardship_approved_through, billing_transactions.service_date, billing_transactions.billing_txn_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[billing_transactions.billing_txn_id]]
+          action_bindings: {billing_transactions.billing_txn_id: applies_to_txn_id}
+      - id: one_hardship_per_charge
+        applies_to: [billing_adjustment_posted]
+        kind: dedup
+        condition: "a charge receives one hardship adjustment at most"
+        evidence_fields: [billing_transactions.applies_to_txn_id, billing_transactions.adjustment_code]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[billing_transactions.applies_to_txn_id]]
+          action_bindings: {billing_transactions.applies_to_txn_id: applies_to_txn_id}
+        dedup_contract:
+          table: billing_transactions
+          mode: separate_record
+          object_bindings: {applies_to_txn_id: applies_to_txn_id}
+          duplicate_filters: {adjustment_code: [hardship_adjustment, prompt_pay_discount]}
+          distinct_fields: []
+    params:
+      per_tier:
+        Medicaid Managed Care Account: {hardship_adjustment_max_pct: "=hardship_adjustment_max_pct", hardship_review_business_days: "=hardship_review_business_days"}
+        Self-Pay Account: {hardship_adjustment_max_pct: "=hardship_adjustment_max_pct", hardship_review_business_days: "=hardship_review_business_days"}
+        Medicare Part B Account: {hardship_adjustment_max_pct: "=hardship_adjustment_max_pct", hardship_review_business_days: "=hardship_review_business_days"}
+        Medicare Advantage Account: {hardship_adjustment_max_pct: "=hardship_adjustment_max_pct", hardship_review_business_days: "=hardship_review_business_days"}
+        Commercial HMO/EPO Account: {hardship_adjustment_max_pct: "=hardship_adjustment_max_pct", hardship_review_business_days: "=hardship_review_business_days"}
+        Commercial PPO/POS Account: {hardship_adjustment_max_pct: "=hardship_adjustment_max_pct", hardship_review_business_days: "=hardship_review_business_days"}
+        High-Deductible Health Plan Account: {hardship_adjustment_max_pct: "=hardship_adjustment_max_pct", hardship_review_business_days: "=hardship_review_business_days"}
+    formula:
+      amount: round(billing_msr_charge_remaining * min(hardship_approved_pct, hardship_adjustment_max_pct) / 100, 2)
+    measures: [billing_msr_charge_remaining]
+
+  - id: billing_estimate_dispute
+    subject: [billing_adjustment_posted]
+    rule: >-
+      Where the tier's gfe_required is true (the Self-Pay Account), a Good Faith Estimate is delivered within
+      gfe_delivery_business_days_short_lead business days when the service is booked 3 to 9 business days
+      ahead and within gfe_delivery_business_days_long_lead business days when it is booked 10 or more
+      business days ahead, and it is recorded on the encounter's charges as estimate_amount. When
+      billing_msr_encounter_billed_total exceeds the estimate by at least gfe_dispute_threshold_usd, the
+      patient may dispute the difference. The dispute is started no later than the tier's estimate-dispute
+      window counted from the posting date of the first charge of the encounter. The window is counted in
+      calendar days starting the day after that posting date, and a dispute started on the last day still
+      qualifies. The group resolves an eligible dispute by adjusting the encounter down to its estimate: one
+      adjustment coded gfe_dispute_adjustment, on the encounter's largest charge, equal to the billed total
+      minus the estimate. A difference below the threshold, an encounter without an estimate, or an insured
+      tier (gfe_required false) is not eligible, and the patient keeps the right to use the federal
+      dispute process directly.
+    eligibility:
+      - id: gfe_dispute_window
+        applies_to: [billing_adjustment_posted]
+        kind: time
+        condition: "The dispute is started no later than the tier's estimate-dispute window counted from the posting date of the first charge of the encounter."
+        evidence_fields: [billing_transactions.txn_date, billing_transactions.billing_txn_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[billing_transactions.billing_txn_id]]
+          action_bindings: {billing_transactions.billing_txn_id: applies_to_txn_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the posting date of the first charge of the encounter"
+          anchor_source: billing_transactions.txn_date
+          relation: not_after
+          duration_source: variants.gfe_dispute_window_days
+          unit: calendar_days
+          counting_rule: "The window is counted in calendar days starting the day after that posting date, and a dispute started on the last day still qualifies."
+          boundary: inclusive
+    params:
+      per_tier:
+        Medicaid Managed Care Account: {gfe_dispute_threshold_usd: "=gfe_dispute_threshold_usd", gfe_dispute_window_days: "=gfe_dispute_window_days"}
+        Self-Pay Account: {gfe_dispute_threshold_usd: "=gfe_dispute_threshold_usd", gfe_dispute_window_days: "=gfe_dispute_window_days"}
+        Medicare Part B Account: {gfe_dispute_threshold_usd: "=gfe_dispute_threshold_usd", gfe_dispute_window_days: "=gfe_dispute_window_days"}
+        Medicare Advantage Account: {gfe_dispute_threshold_usd: "=gfe_dispute_threshold_usd", gfe_dispute_window_days: "=gfe_dispute_window_days"}
+        Commercial HMO/EPO Account: {gfe_dispute_threshold_usd: "=gfe_dispute_threshold_usd", gfe_dispute_window_days: "=gfe_dispute_window_days"}
+        Commercial PPO/POS Account: {gfe_dispute_threshold_usd: "=gfe_dispute_threshold_usd", gfe_dispute_window_days: "=gfe_dispute_window_days"}
+        High-Deductible Health Plan Account: {gfe_dispute_threshold_usd: "=gfe_dispute_threshold_usd", gfe_dispute_window_days: "=gfe_dispute_window_days"}
+    formula:
+      when: gfe_required and billing_msr_encounter_billed_total - estimate_amount >= gfe_dispute_threshold_usd
+      amount: billing_msr_encounter_billed_total - estimate_amount
+    measures: [billing_msr_encounter_billed_total]
+
+  - id: billing_late_fee
+    subject: [billing_charge_posted]
+    rule: >-
+      A late fee of the tier's late_fee_usd is posted, with line category late_fee, no encounter number and
+      the statement date as its service_date, once for a statement whose balance is still unpaid after the late-fee day. The statement balance has
+      remained unpaid for more than the tier's late-fee days after the statement date. The late-fee days are
+      counted in calendar days starting the day after the statement date, and the fee may be posted only
+      from the day after the last counted day. No late fee is posted when late_fee_usd is 0.00, when
+      billing_msr_late_fees_12m has reached late_fee_max_per_12_months, while the account is on billing
+      hold, or on a balance enrolled in an active payment plan; a partial payment of at least
+      late_fee_partial_payment_pct percent of the statement balance before the late-fee day also prevents
+      the fee. A late fee is never reversed merely
+      because the balance is later paid, but it is removed with adjustment code billing_error_correction if
+      the statement it was posted for is later found wrong.
+    eligibility:
+      - id: past_late_fee_day
+        applies_to: [billing_charge_posted]
+        kind: time
+        condition: "The statement balance has remained unpaid for more than the tier's late-fee days after the statement date."
+        evidence_fields: [billing_transactions.txn_date]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[billing_transactions.txn_date]]
+          action_bindings: {billing_transactions.txn_date: service_date}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the statement date"
+          anchor_source: billing_transactions.txn_date
+          relation: not_before
+          duration_source: variants.late_fee_after_days
+          unit: calendar_days
+          counting_rule: "The late-fee days are counted in calendar days starting the day after the statement date, and the fee may be posted only from the day after the last counted day."
+          boundary: exclusive
+    params:
+      per_tier:
+        Medicaid Managed Care Account: {late_fee_usd: "=late_fee_usd", late_fee_after_days: "=late_fee_after_days", late_fee_max_per_12_months: "=late_fee_max_per_12_months"}
+        Self-Pay Account: {late_fee_usd: "=late_fee_usd", late_fee_after_days: "=late_fee_after_days", late_fee_max_per_12_months: "=late_fee_max_per_12_months"}
+        Medicare Part B Account: {late_fee_usd: "=late_fee_usd", late_fee_after_days: "=late_fee_after_days", late_fee_max_per_12_months: "=late_fee_max_per_12_months"}
+        Medicare Advantage Account: {late_fee_usd: "=late_fee_usd", late_fee_after_days: "=late_fee_after_days", late_fee_max_per_12_months: "=late_fee_max_per_12_months"}
+        Commercial HMO/EPO Account: {late_fee_usd: "=late_fee_usd", late_fee_after_days: "=late_fee_after_days", late_fee_max_per_12_months: "=late_fee_max_per_12_months"}
+        Commercial PPO/POS Account: {late_fee_usd: "=late_fee_usd", late_fee_after_days: "=late_fee_after_days", late_fee_max_per_12_months: "=late_fee_max_per_12_months"}
+        High-Deductible Health Plan Account: {late_fee_usd: "=late_fee_usd", late_fee_after_days: "=late_fee_after_days", late_fee_max_per_12_months: "=late_fee_max_per_12_months"}
+    formula:
+      when: late_fee_usd > 0 and billing_msr_late_fees_12m < late_fee_max_per_12_months
+      amount: late_fee_usd
+    measures: [billing_msr_late_fees_12m]
+
+  - id: billing_noncovered_and_liability
+    subject: [billing_charge_posted, billing_adjustment_posted]
+    rule: >-
+      The patient is billed only the patient responsibility the payer determines (copay, deductible,
+      coinsurance), never the difference between the group's fee and the payer's allowed amount, on every
+      tier whose balance_billing_permitted is false. A service the payer denies as not covered is billed to
+      the patient only where the tier's noncovered_waiver_required is false or a signed advance notice of
+      non-coverage is on file. A signed advance notice dated on or before the date of service is on file for
+      the charge. Without it, on a tier that requires it, the charge is removed with adjustment code
+      billing_error_correction. A claim denied because a referral or prior authorization that the group was
+      responsible for obtaining was missing, expired or exhausted is never billed to the patient on an
+      insured tier: its patient charge is removed with adjustment code authorization_denial_writeoff. A
+      claim the group failed to file within the tier's timely_filing_days is removed with adjustment code
+      timely_filing_writeoff. Where the patient holds secondary coverage and secondary_claim_billing is true,
+      the secondary payer is billed before any balance becomes patient responsibility. Fees that a product
+      line's policy prohibits for the patient's tier (for example appointment fees on the Medicaid Managed
+      Care Account) are removed with adjustment code medicaid_fee_prohibition if posted in error.
+    eligibility:
+      - id: waiver_on_file
+        applies_to: [billing_charge_posted]
+        kind: authorization
+        condition: "A signed advance notice dated on or before the date of service is on file for the charge."
+        evidence_fields: [billing_transactions.signed_waiver_date, billing_transactions.service_date, billing_transactions.billing_txn_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[billing_transactions.billing_txn_id]]
+          action_bindings: {billing_transactions.billing_txn_id: billing_txn_id}
+    params:
+      per_tier:
+        Medicaid Managed Care Account: {balance_billing_permitted: "=balance_billing_permitted", noncovered_waiver_required: "=noncovered_waiver_required", timely_filing_days: "=timely_filing_days", secondary_claim_billing: "=secondary_claim_billing"}
+        Self-Pay Account: {balance_billing_permitted: "=balance_billing_permitted", noncovered_waiver_required: "=noncovered_waiver_required", timely_filing_days: "=timely_filing_days", secondary_claim_billing: "=secondary_claim_billing"}
+        Medicare Part B Account: {balance_billing_permitted: "=balance_billing_permitted", noncovered_waiver_required: "=noncovered_waiver_required", timely_filing_days: "=timely_filing_days", secondary_claim_billing: "=secondary_claim_billing"}
+        Medicare Advantage Account: {balance_billing_permitted: "=balance_billing_permitted", noncovered_waiver_required: "=noncovered_waiver_required", timely_filing_days: "=timely_filing_days", secondary_claim_billing: "=secondary_claim_billing"}
+        Commercial HMO/EPO Account: {balance_billing_permitted: "=balance_billing_permitted", noncovered_waiver_required: "=noncovered_waiver_required", timely_filing_days: "=timely_filing_days", secondary_claim_billing: "=secondary_claim_billing"}
+        Commercial PPO/POS Account: {balance_billing_permitted: "=balance_billing_permitted", noncovered_waiver_required: "=noncovered_waiver_required", timely_filing_days: "=timely_filing_days", secondary_claim_billing: "=secondary_claim_billing"}
+        High-Deductible Health Plan Account: {balance_billing_permitted: "=balance_billing_permitted", noncovered_waiver_required: "=noncovered_waiver_required", timely_filing_days: "=timely_filing_days", secondary_claim_billing: "=secondary_claim_billing"}
+
+  - id: billing_collections_recall
+    subject: [billing_collections_recalled, billing_account_brought_current]
+    rule: >-
+      An account in collections is recalled from the agency and returned to active when the placed balance
+      is paid in full, when a late insurance payment reduces it and the tier's
+      collections_recall_on_insurance_payment is true, or when the placement is found to be in error (a
+      charge on hold, enrolled in an active payment plan, or covered by a later hardship approval). An
+      account in precollection returns to active when its past-due balance is enrolled in a payment plan or
+      paid below collections_min_balance_usd. Recall and return to active clear the placement and
+      final-notice dates, and the statement series restarts at 1 for any balance still owed. A partial
+      payment to an account in collections, however large, does not by itself recall it.
+    eligibility: []
+
+  - id: billing_account_closure
+    subject: [billing_account_closed]
+    rule: >-
+      A patient leaving the practice may close the financial account; the closure is requested on a billing
+      case of type account_closure and takes effect only when the patient confirms it. The account's
+      patient_balance is 0.00 when the closure takes effect, where the tier's
+      account_closure_zero_balance_required is true (every tier). A credit is refunded first and a balance
+      owed is paid or enrolled in a payment plan and paid off first; an account in billing_hold,
+      precollection or collections cannot be closed. Closing the financial account does not close the
+      patient's medical record, cancel open referrals or prescriptions, or end a membership; each of those
+      follows its own product line's rules.
+    eligibility:
+      - id: zero_balance
+        applies_to: [billing_account_closed]
+        kind: authorization
+        condition: "The account's patient_balance is 0.00 when the closure takes effect"
+        evidence_fields: [billing_accounts.patient_balance, billing_accounts.billing_account_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[billing_accounts.billing_account_id]]
+          action_bindings: {billing_accounts.billing_account_id: billing_account_id}
+
+  - id: billing_itemized_statement
+    subject: [billing_statement_issued]
+    rule: >-
+      A patient may ask at any time for an itemized statement listing every charge, payment and adjustment
+      by date of service and encounter; it is requested on a billing case of type itemized_statement and
+      delivered within itemized_statement_business_days at the tier's itemized_statement_fee_usd (0.00 on
+      every tier). The itemized statement is informational: it does not advance statement_sequence, does
+      not restart the unpaid series and does not by itself open a dispute. Statements go by the account's
+      statement_delivery channel; a patient whose portal is not active receives mail regardless of the
+      recorded preference.
+      A newly opened account starts with the tier's statement_delivery_default as its statement channel,
+      and the patient may change it at any time.
+    eligibility: []

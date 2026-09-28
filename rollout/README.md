@@ -139,7 +139,7 @@ data/simulations/<SAVE_TO>/
           agent_trajectory.json                 # full agent message history
           user_trajectory.json                  # full user-simulator message history
           llm_debug/
-            001_user_simulator_response.json    # each turn: request messages + normalized response
+            001_user_simulator_response.json    # each turn: request params (reasoning effort, temperature, ...) + messages + normalized response (incl. encrypted reasoning items / thinking blocks when the provider returns them)
             002_agent_response.json             # STREAMED live, call by call, while the rollout runs
             ...
 ```
@@ -162,7 +162,7 @@ hand-rolled. Every knob is an env var in `run.sh` mapped to a CLI flag:
 | `SCENARIOS` / `SCENARIO` | `--scenarios` / `--scenario` | one or more scenario dirs (space-separated); run in one process sharing the world cache |
 | `AGENT_LLM` / `USER_LLM` | `--agent-llm` / `--user-llm` | litellm ids. `openai/…` → OpenAI-compatible endpoint; `openai/responses/…` → Responses API. Defaults: agent `openai/responses/openai.gpt-6-astra`, user `openai/responses/openai.gpt-5.4` (Bedrock). The agent must stay on the Responses API: Bedrock's gpt-6-astra rejects function tools + reasoning effort on Chat Completions |
 | `AGENT_EFFORT` / `USER_EFFORT` | `--agent-effort` / `--user-effort` | reasoning effort (model-dependent; an unsupported level 400s): gpt-6-astra `low\|medium\|high\|xhigh\|max`, gpt-5.4 `none\|low\|medium\|high\|xhigh`. Defaults: agent `max`, user `medium` |
-| `AGENT_MAX_TOKENS` / `USER_MAX_TOKENS` | `--*-max-tokens` | output cap (default 32768) |
+| `AGENT_MAX_TOKENS` / `USER_MAX_TOKENS` | `--*-max-tokens` | output cap (default 65536) |
 | `AGENT_LLM_ARGS` / `USER_LLM_ARGS` | `--*-llm-args` | full litellm-kwargs JSON override; empty → built by `run.sh` from the model id (see below) |
 | `AWS_BEARER_TOKEN_BEDROCK`, `BEDROCK_API_BASE` | `--api-key` / `--api-base` | global endpoint: Bedrock API key + mantle URL (default `https://bedrock-mantle.us-west-2.api.aws/openai/v1`); an explicit `OPENAI_API_KEY` / `OPENAI_API_BASE` wins |
 | `AGENT_API_BASE`/`AGENT_API_KEY`, `USER_API_BASE`/`USER_API_KEY` | `--*-api-base` / `--*-api-key` | per-role endpoint override; empty → the global endpoint above |

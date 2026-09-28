@@ -1,0 +1,1599 @@
+{
+    "frozen_time": "2026-09-17 11:05:00 EDT",
+    "design_rationale": "WORKLOG task 1 (prescription_renewal_handling, category rx).\n\n[Step 0 draw] draw_counts.py --task 1 -> {\"prerequisite_problems\": 1, \"problems\": 2, \"factor_counts\": [5, 5]}. Agreement (prerequisite) 5 factors, renewal (root) 5 factors.\n\n[Why a good test] The patient asks only to get her clonazepam renewed. The agent must read in the controlled renewal policy that its fills are not fixed until the prescription shows an agreement signed within the class's agreement months, see that the agreement on file is dated 2025-08-20 (lapsed 2026-08-20, which is also why the renewal sits on hold with reason agreement_required), find from the agreement policy that the patient's own signature is the one write that records a current agreement date, compute the agreed fill interval (minimum of five allowances over drug screen age, attendance, 12-month dispensing regularity, cadence to the booked visit and payer class), hand the signature to the patient, and then compute the renewal fills on the post-signature world (reach fills to the booked visit at the new 21-day interval, reserve, database-check withholding, adherence and follow-up adjustments). It reconciles the fill ledger with appointments, virtual visits and the billing account.\n\n[Scope / headroom] Occupied by task 0: rx_ext_retail_move_fill_days, rx_ext_replacement_fill_days and tools move_prescription_pharmacy_221e1a97, authorize_replacement_fill_7c6c01e8. Claimed here: rx_ext_agreement_fill_interval (rx_compliance_updated, user tool sign_controlled_agreement_46ef2e3a) and rx_ext_controlled_renewal_fills (rx_renewed, agent tool approve_prescription_renewal_192bec69). Disjoint from task 0; together the two tasks cover all four extended policies. This is the last task (M=2): nothing is reserved.\n\n[Problem-tree card] root rx_ext_controlled_renewal_fills <- rx_ext_agreement_fill_interval. Edge kind value_input, gate binding fill_days (F('days_supply')), form state. Prerequisite sentence (renewal rule, negated direction - the way a pharmacy desk says a renewal is not released until the agreement stands): \"A controlled renewal's fills are not fixed until the prescription shows a controlled-substance agreement the patient signed within the class's agreement renewal months before the renewal date.\" Four-point test: connective 'not ... until'; waited-on side is a record-visible state (the agreement signature date shown by the prescription lookup); no tool, id or code token; strength hard ('not ... until'), scope exactly the agreement date window of the class. Its affirmative rewrite ('fixed only after the prescription shows ...') adds or drops nothing. The charter carries one affirmative (task 0 replacement) and one negated (this renewal) prerequisite sentence. Exactly one write of this difficulty sets controlled_agreement_signed_date: the patient's signature. Derivation: sentence + record (controlled_agreement_signed_date 2025-08-20, hold_reason agreement_required) + agreement policy ('When the patient signs a new controlled-substance agreement ... recorded on the prescription ... on the day the patient signs'; 'Signing the agreement is the patient's own act') -> the patient signs, handed over by the agent. False at opening: initial_state.prescriptions.b86e0008.controlled_agreement_signed_date = 2025-08-20, .hold_reason = agreement_required, .days_supply = 30. Topological order: signature (step 8) -> renewal (step 10). Deletion sensitivity (sens run): skipping the signature gives fills 4 instead of 5 (reach 2 at 30 days) and leaves the old agreement date and 30 days per fill on the row.\n\n[Factor card - agreement, result 21 = MN of five allowances; baseline paragraph = starting interval 14 days]\n- screening_allowance (parameter, date): <=183 days 30 / 184-365 21 / else 14. Evidence last_drug_screen_date 2026-05-12 (128 days) -> 30. Baseline figure 14.\n- attendance_allowance (parameter, multi-source, cross-difficulty appointment: missed visits in 12 months AND completed in-person visit within 183 days): 30 / 21 / 14. Evidence behavioral_health no-show 8eba3cc7 2026-01-14 (one), completed df72fcef 2026-07-15 (64 days) -> 21. Near-miss: dermatology no-show b0f5c1d8 2026-04-02 is another department. Baseline figure 14.\n- dispensing_regularity_allowance (parameter, history): 11-12 dispensings in 12 months 28 / 9-10 21 / else 14. Evidence 12 dispensings 2025-09-30 .. 2026-08-23 -> 28. Baseline figure 14.\n- visit_cadence_allowance (method, cross-difficulty appointment): booked/confirmed visit 1-60 days out -> days to visit split into fewest fills of <=30 days; else within 183 days of last in-person visit -> days left to 183 split the same way; else 14. Evidence booked 27f6ba16 2026-11-12, 56 days -> 2 fills -> 28. Baseline figure 14.\n- coverage_allowance (parameter, cross-difficulty billing): Commercial 30 / Medicare 28 / Medicaid 21 / else 14. Evidence billing d4b1ce54 Commercial PPO/POS -> 30. Baseline figure 14.\nFall-back 14 != 21.\n\n[Factor card - renewal, result 5; baseline paragraph = class fills MN(5+1, 180 // per-fill days) = 6 on this world]\n- visit_reach_fills (method, cross-difficulty appointment): booked/confirmed visit >=1 day out -> ceil(days / per-fill); else last in-person visit < 183 days -> ceil((183 - days since) / per-fill); else class fills. 56 days / 21 -> 3. Baseline figure 6.\n- screening_reserve_fills (parameter, multi-source: missed visits AND drug screen age): 2 / 1 / 0 -> 1. Baseline figure 4.\n- database_check_withholding (parameter, date): >60 days 2 / 31-60 1 / else 0. pdmp_checked_date 2026-08-04, 44 days -> 1. Baseline figure 6.\n- adherence_adjustment (parameter, history): 170-190 days dispensed in 6 months +1 / >190 -1 / else 0. 180 -> +1 (2026-02-25 dispensing outside the window). Baseline figure 4.\n- followup_adjustment (parameter, multi-source; cross_difficulty appointment, second source the telehealth ledger): virtual AND in-person in 6 months +1 / virtual only -1 / else 0. Video dab8822a 2026-04-22 and in-person 2026-07-15 -> +1. Baseline figure 4.\nFall-back 6 != 5. result = MX(1, MN(6, 3 + 1 - 1 + 1 + 1)) = 5. Overwrite declared: base clause 'the number of fills is the smaller of max_refills_per_authorization plus one and ... (rounded down)' replaced by the renewal's fills sentence.\n\n[Base-invariant card] Signature (rx_compliance_updated): rx_controlled_safeguards and rx_specialty_access have no gate applying to this event -> policy_scope (Schedule III-V requires an agreement; signing is the patient's own act; no prior authorization for the class). Renewal (rx_renewed): rx_renewal_eligibility.visit_current (time) - anchor appointments.scheduled_date of the most recent completed behavioral_health visit 2026-07-15, 6 calendar months, same-day counting, inclusive: due 2027-01-15; 2026-09-17 qualifies; 2027-01-16 would not. rx_controlled_safeguards.agreement_current - satisfied only after step 8 (signed 2026-09-17); drug screen 2026-05-12 is within 12 months; database check 2026-08-04 within 90 days. rx_fill_authorization - policy_scope for rx_renewed (its gate governs the authorization event; the prescription is active once approved). The hold order (visit, lab, drug screen, agreement, database check, prior authorization) names agreement as the first missing requirement, consistent with the seed. rx_hold_lapse: hold started 2026-09-11, 6 of 14 days - no lapse owed; 'Completing the requirement ... a signed agreement ... lets the renewal be approved from hold.' Expiration 2026-09-19 has not passed.\n\n[Business-object card] Target: prescription b86e0008 (clonazepam 0.5 mg tablet, behavioral_health, Dr. Imani Castellanos, MD, Kroger Pharmacy #0587 Westerville). Rows aggregated: its 12 dispensings (12-month count), its 6 dispensings 2026-03-26..2026-08-23 (6-month days), behavioral_health appointments and virtual visits of this patient. Excluded: sertraline 37c36c71 and its events (other prescription), the dermatology no-show (other department), the 2026-02-25 dispensing (outside 6 months). No old fills to void (refills 0).\n\n[World rows] customer; billing account (coverage allowance); two prescriptions; 18 fill-ledger rows (14 clonazepam, 4 sertraline); four appointments (completed, booked, behavioral_health no-show, dermatology no-show); one completed video visit. Automatic clauses checked: expiration 2026-09-19 still ahead, hold within 14 days, sertraline active with a fill left, no billing escalation.\n\n[Persona] Marisol Ortega, soft-spoken dental hygienist on a lunch break; volunteers the stuck refill and 'get my clonazepam renewed'; phone for lookup, DOB + SSN last 4 for verification (MRN / email as backups); answers visit questions vaguely and lets the agent look them up; never mentions agreements or paperwork; signs only when the agent explains and hands it over; accepts the numbers; closes on approval. 2026-09-17 is a Thursday.\n\n[Standard solution / verification] reads 0-6, unlock + user call 7-8 (days_supply 21), unlock + agent call 9-10 (appointment_id df72fcef, fills 5). Scratch recompute with check_compute primitives: agreement bindings screening 30 / attendance 21 / regularity 28 / cadence 28 / coverage 30 -> 21, each factor baseline 14, all 14; renewal bindings fill_days 21, reach 3, reserve 1, withhold 1, adherence +1, follow-up +1 -> 5; factor baselines 6,4,6,4,4; all-baseline 6; skip-signature 4. Gates --task 1: COMPUTE OK, REPLAY OK (27/27), SOLVABILITY OK, EXTENDED OK, GROUNDING OK, SCOPE OK, TASK TOOL CONTRACT OK.\n\n[Visible-context draft recomputation] From the published prose, lookups and dialogue: the renewal rule's sentence + the agreement date 2025-08-20 -> signature first (patient's act); agreement allowances from screen date (128 days), appointments (one behavioral_health no-show, visit 64 days back, booked visit 56 days out), 12 dispensings, PPO class -> 21; renewal: ceil(56/21) = 3, +1, -1, +1, +1 -> 5, citing the 2026-07-15 visit. Same writes and values as gold; the dermatology no-show and the video visit are excluded by the rules' own words.\n\n[Revisions] none beyond authoring; the gold was fixed only after the recompute.\n\n[Round 2 rework, audit audits/policy_task/prescription_renewal_handling]\n- O1: the edge's condition now carries exactly the sentence's state (agreement signed within the class's months); the days_supply change stays in effect. Propagated to prerequisite_closure.edges[0].condition.\n- O6: followup_adjustment's cross_difficulty label is now appointment (a claimed difficulty's product it reads through inperson_visits); the telehealth read stays declared in cross_category as its second source.\n- O10: the renewal rule now says that, for a class whose renewals need the prescriber's signature, the prescriber's review is the one that placed the renewal on hold naming its single missing requirement, so the approval from hold is recorded without a second signature once that requirement is complete (grounded in lifecycle on_hold -> active by agent and rx_hold_lapse). Gold unchanged (sign 21, approve 5).",
+    "user_scenario": "You are Marisol Ortega, 42, a dental hygienist in Westerville, calling the Linden Ridge Patient Services Center on your Thursday lunch break. You are soft-spoken and a little embarrassed to be calling about this medicine, but you are organized and you answer questions plainly. You take clonazepam 0.5 mg tablet for panic attacks, prescribed by Dr. Imani Castellanos in behavioral health, and you fill it every month at the Kroger in Westerville. Last week the pharmacy told you the refill was waiting on the doctor's office, and nothing has happened since; you have about five pills left. You open with: \"Hi, my pharmacy says my refill is stuck on your end - can you please get my clonazepam renewed? I only have a few left.\" You want it renewed today, and you are fine with the person on the phone taking care of it for you; you do not know how many refills you should get and you do not guess. When asked who you are, you give your name and the phone number on your chart, 6145554638. To confirm your identity you give your date of birth, July 22, 1984 (1984-07-22), and the last four digits of your Social Security number, 4862. Only if they need one more detail do you give your medical record number, LR4715392, or your email, marisol.ortega@gmail.com. If asked, you last saw Dr. Castellanos in person in July, you also had a video visit with her in the spring, and your next appointment is already on the calendar for November; you do not remember the exact dates and let them look it up. If asked which medication, it is only the clonazepam; your sertraline is fine. You do not bring up any forms, agreements or paperwork on your own. Only if the agent explains that there is something you have to sign or do yourself before the refill can go through, you say that is fine, and when the agent hands it to you, you do it right away with exactly the prescription and the days' supply the agent tells you, and you read back what it shows. If the agent tells you how many fills or how many days each fill will be, you accept it without arguing. Once the agent tells you the renewal is approved and the pharmacy can fill it, you thank them, say you will pick it up after work, and end the call. You do not ask for anything else.",
+    "initial_state": {
+        "customers": {
+            "d4acee7b-ec68-4bff-bdc1-7b2ba1212729": {
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "name": "Marisol Ortega",
+                "date_of_birth": "1984-07-22",
+                "phone_number": "6145554638",
+                "email": "marisol.ortega@gmail.com",
+                "medical_record_number": "LR4715392",
+                "ssn_last4": "4862",
+                "mailing_zip": "43081",
+                "profile_opened_date": "2016-02-09",
+                "portal_status": "active",
+                "primary_care_clinician": "Dr. Evelyn Hartwell, MD"
+            }
+        },
+        "billing_accounts": {
+            "d4b1ce54-7ec3-45cd-8880-0001baaa35f2": {
+                "billing_account_id": "d4b1ce54-7ec3-45cd-8880-0001baaa35f2",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "variant_name": "Commercial PPO/POS Account",
+                "status": "active",
+                "opened_date": "2016-02-09",
+                "closed_date": "",
+                "payer_name": "Central Ohio Health Partners PPO",
+                "member_number": "4071938825",
+                "coverage_effective_date": "2026-01-01",
+                "coverage_verified_date": "2026-08-20",
+                "copay_primary_usd": 25.0,
+                "copay_specialist_usd": 50.0,
+                "deductible_remaining_usd": 350.0,
+                "hold_reason": "none",
+                "hold_started_date": "",
+                "final_notice_date": "",
+                "collections_placed_date": "",
+                "hardship_approved_pct": 0.0,
+                "hardship_approved_through": "",
+                "patient_balance": 0.0,
+                "last_statement_date": "2026-08-05",
+                "statement_delivery": "paperless",
+                "card_on_file": true
+            }
+        },
+        "prescriptions": {
+            "b86e0008-2436-468e-a86e-7e27ed249aa9": {
+                "prescription_id": "b86e0008-2436-468e-a86e-7e27ed249aa9",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "status": "on_hold",
+                "transmitted_date": "2025-09-29",
+                "renewal_requested_date": "2026-09-10",
+                "renewal_channel": "pharmacy_request",
+                "renewed_date": "2026-03-24",
+                "hold_reason": "agreement_required",
+                "hold_started_date": "2026-09-11",
+                "prior_auth_status": "not_required",
+                "last_monitoring_lab_date": "",
+                "last_drug_screen_date": "2026-05-12",
+                "controlled_agreement_signed_date": "2025-08-20",
+                "pdmp_checked_date": "2026-08-04",
+                "transfer_count": 0,
+                "discontinue_reason": "none",
+                "closed_date": "",
+                "variant_name": "Schedule III-V Controlled Prescription",
+                "prescribed_date": "2025-09-29",
+                "medication_name": "clonazepam",
+                "strength": "0.5 mg tablet",
+                "days_supply": 30,
+                "prescriber_name": "Dr. Imani Castellanos, MD",
+                "prescribing_department": "behavioral_health",
+                "pharmacy_name": "Kroger Pharmacy #0587 Westerville",
+                "refills_remaining": 0,
+                "expiration_date": "2026-09-19"
+            },
+            "37c36c71-674b-4b20-87b4-97b0c331ae29": {
+                "prescription_id": "37c36c71-674b-4b20-87b4-97b0c331ae29",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "status": "active",
+                "transmitted_date": "2026-02-03",
+                "renewal_requested_date": "",
+                "renewal_channel": "none",
+                "renewed_date": "",
+                "hold_reason": "none",
+                "hold_started_date": "",
+                "prior_auth_status": "not_required",
+                "last_monitoring_lab_date": "",
+                "last_drug_screen_date": "",
+                "controlled_agreement_signed_date": "",
+                "pdmp_checked_date": "",
+                "transfer_count": 0,
+                "discontinue_reason": "none",
+                "closed_date": "",
+                "variant_name": "Standard Maintenance Prescription",
+                "prescribed_date": "2026-02-03",
+                "medication_name": "sertraline",
+                "strength": "100 mg tablet",
+                "days_supply": 90,
+                "prescriber_name": "Dr. Imani Castellanos, MD",
+                "prescribing_department": "behavioral_health",
+                "pharmacy_name": "Kroger Pharmacy #0587 Westerville",
+                "refills_remaining": 1,
+                "expiration_date": "2027-02-02"
+            }
+        },
+        "rx_events": {
+            "d2719eb6-1d93-425c-96fd-a1a505ccb330": {
+                "rx_event_id": "d2719eb6-1d93-425c-96fd-a1a505ccb330",
+                "prescription_id": "b86e0008-2436-468e-a86e-7e27ed249aa9",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fills_authorized",
+                "fill_date": "2025-09-29",
+                "fills": 6,
+                "days_supply_per_fill": 30,
+                "authorization_reason": "new_prescription",
+                "fill_basis": "none",
+                "dispensing_pharmacy": "",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "2b97823d-97c1-4e3d-9f63-96d035d36515": {
+                "rx_event_id": "2b97823d-97c1-4e3d-9f63-96d035d36515",
+                "prescription_id": "b86e0008-2436-468e-a86e-7e27ed249aa9",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2025-09-30",
+                "fills": 1,
+                "days_supply_per_fill": 30,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Kroger Pharmacy #0587 Westerville",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "59ec342a-46ad-422c-bff3-c9bb6377267c": {
+                "rx_event_id": "59ec342a-46ad-422c-bff3-c9bb6377267c",
+                "prescription_id": "b86e0008-2436-468e-a86e-7e27ed249aa9",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2025-10-29",
+                "fills": 1,
+                "days_supply_per_fill": 30,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Kroger Pharmacy #0587 Westerville",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "4a11c914-5c3b-4928-94a9-6607c2f704d1": {
+                "rx_event_id": "4a11c914-5c3b-4928-94a9-6607c2f704d1",
+                "prescription_id": "b86e0008-2436-468e-a86e-7e27ed249aa9",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2025-11-28",
+                "fills": 1,
+                "days_supply_per_fill": 30,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Kroger Pharmacy #0587 Westerville",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "d5ec9ff4-0b11-4c39-8458-3c1d0be50528": {
+                "rx_event_id": "d5ec9ff4-0b11-4c39-8458-3c1d0be50528",
+                "prescription_id": "b86e0008-2436-468e-a86e-7e27ed249aa9",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2025-12-27",
+                "fills": 1,
+                "days_supply_per_fill": 30,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Kroger Pharmacy #0587 Westerville",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "99e7c96c-ad64-4d45-9c85-32f13c1a7cce": {
+                "rx_event_id": "99e7c96c-ad64-4d45-9c85-32f13c1a7cce",
+                "prescription_id": "b86e0008-2436-468e-a86e-7e27ed249aa9",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2026-01-26",
+                "fills": 1,
+                "days_supply_per_fill": 30,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Kroger Pharmacy #0587 Westerville",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "99fcb2da-df1a-4557-9517-7bac41f773f7": {
+                "rx_event_id": "99fcb2da-df1a-4557-9517-7bac41f773f7",
+                "prescription_id": "b86e0008-2436-468e-a86e-7e27ed249aa9",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2026-02-25",
+                "fills": 1,
+                "days_supply_per_fill": 30,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Kroger Pharmacy #0587 Westerville",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "65db1fa0-7d6b-442e-b6df-4a191274fb0b": {
+                "rx_event_id": "65db1fa0-7d6b-442e-b6df-4a191274fb0b",
+                "prescription_id": "b86e0008-2436-468e-a86e-7e27ed249aa9",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fills_authorized",
+                "fill_date": "2026-03-24",
+                "fills": 6,
+                "days_supply_per_fill": 30,
+                "authorization_reason": "renewal",
+                "fill_basis": "none",
+                "dispensing_pharmacy": "",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "020cc1db-cf8b-4b80-a47a-d99eae05f93c": {
+                "rx_event_id": "020cc1db-cf8b-4b80-a47a-d99eae05f93c",
+                "prescription_id": "b86e0008-2436-468e-a86e-7e27ed249aa9",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2026-03-26",
+                "fills": 1,
+                "days_supply_per_fill": 30,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Kroger Pharmacy #0587 Westerville",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "548e9b76-dbe2-4f99-84fa-f96c2dc060ba": {
+                "rx_event_id": "548e9b76-dbe2-4f99-84fa-f96c2dc060ba",
+                "prescription_id": "b86e0008-2436-468e-a86e-7e27ed249aa9",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2026-04-25",
+                "fills": 1,
+                "days_supply_per_fill": 30,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Kroger Pharmacy #0587 Westerville",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "040c76e8-e3cc-43dd-b424-b386e17a132f": {
+                "rx_event_id": "040c76e8-e3cc-43dd-b424-b386e17a132f",
+                "prescription_id": "b86e0008-2436-468e-a86e-7e27ed249aa9",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2026-05-25",
+                "fills": 1,
+                "days_supply_per_fill": 30,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Kroger Pharmacy #0587 Westerville",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "c38044d0-71e5-491f-a453-b6a9f782f775": {
+                "rx_event_id": "c38044d0-71e5-491f-a453-b6a9f782f775",
+                "prescription_id": "b86e0008-2436-468e-a86e-7e27ed249aa9",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2026-06-24",
+                "fills": 1,
+                "days_supply_per_fill": 30,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Kroger Pharmacy #0587 Westerville",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "b76f1c4d-2932-408d-a34f-167ef323312d": {
+                "rx_event_id": "b76f1c4d-2932-408d-a34f-167ef323312d",
+                "prescription_id": "b86e0008-2436-468e-a86e-7e27ed249aa9",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2026-07-24",
+                "fills": 1,
+                "days_supply_per_fill": 30,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Kroger Pharmacy #0587 Westerville",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "81853809-ae28-45fc-845e-69795fb60bfb": {
+                "rx_event_id": "81853809-ae28-45fc-845e-69795fb60bfb",
+                "prescription_id": "b86e0008-2436-468e-a86e-7e27ed249aa9",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2026-08-23",
+                "fills": 1,
+                "days_supply_per_fill": 30,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Kroger Pharmacy #0587 Westerville",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "7ce39176-3a96-4366-ac30-d36c9a6eb101": {
+                "rx_event_id": "7ce39176-3a96-4366-ac30-d36c9a6eb101",
+                "prescription_id": "37c36c71-674b-4b20-87b4-97b0c331ae29",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fills_authorized",
+                "fill_date": "2026-02-03",
+                "fills": 4,
+                "days_supply_per_fill": 90,
+                "authorization_reason": "new_prescription",
+                "fill_basis": "none",
+                "dispensing_pharmacy": "",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "a142e790-0a81-4356-be17-4266499c4e51": {
+                "rx_event_id": "a142e790-0a81-4356-be17-4266499c4e51",
+                "prescription_id": "37c36c71-674b-4b20-87b4-97b0c331ae29",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2026-02-04",
+                "fills": 1,
+                "days_supply_per_fill": 90,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Kroger Pharmacy #0587 Westerville",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "46213323-b034-4a50-855e-fb45c666640f": {
+                "rx_event_id": "46213323-b034-4a50-855e-fb45c666640f",
+                "prescription_id": "37c36c71-674b-4b20-87b4-97b0c331ae29",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2026-05-02",
+                "fills": 1,
+                "days_supply_per_fill": 90,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Kroger Pharmacy #0587 Westerville",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "6982fe75-31d0-4483-be7e-abf74ce77864": {
+                "rx_event_id": "6982fe75-31d0-4483-be7e-abf74ce77864",
+                "prescription_id": "37c36c71-674b-4b20-87b4-97b0c331ae29",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2026-07-29",
+                "fills": 1,
+                "days_supply_per_fill": 90,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Kroger Pharmacy #0587 Westerville",
+                "void_reason": "none",
+                "police_report_number": ""
+            }
+        },
+        "appointments": {
+            "8eba3cc7-34c6-48b3-98b9-828fcfccf5c3": {
+                "appointment_id": "8eba3cc7-34c6-48b3-98b9-828fcfccf5c3",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "variant_name": "Established Patient Office Visit",
+                "status": "no_show",
+                "booked_date": "2025-12-18",
+                "scheduled_date": "2026-01-14",
+                "scheduled_time": "15:20",
+                "department": "behavioral_health",
+                "clinician_name": "Dr. Imani Castellanos, MD",
+                "clinic_location": "Linden Ridge Westerville",
+                "booking_channel": "phone",
+                "encounter_number": "ENC-43109876",
+                "referral_id": null,
+                "reschedule_count": 0,
+                "last_rescheduled_date": "",
+                "confirmed_date": "",
+                "checked_in_at": "",
+                "arrival_minutes_late": 0,
+                "cancelled_at": "",
+                "cancel_reason": "none",
+                "cancel_timing": "not_cancelled",
+                "deposit_held_usd": 0.0,
+                "closed_date": "2026-01-14"
+            },
+            "b0f5c1d8-0dc0-4b73-a572-661c29720478": {
+                "appointment_id": "b0f5c1d8-0dc0-4b73-a572-661c29720478",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "variant_name": "Specialist Consultation",
+                "status": "no_show",
+                "booked_date": "2026-03-05",
+                "scheduled_date": "2026-04-02",
+                "scheduled_time": "10:00",
+                "department": "dermatology",
+                "clinician_name": "Dr. Owen Lindqvist, MD",
+                "clinic_location": "Linden Ridge Westerville",
+                "booking_channel": "phone",
+                "encounter_number": "ENC-43877102",
+                "referral_id": null,
+                "reschedule_count": 0,
+                "last_rescheduled_date": "",
+                "confirmed_date": "",
+                "checked_in_at": "",
+                "arrival_minutes_late": 0,
+                "cancelled_at": "",
+                "cancel_reason": "none",
+                "cancel_timing": "not_cancelled",
+                "deposit_held_usd": 0.0,
+                "closed_date": "2026-04-02"
+            },
+            "df72fcef-dd18-482e-8c83-66f7130b3e7d": {
+                "appointment_id": "df72fcef-dd18-482e-8c83-66f7130b3e7d",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "variant_name": "Established Patient Office Visit",
+                "status": "completed",
+                "booked_date": "2026-06-22",
+                "scheduled_date": "2026-07-15",
+                "scheduled_time": "16:00",
+                "department": "behavioral_health",
+                "clinician_name": "Dr. Imani Castellanos, MD",
+                "clinic_location": "Linden Ridge Westerville",
+                "booking_channel": "phone",
+                "encounter_number": "ENC-44920315",
+                "referral_id": null,
+                "reschedule_count": 0,
+                "last_rescheduled_date": "",
+                "confirmed_date": "2026-07-13",
+                "checked_in_at": "15:52",
+                "arrival_minutes_late": 0,
+                "cancelled_at": "",
+                "cancel_reason": "none",
+                "cancel_timing": "not_cancelled",
+                "deposit_held_usd": 0.0,
+                "closed_date": "2026-07-15"
+            },
+            "27f6ba16-c5cf-4acd-a3ca-b02b6b209c7c": {
+                "appointment_id": "27f6ba16-c5cf-4acd-a3ca-b02b6b209c7c",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "variant_name": "Established Patient Office Visit",
+                "status": "booked",
+                "booked_date": "2026-07-15",
+                "scheduled_date": "2026-11-12",
+                "scheduled_time": "16:00",
+                "department": "behavioral_health",
+                "clinician_name": "Dr. Imani Castellanos, MD",
+                "clinic_location": "Linden Ridge Westerville",
+                "booking_channel": "phone",
+                "encounter_number": "ENC-45588240",
+                "referral_id": null,
+                "reschedule_count": 0,
+                "last_rescheduled_date": "",
+                "confirmed_date": "",
+                "checked_in_at": "",
+                "arrival_minutes_late": 0,
+                "cancelled_at": "",
+                "cancel_reason": "none",
+                "cancel_timing": "not_cancelled",
+                "deposit_held_usd": 0.0,
+                "closed_date": ""
+            }
+        },
+        "telehealth_visits": {
+            "dab8822a-9b48-4284-9fd3-382b32ac371e": {
+                "telehealth_visit_id": "dab8822a-9b48-4284-9fd3-382b32ac371e",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "variant_name": "Behavioral Health Video Visit",
+                "status": "completed",
+                "requested_date": "2026-04-15",
+                "scheduled_date": "2026-04-22",
+                "scheduled_time": "12:30",
+                "department": "behavioral_health",
+                "clinician_name": "Dr. Imani Castellanos, MD",
+                "encounter_number": "ENC-44102987",
+                "patient_location_state": "OH",
+                "referral_id": null,
+                "prepaid_balance_usd": 0.0,
+                "reschedule_count": 0,
+                "connected_minutes": 28,
+                "end_reason": "completed_normally",
+                "cancel_timing": "not_cancelled",
+                "converted_appointment_id": null,
+                "closed_date": "2026-04-22"
+            }
+        }
+    },
+    "db_closure": {
+        "rx_events": {
+            "46213323-b034-4a50-855e-fb45c666640f": {
+                "rx_event_id": "46213323-b034-4a50-855e-fb45c666640f",
+                "prescription_id": "37c36c71-674b-4b20-87b4-97b0c331ae29",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2026-05-02",
+                "fills": 1,
+                "days_supply_per_fill": 90,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Kroger Pharmacy #0587 Westerville",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "2b97823d-97c1-4e3d-9f63-96d035d36515": {
+                "rx_event_id": "2b97823d-97c1-4e3d-9f63-96d035d36515",
+                "prescription_id": "b86e0008-2436-468e-a86e-7e27ed249aa9",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2025-09-30",
+                "fills": 1,
+                "days_supply_per_fill": 30,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Kroger Pharmacy #0587 Westerville",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "548e9b76-dbe2-4f99-84fa-f96c2dc060ba": {
+                "rx_event_id": "548e9b76-dbe2-4f99-84fa-f96c2dc060ba",
+                "prescription_id": "b86e0008-2436-468e-a86e-7e27ed249aa9",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2026-04-25",
+                "fills": 1,
+                "days_supply_per_fill": 30,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Kroger Pharmacy #0587 Westerville",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "c38044d0-71e5-491f-a453-b6a9f782f775": {
+                "rx_event_id": "c38044d0-71e5-491f-a453-b6a9f782f775",
+                "prescription_id": "b86e0008-2436-468e-a86e-7e27ed249aa9",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2026-06-24",
+                "fills": 1,
+                "days_supply_per_fill": 30,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Kroger Pharmacy #0587 Westerville",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "4a11c914-5c3b-4928-94a9-6607c2f704d1": {
+                "rx_event_id": "4a11c914-5c3b-4928-94a9-6607c2f704d1",
+                "prescription_id": "b86e0008-2436-468e-a86e-7e27ed249aa9",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2025-11-28",
+                "fills": 1,
+                "days_supply_per_fill": 30,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Kroger Pharmacy #0587 Westerville",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "81853809-ae28-45fc-845e-69795fb60bfb": {
+                "rx_event_id": "81853809-ae28-45fc-845e-69795fb60bfb",
+                "prescription_id": "b86e0008-2436-468e-a86e-7e27ed249aa9",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2026-08-23",
+                "fills": 1,
+                "days_supply_per_fill": 30,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Kroger Pharmacy #0587 Westerville",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "020cc1db-cf8b-4b80-a47a-d99eae05f93c": {
+                "rx_event_id": "020cc1db-cf8b-4b80-a47a-d99eae05f93c",
+                "prescription_id": "b86e0008-2436-468e-a86e-7e27ed249aa9",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2026-03-26",
+                "fills": 1,
+                "days_supply_per_fill": 30,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Kroger Pharmacy #0587 Westerville",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "6982fe75-31d0-4483-be7e-abf74ce77864": {
+                "rx_event_id": "6982fe75-31d0-4483-be7e-abf74ce77864",
+                "prescription_id": "37c36c71-674b-4b20-87b4-97b0c331ae29",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2026-07-29",
+                "fills": 1,
+                "days_supply_per_fill": 90,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Kroger Pharmacy #0587 Westerville",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "99fcb2da-df1a-4557-9517-7bac41f773f7": {
+                "rx_event_id": "99fcb2da-df1a-4557-9517-7bac41f773f7",
+                "prescription_id": "b86e0008-2436-468e-a86e-7e27ed249aa9",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2026-02-25",
+                "fills": 1,
+                "days_supply_per_fill": 30,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Kroger Pharmacy #0587 Westerville",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "b76f1c4d-2932-408d-a34f-167ef323312d": {
+                "rx_event_id": "b76f1c4d-2932-408d-a34f-167ef323312d",
+                "prescription_id": "b86e0008-2436-468e-a86e-7e27ed249aa9",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2026-07-24",
+                "fills": 1,
+                "days_supply_per_fill": 30,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Kroger Pharmacy #0587 Westerville",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "d5ec9ff4-0b11-4c39-8458-3c1d0be50528": {
+                "rx_event_id": "d5ec9ff4-0b11-4c39-8458-3c1d0be50528",
+                "prescription_id": "b86e0008-2436-468e-a86e-7e27ed249aa9",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2025-12-27",
+                "fills": 1,
+                "days_supply_per_fill": 30,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Kroger Pharmacy #0587 Westerville",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "65db1fa0-7d6b-442e-b6df-4a191274fb0b": {
+                "rx_event_id": "65db1fa0-7d6b-442e-b6df-4a191274fb0b",
+                "prescription_id": "b86e0008-2436-468e-a86e-7e27ed249aa9",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fills_authorized",
+                "fill_date": "2026-03-24",
+                "fills": 6,
+                "days_supply_per_fill": 30,
+                "authorization_reason": "renewal",
+                "fill_basis": "none",
+                "dispensing_pharmacy": "",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "99e7c96c-ad64-4d45-9c85-32f13c1a7cce": {
+                "rx_event_id": "99e7c96c-ad64-4d45-9c85-32f13c1a7cce",
+                "prescription_id": "b86e0008-2436-468e-a86e-7e27ed249aa9",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2026-01-26",
+                "fills": 1,
+                "days_supply_per_fill": 30,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Kroger Pharmacy #0587 Westerville",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "59ec342a-46ad-422c-bff3-c9bb6377267c": {
+                "rx_event_id": "59ec342a-46ad-422c-bff3-c9bb6377267c",
+                "prescription_id": "b86e0008-2436-468e-a86e-7e27ed249aa9",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2025-10-29",
+                "fills": 1,
+                "days_supply_per_fill": 30,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Kroger Pharmacy #0587 Westerville",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "a142e790-0a81-4356-be17-4266499c4e51": {
+                "rx_event_id": "a142e790-0a81-4356-be17-4266499c4e51",
+                "prescription_id": "37c36c71-674b-4b20-87b4-97b0c331ae29",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2026-02-04",
+                "fills": 1,
+                "days_supply_per_fill": 90,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Kroger Pharmacy #0587 Westerville",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "7ce39176-3a96-4366-ac30-d36c9a6eb101": {
+                "rx_event_id": "7ce39176-3a96-4366-ac30-d36c9a6eb101",
+                "prescription_id": "37c36c71-674b-4b20-87b4-97b0c331ae29",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fills_authorized",
+                "fill_date": "2026-02-03",
+                "fills": 4,
+                "days_supply_per_fill": 90,
+                "authorization_reason": "new_prescription",
+                "fill_basis": "none",
+                "dispensing_pharmacy": "",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "040c76e8-e3cc-43dd-b424-b386e17a132f": {
+                "rx_event_id": "040c76e8-e3cc-43dd-b424-b386e17a132f",
+                "prescription_id": "b86e0008-2436-468e-a86e-7e27ed249aa9",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2026-05-25",
+                "fills": 1,
+                "days_supply_per_fill": 30,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Kroger Pharmacy #0587 Westerville",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "d2719eb6-1d93-425c-96fd-a1a505ccb330": {
+                "rx_event_id": "d2719eb6-1d93-425c-96fd-a1a505ccb330",
+                "prescription_id": "b86e0008-2436-468e-a86e-7e27ed249aa9",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "event_type": "rx_fills_authorized",
+                "fill_date": "2025-09-29",
+                "fills": 6,
+                "days_supply_per_fill": 30,
+                "authorization_reason": "new_prescription",
+                "fill_basis": "none",
+                "dispensing_pharmacy": "",
+                "void_reason": "none",
+                "police_report_number": ""
+            }
+        },
+        "appointments": {
+            "27f6ba16-c5cf-4acd-a3ca-b02b6b209c7c": {
+                "appointment_id": "27f6ba16-c5cf-4acd-a3ca-b02b6b209c7c",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "variant_name": "Established Patient Office Visit",
+                "status": "booked",
+                "booked_date": "2026-07-15",
+                "scheduled_date": "2026-11-12",
+                "scheduled_time": "16:00",
+                "department": "behavioral_health",
+                "clinician_name": "Dr. Imani Castellanos, MD",
+                "clinic_location": "Linden Ridge Westerville",
+                "booking_channel": "phone",
+                "encounter_number": "ENC-45588240",
+                "referral_id": null,
+                "reschedule_count": 0,
+                "last_rescheduled_date": "",
+                "confirmed_date": "",
+                "checked_in_at": "",
+                "arrival_minutes_late": 0,
+                "cancelled_at": "",
+                "cancel_reason": "none",
+                "cancel_timing": "not_cancelled",
+                "deposit_held_usd": 0.0,
+                "closed_date": ""
+            },
+            "b0f5c1d8-0dc0-4b73-a572-661c29720478": {
+                "appointment_id": "b0f5c1d8-0dc0-4b73-a572-661c29720478",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "variant_name": "Specialist Consultation",
+                "status": "no_show",
+                "booked_date": "2026-03-05",
+                "scheduled_date": "2026-04-02",
+                "scheduled_time": "10:00",
+                "department": "dermatology",
+                "clinician_name": "Dr. Owen Lindqvist, MD",
+                "clinic_location": "Linden Ridge Westerville",
+                "booking_channel": "phone",
+                "encounter_number": "ENC-43877102",
+                "referral_id": null,
+                "reschedule_count": 0,
+                "last_rescheduled_date": "",
+                "confirmed_date": "",
+                "checked_in_at": "",
+                "arrival_minutes_late": 0,
+                "cancelled_at": "",
+                "cancel_reason": "none",
+                "cancel_timing": "not_cancelled",
+                "deposit_held_usd": 0.0,
+                "closed_date": "2026-04-02"
+            },
+            "8eba3cc7-34c6-48b3-98b9-828fcfccf5c3": {
+                "appointment_id": "8eba3cc7-34c6-48b3-98b9-828fcfccf5c3",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "variant_name": "Established Patient Office Visit",
+                "status": "no_show",
+                "booked_date": "2025-12-18",
+                "scheduled_date": "2026-01-14",
+                "scheduled_time": "15:20",
+                "department": "behavioral_health",
+                "clinician_name": "Dr. Imani Castellanos, MD",
+                "clinic_location": "Linden Ridge Westerville",
+                "booking_channel": "phone",
+                "encounter_number": "ENC-43109876",
+                "referral_id": null,
+                "reschedule_count": 0,
+                "last_rescheduled_date": "",
+                "confirmed_date": "",
+                "checked_in_at": "",
+                "arrival_minutes_late": 0,
+                "cancelled_at": "",
+                "cancel_reason": "none",
+                "cancel_timing": "not_cancelled",
+                "deposit_held_usd": 0.0,
+                "closed_date": "2026-01-14"
+            },
+            "df72fcef-dd18-482e-8c83-66f7130b3e7d": {
+                "appointment_id": "df72fcef-dd18-482e-8c83-66f7130b3e7d",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "variant_name": "Established Patient Office Visit",
+                "status": "completed",
+                "booked_date": "2026-06-22",
+                "scheduled_date": "2026-07-15",
+                "scheduled_time": "16:00",
+                "department": "behavioral_health",
+                "clinician_name": "Dr. Imani Castellanos, MD",
+                "clinic_location": "Linden Ridge Westerville",
+                "booking_channel": "phone",
+                "encounter_number": "ENC-44920315",
+                "referral_id": null,
+                "reschedule_count": 0,
+                "last_rescheduled_date": "",
+                "confirmed_date": "2026-07-13",
+                "checked_in_at": "15:52",
+                "arrival_minutes_late": 0,
+                "cancelled_at": "",
+                "cancel_reason": "none",
+                "cancel_timing": "not_cancelled",
+                "deposit_held_usd": 0.0,
+                "closed_date": "2026-07-15"
+            }
+        },
+        "prescriptions": {
+            "b86e0008-2436-468e-a86e-7e27ed249aa9": {
+                "prescription_id": "b86e0008-2436-468e-a86e-7e27ed249aa9",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "status": "on_hold",
+                "transmitted_date": "2025-09-29",
+                "renewal_requested_date": "2026-09-10",
+                "renewal_channel": "pharmacy_request",
+                "renewed_date": "2026-03-24",
+                "hold_reason": "agreement_required",
+                "hold_started_date": "2026-09-11",
+                "prior_auth_status": "not_required",
+                "last_monitoring_lab_date": "",
+                "last_drug_screen_date": "2026-05-12",
+                "controlled_agreement_signed_date": "2025-08-20",
+                "pdmp_checked_date": "2026-08-04",
+                "transfer_count": 0,
+                "discontinue_reason": "none",
+                "closed_date": "",
+                "variant_name": "Schedule III-V Controlled Prescription",
+                "prescribed_date": "2025-09-29",
+                "medication_name": "clonazepam",
+                "strength": "0.5 mg tablet",
+                "days_supply": 30,
+                "prescriber_name": "Dr. Imani Castellanos, MD",
+                "prescribing_department": "behavioral_health",
+                "pharmacy_name": "Kroger Pharmacy #0587 Westerville",
+                "refills_remaining": 0,
+                "expiration_date": "2026-09-19"
+            },
+            "37c36c71-674b-4b20-87b4-97b0c331ae29": {
+                "prescription_id": "37c36c71-674b-4b20-87b4-97b0c331ae29",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "status": "active",
+                "transmitted_date": "2026-02-03",
+                "renewal_requested_date": "",
+                "renewal_channel": "none",
+                "renewed_date": "",
+                "hold_reason": "none",
+                "hold_started_date": "",
+                "prior_auth_status": "not_required",
+                "last_monitoring_lab_date": "",
+                "last_drug_screen_date": "",
+                "controlled_agreement_signed_date": "",
+                "pdmp_checked_date": "",
+                "transfer_count": 0,
+                "discontinue_reason": "none",
+                "closed_date": "",
+                "variant_name": "Standard Maintenance Prescription",
+                "prescribed_date": "2026-02-03",
+                "medication_name": "sertraline",
+                "strength": "100 mg tablet",
+                "days_supply": 90,
+                "prescriber_name": "Dr. Imani Castellanos, MD",
+                "prescribing_department": "behavioral_health",
+                "pharmacy_name": "Kroger Pharmacy #0587 Westerville",
+                "refills_remaining": 1,
+                "expiration_date": "2027-02-02"
+            }
+        },
+        "telehealth_visits": {
+            "dab8822a-9b48-4284-9fd3-382b32ac371e": {
+                "telehealth_visit_id": "dab8822a-9b48-4284-9fd3-382b32ac371e",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "variant_name": "Behavioral Health Video Visit",
+                "status": "completed",
+                "requested_date": "2026-04-15",
+                "scheduled_date": "2026-04-22",
+                "scheduled_time": "12:30",
+                "department": "behavioral_health",
+                "clinician_name": "Dr. Imani Castellanos, MD",
+                "encounter_number": "ENC-44102987",
+                "patient_location_state": "OH",
+                "referral_id": null,
+                "prepaid_balance_usd": 0.0,
+                "reschedule_count": 0,
+                "connected_minutes": 28,
+                "end_reason": "completed_normally",
+                "cancel_timing": "not_cancelled",
+                "converted_appointment_id": null,
+                "closed_date": "2026-04-22"
+            }
+        },
+        "billing_accounts": {
+            "d4b1ce54-7ec3-45cd-8880-0001baaa35f2": {
+                "billing_account_id": "d4b1ce54-7ec3-45cd-8880-0001baaa35f2",
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "variant_name": "Commercial PPO/POS Account",
+                "status": "active",
+                "opened_date": "2016-02-09",
+                "closed_date": "",
+                "payer_name": "Central Ohio Health Partners PPO",
+                "member_number": "4071938825",
+                "coverage_effective_date": "2026-01-01",
+                "coverage_verified_date": "2026-08-20",
+                "copay_primary_usd": 25.0,
+                "copay_specialist_usd": 50.0,
+                "deductible_remaining_usd": 350.0,
+                "hold_reason": "none",
+                "hold_started_date": "",
+                "final_notice_date": "",
+                "collections_placed_date": "",
+                "hardship_approved_pct": 0.0,
+                "hardship_approved_through": "",
+                "patient_balance": 0.0,
+                "last_statement_date": "2026-08-05",
+                "statement_delivery": "paperless",
+                "card_on_file": true
+            }
+        },
+        "customers": {
+            "d4acee7b-ec68-4bff-bdc1-7b2ba1212729": {
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "name": "Marisol Ortega",
+                "date_of_birth": "1984-07-22",
+                "phone_number": "6145554638",
+                "email": "marisol.ortega@gmail.com",
+                "medical_record_number": "LR4715392",
+                "ssn_last4": "4862",
+                "mailing_zip": "43081",
+                "profile_opened_date": "2016-02-09",
+                "portal_status": "active",
+                "primary_care_clinician": "Dr. Evelyn Hartwell, MD"
+            }
+        }
+    },
+    "db_closure_matches_initial_state": true,
+    "solvability_contract": {
+        "request_binding_version": 1,
+        "request_alignment": [
+            {
+                "claim": "The patient asks for her held clonazepam renewal to be renewed today and lets the agent handle it.",
+                "evidence": [
+                    "user_scenario:get my clonazepam renewed",
+                    "user_scenario:you are fine with the person on the phone taking care of it for you"
+                ]
+            }
+        ],
+        "gold_actions": [
+            {
+                "step": 8,
+                "business_effect": "The patient herself signs a new controlled-substance agreement on clonazepam b86e0008: controlled_agreement_signed_date becomes 2026-09-17 and the per-fill days' supply becomes the agreed fill interval of 21 days.",
+                "request_binding": {
+                    "action_semantics": "The renewal she asks for is not fixed until a controlled-substance agreement signed within 12 months is on the prescription; the one on file (2025-08-20) has lapsed, and signing is the patient's own act, so the signature is the write that serves her request and is handed to her.",
+                    "intent_source": {
+                        "kind": "user_scenario",
+                        "evidence": [
+                            "user_scenario:get my clonazepam renewed"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "get my clonazepam renewed",
+                        "evidence": [
+                            "user_scenario:get my clonazepam renewed"
+                        ],
+                        "value": "controlled_agreement_signed_date"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "performed_by_this_tool",
+                    "fact": "The signature is made by the patient in this call; the lapsed agreement date is on the prescription at the opening.",
+                    "evidence": [
+                        "initial_state.prescriptions.b86e0008-2436-468e-a86e-7e27ed249aa9.controlled_agreement_signed_date",
+                        "initial_state.prescriptions.b86e0008-2436-468e-a86e-7e27ed249aa9.hold_reason"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "rx_controlled_safeguards",
+                        "eligibility_id": "policy_scope",
+                        "condition": "The prescription is a Schedule III-V Controlled Prescription (controlled_agreement_required true, 12-month agreement); signing the agreement is the patient's own act and nobody signs for the patient.",
+                        "evidence": [
+                            "initial_state.prescriptions.b86e0008-2436-468e-a86e-7e27ed249aa9.variant_name",
+                            "initial_state.prescriptions.b86e0008-2436-468e-a86e-7e27ed249aa9.controlled_agreement_signed_date"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "rx_specialty_access",
+                        "eligibility_id": "policy_scope",
+                        "condition": "The class needs no prior authorization (prior_auth_status not_required); the signature records no prior-authorization decision.",
+                        "evidence": [
+                            "initial_state.prescriptions.b86e0008-2436-468e-a86e-7e27ed249aa9.prior_auth_status"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 10,
+                "business_effect": "The held renewal of clonazepam b86e0008 is approved: status active, renewed 2026-09-17, expiration 2027-03-15, hold cleared, one renewal authorization of 5 fills at 21 days per fill; no old fills to void (refills_remaining was 0).",
+                "request_binding": {
+                    "action_semantics": "She asks for the prescription to be renewed; it is on hold with a logged pharmacy renewal request, so approving the renewal from hold is the write (a new request would duplicate the logged one, a bridge is never allowed for controlled prescriptions).",
+                    "intent_source": {
+                        "kind": "user_scenario",
+                        "evidence": [
+                            "user_scenario:get my clonazepam renewed"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "get my clonazepam renewed",
+                        "evidence": [
+                            "user_scenario:get my clonazepam renewed"
+                        ],
+                        "value": "renewal"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "established_by_prior_tool",
+                    "fact": "The agreement requirement that held the renewal is completed by the patient's signature at step 8; the other requirements are current at the opening.",
+                    "evidence": [
+                        "prior_step:8",
+                        "initial_state.prescriptions.b86e0008-2436-468e-a86e-7e27ed249aa9.hold_reason",
+                        "initial_state.appointments.df72fcef-dd18-482e-8c83-66f7130b3e7d.scheduled_date"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "rx_renewal_eligibility",
+                        "eligibility_id": "visit_current",
+                        "condition": "the renewal date is no later than the tier's visit interval counted from the patient's most recent completed visit with the prescribing department",
+                        "evidence": [
+                            "initial_state.appointments.df72fcef-dd18-482e-8c83-66f7130b3e7d.scheduled_date",
+                            "initial_state.appointments.df72fcef-dd18-482e-8c83-66f7130b3e7d.status",
+                            "initial_state.appointments.df72fcef-dd18-482e-8c83-66f7130b3e7d.department",
+                            "initial_state.appointments.df72fcef-dd18-482e-8c83-66f7130b3e7d.appointment_id",
+                            "initial_state.prescriptions.b86e0008-2436-468e-a86e-7e27ed249aa9.prescribing_department",
+                            "frozen_time"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "appointments.appointment_id",
+                                "source": "initial_state.appointments.df72fcef-dd18-482e-8c83-66f7130b3e7d.appointment_id",
+                                "action_arg": "appointment_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "rx_fill_authorization",
+                        "eligibility_id": "policy_scope",
+                        "condition": "A renewal replaces the old authorization (fills left voided as superseded_by_renewal, none here) and sets expiration to the renewal date plus prescription_validity_days minus one; its fill-authorization gate applies to the fill authorization event, and the prescription is active once the renewal is approved.",
+                        "evidence": [
+                            "initial_state.prescriptions.b86e0008-2436-468e-a86e-7e27ed249aa9.refills_remaining",
+                            "initial_state.prescriptions.b86e0008-2436-468e-a86e-7e27ed249aa9.variant_name"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "rx_controlled_safeguards",
+                        "eligibility_id": "agreement_current",
+                        "condition": "For a tier whose controlled_agreement_required is true, a controlled prescription is renewed only when a controlled-substance agreement signed by the patient within controlled_agreement_renewal_months calendar months of the renewal date is on file",
+                        "evidence": [
+                            "prior_step:8",
+                            "initial_state.prescriptions.b86e0008-2436-468e-a86e-7e27ed249aa9.controlled_agreement_signed_date",
+                            "initial_state.prescriptions.b86e0008-2436-468e-a86e-7e27ed249aa9.last_drug_screen_date",
+                            "initial_state.prescriptions.b86e0008-2436-468e-a86e-7e27ed249aa9.pdmp_checked_date",
+                            "initial_state.prescriptions.b86e0008-2436-468e-a86e-7e27ed249aa9.prescription_id"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "prescriptions.prescription_id",
+                                "source": "prior_step:8",
+                                "source_arg": "prescription_id",
+                                "action_arg": "prescription_id"
+                            }
+                        ],
+                        "satisfied": true
+                    }
+                ]
+            }
+        ],
+        "temporal_feasibility": [
+            {
+                "step": 10,
+                "policy_id": "rx_renewal_eligibility",
+                "eligibility_id": "visit_current",
+                "condition": "the renewal date is no later than the tier's visit interval counted from the patient's most recent completed visit with the prescribing department",
+                "temporal_basis": {
+                    "clock": "frozen_time",
+                    "anchor_event": "the patient's most recent completed visit with the prescribing department",
+                    "anchor_source": "appointments.scheduled_date",
+                    "relation": "not_after",
+                    "duration_source": "variants.visit_interval_months",
+                    "unit": "calendar_months",
+                    "counting_rule": "The interval is counted in calendar months from the visit date to the same day of the month, falling back to the last day of the month when that day does not exist, and a renewal on that day still qualifies.",
+                    "boundary": "inclusive"
+                },
+                "as_of": "frozen_time",
+                "evidence": [
+                    "frozen_time",
+                    "initial_state.appointments.df72fcef-dd18-482e-8c83-66f7130b3e7d.scheduled_date",
+                    "initial_state.prescriptions.b86e0008-2436-468e-a86e-7e27ed249aa9.variant_name"
+                ],
+                "satisfied": true,
+                "boundary_check": {
+                    "just_before": "Most recent completed behavioral_health visit 2026-07-15 + 6 calendar months = 2027-01-15; a renewal on 2027-01-16 would be past the interval and must be held for a visit instead. The renewal on 2026-09-17 is 4 months inside it.",
+                    "at_boundary": "A renewal dated exactly 2027-01-15 still qualifies (inclusive); 2026-09-17 qualifies with margin."
+                }
+            }
+        ],
+        "required_user_inputs": [
+            {
+                "information": "phone number used to locate the patient profile",
+                "source": "user_scenario:the phone number on your chart, 6145554638"
+            },
+            {
+                "information": "date of birth for identity verification",
+                "source": "user_scenario:(1984-07-22)"
+            },
+            {
+                "information": "last four SSN digits for identity verification",
+                "source": "user_scenario:the last four digits of your Social Security number, 4862"
+            },
+            {
+                "information": "which medication she needs renewed (selects b86e0008, not the sertraline)",
+                "source": "user_scenario:it is only the clonazepam; your sertraline is fine"
+            },
+            {
+                "information": "agreement to sign whatever the renewal needs in person when handed over",
+                "source": "user_scenario:when the agent hands it to you, you do it right away with exactly the prescription and the days' supply the agent tells you"
+            },
+            {
+                "information": "authorization for the agent to handle the renewal",
+                "source": "user_scenario:you are fine with the person on the phone taking care of it for you"
+            }
+        ],
+        "seed_consistency": [
+            {
+                "row": "initial_state.prescriptions.b86e0008-2436-468e-a86e-7e27ed249aa9",
+                "policy_id": "rx_renewal_eligibility",
+                "check": "Schedule III-V clonazepam: prescribed 2025-09-29, renewed 2026-03-24 so expiration 2026-03-24 + 180 - 1 = 2026-09-19 (not passed at 2026-09-17); 12 fills authorized, 12 dispensed, refills 0; pharmacy renewal request logged 2026-09-10 and held 2026-09-11 for agreement_required, the first missing requirement in the base order (visit 2026-07-15 current, no lab for the class, drug screen 2026-05-12 current, agreement 2025-08-20 lapsed on 2026-08-20); database check 2026-08-04 current (44 of 90 days); the hold (6 days) is inside the 14 hold-resolution days, so no lapse is owed.",
+                "evidence": [
+                    "initial_state.prescriptions.b86e0008-2436-468e-a86e-7e27ed249aa9.hold_started_date",
+                    "initial_state.prescriptions.b86e0008-2436-468e-a86e-7e27ed249aa9.expiration_date"
+                ]
+            },
+            {
+                "row": "initial_state.prescriptions.37c36c71-674b-4b20-87b4-97b0c331ae29",
+                "policy_id": "rx_fill_authorization",
+                "check": "Standard Maintenance sertraline, prescribed 2026-02-03 (expiration 2027-02-02), 4 fills authorized, 3 dispensed, 1 remaining, active; untouched by the gold.",
+                "evidence": [
+                    "initial_state.prescriptions.37c36c71-674b-4b20-87b4-97b0c331ae29.refills_remaining"
+                ]
+            },
+            {
+                "row": "initial_state.rx_events.d2719eb6-1d93-425c-96fd-a1a505ccb330",
+                "policy_id": "rx_fill_authorization",
+                "check": "clonazepam b86e0008: new_prescription authorization of 6 fills x 30 days on 2025-09-29 while active; class rule min(refills+1, total days / days per fill) = 6.",
+                "evidence": [
+                    "initial_state.rx_events.d2719eb6-1d93-425c-96fd-a1a505ccb330.fill_date"
+                ]
+            },
+            {
+                "row": "initial_state.rx_events.2b97823d-97c1-4e3d-9f63-96d035d36515",
+                "policy_id": "rx_fill_timing",
+                "check": "clonazepam b86e0008: regular dispensing of 30 days on 2025-09-30 at Kroger Pharmacy #0587 Westerville, with fills remaining, before expiration and past the class early-refill threshold after the previous fill.",
+                "evidence": [
+                    "initial_state.rx_events.2b97823d-97c1-4e3d-9f63-96d035d36515.fill_date"
+                ]
+            },
+            {
+                "row": "initial_state.rx_events.59ec342a-46ad-422c-bff3-c9bb6377267c",
+                "policy_id": "rx_fill_timing",
+                "check": "clonazepam b86e0008: regular dispensing of 30 days on 2025-10-29 at Kroger Pharmacy #0587 Westerville, with fills remaining, before expiration and past the class early-refill threshold after the previous fill.",
+                "evidence": [
+                    "initial_state.rx_events.59ec342a-46ad-422c-bff3-c9bb6377267c.fill_date"
+                ]
+            },
+            {
+                "row": "initial_state.rx_events.4a11c914-5c3b-4928-94a9-6607c2f704d1",
+                "policy_id": "rx_fill_timing",
+                "check": "clonazepam b86e0008: regular dispensing of 30 days on 2025-11-28 at Kroger Pharmacy #0587 Westerville, with fills remaining, before expiration and past the class early-refill threshold after the previous fill.",
+                "evidence": [
+                    "initial_state.rx_events.4a11c914-5c3b-4928-94a9-6607c2f704d1.fill_date"
+                ]
+            },
+            {
+                "row": "initial_state.rx_events.d5ec9ff4-0b11-4c39-8458-3c1d0be50528",
+                "policy_id": "rx_fill_timing",
+                "check": "clonazepam b86e0008: regular dispensing of 30 days on 2025-12-27 at Kroger Pharmacy #0587 Westerville, with fills remaining, before expiration and past the class early-refill threshold after the previous fill.",
+                "evidence": [
+                    "initial_state.rx_events.d5ec9ff4-0b11-4c39-8458-3c1d0be50528.fill_date"
+                ]
+            },
+            {
+                "row": "initial_state.rx_events.99e7c96c-ad64-4d45-9c85-32f13c1a7cce",
+                "policy_id": "rx_fill_timing",
+                "check": "clonazepam b86e0008: regular dispensing of 30 days on 2026-01-26 at Kroger Pharmacy #0587 Westerville, with fills remaining, before expiration and past the class early-refill threshold after the previous fill.",
+                "evidence": [
+                    "initial_state.rx_events.99e7c96c-ad64-4d45-9c85-32f13c1a7cce.fill_date"
+                ]
+            },
+            {
+                "row": "initial_state.rx_events.99fcb2da-df1a-4557-9517-7bac41f773f7",
+                "policy_id": "rx_fill_timing",
+                "check": "clonazepam b86e0008: regular dispensing of 30 days on 2026-02-25 at Kroger Pharmacy #0587 Westerville, with fills remaining, before expiration and past the class early-refill threshold after the previous fill.",
+                "evidence": [
+                    "initial_state.rx_events.99fcb2da-df1a-4557-9517-7bac41f773f7.fill_date"
+                ]
+            },
+            {
+                "row": "initial_state.rx_events.65db1fa0-7d6b-442e-b6df-4a191274fb0b",
+                "policy_id": "rx_fill_authorization",
+                "check": "clonazepam b86e0008: renewal authorization of 6 fills x 30 days on 2026-03-24 while active; class rule min(refills+1, total days / days per fill) = 6.",
+                "evidence": [
+                    "initial_state.rx_events.65db1fa0-7d6b-442e-b6df-4a191274fb0b.fill_date"
+                ]
+            },
+            {
+                "row": "initial_state.rx_events.020cc1db-cf8b-4b80-a47a-d99eae05f93c",
+                "policy_id": "rx_fill_timing",
+                "check": "clonazepam b86e0008: regular dispensing of 30 days on 2026-03-26 at Kroger Pharmacy #0587 Westerville, with fills remaining, before expiration and past the class early-refill threshold after the previous fill.",
+                "evidence": [
+                    "initial_state.rx_events.020cc1db-cf8b-4b80-a47a-d99eae05f93c.fill_date"
+                ]
+            },
+            {
+                "row": "initial_state.rx_events.548e9b76-dbe2-4f99-84fa-f96c2dc060ba",
+                "policy_id": "rx_fill_timing",
+                "check": "clonazepam b86e0008: regular dispensing of 30 days on 2026-04-25 at Kroger Pharmacy #0587 Westerville, with fills remaining, before expiration and past the class early-refill threshold after the previous fill.",
+                "evidence": [
+                    "initial_state.rx_events.548e9b76-dbe2-4f99-84fa-f96c2dc060ba.fill_date"
+                ]
+            },
+            {
+                "row": "initial_state.rx_events.040c76e8-e3cc-43dd-b424-b386e17a132f",
+                "policy_id": "rx_fill_timing",
+                "check": "clonazepam b86e0008: regular dispensing of 30 days on 2026-05-25 at Kroger Pharmacy #0587 Westerville, with fills remaining, before expiration and past the class early-refill threshold after the previous fill.",
+                "evidence": [
+                    "initial_state.rx_events.040c76e8-e3cc-43dd-b424-b386e17a132f.fill_date"
+                ]
+            },
+            {
+                "row": "initial_state.rx_events.c38044d0-71e5-491f-a453-b6a9f782f775",
+                "policy_id": "rx_fill_timing",
+                "check": "clonazepam b86e0008: regular dispensing of 30 days on 2026-06-24 at Kroger Pharmacy #0587 Westerville, with fills remaining, before expiration and past the class early-refill threshold after the previous fill.",
+                "evidence": [
+                    "initial_state.rx_events.c38044d0-71e5-491f-a453-b6a9f782f775.fill_date"
+                ]
+            },
+            {
+                "row": "initial_state.rx_events.b76f1c4d-2932-408d-a34f-167ef323312d",
+                "policy_id": "rx_fill_timing",
+                "check": "clonazepam b86e0008: regular dispensing of 30 days on 2026-07-24 at Kroger Pharmacy #0587 Westerville, with fills remaining, before expiration and past the class early-refill threshold after the previous fill.",
+                "evidence": [
+                    "initial_state.rx_events.b76f1c4d-2932-408d-a34f-167ef323312d.fill_date"
+                ]
+            },
+            {
+                "row": "initial_state.rx_events.81853809-ae28-45fc-845e-69795fb60bfb",
+                "policy_id": "rx_fill_timing",
+                "check": "clonazepam b86e0008: regular dispensing of 30 days on 2026-08-23 at Kroger Pharmacy #0587 Westerville, with fills remaining, before expiration and past the class early-refill threshold after the previous fill.",
+                "evidence": [
+                    "initial_state.rx_events.81853809-ae28-45fc-845e-69795fb60bfb.fill_date"
+                ]
+            },
+            {
+                "row": "initial_state.rx_events.7ce39176-3a96-4366-ac30-d36c9a6eb101",
+                "policy_id": "rx_fill_authorization",
+                "check": "sertraline 37c36c71: new_prescription authorization of 4 fills x 90 days on 2026-02-03 while active; class rule min(refills+1, total days / days per fill) = 4.",
+                "evidence": [
+                    "initial_state.rx_events.7ce39176-3a96-4366-ac30-d36c9a6eb101.fill_date"
+                ]
+            },
+            {
+                "row": "initial_state.rx_events.a142e790-0a81-4356-be17-4266499c4e51",
+                "policy_id": "rx_fill_timing",
+                "check": "sertraline 37c36c71: regular dispensing of 90 days on 2026-02-04 at Kroger Pharmacy #0587 Westerville, with fills remaining, before expiration and past the class early-refill threshold after the previous fill.",
+                "evidence": [
+                    "initial_state.rx_events.a142e790-0a81-4356-be17-4266499c4e51.fill_date"
+                ]
+            },
+            {
+                "row": "initial_state.rx_events.46213323-b034-4a50-855e-fb45c666640f",
+                "policy_id": "rx_fill_timing",
+                "check": "sertraline 37c36c71: regular dispensing of 90 days on 2026-05-02 at Kroger Pharmacy #0587 Westerville, with fills remaining, before expiration and past the class early-refill threshold after the previous fill.",
+                "evidence": [
+                    "initial_state.rx_events.46213323-b034-4a50-855e-fb45c666640f.fill_date"
+                ]
+            },
+            {
+                "row": "initial_state.rx_events.6982fe75-31d0-4483-be7e-abf74ce77864",
+                "policy_id": "rx_fill_timing",
+                "check": "sertraline 37c36c71: regular dispensing of 90 days on 2026-07-29 at Kroger Pharmacy #0587 Westerville, with fills remaining, before expiration and past the class early-refill threshold after the previous fill.",
+                "evidence": [
+                    "initial_state.rx_events.6982fe75-31d0-4483-be7e-abf74ce77864.fill_date"
+                ]
+            }
+        ]
+    },
+    "evaluation_criteria": [
+        {
+            "owner": "agent",
+            "tool": "find_customers",
+            "arguments": {
+                "phone_number": "6145554638"
+            },
+            "objective": "Locate the caller's profile by the phone number she states (6145554638).",
+            "necessity": "Anchors every later read and write to patient d4acee7b."
+        },
+        {
+            "owner": "agent",
+            "tool": "verify_patient_identity",
+            "arguments": {
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729",
+                "date_of_birth": "1984-07-22",
+                "ssn_last4": "4862"
+            },
+            "objective": "Record in-session identity verification with her date of birth 1984-07-22 and SSN last four 4862.",
+            "necessity": "No account detail may be acted on before identity is confirmed; the verification row is scored state."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_prescriptions",
+            "arguments": {
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729"
+            },
+            "objective": "List her prescriptions: clonazepam b86e0008 (Schedule III-V, on_hold agreement_required since 2026-09-11, agreement signed 2025-08-20, drug screen 2026-05-12, database check 2026-08-04, 30 days per fill, 0 fills left) and sertraline 37c36c71.",
+            "necessity": "Selects the held renewal; shows the prerequisite state is false (agreement older than 12 months) and supplies the screening, database-check and per-fill inputs."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_rx_events",
+            "arguments": {
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729"
+            },
+            "objective": "Read the fill ledger: 12 monthly clonazepam dispensings in 12 months, 180 days dispensed in the last 6 months, latest 2026-08-23.",
+            "necessity": "Evidence for the dispensing-regularity allowance (12 -> 28 days) and the adherence adjustment (180 days -> +1 fill)."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_appointments",
+            "arguments": {
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729"
+            },
+            "objective": "Read her appointments: behavioral_health completed 2026-07-15, booked 2026-11-12, no-show 2026-01-14, and a dermatology no-show 2026-04-02.",
+            "necessity": "Cross-difficulty evidence: attendance allowance and reserve fills (one behavioral_health no-show; the dermatology no-show does not count), visit cadence and reach fills (56 days to the booked visit), and the visit requirement of the renewal (visit 2026-07-15 current)."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_telehealth_visits",
+            "arguments": {
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729"
+            },
+            "objective": "Read her virtual visits: Behavioral Health Video Visit completed 2026-04-22.",
+            "necessity": "Cross-difficulty evidence for the follow-up adjustment (a virtual and an in-person visit in 6 months -> +1 fill); it is excluded from the in-person counts."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_billing_accounts",
+            "arguments": {
+                "customer_id": "d4acee7b-ec68-4bff-bdc1-7b2ba1212729"
+            },
+            "objective": "Read her billing account: Commercial PPO/POS Account.",
+            "necessity": "Cross-difficulty evidence for the coverage allowance (30 days)."
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "sign_controlled_agreement_46ef2e3a"
+            },
+            "objective": "Unlock the patient-owned agreement signature and hand it to the patient.",
+            "necessity": "The renewal's fills are not fixed until a current agreement is on the prescription; signing is the patient's own act. No DB effect."
+        },
+        {
+            "owner": "user",
+            "tool": "call_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "sign_controlled_agreement_46ef2e3a",
+                "arguments": {
+                    "prescription_id": "b86e0008-2436-468e-a86e-7e27ed249aa9",
+                    "days_supply": 21
+                }
+            },
+            "objective": "The patient signs the new controlled-substance agreement on b86e0008 with the agreed fill interval of 21 days.",
+            "necessity": "Resolves the renewal's prerequisite: rx_ext_agreement_fill_interval computes days_supply = MN(30, 21, 28, 28, 30) = 21 on the opening world.",
+            "argument_uniqueness_tracing": {
+                "prescription_id": "Value b86e0008-2436-468e-a86e-7e27ed249aa9. Basis: the lookup shows clonazepam 0.5 mg tablet under this id with hold_reason agreement_required; the customer says 'it is only the clonazepam'. Uniqueness: the sertraline is active and not controlled, so no agreement applies to it.",
+                "days_supply": "Value 21. rx_ext_agreement_fill_interval: screening allowance 30 (drug screen 128 days back), attendance allowance 21 (one behavioral_health no-show 2026-01-14 in 12 months and a completed in-person visit 64 days back), dispensing-regularity allowance 28 (12 dispensings in 12 months), visit-cadence allowance 28 (booked visit 56 days away -> 2 fills -> 56 // 2), coverage allowance 30 (Commercial PPO/POS Account); the shortest is 21."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "approve_prescription_renewal_192bec69"
+            },
+            "objective": "Unlock the renewal approval tool.",
+            "necessity": "First half of the unlock/call pair for the renewal write; no DB effect."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "approve_prescription_renewal_192bec69",
+                "arguments": {
+                    "prescription_id": "b86e0008-2436-468e-a86e-7e27ed249aa9",
+                    "appointment_id": "df72fcef-dd18-482e-8c83-66f7130b3e7d",
+                    "fills": 5
+                }
+            },
+            "objective": "Approve the held renewal of b86e0008 with 5 fills, citing the qualifying 2026-07-15 visit.",
+            "necessity": "rx_ext_controlled_renewal_fills computes fills = 5 on the world after the signature (21 days per fill, agreement dated 2026-09-17).",
+            "argument_uniqueness_tracing": {
+                "prescription_id": "Value b86e0008-2436-468e-a86e-7e27ed249aa9, the held clonazepam renewal. Basis: lookup row status on_hold, renewal_requested_date 2026-09-10. Uniqueness: the only prescription with a pending or held renewal.",
+                "appointment_id": "Value df72fcef-dd18-482e-8c83-66f7130b3e7d. Basis: rx_renewal_eligibility 'the renewal date is no later than the tier's visit interval counted from the patient's most recent completed visit with the prescribing department'; the docstring asks for 'the patient's completed visit with the prescribing department that keeps the visit requirement current'. Uniqueness: it is the only completed in-person behavioral_health visit (2026-07-15), and the more recent-seeming records are a no-show, a booked future visit, a dermatology no-show and a virtual visit (a telehealth id is not an appointment reference).",
+                "fills": "Value 5. rx_ext_controlled_renewal_fills on the world after the signature: reach fills ceil(56 / 21) = 3 (booked visit 2026-11-12); reserve fills 1 (one behavioral_health no-show in 12 months and drug screen within 183 days); database-check withholding 1 (check 44 days old); adherence adjustment +1 (180 days dispensed in 6 months); follow-up adjustment +1 (virtual visit 2026-04-22 and in-person visit 2026-07-15 in 6 months); MX(1, MN(6, 3 + 1 - 1 + 1 + 1)) = 5."
+            }
+        }
+    ],
+    "prerequisite_closure": {
+        "root_problem": "rx_ext_controlled_renewal_fills",
+        "edges": [
+            {
+                "from": "rx_ext_controlled_renewal_fills",
+                "to": "rx_ext_agreement_fill_interval",
+                "kind": "value_input",
+                "gate": "fill_days",
+                "form": "state",
+                "condition": "prescriptions.controlled_agreement_signed_date falls within controlled_agreement_renewal_months calendar months before the renewal date",
+                "policy_source": "A controlled renewal's fills are not fixed until the prescription shows a controlled-substance agreement the patient signed within the class's agreement renewal months before the renewal date.",
+                "resolved_by": "sign_controlled_agreement_46ef2e3a",
+                "unresolved_at_frozen_time": {
+                    "why_false": "The agreement on file was signed 2025-08-20, more than 12 calendar months before 2026-09-17 (it lapsed on 2026-08-20), which is why the renewal sits on hold with reason agreement_required; days_supply is still the old 30.",
+                    "evidence": [
+                        "initial_state.prescriptions.b86e0008-2436-468e-a86e-7e27ed249aa9.controlled_agreement_signed_date = 2025-08-20",
+                        "initial_state.prescriptions.b86e0008-2436-468e-a86e-7e27ed249aa9.hold_reason = agreement_required",
+                        "initial_state.prescriptions.b86e0008-2436-468e-a86e-7e27ed249aa9.days_supply = 30"
+                    ],
+                    "flips_to_true_by": "The patient's signature at step 8 sets controlled_agreement_signed_date = 2026-09-17 and days_supply = 21; the renewal's fill_days then reads 21 and reach fills become ceil(56 / 21) = 3."
+                }
+            }
+        ],
+        "resolution_order": [
+            "rx_ext_agreement_fill_interval",
+            "rx_ext_controlled_renewal_fills"
+        ],
+        "order_uniqueness": "A single edge (two-node chain). The renewal reads the per-fill days' supply the signature records and waits on the signature's date; approving first would grant ceil(56/30) = 2 reach fills (4 in all) on a lapsed agreement, so only signature-then-renewal reproduces the gold terminal state. No parallel prerequisites.",
+        "edge_load_bearing": [
+            {
+                "edge": "rx_ext_controlled_renewal_fills -> rx_ext_agreement_fill_interval",
+                "skipped_effect": "Skipping the signature (step 8) leaves days_supply 30 and the 2025-08-20 agreement: reach fills 2 instead of 3, fills 4 instead of 5 (sens run); the terminal prescription row also keeps controlled_agreement_signed_date 2025-08-20 and days_supply 30, and the renewal authorization row carries 4 fills x 30 days instead of 5 x 21."
+            }
+        ],
+        "no_user_hint": "user_scenario never mentions an agreement, a contract, a signature, paperwork or a per-fill days' supply; it states that she does not bring up any forms, agreements or paperwork, and she signs only after the agent explains there is something she must sign and hands it over.",
+        "tools_do_not_block": "approve_prescription_renewal_192bec69 reads the prescription only to copy customer_id, days_supply, refills_remaining and variant_name for the mechanical void / authorization / expiration fields; it never reads controlled_agreement_signed_date, hold_reason or status and returns its normal receipt whatever they hold. sign_controlled_agreement_46ef2e3a only updates two fields. Neither returns an error or a hint."
+    },
+    "charter_scope": {
+        "extended_policies": [
+            "rx_ext_agreement_fill_interval",
+            "rx_ext_controlled_renewal_fills"
+        ],
+        "task_tools": [
+            "sign_controlled_agreement_46ef2e3a",
+            "approve_prescription_renewal_192bec69"
+        ]
+    },
+    "required_documents": [
+        "rx_ext_agreement_fill_interval",
+        "rx_ext_controlled_renewal_fills"
+    ],
+    "computations": [
+        {
+            "policy_id": "rx_ext_agreement_fill_interval",
+            "target_holding_id": "b86e0008-2436-468e-a86e-7e27ed249aa9",
+            "step": 8,
+            "arg": "days_supply",
+            "expected": 21,
+            "factor_trace": [
+                "screening_allowance (parameter, date): last_drug_screen_date 2026-05-12 is 128 days before 2026-09-17 -> tier '183 days or fewer' selects 30 days; baseline 14.",
+                "attendance_allowance (parameter, multi-source, cross-difficulty appointment): one behavioral_health no-show in 12 months (8eba3cc7 on 2026-01-14; the dermatology no-show b0f5c1d8 of 2026-04-02 is another department and does not count) AND completed in-person behavioral_health visit df72fcef on 2026-07-15, 64 days back -> tier 'exactly one missed visit and a completed visit within 183 days' selects 21 days; baseline 14.",
+                "dispensing_regularity_allowance (parameter, history): 12 dispensings of b86e0008 in the last 12 calendar months (2025-09-30 through 2026-08-23) -> tier '11 or 12' selects 28 days; baseline 14.",
+                "visit_cadence_allowance (method, cross-difficulty appointment): booked behavioral_health visit 27f6ba16 on 2026-11-12 is 56 days away (<= 60) -> fewest fills of at most 30 days covering 56 days = 2, 56 // 2 = 28 days; baseline 14.",
+                "coverage_allowance (parameter, cross-difficulty billing): billing account d4b1ce54 is a Commercial PPO/POS Account -> 30 days; baseline 14.",
+                "result = MN(30, 21, 28, 28, 30) = 21 days per fill under the new agreement."
+            ],
+            "baseline_result": 14,
+            "factor_sensitivity": [
+                {
+                    "factor": "screening_allowance",
+                    "tier_taken": "latest drug screen 183 days or fewer before the signing day",
+                    "baseline_result": 14
+                },
+                {
+                    "factor": "attendance_allowance",
+                    "tier_taken": "exactly one missed visit with that department in 12 calendar months AND a completed in-person visit with it no more than 183 days before",
+                    "baseline_result": 14
+                },
+                {
+                    "factor": "dispensing_regularity_allowance",
+                    "tier_taken": "11 or 12 dispensings of the prescription in the last 12 calendar months",
+                    "baseline_result": 14
+                },
+                {
+                    "factor": "visit_cadence_allowance",
+                    "tier_taken": "a booked or confirmed visit with the prescribing department 1 to 60 days after the signing day",
+                    "baseline_result": 14
+                },
+                {
+                    "factor": "coverage_allowance",
+                    "tier_taken": "the billing account is a Commercial PPO/POS Account or a Commercial HMO/EPO Account",
+                    "baseline_result": 14
+                }
+            ]
+        },
+        {
+            "policy_id": "rx_ext_controlled_renewal_fills",
+            "target_holding_id": "b86e0008-2436-468e-a86e-7e27ed249aa9",
+            "step": 10,
+            "arg": "fills",
+            "expected": 5,
+            "factor_trace": [
+                "visit_reach_fills (method, cross-difficulty appointment): booked behavioral_health visit 2026-11-12 is 56 days after 2026-09-17 -> days to the visit / per-fill days' supply 21 (recorded by the agreement at step 8), rounded up = 3; baseline class fills MN(5 + 1, 180 // 21 = 8) = 6.",
+                "screening_reserve_fills (parameter, multi-source cross-difficulty appointment + date): one behavioral_health no-show in 12 months AND drug screen 128 days back (<= 183) -> 1 fill; baseline 0.",
+                "database_check_withholding (parameter, date): pdmp_checked_date 2026-08-04 is 44 days back (more than 30, no more than 60) -> withhold 1 fill; baseline 0.",
+                "adherence_adjustment (parameter, history): days dispensed in the last 6 calendar months = 6 x 30 = 180 (2026-03-26 .. 2026-08-23; 2026-02-25 is outside) -> 170 to 190 -> +1 fill; baseline 0.",
+                "followup_adjustment (parameter, multi-source; cross-difficulty appointment, with the telehealth ledger as its second source): completed Behavioral Health Video Visit dab8822a on 2026-04-22 AND completed in-person visit 2026-07-15 within 6 months -> +1 fill; baseline 0.",
+                "plumbing: fill_days = F('days_supply') = 21 (value_input from the signature); result = MX(1, MN(6, 3 + 1 - 1 + 1 + 1)) = 5 fills."
+            ],
+            "baseline_result": 6,
+            "factor_sensitivity": [
+                {
+                    "factor": "visit_reach_fills",
+                    "tier_taken": "a booked or confirmed visit with the prescribing department 1 or more days after the renewal date",
+                    "baseline_result": 6
+                },
+                {
+                    "factor": "screening_reserve_fills",
+                    "tier_taken": "one or more missed visits with that department in 12 calendar months AND a drug screen no more than 183 days before",
+                    "baseline_result": 4
+                },
+                {
+                    "factor": "database_check_withholding",
+                    "tier_taken": "more than 30 but no more than 60 days before",
+                    "baseline_result": 6
+                },
+                {
+                    "factor": "adherence_adjustment",
+                    "tier_taken": "170 to 190 days' supply dispensed on the prescription in the last 6 calendar months",
+                    "baseline_result": 4
+                },
+                {
+                    "factor": "followup_adjustment",
+                    "tier_taken": "a completed virtual visit AND a completed in-person visit with the prescribing department in the last 6 calendar months",
+                    "baseline_result": 4
+                }
+            ]
+        }
+    ]
+}

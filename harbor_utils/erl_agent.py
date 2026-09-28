@@ -57,7 +57,7 @@ from harbor.models.trajectories import (
 HARNESS_VERSION = "2.0.0"
 DEFAULT_AGENT_MODEL = "openai/responses/openai.gpt-6-astra"
 DEFAULT_USER_MODEL = "openai/responses/openai.gpt-5.4"
-DEFAULT_MAX_TOKENS = 32 * 1024
+DEFAULT_MAX_TOKENS = 64 * 1024
 ROLE_ENV = {"agent": "AGENT", "user": "USER"}  # <ROLE>_API_BASE / <ROLE>_API_KEY
 AGENT_GREETING = "Hi! Thank you for contacting us. How can I help you today?"
 

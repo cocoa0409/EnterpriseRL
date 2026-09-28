@@ -202,6 +202,10 @@ class Orchestrator:
             "call_name": call_name,
             "request": {
                 "model": client.model_id,
+                # The generation settings sent with the call (reasoning effort, temperature,
+                # max_tokens, endpoint) — everything litellm receives except the messages,
+                # tools and the API key — so a recorded run shows what each role ran with.
+                "params": {k: v for k, v in client.args.items() if k != "api_key"},
                 "messages": [dict(m) for m in request_msgs],
                 "tools": tools,          # the exact tool schemas offered this turn
                 "tool_choice": "auto" if tools else None,
@@ -210,6 +214,11 @@ class Orchestrator:
             "response": {
                 "content": result.content,
                 "reasoning_content": result.reasoning_content,
+                # The reasoning carried back with the turn when the provider returns it in
+                # a form other than text: the Responses API's reasoning items (id +
+                # encrypted content) and Anthropic's signed thinking blocks.
+                "reasoning_items": result.raw_message.get("reasoning_items"),
+                "thinking_blocks": result.raw_message.get("thinking_blocks"),
                 "tool_calls": [
                     {"name": tc.name, "arguments": tc.arguments} for tc in result.tool_calls
                 ],

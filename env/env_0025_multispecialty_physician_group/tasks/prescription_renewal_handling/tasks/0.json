@@ -1,0 +1,1399 @@
+{
+    "frozen_time": "2026-08-31 10:20:00 EDT",
+    "design_rationale": "WORKLOG task 0 (prescription_renewal_handling, category rx). Resumed round 1 after a cut-off with nothing on disk.\n\n[Step 0 draw] draw_counts.py --task 0 -> {\"prerequisite_problems\": 1, \"problems\": 2, \"factor_counts\": [4, 5]}. The move (prerequisite) takes 4 factors, the replacement (root) takes 5.\n\n[Why a good test] The patient asks only for her stolen mail-order losartan to be replaced. The agent must (1) read in the replacement policy that its days' supply is fixed only after the prescription stands at a retail pharmacy, (2) see in the prescription record that it stands at Heartland Mail Order Pharmacy, (3) work out from the move policy that the patient's own move is the one write that brings that state about, compute the retail fill length (a 4-allowance minimum over payer class, 12-month dispensing history, authorization span and in-person visit recency) and hand the move to the patient, and only then (4) compute the replacement on the post-move world (lost supply by a dispensing-age method with a payer early-refill share, credit of the remaining fill at the new per-fill length, repeat-loss share, follow-up trim). Difficulty comes from reading policy, reconciling the fill ledger and two other product lines (billing class, appointments), and ordering two writes; there are only two task tools and they do different things.\n\n[Scope / headroom] Occupied before: nothing (task 0). Claimed: rx_ext_retail_move_fill_days (rx_pharmacy_changed, user tool move_prescription_pharmacy_221e1a97) and rx_ext_replacement_fill_days (rx_fills_authorized/replacement, agent tool authorize_replacement_fill_7c6c01e8). Left for task 1 (draw 1 prerequisite, factors [5,5]): the controlled-substance agreement signature (rx_compliance_updated, the patient's own act by base rule) and the renewal approval from hold (rx_renewed). Controlled classes allow no bridge, replacement or protocol renewal, so the agreement can only pair with the renewal; the only other patient-owned write in rx is the pharmacy move ('A patient may move the remaining fills of a prescription to another pharmacy'), which is why this task pairs the move with the replacement. Bridge supply and hold writes carry no scored quantity pairable here and stay unclaimed as base capability (M=2).\n\n[Problem-tree card] root rx_ext_replacement_fill_days <- rx_ext_retail_move_fill_days. Edge: kind value_input, gate binding fill_days (F('days_supply')), form state. Prerequisite sentence (replacement rule, affirmative): \"A replacement fill's days' supply is fixed only after the prescription stands at a retail pharmacy rather than at a mail-order pharmacy.\" Four-point test: ordering connective 'only after'; the waited-on side is a record-visible state (the pharmacy the prescription stands at, shown by the prescription lookup); no tool, id or code token; strength 'only after', scope exactly the pharmacy kind. Exactly one write of this difficulty changes prescriptions.pharmacy_name: the move. Derivation: sentence + record (pharmacy_name = Heartland Mail Order Pharmacy) + move policy ('A prescription the patient moves to a retail pharmacy is dispensed there in fills of ...' / the retail fill length is recorded at the move) -> the patient's move to a retail pharmacy, handed over at that point. condition: pharmacy_name names a retail pharmacy rather than a mail-order pharmacy (round 2: the days_supply change is the edge's effect, not part of its condition). False at opening: initial_state.prescriptions.546f17fd.pharmacy_name = Heartland Mail Order Pharmacy, .days_supply = 90, .transfer_count = 0. Owner of the resolving tool: user. Topological order: move (step 8) -> replacement (step 10). Deletion sensitivity (sens run): skipping the move gives days_supply_per_fill 0 instead of 21 (credit 90 instead of 34) and leaves the prescription row unchanged. user_scenario never names a pharmacy move (see no_user_hint). Tools validate nothing (see tools_do_not_block).\n\n[Factor card - move, rx_ext_retail_move_fill_days, result 34 = MN of four allowances; baseline paragraph = retail standard 30 days]\n- payer_retail_allowance (parameter, cross-difficulty billing): ladder Medicaid MC 34 / Medicare Advantage or Part B 60 / Commercial PPO/POS or HMO/EPO 90 / otherwise 30. Evidence billing_accounts 9d6e82df variant 'Medicaid Managed Care Account' -> 34. Baseline figure 30.\n- dispensing_adherence_allowance (parameter, history): days dispensed in 12 calendar months >=330 -> 90, 270-329 -> 60, else 30. Evidence: 5 dispensings of 90 days (2025-09-02 .. 2026-08-26) = 450 -> 90. Near-miss: the 2025-07-19 replacement dispensing (13 months back) is outside the window. Baseline figure 30.\n- authorization_span_allowance (method): fills remain and, at the per-fill supply the prescription carries, would run past expiry -> days to expiry split evenly among them (fit to the authorization); fills remain and end on or before expiry -> the fill length as written; none -> 30. Evidence refills_remaining 1 x 90 days = 90 <= 182 days to expiration 2027-03-01 -> 90. Baseline figure 30.\n- visit_recency_allowance (parameter, cross-difficulty appointment): latest completed in-person visit <=183 days -> 90, 184-365 -> 60, else 30. Evidence appointment 6047b080 completed 2025-10-20 (315 days). Near-miss: telehealth bb09d7d6 completed 2026-05-12 is virtual and excluded. Baseline figure 30.\nFall-back (all baselines) 30 != 34.\n\n[Factor card - replacement, rx_ext_replacement_fill_days, result 21; baseline paragraph = one regular fill (per-fill days' supply) = 34 on this world]\n- lost_supply_count (method): dispensing age <=14 days -> days until next regular fill due (ceil(days x share) - elapsed); 15-60 -> days left on that dispensing; else one regular fill. Evidence 2026-08-26, 90 days, 5 days back -> ceil(76.5) - 5 = 72. Baseline figure 0.\n- payer_early_refill_share (parameter, cross-difficulty billing): Medicaid 85 / Medicare 80 / Commercial 70 / otherwise class 75. -> 85. Baseline figure 14.\n- standing_fill_credit (method): fills remain and expiry beyond one per-fill length -> fills x per-fill days; fills remain but expiry within -> min(days to expiry, per-fill days); none -> 0. -> 1 x 34 = 34. Baseline figure 47.\n- repeat_loss_share (parameter, multi-source: earlier replacement in 24 months AND missed visits in 12 months): 75 / 50 / 100. Evidence rx_events replacement authorization 2025-07-18 (13 months), no internal_medicine no-show in 12 months (no-show 2025-06-10 is 14 months back: near-miss) -> 75. Baseline figure 31.\n- followup_trim (parameter, multi-source cross-difficulty appointment: last in-person visit > 270 days AND booked/confirmed visit): 21 / 7 / 0. Evidence 315 days, booked ef8c9a71 on 2026-10-13 -> 7. Baseline figure 28.\nFall-back 34 != 21. result = MX(0, int((72 - 34) x 75/100) - 7) = 21.\n\n[Base-invariant card] Move: rx_pharmacy_transfer.transferable_status 'The prescription status is active or renewal_requested when the pharmacy is changed.' -> prescriptions.546f17fd.status = active at frozen_time. Standard Maintenance transfer_allowed true, one_time_transfer_only false (transfer_count 0 anyway). Overwrite declared: base clause 'the prescription keeps its fills and expiration and only the pharmacy changes' replaced by the move policy's sentence that fills and expiration are kept and the per-fill days' supply becomes the retail fill length. Replacement: rx_fill_authorization.authorize_when_active 'Fills are authorized only while the prescription status is active.' -> active (the move does not change status). rx_lost_stolen_replacement (no structured gate): class allows replacement, 1 per rolling 12 months; the earlier replacement 2025-07-18 lies outside 2025-08-31..2026-08-31; no police report needed for the class; not controlled. No time eligibility applies to either write (temporal_feasibility []).\n\n[Business-object card] Target: prescription 546f17fd (losartan 50 mg tablet, internal_medicine, Dr. Colin Varga, DO). The stolen object is the 2026-08-26 mail-order dispensing (the latest rx_fill_dispensed row of 546f17fd). Rows in aggregates: 546f17fd dispensings for the 12-month sum and latest dispensing; replacement authorizations of 546f17fd within 24 months (one). Excluded: atorvastatin e8cff9e9 and its three dispensings (other prescription, not in the package), the 2025-03-12 / 2025-06-06 / 2025-07-19 dispensings (outside 12 months). No reversal or compensation rows exist.\n\n[World rows] customers (identity), billing_accounts (payer class for two factors), prescriptions 546f17fd (target) and e8cff9e9 (the other maintenance medication at the same mail-order pharmacy, a selection trap), rx_events (11 on the target: 3 authorizations incl. the earlier replacement, 8 dispensings; 4 on the atorvastatin), appointments (completed 2025-10-20, booked 2026-10-13, no-show 2025-06-10 outside 12 months), telehealth_visits (completed video visit 2026-05-12, virtual near-miss). Removing the billing row sends two factors to baseline; removing the booked visit changes the trim to 21; removing the earlier replacement changes the share to 100. Automatic clauses checked: no prescription passes its expiration, no hold exists (no lapse), the no-show is 14 months back (no attendance action), nothing is in collections.\n\n[Persona] Lorraine Pruitt, a fast-talking school bus dispatcher; volunteers only the theft, being out since Friday and the ask to replace the stolen pills; gives phone for lookup, DOB and MRN for verification (email / SSN last 4 as backups); answers 'only the losartan', 'no police report'; names Kroger Pharmacy #0419 Dublin only after the agent raises a store pharmacy; runs the handed-over move with the values the agent gives; accepts the replacement days and closes. No template labels. Weekdays checked: 2026-08-28 Friday, 2026-08-31 Monday.\n\n[Standard solution / verification] reads 0-6, unlock + user call 7-8 (days_supply 34), unlock + agent call 9-10 (days_supply_per_fill 21). Verification: scratch recompute via check_compute primitives on the handling-time worlds (step 8 on the opening world; step 10 after the move) printed move result 34 with bindings payer 34 / adherence 90 / span 90 / visit 60 (span 182 before the round-2 rework), factor baselines 30,30,30,30, all-baseline 30; replacement result 21 with lost 72, share 85, credit 34, prior 1, missed 0, share 75, trim 7, factor baselines 0,14,47,31,28, all-baseline 34; skip-move replacement 0. Gates: check_compute --task 0 COMPUTE OK; replay REPLAY OK (23/23 closure); solvability SOLVABILITY OK; grounding GROUNDING OK; cross_fire SCOPE OK; task tools TASK TOOL CONTRACT OK.\n\n[Visible-context draft recomputation] From the published prose alone: the replacement rule's prerequisite sentence + the lookup showing 'Heartland Mail Order Pharmacy' -> move first; the move rule's four allowances from billing (Medicaid 34), fill ledger (450 -> 90), prescription (1 fill of 90 days ending before expiry -> 90) and appointments (315 days -> 60) -> 34; then the replacement rule step by step -> 72 - 34 = 38, x 75% = 28.5 -> 28, - 7 = 21. Same object, order and values as gold; no second reading found (the video visit is excluded by 'a virtual visit not counting'; the atorvastatin by the customer's statement).\n\n[Revisions] r1: FK fields referral_id / converted_appointment_id seeded as '' were read as dangling -> set to null; replay re-run OK. r2: persona line that asked for the pills to be sent 'where you can pick it up' removed (hint toward the retail prerequisite).\n\n[Round 2 rework, audit audits/policy_task/prescription_renewal_handling]\n- F1 / T0-1 (SOURCE-FACTOR RED): authorization_span_allowance had tiers 'two or more fills -> days // fills' and 'exactly one -> all days', one method at fills = 1. Root cause: the tiers split on the fill count instead of on which method applies. Change: the ladder now splits on whether the fills remaining, at the per-fill supply the prescription carries, would run past expiration: yes -> fit to the authorization (days to expiry // fills, always < the written length); no -> keep the fill length as written (the carried per-fill supply); no fill -> 30. New binding written_fill_days = F('days_supply'). This world: 1 x 90 = 90 <= 182 -> 90 (the fit method would give 182). Result stays MN(34, 90, 90, 60, 90) = 34; the span factor's baseline figure stays 30 (still bears weight); all-baseline 30. Re-run: COMPUTE OK.\n- F2 (SOURCE-POLICY RED, latent): the retail fill length could exceed max_days_supply_per_fill. Change: rule adds 'and it never exceeds the largest days' supply per fill of the prescription's class', compute result = MN(four allowances, P('max_days_supply_per_fill')), and rx_fill_authorization joins base_policy_refs. The base clause is now followed, so no overwrite is needed. This world: cap 90, not binding.\n- O1: both edges' condition now carries exactly the sentence's state (pharmacy kind only); the days_supply change stays in effect. Propagated to prerequisite_closure.edges[0].condition.",
+    "user_scenario": "You are Lorraine Pruitt, a 52-year-old school bus dispatcher from Dublin, Ohio, calling the Linden Ridge Patient Services Center on a Monday morning between routes. You talk fast and a little frazzled, but you are polite and you answer exactly what you are asked. Your blood pressure pill, losartan 50 mg tablet, comes to you by mail in a three-month box. The tracking said the new box was delivered to your front porch on Friday, but when you got home it was gone - somebody took it off the porch. You took your last pill from the old bottle on Thursday, so you have been without it since Friday and you are worried. You open with: \"Hi, my blood pressure pills got stolen off my porch and I'm completely out - I need you to replace the blood pressure pills that were stolen.\" You want the replacement set up today, and you are happy for the person on the phone to set it up for you; you do not know how many pills or days you are entitled to and you do not guess. When you are asked who you are, you give your name and that the phone number on your chart is 6145554271. When you are asked to confirm your identity, you give your date of birth, March 14, 1974 (1974-03-14), and your medical record number from your visit summary, LR4308816. Only if they still need something else do you give your email, lorraine.pruitt@outlook.com, or the last four of your Social Security number, 4417. If they ask which medication was in the box, it was only the losartan; your other pills were not in that package. If they ask about a police report, you reported the missing box to the delivery company but you did not file a police report, so you have no report number. You do not bring up changing pharmacies yourself. Only if the agent tells you the prescription has to be at a store pharmacy, or asks which pharmacy near you it should go to, do you say you would use the Kroger by your house, and you name it exactly as Kroger Pharmacy #0419 Dublin. If the agent says this is something you have to do yourself and hands it to you, you do it right then with exactly the prescription, the pharmacy name and the days' supply the agent tells you, and you read back what it shows. If the agent tells you a number of days for the replacement, you do not argue with it and you accept it. Once the agent tells you the replacement has been authorized, you thank them, say you will head to the pharmacy after your shift, and end the call. You do not ask for anything else.",
+    "initial_state": {
+        "customers": {
+            "1e3c0760-498b-48fd-8429-61c9cfa79dc5": {
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "name": "Lorraine Pruitt",
+                "date_of_birth": "1974-03-14",
+                "phone_number": "6145554271",
+                "email": "lorraine.pruitt@outlook.com",
+                "medical_record_number": "LR4308816",
+                "ssn_last4": "4417",
+                "mailing_zip": "43017",
+                "profile_opened_date": "2014-05-20",
+                "portal_status": "active",
+                "primary_care_clinician": "Dr. Colin Varga, DO"
+            }
+        },
+        "billing_accounts": {
+            "9d6e82df-0a5b-4672-b2b5-87f5cd4fec52": {
+                "billing_account_id": "9d6e82df-0a5b-4672-b2b5-87f5cd4fec52",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "variant_name": "Medicaid Managed Care Account",
+                "status": "active",
+                "opened_date": "2014-05-20",
+                "closed_date": "",
+                "payer_name": "Olentangy Community Health Plan",
+                "member_number": "4190773521",
+                "coverage_effective_date": "2023-01-01",
+                "coverage_verified_date": "2026-07-30",
+                "copay_primary_usd": 0.0,
+                "copay_specialist_usd": 0.0,
+                "deductible_remaining_usd": 0.0,
+                "hold_reason": "none",
+                "hold_started_date": "",
+                "final_notice_date": "",
+                "collections_placed_date": "",
+                "hardship_approved_pct": 0.0,
+                "hardship_approved_through": "",
+                "patient_balance": 0.0,
+                "last_statement_date": "",
+                "statement_delivery": "paperless",
+                "card_on_file": false
+            }
+        },
+        "prescriptions": {
+            "546f17fd-432e-4503-ad9c-ac515e2a2e41": {
+                "prescription_id": "546f17fd-432e-4503-ad9c-ac515e2a2e41",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "variant_name": "Standard Maintenance Prescription",
+                "status": "active",
+                "transmitted_date": "2025-03-10",
+                "renewal_requested_date": "2026-02-24",
+                "renewal_channel": "pharmacy_request",
+                "renewed_date": "2026-03-02",
+                "hold_reason": "none",
+                "hold_started_date": "",
+                "prior_auth_status": "not_required",
+                "last_monitoring_lab_date": "",
+                "last_drug_screen_date": "",
+                "controlled_agreement_signed_date": "",
+                "pdmp_checked_date": "",
+                "transfer_count": 0,
+                "discontinue_reason": "none",
+                "closed_date": "",
+                "prescribed_date": "2025-03-10",
+                "medication_name": "losartan",
+                "strength": "50 mg tablet",
+                "days_supply": 90,
+                "prescriber_name": "Dr. Colin Varga, DO",
+                "prescribing_department": "internal_medicine",
+                "pharmacy_name": "Heartland Mail Order Pharmacy",
+                "refills_remaining": 1,
+                "expiration_date": "2027-03-01"
+            },
+            "e8cff9e9-fdea-4711-bc92-92dad6eed36f": {
+                "prescription_id": "e8cff9e9-fdea-4711-bc92-92dad6eed36f",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "variant_name": "Standard Maintenance Prescription",
+                "status": "active",
+                "transmitted_date": "2026-01-22",
+                "renewal_requested_date": "",
+                "renewal_channel": "none",
+                "renewed_date": "",
+                "hold_reason": "none",
+                "hold_started_date": "",
+                "prior_auth_status": "not_required",
+                "last_monitoring_lab_date": "",
+                "last_drug_screen_date": "",
+                "controlled_agreement_signed_date": "",
+                "pdmp_checked_date": "",
+                "transfer_count": 0,
+                "discontinue_reason": "none",
+                "closed_date": "",
+                "prescribed_date": "2026-01-22",
+                "medication_name": "atorvastatin",
+                "strength": "20 mg tablet",
+                "days_supply": 90,
+                "prescriber_name": "Dr. Colin Varga, DO",
+                "prescribing_department": "internal_medicine",
+                "pharmacy_name": "Heartland Mail Order Pharmacy",
+                "refills_remaining": 1,
+                "expiration_date": "2027-01-21"
+            }
+        },
+        "rx_events": {
+            "1159e271-9d5c-4203-b9ea-96e9bfdd0757": {
+                "rx_event_id": "1159e271-9d5c-4203-b9ea-96e9bfdd0757",
+                "prescription_id": "546f17fd-432e-4503-ad9c-ac515e2a2e41",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "event_type": "rx_fills_authorized",
+                "fill_date": "2025-03-10",
+                "fills": 4,
+                "days_supply_per_fill": 90,
+                "authorization_reason": "new_prescription",
+                "fill_basis": "none",
+                "dispensing_pharmacy": "",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "7ccf106d-2c53-4b11-ac9d-35be2cd78aaa": {
+                "rx_event_id": "7ccf106d-2c53-4b11-ac9d-35be2cd78aaa",
+                "prescription_id": "546f17fd-432e-4503-ad9c-ac515e2a2e41",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2025-03-12",
+                "fills": 1,
+                "days_supply_per_fill": 90,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Heartland Mail Order Pharmacy",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "b37bc18a-16be-4fc2-9e58-45938a7a2ec3": {
+                "rx_event_id": "b37bc18a-16be-4fc2-9e58-45938a7a2ec3",
+                "prescription_id": "546f17fd-432e-4503-ad9c-ac515e2a2e41",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2025-06-06",
+                "fills": 1,
+                "days_supply_per_fill": 90,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Heartland Mail Order Pharmacy",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "14351bf1-9d71-4960-a513-7044c1323a06": {
+                "rx_event_id": "14351bf1-9d71-4960-a513-7044c1323a06",
+                "prescription_id": "546f17fd-432e-4503-ad9c-ac515e2a2e41",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "event_type": "rx_fills_authorized",
+                "fill_date": "2025-07-18",
+                "fills": 1,
+                "days_supply_per_fill": 30,
+                "authorization_reason": "replacement_fill",
+                "fill_basis": "none",
+                "dispensing_pharmacy": "",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "0dff2461-867a-4ee9-bd49-25ff62151fab": {
+                "rx_event_id": "0dff2461-867a-4ee9-bd49-25ff62151fab",
+                "prescription_id": "546f17fd-432e-4503-ad9c-ac515e2a2e41",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2025-07-19",
+                "fills": 1,
+                "days_supply_per_fill": 30,
+                "authorization_reason": "none",
+                "fill_basis": "replacement",
+                "dispensing_pharmacy": "Heartland Mail Order Pharmacy",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "5e2488b8-2f44-4a7d-8e61-be0b9312161a": {
+                "rx_event_id": "5e2488b8-2f44-4a7d-8e61-be0b9312161a",
+                "prescription_id": "546f17fd-432e-4503-ad9c-ac515e2a2e41",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2025-09-02",
+                "fills": 1,
+                "days_supply_per_fill": 90,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Heartland Mail Order Pharmacy",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "1fb99794-d186-4183-9e93-a9c12d56a845": {
+                "rx_event_id": "1fb99794-d186-4183-9e93-a9c12d56a845",
+                "prescription_id": "546f17fd-432e-4503-ad9c-ac515e2a2e41",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2025-11-28",
+                "fills": 1,
+                "days_supply_per_fill": 90,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Heartland Mail Order Pharmacy",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "a4d3361a-0fab-4254-a8f1-29b7411d09e9": {
+                "rx_event_id": "a4d3361a-0fab-4254-a8f1-29b7411d09e9",
+                "prescription_id": "546f17fd-432e-4503-ad9c-ac515e2a2e41",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "event_type": "rx_fills_authorized",
+                "fill_date": "2026-03-02",
+                "fills": 4,
+                "days_supply_per_fill": 90,
+                "authorization_reason": "renewal",
+                "fill_basis": "none",
+                "dispensing_pharmacy": "",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "9c942446-14b3-4e96-9e98-faf1026614b0": {
+                "rx_event_id": "9c942446-14b3-4e96-9e98-faf1026614b0",
+                "prescription_id": "546f17fd-432e-4503-ad9c-ac515e2a2e41",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2026-03-03",
+                "fills": 1,
+                "days_supply_per_fill": 90,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Heartland Mail Order Pharmacy",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "bb4dae9f-bc6f-4c5e-8274-85fb051a8da8": {
+                "rx_event_id": "bb4dae9f-bc6f-4c5e-8274-85fb051a8da8",
+                "prescription_id": "546f17fd-432e-4503-ad9c-ac515e2a2e41",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2026-05-29",
+                "fills": 1,
+                "days_supply_per_fill": 90,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Heartland Mail Order Pharmacy",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "79d38623-3ab9-41e7-9dd8-53ed66ba862b": {
+                "rx_event_id": "79d38623-3ab9-41e7-9dd8-53ed66ba862b",
+                "prescription_id": "546f17fd-432e-4503-ad9c-ac515e2a2e41",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2026-08-26",
+                "fills": 1,
+                "days_supply_per_fill": 90,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Heartland Mail Order Pharmacy",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "4e9c5962-99a4-4a33-acbb-4131a8b23011": {
+                "rx_event_id": "4e9c5962-99a4-4a33-acbb-4131a8b23011",
+                "prescription_id": "e8cff9e9-fdea-4711-bc92-92dad6eed36f",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "event_type": "rx_fills_authorized",
+                "fill_date": "2026-01-22",
+                "fills": 4,
+                "days_supply_per_fill": 90,
+                "authorization_reason": "new_prescription",
+                "fill_basis": "none",
+                "dispensing_pharmacy": "",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "d1129e24-8c0a-407e-a7a4-7c5cb908df72": {
+                "rx_event_id": "d1129e24-8c0a-407e-a7a4-7c5cb908df72",
+                "prescription_id": "e8cff9e9-fdea-4711-bc92-92dad6eed36f",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2026-01-24",
+                "fills": 1,
+                "days_supply_per_fill": 90,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Heartland Mail Order Pharmacy",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "3c946af2-3143-4dd4-82cc-1e543793bc9a": {
+                "rx_event_id": "3c946af2-3143-4dd4-82cc-1e543793bc9a",
+                "prescription_id": "e8cff9e9-fdea-4711-bc92-92dad6eed36f",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2026-04-21",
+                "fills": 1,
+                "days_supply_per_fill": 90,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Heartland Mail Order Pharmacy",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "f8f17834-5079-41df-9af5-e5253d5a9c47": {
+                "rx_event_id": "f8f17834-5079-41df-9af5-e5253d5a9c47",
+                "prescription_id": "e8cff9e9-fdea-4711-bc92-92dad6eed36f",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2026-07-17",
+                "fills": 1,
+                "days_supply_per_fill": 90,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Heartland Mail Order Pharmacy",
+                "void_reason": "none",
+                "police_report_number": ""
+            }
+        },
+        "appointments": {
+            "296a2ab7-6136-4769-933e-75b86fff0fa9": {
+                "appointment_id": "296a2ab7-6136-4769-933e-75b86fff0fa9",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "variant_name": "Established Patient Office Visit",
+                "status": "no_show",
+                "booked_date": "2025-05-20",
+                "scheduled_date": "2025-06-10",
+                "scheduled_time": "09:40",
+                "department": "internal_medicine",
+                "clinician_name": "Dr. Colin Varga, DO",
+                "clinic_location": "Linden Ridge Dublin",
+                "booking_channel": "phone",
+                "encounter_number": "ENC-41730562",
+                "referral_id": null,
+                "reschedule_count": 0,
+                "last_rescheduled_date": "",
+                "confirmed_date": "",
+                "checked_in_at": "",
+                "arrival_minutes_late": 0,
+                "cancelled_at": "",
+                "cancel_reason": "none",
+                "cancel_timing": "not_cancelled",
+                "deposit_held_usd": 0.0,
+                "closed_date": "2025-06-10"
+            },
+            "6047b080-9495-4cd5-829e-d565d9d5a235": {
+                "appointment_id": "6047b080-9495-4cd5-829e-d565d9d5a235",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "variant_name": "Established Patient Office Visit",
+                "status": "completed",
+                "booked_date": "2025-09-29",
+                "scheduled_date": "2025-10-20",
+                "scheduled_time": "10:20",
+                "department": "internal_medicine",
+                "clinician_name": "Dr. Colin Varga, DO",
+                "clinic_location": "Linden Ridge Dublin",
+                "booking_channel": "phone",
+                "encounter_number": "ENC-42285417",
+                "referral_id": null,
+                "reschedule_count": 0,
+                "last_rescheduled_date": "",
+                "confirmed_date": "2025-10-18",
+                "checked_in_at": "10:12",
+                "arrival_minutes_late": 0,
+                "cancelled_at": "",
+                "cancel_reason": "none",
+                "cancel_timing": "not_cancelled",
+                "deposit_held_usd": 0.0,
+                "closed_date": "2025-10-20"
+            },
+            "ef8c9a71-d3ad-43dd-9a70-b1dfc45440f1": {
+                "appointment_id": "ef8c9a71-d3ad-43dd-9a70-b1dfc45440f1",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "variant_name": "Established Patient Office Visit",
+                "status": "booked",
+                "booked_date": "2026-08-12",
+                "scheduled_date": "2026-10-13",
+                "scheduled_time": "08:50",
+                "department": "internal_medicine",
+                "clinician_name": "Dr. Colin Varga, DO",
+                "clinic_location": "Linden Ridge Dublin",
+                "booking_channel": "patient_portal",
+                "encounter_number": "ENC-46019238",
+                "referral_id": null,
+                "reschedule_count": 0,
+                "last_rescheduled_date": "",
+                "confirmed_date": "",
+                "checked_in_at": "",
+                "arrival_minutes_late": 0,
+                "cancelled_at": "",
+                "cancel_reason": "none",
+                "cancel_timing": "not_cancelled",
+                "deposit_held_usd": 0.0,
+                "closed_date": ""
+            }
+        },
+        "telehealth_visits": {
+            "bb09d7d6-d967-4977-a208-31983dc32217": {
+                "telehealth_visit_id": "bb09d7d6-d967-4977-a208-31983dc32217",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "variant_name": "Primary Care Video Visit",
+                "status": "completed",
+                "requested_date": "2026-05-08",
+                "scheduled_date": "2026-05-12",
+                "scheduled_time": "13:30",
+                "department": "internal_medicine",
+                "clinician_name": "Dr. Colin Varga, DO",
+                "encounter_number": "ENC-44561903",
+                "patient_location_state": "OH",
+                "referral_id": null,
+                "prepaid_balance_usd": 0.0,
+                "reschedule_count": 0,
+                "connected_minutes": 17,
+                "end_reason": "completed_normally",
+                "cancel_timing": "not_cancelled",
+                "converted_appointment_id": null,
+                "closed_date": "2026-05-12"
+            }
+        }
+    },
+    "db_closure": {
+        "billing_accounts": {
+            "9d6e82df-0a5b-4672-b2b5-87f5cd4fec52": {
+                "billing_account_id": "9d6e82df-0a5b-4672-b2b5-87f5cd4fec52",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "variant_name": "Medicaid Managed Care Account",
+                "status": "active",
+                "opened_date": "2014-05-20",
+                "closed_date": "",
+                "payer_name": "Olentangy Community Health Plan",
+                "member_number": "4190773521",
+                "coverage_effective_date": "2023-01-01",
+                "coverage_verified_date": "2026-07-30",
+                "copay_primary_usd": 0.0,
+                "copay_specialist_usd": 0.0,
+                "deductible_remaining_usd": 0.0,
+                "hold_reason": "none",
+                "hold_started_date": "",
+                "final_notice_date": "",
+                "collections_placed_date": "",
+                "hardship_approved_pct": 0.0,
+                "hardship_approved_through": "",
+                "patient_balance": 0.0,
+                "last_statement_date": "",
+                "statement_delivery": "paperless",
+                "card_on_file": false
+            }
+        },
+        "rx_events": {
+            "f8f17834-5079-41df-9af5-e5253d5a9c47": {
+                "rx_event_id": "f8f17834-5079-41df-9af5-e5253d5a9c47",
+                "prescription_id": "e8cff9e9-fdea-4711-bc92-92dad6eed36f",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2026-07-17",
+                "fills": 1,
+                "days_supply_per_fill": 90,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Heartland Mail Order Pharmacy",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "9c942446-14b3-4e96-9e98-faf1026614b0": {
+                "rx_event_id": "9c942446-14b3-4e96-9e98-faf1026614b0",
+                "prescription_id": "546f17fd-432e-4503-ad9c-ac515e2a2e41",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2026-03-03",
+                "fills": 1,
+                "days_supply_per_fill": 90,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Heartland Mail Order Pharmacy",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "0dff2461-867a-4ee9-bd49-25ff62151fab": {
+                "rx_event_id": "0dff2461-867a-4ee9-bd49-25ff62151fab",
+                "prescription_id": "546f17fd-432e-4503-ad9c-ac515e2a2e41",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2025-07-19",
+                "fills": 1,
+                "days_supply_per_fill": 30,
+                "authorization_reason": "none",
+                "fill_basis": "replacement",
+                "dispensing_pharmacy": "Heartland Mail Order Pharmacy",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "4e9c5962-99a4-4a33-acbb-4131a8b23011": {
+                "rx_event_id": "4e9c5962-99a4-4a33-acbb-4131a8b23011",
+                "prescription_id": "e8cff9e9-fdea-4711-bc92-92dad6eed36f",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "event_type": "rx_fills_authorized",
+                "fill_date": "2026-01-22",
+                "fills": 4,
+                "days_supply_per_fill": 90,
+                "authorization_reason": "new_prescription",
+                "fill_basis": "none",
+                "dispensing_pharmacy": "",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "1fb99794-d186-4183-9e93-a9c12d56a845": {
+                "rx_event_id": "1fb99794-d186-4183-9e93-a9c12d56a845",
+                "prescription_id": "546f17fd-432e-4503-ad9c-ac515e2a2e41",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2025-11-28",
+                "fills": 1,
+                "days_supply_per_fill": 90,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Heartland Mail Order Pharmacy",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "14351bf1-9d71-4960-a513-7044c1323a06": {
+                "rx_event_id": "14351bf1-9d71-4960-a513-7044c1323a06",
+                "prescription_id": "546f17fd-432e-4503-ad9c-ac515e2a2e41",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "event_type": "rx_fills_authorized",
+                "fill_date": "2025-07-18",
+                "fills": 1,
+                "days_supply_per_fill": 30,
+                "authorization_reason": "replacement_fill",
+                "fill_basis": "none",
+                "dispensing_pharmacy": "",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "1159e271-9d5c-4203-b9ea-96e9bfdd0757": {
+                "rx_event_id": "1159e271-9d5c-4203-b9ea-96e9bfdd0757",
+                "prescription_id": "546f17fd-432e-4503-ad9c-ac515e2a2e41",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "event_type": "rx_fills_authorized",
+                "fill_date": "2025-03-10",
+                "fills": 4,
+                "days_supply_per_fill": 90,
+                "authorization_reason": "new_prescription",
+                "fill_basis": "none",
+                "dispensing_pharmacy": "",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "7ccf106d-2c53-4b11-ac9d-35be2cd78aaa": {
+                "rx_event_id": "7ccf106d-2c53-4b11-ac9d-35be2cd78aaa",
+                "prescription_id": "546f17fd-432e-4503-ad9c-ac515e2a2e41",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2025-03-12",
+                "fills": 1,
+                "days_supply_per_fill": 90,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Heartland Mail Order Pharmacy",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "5e2488b8-2f44-4a7d-8e61-be0b9312161a": {
+                "rx_event_id": "5e2488b8-2f44-4a7d-8e61-be0b9312161a",
+                "prescription_id": "546f17fd-432e-4503-ad9c-ac515e2a2e41",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2025-09-02",
+                "fills": 1,
+                "days_supply_per_fill": 90,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Heartland Mail Order Pharmacy",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "b37bc18a-16be-4fc2-9e58-45938a7a2ec3": {
+                "rx_event_id": "b37bc18a-16be-4fc2-9e58-45938a7a2ec3",
+                "prescription_id": "546f17fd-432e-4503-ad9c-ac515e2a2e41",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2025-06-06",
+                "fills": 1,
+                "days_supply_per_fill": 90,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Heartland Mail Order Pharmacy",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "79d38623-3ab9-41e7-9dd8-53ed66ba862b": {
+                "rx_event_id": "79d38623-3ab9-41e7-9dd8-53ed66ba862b",
+                "prescription_id": "546f17fd-432e-4503-ad9c-ac515e2a2e41",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2026-08-26",
+                "fills": 1,
+                "days_supply_per_fill": 90,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Heartland Mail Order Pharmacy",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "bb4dae9f-bc6f-4c5e-8274-85fb051a8da8": {
+                "rx_event_id": "bb4dae9f-bc6f-4c5e-8274-85fb051a8da8",
+                "prescription_id": "546f17fd-432e-4503-ad9c-ac515e2a2e41",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2026-05-29",
+                "fills": 1,
+                "days_supply_per_fill": 90,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Heartland Mail Order Pharmacy",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "3c946af2-3143-4dd4-82cc-1e543793bc9a": {
+                "rx_event_id": "3c946af2-3143-4dd4-82cc-1e543793bc9a",
+                "prescription_id": "e8cff9e9-fdea-4711-bc92-92dad6eed36f",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2026-04-21",
+                "fills": 1,
+                "days_supply_per_fill": 90,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Heartland Mail Order Pharmacy",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "a4d3361a-0fab-4254-a8f1-29b7411d09e9": {
+                "rx_event_id": "a4d3361a-0fab-4254-a8f1-29b7411d09e9",
+                "prescription_id": "546f17fd-432e-4503-ad9c-ac515e2a2e41",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "event_type": "rx_fills_authorized",
+                "fill_date": "2026-03-02",
+                "fills": 4,
+                "days_supply_per_fill": 90,
+                "authorization_reason": "renewal",
+                "fill_basis": "none",
+                "dispensing_pharmacy": "",
+                "void_reason": "none",
+                "police_report_number": ""
+            },
+            "d1129e24-8c0a-407e-a7a4-7c5cb908df72": {
+                "rx_event_id": "d1129e24-8c0a-407e-a7a4-7c5cb908df72",
+                "prescription_id": "e8cff9e9-fdea-4711-bc92-92dad6eed36f",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "event_type": "rx_fill_dispensed",
+                "fill_date": "2026-01-24",
+                "fills": 1,
+                "days_supply_per_fill": 90,
+                "authorization_reason": "none",
+                "fill_basis": "regular",
+                "dispensing_pharmacy": "Heartland Mail Order Pharmacy",
+                "void_reason": "none",
+                "police_report_number": ""
+            }
+        },
+        "telehealth_visits": {
+            "bb09d7d6-d967-4977-a208-31983dc32217": {
+                "telehealth_visit_id": "bb09d7d6-d967-4977-a208-31983dc32217",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "variant_name": "Primary Care Video Visit",
+                "status": "completed",
+                "requested_date": "2026-05-08",
+                "scheduled_date": "2026-05-12",
+                "scheduled_time": "13:30",
+                "department": "internal_medicine",
+                "clinician_name": "Dr. Colin Varga, DO",
+                "encounter_number": "ENC-44561903",
+                "patient_location_state": "OH",
+                "referral_id": null,
+                "prepaid_balance_usd": 0.0,
+                "reschedule_count": 0,
+                "connected_minutes": 17,
+                "end_reason": "completed_normally",
+                "cancel_timing": "not_cancelled",
+                "converted_appointment_id": null,
+                "closed_date": "2026-05-12"
+            }
+        },
+        "prescriptions": {
+            "e8cff9e9-fdea-4711-bc92-92dad6eed36f": {
+                "prescription_id": "e8cff9e9-fdea-4711-bc92-92dad6eed36f",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "variant_name": "Standard Maintenance Prescription",
+                "status": "active",
+                "transmitted_date": "2026-01-22",
+                "renewal_requested_date": "",
+                "renewal_channel": "none",
+                "renewed_date": "",
+                "hold_reason": "none",
+                "hold_started_date": "",
+                "prior_auth_status": "not_required",
+                "last_monitoring_lab_date": "",
+                "last_drug_screen_date": "",
+                "controlled_agreement_signed_date": "",
+                "pdmp_checked_date": "",
+                "transfer_count": 0,
+                "discontinue_reason": "none",
+                "closed_date": "",
+                "prescribed_date": "2026-01-22",
+                "medication_name": "atorvastatin",
+                "strength": "20 mg tablet",
+                "days_supply": 90,
+                "prescriber_name": "Dr. Colin Varga, DO",
+                "prescribing_department": "internal_medicine",
+                "pharmacy_name": "Heartland Mail Order Pharmacy",
+                "refills_remaining": 1,
+                "expiration_date": "2027-01-21"
+            },
+            "546f17fd-432e-4503-ad9c-ac515e2a2e41": {
+                "prescription_id": "546f17fd-432e-4503-ad9c-ac515e2a2e41",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "variant_name": "Standard Maintenance Prescription",
+                "status": "active",
+                "transmitted_date": "2025-03-10",
+                "renewal_requested_date": "2026-02-24",
+                "renewal_channel": "pharmacy_request",
+                "renewed_date": "2026-03-02",
+                "hold_reason": "none",
+                "hold_started_date": "",
+                "prior_auth_status": "not_required",
+                "last_monitoring_lab_date": "",
+                "last_drug_screen_date": "",
+                "controlled_agreement_signed_date": "",
+                "pdmp_checked_date": "",
+                "transfer_count": 0,
+                "discontinue_reason": "none",
+                "closed_date": "",
+                "prescribed_date": "2025-03-10",
+                "medication_name": "losartan",
+                "strength": "50 mg tablet",
+                "days_supply": 90,
+                "prescriber_name": "Dr. Colin Varga, DO",
+                "prescribing_department": "internal_medicine",
+                "pharmacy_name": "Heartland Mail Order Pharmacy",
+                "refills_remaining": 1,
+                "expiration_date": "2027-03-01"
+            }
+        },
+        "appointments": {
+            "ef8c9a71-d3ad-43dd-9a70-b1dfc45440f1": {
+                "appointment_id": "ef8c9a71-d3ad-43dd-9a70-b1dfc45440f1",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "variant_name": "Established Patient Office Visit",
+                "status": "booked",
+                "booked_date": "2026-08-12",
+                "scheduled_date": "2026-10-13",
+                "scheduled_time": "08:50",
+                "department": "internal_medicine",
+                "clinician_name": "Dr. Colin Varga, DO",
+                "clinic_location": "Linden Ridge Dublin",
+                "booking_channel": "patient_portal",
+                "encounter_number": "ENC-46019238",
+                "referral_id": null,
+                "reschedule_count": 0,
+                "last_rescheduled_date": "",
+                "confirmed_date": "",
+                "checked_in_at": "",
+                "arrival_minutes_late": 0,
+                "cancelled_at": "",
+                "cancel_reason": "none",
+                "cancel_timing": "not_cancelled",
+                "deposit_held_usd": 0.0,
+                "closed_date": ""
+            },
+            "6047b080-9495-4cd5-829e-d565d9d5a235": {
+                "appointment_id": "6047b080-9495-4cd5-829e-d565d9d5a235",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "variant_name": "Established Patient Office Visit",
+                "status": "completed",
+                "booked_date": "2025-09-29",
+                "scheduled_date": "2025-10-20",
+                "scheduled_time": "10:20",
+                "department": "internal_medicine",
+                "clinician_name": "Dr. Colin Varga, DO",
+                "clinic_location": "Linden Ridge Dublin",
+                "booking_channel": "phone",
+                "encounter_number": "ENC-42285417",
+                "referral_id": null,
+                "reschedule_count": 0,
+                "last_rescheduled_date": "",
+                "confirmed_date": "2025-10-18",
+                "checked_in_at": "10:12",
+                "arrival_minutes_late": 0,
+                "cancelled_at": "",
+                "cancel_reason": "none",
+                "cancel_timing": "not_cancelled",
+                "deposit_held_usd": 0.0,
+                "closed_date": "2025-10-20"
+            },
+            "296a2ab7-6136-4769-933e-75b86fff0fa9": {
+                "appointment_id": "296a2ab7-6136-4769-933e-75b86fff0fa9",
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "variant_name": "Established Patient Office Visit",
+                "status": "no_show",
+                "booked_date": "2025-05-20",
+                "scheduled_date": "2025-06-10",
+                "scheduled_time": "09:40",
+                "department": "internal_medicine",
+                "clinician_name": "Dr. Colin Varga, DO",
+                "clinic_location": "Linden Ridge Dublin",
+                "booking_channel": "phone",
+                "encounter_number": "ENC-41730562",
+                "referral_id": null,
+                "reschedule_count": 0,
+                "last_rescheduled_date": "",
+                "confirmed_date": "",
+                "checked_in_at": "",
+                "arrival_minutes_late": 0,
+                "cancelled_at": "",
+                "cancel_reason": "none",
+                "cancel_timing": "not_cancelled",
+                "deposit_held_usd": 0.0,
+                "closed_date": "2025-06-10"
+            }
+        },
+        "customers": {
+            "1e3c0760-498b-48fd-8429-61c9cfa79dc5": {
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "name": "Lorraine Pruitt",
+                "date_of_birth": "1974-03-14",
+                "phone_number": "6145554271",
+                "email": "lorraine.pruitt@outlook.com",
+                "medical_record_number": "LR4308816",
+                "ssn_last4": "4417",
+                "mailing_zip": "43017",
+                "profile_opened_date": "2014-05-20",
+                "portal_status": "active",
+                "primary_care_clinician": "Dr. Colin Varga, DO"
+            }
+        }
+    },
+    "db_closure_matches_initial_state": true,
+    "solvability_contract": {
+        "request_binding_version": 1,
+        "request_alignment": [
+            {
+                "claim": "The patient asks for a replacement of her stolen losartan supply today, and lets the agent set it up.",
+                "evidence": [
+                    "user_scenario:I need you to replace the blood pressure pills that were stolen",
+                    "user_scenario:You want the replacement set up today, and you are happy for the person on the phone to set it up for you"
+                ]
+            }
+        ],
+        "gold_actions": [
+            {
+                "step": 8,
+                "business_effect": "The patient herself moves prescription 546f17fd (losartan 50 mg tablet) from Heartland Mail Order Pharmacy to Kroger Pharmacy #0419 Dublin and records the retail fill length of 34 days per fill; transfer_count goes from 0 to 1.",
+                "request_binding": {
+                    "action_semantics": "The replacement the patient asks for can only take its days' supply once the prescription stands at a retail pharmacy; the prescription stands at a mail-order pharmacy, so the move to the retail pharmacy the patient names is the write that serves her stated request. The move is the patient's own disposition of her prescription (a patient may move the remaining fills to another pharmacy), so it is handed to her.",
+                    "intent_source": {
+                        "kind": "user_scenario",
+                        "evidence": [
+                            "user_scenario:replace the blood pressure pills that were stolen"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "Kroger Pharmacy #0419 Dublin",
+                        "evidence": [
+                            "user_scenario:you name it exactly as Kroger Pharmacy #0419 Dublin"
+                        ],
+                        "action_arg": "pharmacy_name",
+                        "value": "Kroger Pharmacy #0419 Dublin"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "performed_by_this_tool",
+                    "fact": "The prescription stands at a mail-order pharmacy at the opening; the move itself lands synchronously in this call.",
+                    "evidence": [
+                        "initial_state.prescriptions.546f17fd-432e-4503-ad9c-ac515e2a2e41.pharmacy_name",
+                        "initial_state.prescriptions.546f17fd-432e-4503-ad9c-ac515e2a2e41.status"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "rx_pharmacy_transfer",
+                        "eligibility_id": "transferable_status",
+                        "condition": "The prescription status is active or renewal_requested when the pharmacy is changed.",
+                        "evidence": [
+                            "initial_state.prescriptions.546f17fd-432e-4503-ad9c-ac515e2a2e41.status",
+                            "initial_state.prescriptions.546f17fd-432e-4503-ad9c-ac515e2a2e41.prescription_id"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "prescriptions.prescription_id",
+                                "source": "initial_state.prescriptions.546f17fd-432e-4503-ad9c-ac515e2a2e41.prescription_id",
+                                "action_arg": "prescription_id"
+                            }
+                        ],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 10,
+                "business_effect": "One replacement fill of 21 days is authorized on prescription 546f17fd (reason replacement_fill, 1 fill, dated 2026-08-31) at the pharmacy it now stands at; refills_remaining goes from 1 to 2.",
+                "request_binding": {
+                    "action_semantics": "The patient reports medication stolen and asks for it to be replaced; the lost or stolen replacement fill is the only write that authorizes a fill for missing medication (a bridge needs a held renewal, a renewal needs a pending request).",
+                    "intent_source": {
+                        "kind": "user_scenario",
+                        "evidence": [
+                            "user_scenario:replace the blood pressure pills that were stolen"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "replace the blood pressure pills that were stolen",
+                        "evidence": [
+                            "user_scenario:replace the blood pressure pills that were stolen"
+                        ],
+                        "value": "replacement_fill"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "performed_by_this_tool",
+                    "fact": "The replacement authorization is posted by this call; the retail per-fill days' supply it credits was recorded by the patient's move at step 8.",
+                    "evidence": [
+                        "prior_step:8",
+                        "initial_state.prescriptions.546f17fd-432e-4503-ad9c-ac515e2a2e41.refills_remaining"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "rx_fill_authorization",
+                        "eligibility_id": "authorize_when_active",
+                        "condition": "Fills are authorized only while the prescription status is active.",
+                        "evidence": [
+                            "initial_state.prescriptions.546f17fd-432e-4503-ad9c-ac515e2a2e41.status",
+                            "initial_state.prescriptions.546f17fd-432e-4503-ad9c-ac515e2a2e41.prescription_id"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "prescriptions.prescription_id",
+                                "source": "initial_state.prescriptions.546f17fd-432e-4503-ad9c-ac515e2a2e41.prescription_id",
+                                "action_arg": "prescription_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "rx_lost_stolen_replacement",
+                        "eligibility_id": "policy_scope",
+                        "condition": "A Standard Maintenance Prescription allows one lost or stolen replacement fill per rolling 12 months; the only earlier replacement on this prescription was authorized on 2025-07-18, outside the rolling 12 months ending 2026-08-31; the class needs no police report and the prescription is not controlled.",
+                        "evidence": [
+                            "initial_state.prescriptions.546f17fd-432e-4503-ad9c-ac515e2a2e41.variant_name",
+                            "initial_state.rx_events.14351bf1-9d71-4960-a513-7044c1323a06.fill_date",
+                            "frozen_time"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    }
+                ]
+            }
+        ],
+        "temporal_feasibility": [],
+        "required_user_inputs": [
+            {
+                "information": "phone number used to locate the patient profile",
+                "source": "user_scenario:the phone number on your chart is 6145554271"
+            },
+            {
+                "information": "date of birth for identity verification",
+                "source": "user_scenario:(1974-03-14)"
+            },
+            {
+                "information": "medical record number for identity verification",
+                "source": "user_scenario:your medical record number from your visit summary, LR4308816"
+            },
+            {
+                "information": "which medication was lost (selects prescription 546f17fd, not the atorvastatin)",
+                "source": "user_scenario:it was only the losartan"
+            },
+            {
+                "information": "the retail pharmacy the patient chooses for the prescription",
+                "source": "user_scenario:you name it exactly as Kroger Pharmacy #0419 Dublin"
+            },
+            {
+                "information": "whether a police report number exists (none; the class does not require one)",
+                "source": "user_scenario:you did not file a police report, so you have no report number"
+            },
+            {
+                "information": "authorization for the agent to set up the replacement",
+                "source": "user_scenario:you are happy for the person on the phone to set it up for you"
+            }
+        ],
+        "seed_consistency": [
+            {
+                "row": "initial_state.prescriptions.546f17fd-432e-4503-ad9c-ac515e2a2e41",
+                "policy_id": "rx_fill_authorization",
+                "check": "Standard Maintenance Prescription, 90 days per fill (the mail-order days' supply of the class), prescribed 2025-03-10, renewed 2026-03-02 so expiration_date = 2026-03-02 + 365 - 1 = 2027-03-01; refills_remaining 1 = 4 (new) + 1 (replacement) + 4 (renewal) authorized - 8 dispensed; status active, transfer_count 0, no hold.",
+                "evidence": [
+                    "initial_state.prescriptions.546f17fd-432e-4503-ad9c-ac515e2a2e41.expiration_date",
+                    "initial_state.prescriptions.546f17fd-432e-4503-ad9c-ac515e2a2e41.refills_remaining"
+                ]
+            },
+            {
+                "row": "initial_state.prescriptions.e8cff9e9-fdea-4711-bc92-92dad6eed36f",
+                "policy_id": "rx_fill_authorization",
+                "check": "Standard Maintenance atorvastatin at the same mail-order pharmacy, prescribed 2026-01-22 (expiration 2027-01-21), 4 fills authorized and 3 dispensed so refills_remaining 1; not part of the stolen package and not touched by the gold.",
+                "evidence": [
+                    "initial_state.prescriptions.e8cff9e9-fdea-4711-bc92-92dad6eed36f.refills_remaining",
+                    "initial_state.prescriptions.e8cff9e9-fdea-4711-bc92-92dad6eed36f.expiration_date"
+                ]
+            },
+            {
+                "row": "initial_state.rx_events.1159e271-9d5c-4203-b9ea-96e9bfdd0757",
+                "policy_id": "rx_fill_authorization",
+                "check": "losartan 546f17fd: new_prescription authorization of 4 fill(s) x 90 days on 2025-03-10, posted while the prescription was active; consistent with the class fill rule (min(3+1, 360/90)=4) or, for the replacement, one fill.",
+                "evidence": [
+                    "initial_state.rx_events.1159e271-9d5c-4203-b9ea-96e9bfdd0757.fill_date",
+                    "initial_state.rx_events.1159e271-9d5c-4203-b9ea-96e9bfdd0757.prescription_id"
+                ]
+            },
+            {
+                "row": "initial_state.rx_events.7ccf106d-2c53-4b11-ac9d-35be2cd78aaa",
+                "policy_id": "rx_fill_timing",
+                "check": "losartan 546f17fd: regular dispensing of 90 days on 2025-03-12 by Heartland Mail Order Pharmacy, while fills remained and on or before the expiration date; spacing respects the 75 percent early-refill threshold.",
+                "evidence": [
+                    "initial_state.rx_events.7ccf106d-2c53-4b11-ac9d-35be2cd78aaa.fill_date",
+                    "initial_state.rx_events.7ccf106d-2c53-4b11-ac9d-35be2cd78aaa.prescription_id"
+                ]
+            },
+            {
+                "row": "initial_state.rx_events.b37bc18a-16be-4fc2-9e58-45938a7a2ec3",
+                "policy_id": "rx_fill_timing",
+                "check": "losartan 546f17fd: regular dispensing of 90 days on 2025-06-06 by Heartland Mail Order Pharmacy, while fills remained and on or before the expiration date; spacing respects the 75 percent early-refill threshold.",
+                "evidence": [
+                    "initial_state.rx_events.b37bc18a-16be-4fc2-9e58-45938a7a2ec3.fill_date",
+                    "initial_state.rx_events.b37bc18a-16be-4fc2-9e58-45938a7a2ec3.prescription_id"
+                ]
+            },
+            {
+                "row": "initial_state.rx_events.14351bf1-9d71-4960-a513-7044c1323a06",
+                "policy_id": "rx_lost_stolen_replacement",
+                "check": "losartan 546f17fd: replacement_fill authorization of 1 fill(s) x 30 days on 2025-07-18, posted while the prescription was active; consistent with the class fill rule (min(3+1, 360/90)=4) or, for the replacement, one fill.",
+                "evidence": [
+                    "initial_state.rx_events.14351bf1-9d71-4960-a513-7044c1323a06.fill_date",
+                    "initial_state.rx_events.14351bf1-9d71-4960-a513-7044c1323a06.prescription_id"
+                ]
+            },
+            {
+                "row": "initial_state.rx_events.0dff2461-867a-4ee9-bd49-25ff62151fab",
+                "policy_id": "rx_fill_timing",
+                "check": "losartan 546f17fd: replacement dispensing of 30 days on 2025-07-19 by Heartland Mail Order Pharmacy, while fills remained and on or before the expiration date; spacing respects the 75 percent early-refill threshold.",
+                "evidence": [
+                    "initial_state.rx_events.0dff2461-867a-4ee9-bd49-25ff62151fab.fill_date",
+                    "initial_state.rx_events.0dff2461-867a-4ee9-bd49-25ff62151fab.prescription_id"
+                ]
+            },
+            {
+                "row": "initial_state.rx_events.5e2488b8-2f44-4a7d-8e61-be0b9312161a",
+                "policy_id": "rx_fill_timing",
+                "check": "losartan 546f17fd: regular dispensing of 90 days on 2025-09-02 by Heartland Mail Order Pharmacy, while fills remained and on or before the expiration date; spacing respects the 75 percent early-refill threshold.",
+                "evidence": [
+                    "initial_state.rx_events.5e2488b8-2f44-4a7d-8e61-be0b9312161a.fill_date",
+                    "initial_state.rx_events.5e2488b8-2f44-4a7d-8e61-be0b9312161a.prescription_id"
+                ]
+            },
+            {
+                "row": "initial_state.rx_events.1fb99794-d186-4183-9e93-a9c12d56a845",
+                "policy_id": "rx_fill_timing",
+                "check": "losartan 546f17fd: regular dispensing of 90 days on 2025-11-28 by Heartland Mail Order Pharmacy, while fills remained and on or before the expiration date; spacing respects the 75 percent early-refill threshold.",
+                "evidence": [
+                    "initial_state.rx_events.1fb99794-d186-4183-9e93-a9c12d56a845.fill_date",
+                    "initial_state.rx_events.1fb99794-d186-4183-9e93-a9c12d56a845.prescription_id"
+                ]
+            },
+            {
+                "row": "initial_state.rx_events.a4d3361a-0fab-4254-a8f1-29b7411d09e9",
+                "policy_id": "rx_fill_authorization",
+                "check": "losartan 546f17fd: renewal authorization of 4 fill(s) x 90 days on 2026-03-02, posted while the prescription was active; consistent with the class fill rule (min(3+1, 360/90)=4) or, for the replacement, one fill.",
+                "evidence": [
+                    "initial_state.rx_events.a4d3361a-0fab-4254-a8f1-29b7411d09e9.fill_date",
+                    "initial_state.rx_events.a4d3361a-0fab-4254-a8f1-29b7411d09e9.prescription_id"
+                ]
+            },
+            {
+                "row": "initial_state.rx_events.9c942446-14b3-4e96-9e98-faf1026614b0",
+                "policy_id": "rx_fill_timing",
+                "check": "losartan 546f17fd: regular dispensing of 90 days on 2026-03-03 by Heartland Mail Order Pharmacy, while fills remained and on or before the expiration date; spacing respects the 75 percent early-refill threshold.",
+                "evidence": [
+                    "initial_state.rx_events.9c942446-14b3-4e96-9e98-faf1026614b0.fill_date",
+                    "initial_state.rx_events.9c942446-14b3-4e96-9e98-faf1026614b0.prescription_id"
+                ]
+            },
+            {
+                "row": "initial_state.rx_events.bb4dae9f-bc6f-4c5e-8274-85fb051a8da8",
+                "policy_id": "rx_fill_timing",
+                "check": "losartan 546f17fd: regular dispensing of 90 days on 2026-05-29 by Heartland Mail Order Pharmacy, while fills remained and on or before the expiration date; spacing respects the 75 percent early-refill threshold.",
+                "evidence": [
+                    "initial_state.rx_events.bb4dae9f-bc6f-4c5e-8274-85fb051a8da8.fill_date",
+                    "initial_state.rx_events.bb4dae9f-bc6f-4c5e-8274-85fb051a8da8.prescription_id"
+                ]
+            },
+            {
+                "row": "initial_state.rx_events.79d38623-3ab9-41e7-9dd8-53ed66ba862b",
+                "policy_id": "rx_fill_timing",
+                "check": "losartan 546f17fd: regular dispensing of 90 days on 2026-08-26 by Heartland Mail Order Pharmacy, while fills remained and on or before the expiration date; spacing respects the 75 percent early-refill threshold.",
+                "evidence": [
+                    "initial_state.rx_events.79d38623-3ab9-41e7-9dd8-53ed66ba862b.fill_date",
+                    "initial_state.rx_events.79d38623-3ab9-41e7-9dd8-53ed66ba862b.prescription_id"
+                ]
+            },
+            {
+                "row": "initial_state.rx_events.4e9c5962-99a4-4a33-acbb-4131a8b23011",
+                "policy_id": "rx_fill_authorization",
+                "check": "atorvastatin e8cff9e9: new_prescription authorization of 4 fill(s) x 90 days on 2026-01-22, posted while the prescription was active; consistent with the class fill rule (min(3+1, 360/90)=4) or, for the replacement, one fill.",
+                "evidence": [
+                    "initial_state.rx_events.4e9c5962-99a4-4a33-acbb-4131a8b23011.fill_date",
+                    "initial_state.rx_events.4e9c5962-99a4-4a33-acbb-4131a8b23011.prescription_id"
+                ]
+            },
+            {
+                "row": "initial_state.rx_events.d1129e24-8c0a-407e-a7a4-7c5cb908df72",
+                "policy_id": "rx_fill_timing",
+                "check": "atorvastatin e8cff9e9: regular dispensing of 90 days on 2026-01-24 by Heartland Mail Order Pharmacy, while fills remained and on or before the expiration date; spacing respects the 75 percent early-refill threshold.",
+                "evidence": [
+                    "initial_state.rx_events.d1129e24-8c0a-407e-a7a4-7c5cb908df72.fill_date",
+                    "initial_state.rx_events.d1129e24-8c0a-407e-a7a4-7c5cb908df72.prescription_id"
+                ]
+            },
+            {
+                "row": "initial_state.rx_events.3c946af2-3143-4dd4-82cc-1e543793bc9a",
+                "policy_id": "rx_fill_timing",
+                "check": "atorvastatin e8cff9e9: regular dispensing of 90 days on 2026-04-21 by Heartland Mail Order Pharmacy, while fills remained and on or before the expiration date; spacing respects the 75 percent early-refill threshold.",
+                "evidence": [
+                    "initial_state.rx_events.3c946af2-3143-4dd4-82cc-1e543793bc9a.fill_date",
+                    "initial_state.rx_events.3c946af2-3143-4dd4-82cc-1e543793bc9a.prescription_id"
+                ]
+            },
+            {
+                "row": "initial_state.rx_events.f8f17834-5079-41df-9af5-e5253d5a9c47",
+                "policy_id": "rx_fill_timing",
+                "check": "atorvastatin e8cff9e9: regular dispensing of 90 days on 2026-07-17 by Heartland Mail Order Pharmacy, while fills remained and on or before the expiration date; spacing respects the 75 percent early-refill threshold.",
+                "evidence": [
+                    "initial_state.rx_events.f8f17834-5079-41df-9af5-e5253d5a9c47.fill_date",
+                    "initial_state.rx_events.f8f17834-5079-41df-9af5-e5253d5a9c47.prescription_id"
+                ]
+            }
+        ]
+    },
+    "evaluation_criteria": [
+        {
+            "owner": "agent",
+            "tool": "find_customers",
+            "arguments": {
+                "phone_number": "6145554271"
+            },
+            "objective": "Locate the caller's patient profile by the phone number she states (6145554271).",
+            "necessity": "Every later read and write needs the patient reference number; the profile is the anchor of the identity check."
+        },
+        {
+            "owner": "agent",
+            "tool": "verify_patient_identity",
+            "arguments": {
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5",
+                "date_of_birth": "1974-03-14",
+                "medical_record_number": "LR4308816"
+            },
+            "objective": "Record the in-session identity verification with two credentials she states: date of birth 1974-03-14 and MRN LR4308816.",
+            "necessity": "No account detail may be discussed or acted on before identity is confirmed; the verification row is scored state."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_prescriptions",
+            "arguments": {
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5"
+            },
+            "objective": "List her prescriptions: losartan 546f17fd (Standard Maintenance, Heartland Mail Order Pharmacy, 90 days per fill, 1 fill remaining, expires 2027-03-01) and atorvastatin e8cff9e9.",
+            "necessity": "Selects the stolen medication's prescription; its pharmacy_name shows the prerequisite state is false (mail-order pharmacy), and refills_remaining / expiration_date feed the authorization-span allowance and the standing-fill credit."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_rx_events",
+            "arguments": {
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5"
+            },
+            "objective": "Read the fill ledger of her prescriptions: the 2026-08-26 90-day dispensing, the 12-month dispensings, and the 2025-07-18 replacement authorization.",
+            "necessity": "Supplies the lost-supply count (latest dispensing date and days), the adherence allowance (450 days dispensed in 12 months) and the repeat-loss share (one earlier replacement inside 24 months, none inside 12)."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_billing_accounts",
+            "arguments": {
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5"
+            },
+            "objective": "Read the billing account: Medicaid Managed Care Account.",
+            "necessity": "Cross-difficulty evidence: decides the payer retail allowance (34 days) and the payer early-refill share (85 percent)."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_appointments",
+            "arguments": {
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5"
+            },
+            "objective": "Read her in-person appointments with internal_medicine: completed 2025-10-20, booked 2026-10-13, no-show 2025-06-10.",
+            "necessity": "Cross-difficulty evidence for the visit allowance (315 days -> 60), the repeat-loss share (no no-show in 12 months) and the follow-up trim (over 270 days and a booked visit -> 7)."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_telehealth_visits",
+            "arguments": {
+                "customer_id": "1e3c0760-498b-48fd-8429-61c9cfa79dc5"
+            },
+            "objective": "Read her virtual visits: the completed Primary Care Video Visit of 2026-05-12.",
+            "necessity": "Excludes the near-miss: a virtual visit is not an in-person visit for the visit allowance or the follow-up trim, so the latest in-person visit stays 2025-10-20."
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "move_prescription_pharmacy_221e1a97"
+            },
+            "objective": "Unlock the patient-owned pharmacy move tool and hand it to the patient.",
+            "necessity": "The replacement's days' supply is fixed only after the prescription stands at a retail pharmacy; the move is the patient's own act, so the agent hands it over. No DB effect."
+        },
+        {
+            "owner": "user",
+            "tool": "call_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "move_prescription_pharmacy_221e1a97",
+                "arguments": {
+                    "prescription_id": "546f17fd-432e-4503-ad9c-ac515e2a2e41",
+                    "pharmacy_name": "Kroger Pharmacy #0419 Dublin",
+                    "days_supply": 34
+                }
+            },
+            "objective": "The patient moves losartan 546f17fd to Kroger Pharmacy #0419 Dublin with the retail fill length of 34 days per fill.",
+            "necessity": "Resolves the prerequisite of the replacement: rx_ext_retail_move_fill_days computes days_supply = MN(34, 90, 90, 60, 90) = 34 on the opening world.",
+            "argument_uniqueness_tracing": {
+                "prescription_id": "Value 546f17fd-432e-4503-ad9c-ac515e2a2e41. Basis: the prescription lookup lists losartan 50 mg tablet under this id, and the customer line 'it was only the losartan' names the stolen medication. Uniqueness: the only other prescription (atorvastatin e8cff9e9) was not in the package, so every correct agent moves 546f17fd.",
+                "pharmacy_name": "Value 'Kroger Pharmacy #0419 Dublin'. Basis: the customer line 'you name it exactly as Kroger Pharmacy #0419 Dublin'; the tool docstring requires it 'written exactly as the patient states it'. Uniqueness: it is the only pharmacy she names, and it is copied verbatim.",
+                "days_supply": "Value 34. rx_ext_retail_move_fill_days: payer allowance 34 (billing account Medicaid Managed Care Account), adherence allowance 90 (450 days dispensed in the last 12 calendar months, >= 330), authorization-span allowance 90 (one fill remains; at the 90-day per-fill supply it ends on or before the expiration date 182 days away, so the fill length as written, 90), visit allowance 60 (latest completed in-person internal_medicine visit 2025-10-20 is 315 days back); the shortest is 34, below the class's largest days' supply per fill of 90."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "authorize_replacement_fill_7c6c01e8"
+            },
+            "objective": "Unlock the replacement fill tool.",
+            "necessity": "First half of the unlock/call pair for the replacement write; no DB effect."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "authorize_replacement_fill_7c6c01e8",
+                "arguments": {
+                    "prescription_id": "546f17fd-432e-4503-ad9c-ac515e2a2e41",
+                    "days_supply_per_fill": 21
+                }
+            },
+            "objective": "Authorize one 21-day replacement fill on losartan 546f17fd.",
+            "necessity": "rx_ext_replacement_fill_days computes days_supply_per_fill = 21 on the world after the move (credit uses 34 days per fill).",
+            "argument_uniqueness_tracing": {
+                "prescription_id": "Value 546f17fd-432e-4503-ad9c-ac515e2a2e41, the same stolen losartan prescription, now at Kroger Pharmacy #0419 Dublin (step 8). Basis: the lookup row and 'it was only the losartan'. Uniqueness: no other prescription lost medication.",
+                "days_supply_per_fill": "Value 21. rx_ext_replacement_fill_days on the world after the move: lost supply 72 (latest dispensing 2026-08-26, 5 days back -> ceil(90 x 85%) - 5, the 85 percent share from the Medicaid Managed Care Account); credit 34 (one fill remaining x the 34-day retail fill length, expiration 182 days away); replaced share 75 percent (earlier replacement 2025-07-18 inside 24 months, no internal_medicine no-show in 12 months); follow-up trim 7 (last in-person visit 315 days back, visit booked 2026-10-13); MX(0, int((72 - 34) x 0.75) - 7) = 28 - 7 = 21."
+            }
+        }
+    ],
+    "prerequisite_closure": {
+        "root_problem": "rx_ext_replacement_fill_days",
+        "edges": [
+            {
+                "from": "rx_ext_replacement_fill_days",
+                "to": "rx_ext_retail_move_fill_days",
+                "kind": "value_input",
+                "gate": "fill_days",
+                "form": "state",
+                "condition": "prescriptions.pharmacy_name names a retail pharmacy rather than a mail-order pharmacy",
+                "policy_source": "A replacement fill's days' supply is fixed only after the prescription stands at a retail pharmacy rather than at a mail-order pharmacy.",
+                "resolved_by": "move_prescription_pharmacy_221e1a97",
+                "unresolved_at_frozen_time": {
+                    "why_false": "At 2026-08-31 the losartan prescription stands at Heartland Mail Order Pharmacy with the mail-order per-fill days' supply of 90; no retail fill length has been recorded.",
+                    "evidence": [
+                        "initial_state.prescriptions.546f17fd-432e-4503-ad9c-ac515e2a2e41.pharmacy_name = Heartland Mail Order Pharmacy",
+                        "initial_state.prescriptions.546f17fd-432e-4503-ad9c-ac515e2a2e41.days_supply = 90",
+                        "initial_state.prescriptions.546f17fd-432e-4503-ad9c-ac515e2a2e41.transfer_count = 0"
+                    ],
+                    "flips_to_true_by": "The patient's move at step 8 sets pharmacy_name = Kroger Pharmacy #0419 Dublin, days_supply = 34 and transfer_count = 1; the replacement's fill_days binding then reads 34 (credit 34) instead of 90."
+                }
+            }
+        ],
+        "resolution_order": [
+            "rx_ext_retail_move_fill_days",
+            "rx_ext_replacement_fill_days"
+        ],
+        "order_uniqueness": "A single edge (a two-node chain): the move must land before the replacement is computed, because the replacement's credit reads the per-fill days' supply the move records; the reverse order computes the credit on 90 days and writes 0 days, so only one order reproduces the gold terminal state. There are no parallel prerequisites.",
+        "edge_load_bearing": [
+            {
+                "edge": "rx_ext_replacement_fill_days -> rx_ext_retail_move_fill_days",
+                "skipped_effect": "Skipping the move (step 8) leaves days_supply = 90: credit_days becomes 1 x 90 = 90, (72 - 90) x 75 / 100 truncates to -13, minus 7 is -20, floored at 0 -> days_supply_per_fill 0 instead of 21; the terminal prescriptions row also keeps pharmacy_name Heartland Mail Order Pharmacy, days_supply 90 and transfer_count 0 instead of Kroger Pharmacy #0419 Dublin, 34 and 1 (sens run 2026-09-24)."
+            }
+        ],
+        "no_user_hint": "user_scenario never mentions moving or changing pharmacies, a retail pharmacy, a per-fill days' supply or any other prerequisite; it says outright that she does not bring up changing pharmacies herself, and names Kroger Pharmacy #0419 Dublin only after the agent says the prescription has to be at a store pharmacy or asks which pharmacy near her it should go to. The move is run by her only when the agent hands it over.",
+        "tools_do_not_block": "authorize_replacement_fill_7c6c01e8 reads the prescription only to copy customer_id and raise refills_remaining by one; it never looks at pharmacy_name, days_supply or status and returns its normal receipt whatever pharmacy the prescription stands at. move_prescription_pharmacy_221e1a97 reads transfer_count only to add one and never checks status or pharmacy type. Neither returns an error or a hint."
+    },
+    "charter_scope": {
+        "extended_policies": [
+            "rx_ext_retail_move_fill_days",
+            "rx_ext_replacement_fill_days"
+        ],
+        "task_tools": [
+            "move_prescription_pharmacy_221e1a97",
+            "authorize_replacement_fill_7c6c01e8"
+        ]
+    },
+    "required_documents": [
+        "rx_ext_retail_move_fill_days",
+        "rx_ext_replacement_fill_days"
+    ],
+    "computations": [
+        {
+            "policy_id": "rx_ext_retail_move_fill_days",
+            "target_holding_id": "546f17fd-432e-4503-ad9c-ac515e2a2e41",
+            "step": 8,
+            "arg": "days_supply",
+            "expected": 34,
+            "factor_trace": [
+                "payer_retail_allowance (parameter, cross-difficulty billing): billing account 9d6e82df-0a5b-4672-b2b5-87f5cd4fec52 carries variant_name 'Medicaid Managed Care Account' -> tier 'Medicaid Managed Care Account' selects K('payer_medicaid_days') = 34 days; the baseline (retail standard 30 days) would give 30.",
+                "dispensing_adherence_allowance (parameter, history): dispensings of prescription 546f17fd in the last 12 calendar months are 2025-09-02, 2025-11-28, 2026-03-03, 2026-05-29 and 2026-08-26 at 90 days each = 450 days (the 2025-07-19 replacement dispensing and the 2025-06-06 and 2025-03-12 fills fall outside the window) -> tier '330 days or more' selects 90 days; baseline 30.",
+                "authorization_span_allowance (method, date + history): refills_remaining = 1 at the 90-day per-fill supply the prescription carries = 90 days, which ends on or before expiration_date 2027-03-01 (182 calendar days after 2026-08-31) -> tier 'fills would end on or before the expiration date' applies the method 'keep the fill length as written' = 90 days (the fit-to-expiry method, 182 // 1, would give 182); baseline 30.",
+                "visit_recency_allowance (parameter, cross-difficulty appointment): latest completed in-person internal_medicine visit is appointment 6047b080 on 2025-10-20, 315 days before 2026-08-31 (the completed Primary Care Video Visit bb09d7d6 on 2026-05-12 is virtual and does not count) -> tier 'more than 183 but no more than 365 days' selects 60 days; baseline 30.",
+                "result = MN(34, 90, 90, 60, class largest days' supply per fill 90) = 34 days per fill at the retail pharmacy."
+            ],
+            "baseline_result": 30,
+            "factor_sensitivity": [
+                {
+                    "factor": "payer_retail_allowance",
+                    "tier_taken": "the billing account is a Medicaid Managed Care Account",
+                    "baseline_result": 30
+                },
+                {
+                    "factor": "dispensing_adherence_allowance",
+                    "tier_taken": "330 or more days' supply dispensed on the prescription in the last 12 calendar months",
+                    "baseline_result": 30
+                },
+                {
+                    "factor": "authorization_span_allowance",
+                    "tier_taken": "at least one fill remains AND those fills would end on or before the expiration date",
+                    "baseline_result": 30
+                },
+                {
+                    "factor": "visit_recency_allowance",
+                    "tier_taken": "that visit was more than 183 but no more than 365 days ago",
+                    "baseline_result": 30
+                }
+            ]
+        },
+        {
+            "policy_id": "rx_ext_replacement_fill_days",
+            "target_holding_id": "546f17fd-432e-4503-ad9c-ac515e2a2e41",
+            "step": 10,
+            "arg": "days_supply_per_fill",
+            "expected": 21,
+            "factor_trace": [
+                "lost_supply_count (method, history + date): the most recent dispensing of 546f17fd is rx_fill_dispensed on 2026-08-26 for 90 days, 5 days before 2026-08-31 -> tier '14 days or fewer' applies 'days until the next regular fill would have fallen due' = ceil(90 x 85 / 100) - 5 = 77 - 5 = 72 days; baseline (one regular fill = per-fill days' supply) would give 34.",
+                "payer_early_refill_share (parameter, cross-difficulty billing): billing account variant 'Medicaid Managed Care Account' -> 85 percent; baseline is the class early-refill percentage 75, which would make the lost supply ceil(67.5) - 5 = 63.",
+                "standing_fill_credit (method): refills_remaining = 1 and expiration 2027-03-01 is 182 days away, more than one per-fill days' supply (34, recorded by the move at step 8) -> credit 1 x 34 = 34 days; baseline no credit (0).",
+                "repeat_loss_share (parameter, multi-source history + cross-difficulty appointment): one earlier replacement authorization on 2025-07-18 inside 24 calendar months AND no internal_medicine no-show in the last 12 months (the no-show of 2025-06-10 is 14 months back) -> 75 percent; baseline 100 percent.",
+                "followup_trim (parameter, multi-source cross-difficulty appointment): latest completed in-person internal_medicine visit 2025-10-20 is 315 days back (> 270) AND a booked internal_medicine visit on 2026-10-13 exists -> 7 days; baseline 0.",
+                "plumbing: fill_days = F('days_supply') = 34 (value_input from the move); result = MX(0, int((72 - 34) x 75 / 100) - 7) = MX(0, int(28.5) - 7) = 28 - 7 = 21."
+            ],
+            "baseline_result": 34,
+            "factor_sensitivity": [
+                {
+                    "factor": "lost_supply_count",
+                    "tier_taken": "the most recent dispensing was 14 days or fewer before the replacement",
+                    "baseline_result": 0
+                },
+                {
+                    "factor": "payer_early_refill_share",
+                    "tier_taken": "the billing account is a Medicaid Managed Care Account",
+                    "baseline_result": 14
+                },
+                {
+                    "factor": "standing_fill_credit",
+                    "tier_taken": "at least one fill remains and the expiration date is more than one per-fill days' supply away",
+                    "baseline_result": 47
+                },
+                {
+                    "factor": "repeat_loss_share",
+                    "tier_taken": "an earlier replacement fill in the last 24 calendar months AND no missed visit with the prescribing department in the last 12 calendar months",
+                    "baseline_result": 31
+                },
+                {
+                    "factor": "followup_trim",
+                    "tier_taken": "latest completed in-person visit more than 270 days ago AND a visit with it booked or confirmed",
+                    "baseline_result": 28
+                }
+            ]
+        }
+    ]
+}

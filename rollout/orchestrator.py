@@ -9,10 +9,10 @@ a tool call (routed to the Engine, whose string result is fed back to the caller
 keeping the floor). The user simulator ends the call with a stop token.
 
 Every tool call is appended to ``trajectory`` in the exact ``{owner, tool, arguments}``
-shape ``erlbench.scoring`` expects — an agent's hidden-tool call is recorded as the
-``call_agent_discoverable_tool`` wrapper it really issued, which ``scoring._resolve``
-unwraps back to the underlying task tool. So scoring the run is just
-``erlbench.score(scenario, task, task["evaluation_criteria"], result.trajectory)``.
+shape ``erlbench.scoring`` expects — each call as it was really issued (an agent's
+hidden-tool call as the ``call_agent_discoverable_tool`` wrapper, the unlock calls as such),
+which ``scoring.replay_calls`` re-runs through the same Engine routing. So scoring the run
+is just ``erlbench.score(scenario, task, task["evaluation_criteria"], result.trajectory)``.
 
 Neither side sees the other's tool traffic — only the plain-text messages — exactly
 like the two participants in a real support call.
@@ -181,7 +181,8 @@ class Orchestrator:
             args = tc.arguments if isinstance(tc.arguments, dict) else {}
             output = self.engine.call(owner, name, args)
             output = "" if output is None else str(output)
-            # Record for scoring in the exact shape scoring._resolve consumes.
+            # Record for scoring, exactly as issued: scoring.replay_calls re-runs it through
+            # the same engine.call.
             self.trajectory.append({"owner": owner, "tool": name, "arguments": args})
             is_error = output.startswith("Error")
             if is_error:

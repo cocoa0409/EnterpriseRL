@@ -1,8 +1,8 @@
 # rollout — agent ↔ user-simulator rollouts for erlbench scenarios
 
 `erlbench/` can load a generated scenario, bind its DB + knowledge base + tools
-into an `Engine`, and score a trajectory by replaying its writes and comparing DB
-hashes — but nothing drives two LLMs through the `Engine`. **`rollout/` is that
+into an `Engine`, and score a trajectory by replaying it through the `Engine` and
+comparing DB hashes — but nothing drives two LLMs through the `Engine`. **`rollout/` is that
 missing runtime piece.** It runs a live customer-service conversation between an
 **agent** LLM and a **user-simulator** LLM over each task, collects every tool call,
 and scores the result. It is implemented entirely on top of this repo's own
@@ -81,11 +81,19 @@ scenario, and artifacts are grouped by scenario id (below).
 ## Scoring
 
 Every tool call is recorded in the exact `{owner, tool, arguments}` shape
-`erlbench.scoring` consumes (a hidden-tool call is recorded as the
-`call_agent_discoverable_tool` wrapper it really issued, which `_resolve` unwraps).
-The run's `reward` is the terminal-state DB-hash match between the agent trajectory
-and the task's `evaluation_criteria`, **gated on a normal end of call**
-(`USER_STOP` / `USER_TRANSFER`) — an aborted or step-capped conversation scores 0.
+`erlbench.scoring` consumes — each call as it was really issued (a hidden-tool call as
+the `call_agent_discoverable_tool` wrapper, the unlock calls as such). Scoring first checks
+the order of the calls against the task's problem tree (`required_order` from
+`prerequisite_closure` and the policies' target tools; `check_order`): each prerequisite's
+tool must be first called — by either side, whatever the arguments or the outcome — before
+the tool of the problem it unblocks. Only then does it re-run the record through the same
+`Engine.call` routing on a fresh world (`replay_calls`), so a call the agent was refused
+live — wrong owner, tool not unlocked or not handed over, bad arguments — is refused again
+and changes nothing; the gold `evaluation_criteria` is replayed by its write effects
+(`replay`). The run's `reward` is the terminal-state DB-hash match between the two, **gated
+on the order check and on a normal end of call** (`USER_STOP` / `USER_TRANSFER`) — an
+out-of-order, aborted or step-capped conversation scores 0 (`order_ok` and
+`order_violations` say why).
 
 ## Files
 
@@ -133,7 +141,7 @@ data/simulations/<SAVE_TO>/
     <scenario>/                                 # e.g. home_appliance_warranty_provider
       task_<difficulty>_<index>/
         sim_<trial>/
-          sim_status.json                       # scenario, reward, db_match, termination, hashes, usage
+          sim_status.json                       # scenario, reward, order_ok, db_match, termination, hashes, usage
           transcript.json                       # readable conversation + tool-call event log
           trajectory.json                       # the scored {owner,tool,arguments} actions
           agent_trajectory.json                 # full agent message history

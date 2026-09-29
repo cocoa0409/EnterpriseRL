@@ -39,7 +39,7 @@ together.
 Every task carries its own copy of the whole scenario world, so no task depends on another
 (or on this repo). Nothing is hand-written per scenario: everything is derived by code, with
 the functions the local rollout uses (``load_scenario``, ``merged_initial_state``,
-``_company_name``, ``rollout.prompts``, ``erlbench.scoring.replay``).
+``_company_name``, ``rollout.prompts``, ``erlbench.scoring.replay`` / ``replay_calls``).
 
 The tool files (share_tools.py and the merged task_tools.py) and the erlbench runtime are
 shipped without
@@ -57,12 +57,17 @@ Conversion refuses to write a task unless
     differs from the source's order a warning says so (only equal-score results can reorder);
   * the seeded database survives its JSON round trip bit for bit;
   * the reference actions, executed LIVE through the engine's own routing, succeed call by
-    call and reach the reference replay's database hash.
+    call and reach the reference replay's database hash;
+  * the task's problem tree maps to a tool order (every prerequisite edge's policies have a
+    target tool) and the reference calls follow it.
 
 ``--selftest`` additionally runs each written task end to end without Docker, with its own
 runtime, oracle and verifier — oracle -> 1, an empty conversation -> 0, the reference calls
-without a normal end of call -> 0 — and runs the harness's run_episode.py once against a
-written task with scripted stand-ins for the two models (no model is called).
+without a normal end of call -> 0, the reference calls without their unlock / hand-over
+steps -> 0 (every discoverable write is refused, live and on replay alike), the reference
+calls with a blocked problem's tool attempted first -> 0 (the order check fails before any
+replay) — and runs the harness's run_episode.py once against a written task with scripted
+stand-ins for the two models (no model is called).
 """
 
 from __future__ import annotations
@@ -99,7 +104,8 @@ from erlbench.determinism import Clock  # noqa: E402
 from erlbench.engine import AGENT_BASE, BASE_SCHEMAS, USER_BASE, Engine  # noqa: E402
 from erlbench.kb import Document, KnowledgeBase  # noqa: E402
 from erlbench.loader import Scenario, load_scenario  # noqa: E402
-from erlbench.scoring import replay  # noqa: E402
+from erlbench.loader import required_order  # noqa: E402
+from erlbench.scoring import check_order, first_calls, replay  # noqa: E402
 from rollout.orchestrator import NORMAL_TERMINATIONS  # noqa: E402
 from rollout.prompts import build_agent_prompt, build_user_prompt  # noqa: E402
 from rollout.runner import _company_name, merged_initial_state  # noqa: E402
@@ -117,6 +123,7 @@ rt = _load_runtime_module("runtime")
 
 BASE_IMAGE = "python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea"
 ORACLE_TERMINATION = "USER_STOP"
+UNLOCK_TOOLS = ("unlock_agent_discoverable_tool", "unlock_user_discoverable_tool")
 TASK_MARKER = 'benchmark = "erlbench"'
 # What the conversation needs inside the container: the repo's own runtime dependencies
 # (pyproject.toml) — the environment the local rollout runs in, which also covers what litellm
@@ -134,11 +141,13 @@ LIBRARY_MODULES = {
           "(grep) over whole documents.",
     "engine": "The engine: the base meta tools and the routing that binds a task's database, "
               "knowledge base and tools.",
-    "scoring": "Replay: re-apply the write calls of a trajectory to a fresh database and hash "
-               "the result.",
+    "scoring": "Scoring: check a conversation's tool calls against a required order of tool "
+               "pairs; replay — re-run a recorded conversation's tool calls through the "
+               "engine's routing, or re-apply a reference's writes, on a fresh database — "
+               "and hash the result.",
 }
 LIBRARY_EXPORTS = ("tool", "ToolContext", "make_id", "Clock", "DB", "Document",
-                   "KnowledgeBase", "Engine", "replay")
+                   "KnowledgeBase", "Engine", "replay", "replay_calls", "check_order")
 LIBRARY_INIT = f'''"""erlbench runtime: the database, clock, knowledge base, tool API and engine a task's
 tools run on."""
 
@@ -147,7 +156,7 @@ from .db import DB
 from .tools import ToolContext, tool
 from .kb import Document, KnowledgeBase
 from .engine import Engine
-from .scoring import replay
+from .scoring import check_order, replay, replay_calls
 
 __all__ = {list(LIBRARY_EXPORTS)!r}
 '''
@@ -653,6 +662,15 @@ def convert_task(sc: Scenario, staged: Path, kb: KnowledgeBase, merged: dict, co
     reference = task.get("evaluation_criteria") or []
     if not reference:
         raise ConversionError(f"{name}: task has no evaluation_criteria")
+    # The tool pairs the verifier checks the conversation's order against (loader.required_order;
+    # only the tool names are written out).
+    try:
+        order = required_order(task.get("prerequisite_closure") or {},
+                               sc.target_tools.get(difficulty) or {})
+    except ValueError as e:
+        raise ConversionError(f"{name}: {e}") from e
+    if not order:
+        print(f"    WARN {name}: the task imposes no tool order (no prerequisite edges)")
 
     # The rollout's world for this task (rollout.runner.ScenarioWorld.engine_for), with the
     # knowledge base in its packed index order.
@@ -679,6 +697,13 @@ def convert_task(sc: Scenario, staged: Path, kb: KnowledgeBase, merged: dict, co
     if live.db.hash() != target_hash:
         raise ConversionError(f"{name}: the reference calls executed live reach {live.db.hash()}, "
                               f"the reference replay {target_hash}")
+    violated = check_order(order, plan)
+    if violated:
+        raise ConversionError(f"{name}: the reference calls violate the task's tool order: {violated}")
+    # Discoverable writes of the reference: each needs its unlock / hand-over first, live and
+    # on replay alike (the self-test proves that running the plan without them scores 0).
+    gated_writes = sum(1 for c in plan if c["tool"] in UNLOCK_TOOLS
+                       and probe.registry[c["arguments"]["tool_name"]].rw == "write")
 
     tdir = out / name
     _prepare_task_dir(tdir, opts.force)
@@ -705,10 +730,17 @@ def convert_task(sc: Scenario, staged: Path, kb: KnowledgeBase, merged: dict, co
     (tdir / "tests").mkdir()
     shutil.copyfile(RUNTIME / "grade.py", tdir / "tests" / "grade.py")
     _write(tdir / "tests" / "test.sh", TEST_SH, executable=True)
+    # reference_actions: the task's evaluation_criteria as authored (bare tool names, no unlock
+    # steps). reference_calls: the same as live tool calls — what solution/oracle_calls.json
+    # runs and what grade.py re-runs through the engine's routing to reach expected_db_hash.
+    # required_order: tool pairs (before, after) the conversation's call order is checked
+    # against before its final state is compared.
     _dump(tdir / "tests" / "expected.json", {
         "task_id": name, "frozen_time": ft,
         "reference_actions": [{"owner": a.get("owner") or "agent", "tool": a.get("tool") or a.get("name"),
                                "arguments": a.get("arguments") or {}} for a in reference],
+        "reference_calls": plan,
+        "required_order": order,
         "expected_db_hash": target_hash, "initial_db_hash": initial_hash,
         "normal_terminations": sorted(NORMAL_TERMINATIONS)})
 
@@ -734,12 +766,14 @@ def convert_task(sc: Scenario, staged: Path, kb: KnowledgeBase, merged: dict, co
         "n_knowledge_base_documents": len(probe.kb.docs),
         "n_db_rows": sum(len(rows) for rows in tables.values()),
         "n_reference_actions": len(reference),
+        "n_order_constraints": len(order),
         **task_annotations(sc, task),
     }
     text = render_task_toml(name, meta, opts)
     tomllib.loads(text)
     _write(tdir / "task.toml", text)
-    return {"name": name, "scenario": sc.name, "category": difficulty, "task_index": index}
+    return {"name": name, "scenario": sc.name, "category": difficulty, "task_index": index,
+            "gated_writes": gated_writes}
 
 
 # ─────────────────────────────────────────────────────────────────────────────────────────
@@ -964,11 +998,18 @@ for an OpenAI-compatible endpoint (`openai/responses/...` for its Responses API)
 
 ## Scoring
 
-Every tool call is recorded as it happens. The verifier re-applies the recorded calls and the
-reference actions to fresh copies of the database and compares the resulting database
-hashes; the reward is 1 when they match **and** the customer ended the call normally
-(`USER_STOP`, or `USER_TRANSFER` after a hand-off to a human). `reward.json` has `reward`
-and `reward_db_match` (the database match alone).
+Every tool call is recorded as it happens. The verifier first checks the order of the calls
+against the task's required order, a list of tool pairs: the first tool of each pair must be
+called (by either side, whatever the arguments or the outcome) before the second is first
+attempted. Only then does it re-run the recorded calls, verbatim and in order, through the
+same tool routing the conversation went through —
+permissions, the unlock and hand-over steps a discoverable tool needs first, argument checks
+— on a fresh copy of the database, so a call the conversation was refused is refused again
+and changes nothing; it runs the reference solution's calls the same way and compares the
+resulting database hashes. The reward is 1 when the order holds, the hashes match **and**
+the customer ended the call normally (`USER_STOP`, or `USER_TRANSFER` after a hand-off to a
+human). `reward.json` has `reward`, `reward_order` (the order check alone) and
+`reward_db_match` (the database match; 0 when the order check failed).
 
 Each trial keeps: `agent/` — the conversation (`transcript.json`, `agent_trajectory.json`,
 `user_trajectory.json`, `rollout.json`, per-call `llm_debug/`, `erl_agent.log`, and an ATIF
@@ -981,31 +1022,40 @@ the conversation (`calls.jsonl`, `episode.json`, `final_db.json`).
 # Offline self-test (no Docker): the task's own runtime, oracle and verifier
 # ─────────────────────────────────────────────────────────────────────────────────────────
 
-_NO_STOP = """
+# Drive the task's runtime with a conversation read from stdin — {"calls": [...],
+# "termination": ...} — and end it with that termination.
+_RUN_CALLS = """
 import json, sys
 sys.path.insert(0, sys.argv[1])
 import runtime as rt
-plan = json.load(open(sys.argv[2]))
+spec = json.load(sys.stdin)
 session = rt.open_session()
-for c in plan["calls"]:
+for c in spec["calls"]:
     session.call(c["owner"], c["tool"], c["arguments"])
-session.end({"termination": "MAX_STEPS"})
+session.end({"termination": spec["termination"]})
 """
 
 
-def _selftest_case(tdir: Path, case: str) -> dict:
+def _selftest_case(tdir: Path, conversation) -> dict:
+    """Grade one conversation offline and return reward.json. ``conversation`` is
+    {"calls", "termination"} driven through the task's runtime by _RUN_CALLS, "oracle" for the
+    task's own solution/oracle.py, or None for no conversation at all."""
     env_dir = tdir / "environment"
     with tempfile.TemporaryDirectory() as tmp:
         envv = {**os.environ, "ERL_TASK_DIR": str(env_dir), "ERL_STATE_DIR": f"{tmp}/state",
                 "ERL_TESTS_DIR": str(tdir / "tests"), "ERL_VERIFIER_DIR": f"{tmp}/verifier",
                 "PYTHONDONTWRITEBYTECODE": "1"}
-        steps = {"oracle": [sys.executable, str(tdir / "solution" / "oracle.py")],
-                 "no_stop": [sys.executable, "-c", _NO_STOP, str(env_dir / "runtime"),
-                             str(tdir / "solution" / "oracle_calls.json")]}
-        if case in steps:
-            proc = subprocess.run(steps[case], env=envv, capture_output=True, text=True)
-            if proc.returncode != 0:
-                raise ConversionError(f"{case} failed: {proc.stdout[-1500:]}{proc.stderr[-1500:]}")
+        if conversation == "oracle":
+            proc = subprocess.run([sys.executable, str(tdir / "solution" / "oracle.py")],
+                                  env=envv, capture_output=True, text=True)
+        elif conversation is not None:
+            proc = subprocess.run([sys.executable, "-c", _RUN_CALLS, str(env_dir / "runtime")],
+                                  input=json.dumps(conversation), env=envv,
+                                  capture_output=True, text=True)
+        else:
+            proc = None
+        if proc is not None and proc.returncode != 0:
+            raise ConversionError(f"conversation failed: {proc.stdout[-1500:]}{proc.stderr[-1500:]}")
         proc = subprocess.run([sys.executable, str(tdir / "tests" / "grade.py")],
                               env=envv, capture_output=True, text=True)
         if proc.returncode != 0:
@@ -1013,15 +1063,34 @@ def _selftest_case(tdir: Path, case: str) -> dict:
         return json.loads(Path(f"{tmp}/verifier/reward.json").read_text())
 
 
-def selftest_task(tdir: Path) -> None:
-    """oracle -> 1/1; the reference calls without a normal end of call -> 0/1; an empty
-    conversation -> 0/0 (0/1 only when the reference changes nothing, already warned)."""
+def selftest_task(tdir: Path, gated_writes: int) -> None:
+    """Rewards as (reward / order / db match): oracle -> 1/1/1; the reference calls without a
+    normal end of call -> 0/1/1; an empty conversation -> 0/1/0 (0/1/1 only when the
+    reference changes nothing, already warned); when the reference has a discoverable
+    write, its calls without their unlock / hand-over steps, ended normally -> 0/1/0 (every
+    such write is refused, live and on replay alike); when the task imposes a tool order,
+    the reference calls with the first constraint's blocked tool attempted before anything
+    else -> 0/0/0 (the order check fails and the final state is not replayed)."""
     expected = json.loads((tdir / "tests" / "expected.json").read_text(encoding="utf-8"))
+    plan = json.loads((tdir / "solution" / "oracle_calls.json").read_text(encoding="utf-8"))["calls"]
     no_change = expected["expected_db_hash"] == expected["initial_db_hash"]
-    want = {"oracle": {"reward": 1.0, "reward_db_match": 1.0},
-            "nop": {"reward": 0.0, "reward_db_match": 1.0 if no_change else 0.0},
-            "no_stop": {"reward": 0.0, "reward_db_match": 1.0}}
-    got = {case: _selftest_case(tdir, case) for case in want}
+
+    def rewards(reward, order, db):
+        return {"reward": reward, "reward_order": order, "reward_db_match": db}
+
+    cases = {"oracle": ("oracle", rewards(1.0, 1.0, 1.0)),
+             "nop": (None, rewards(0.0, 1.0, 1.0 if no_change else 0.0)),
+             "no_stop": ({"calls": plan, "termination": "MAX_STEPS"}, rewards(0.0, 1.0, 1.0))}
+    if gated_writes:
+        cases["no_unlock"] = ({"calls": [c for c in plan if c["tool"] not in UNLOCK_TOOLS],
+                               "termination": ORACLE_TERMINATION}, rewards(0.0, 1.0, 0.0))
+    order = expected["required_order"]
+    if order:
+        at = first_calls(plan)[order[0]["after"]]
+        cases["order_swapped"] = ({"calls": [plan[at]] + plan[:at] + plan[at + 1:],
+                                   "termination": ORACLE_TERMINATION}, rewards(0.0, 0.0, 0.0))
+    got = {case: _selftest_case(tdir, conversation) for case, (conversation, _) in cases.items()}
+    want = {case: w for case, (_, w) in cases.items()}
     if got != want:
         raise ConversionError(f"{tdir.name}: self-test rewards {got} != expected {want}")
 
@@ -1178,7 +1247,7 @@ def main(argv: list[str] | None = None) -> int:
                 try:
                     rec = convert_task(sc, staged, kb, merged, company, background, d, i, t, out, opts)
                     if opts.selftest:
-                        selftest_task(out / rec["name"])
+                        selftest_task(out / rec["name"], rec["gated_writes"])
                     written.append(rec)
                     print(f"  ok  {rec['name']}" + ("  (self-test passed)" if opts.selftest else ""))
                 except ConversionError as e:

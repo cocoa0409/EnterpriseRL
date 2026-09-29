@@ -78,6 +78,44 @@ def blueprint_dir(root: str) -> str:
     return root
 
 
+def _read_target_tools(difficulty_dir: str) -> Dict[str, str]:
+    """{extended policy id: target_tool} from the difficulty's <category>.extended.yaml."""
+    out: Dict[str, str] = {}
+    for fn in sorted(os.listdir(difficulty_dir)):
+        if not fn.endswith(".extended.yaml"):
+            continue
+        with open(os.path.join(difficulty_dir, fn)) as f:
+            ext = yaml.safe_load(f) or {}
+        for p in ext.get("extended_policies") or []:
+            if isinstance(p, dict) and p.get("id"):
+                out[p["id"]] = p.get("target_tool")
+    return out
+
+
+def required_order(closure: dict, target_tool: dict) -> List[dict]:
+    """The tool pairs a task's ``prerequisite_closure`` imposes, one per edge in edge order:
+    an edge ``from -> to`` says the ``from`` problem depends on the ``to`` problem, and each
+    problem is resolved by its policy's target tool, so ``{"before": to's tool, "after":
+    from's tool}``. ``target_tool`` maps a policy id to its target tool (Scenario.target_tools).
+    A policy without a tool, or a ``resolved_by`` that is not the prerequisite's tool, is a
+    data error (ValueError). Only the tool names leave this function: what the verifier ships
+    says nothing about where the pairs come from."""
+    order = []
+    for e in (closure or {}).get("edges") or []:
+        blocked, prerequisite = e.get("from"), e.get("to")
+        after, before = target_tool.get(blocked), target_tool.get(prerequisite)
+        if not after or not before:
+            missing = blocked if not after else prerequisite
+            raise ValueError(f"prerequisite edge {blocked} -> {prerequisite}: policy {missing!r} "
+                             f"has no target tool")
+        if e.get("resolved_by") and e["resolved_by"] != before:
+            raise ValueError(f"prerequisite edge {blocked} -> {prerequisite}: resolved_by "
+                             f"{e['resolved_by']!r} is not the target tool of {prerequisite} "
+                             f"({before!r})")
+        order.append({"before": before, "after": after})
+    return order
+
+
 def _read_tasks(task_dir: str) -> List[dict]:
     """Read a difficulty's numbered task files, in index order. Two layouts:
     <difficulty>/tasks/<idx>.json (current) or <difficulty>/<idx>/task.json (legacy)."""
@@ -145,6 +183,9 @@ class Scenario:
     specs: List[ToolSpec]
     docs: List[Document]
     tasks: Dict[str, List[dict]]  # difficulty -> [task, ...]
+    # difficulty -> {extended policy id: its target tool}, from <category>.extended.yaml —
+    # what turns a task's prerequisite_closure into a tool order (scoring.required_order)
+    target_tools: Dict[str, Dict[str, str]] = field(default_factory=dict)
     _kb_cache: Optional[KnowledgeBase] = field(default=None, repr=False, compare=False)
 
     def kb(self) -> KnowledgeBase:
@@ -188,6 +229,7 @@ def load_scenario(root: str) -> Scenario:
     specs: List[ToolSpec] = load_tool_specs(os.path.join(bdir, "share_tools.py"), kind="share")
     docs: List[Document] = []
     tasks: Dict[str, List[dict]] = {}
+    target_tools: Dict[str, Dict[str, str]] = {}
 
     tasks_root = os.path.join(root, "tasks")
     if os.path.isdir(tasks_root):
@@ -200,6 +242,7 @@ def load_scenario(root: str) -> Scenario:
             t = _read_tasks(d)
             if t:
                 tasks[entry] = t
+                target_tools[entry] = _read_target_tools(d)
         docs = _read_docs(os.path.join(root, "docs"))
     else:
         # legacy layout: difficulty dirs at the env root, each with its own docs/
@@ -214,6 +257,7 @@ def load_scenario(root: str) -> Scenario:
             t = _read_tasks(d)
             if t:
                 tasks[entry] = t
+                target_tools[entry] = _read_target_tools(d)
 
     return Scenario(root=root, name=name, blueprint=blueprint, db_schema=db_schema,
-                    specs=specs, docs=docs, tasks=tasks)
+                    specs=specs, docs=docs, tasks=tasks, target_tools=target_tools)

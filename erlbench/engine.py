@@ -54,7 +54,9 @@ def format_tool_for_display(spec: ToolSpec) -> str:
 class Engine:
     """One running task: a seeded DB + the KB + every generated tool, with the
     six base tools bound on top. Permissions and the unlock flow are enforced
-    here for live runs; scoring replays bypass it (see scoring.py)."""
+    here — for live runs and, through the same ``call``, for the replay of a
+    recorded conversation (scoring.replay_calls); only the ground-truth replay of
+    a trusted reference bypasses it (scoring.replay)."""
 
     def __init__(self, db: DB, clock: Clock, kb: KnowledgeBase, specs: List[ToolSpec],
                  schema: dict | None = None):

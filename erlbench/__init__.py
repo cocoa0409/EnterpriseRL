@@ -11,12 +11,13 @@ from .db import DB
 from .tools import ToolContext, tool
 from .kb import Document, KnowledgeBase
 from .engine import Engine
-from .loader import Scenario, load_scenario
-from .scoring import replay, score
+from .loader import Scenario, load_scenario, required_order
+from .scoring import check_order, replay, replay_calls, score
 from .validate import validate_scenario
 
 __all__ = [
     "tool", "ToolContext", "make_id", "Clock",
     "DB", "Document", "KnowledgeBase", "Engine",
-    "Scenario", "load_scenario", "replay", "score", "validate_scenario",
+    "Scenario", "load_scenario", "replay", "replay_calls", "required_order", "check_order",
+    "score", "validate_scenario",
 ]

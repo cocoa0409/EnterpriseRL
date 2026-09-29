@@ -29,7 +29,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from erlbench import load_scenario, replay  # noqa: E402
+from erlbench import check_order, load_scenario, replay, replay_calls, required_order  # noqa: E402
 from erlbench.loader import Scenario  # noqa: E402
 from erlbench.db import DB  # noqa: E402
 from erlbench.determinism import Clock  # noqa: E402
@@ -83,15 +83,27 @@ class ScenarioWorld:
         return Engine(db, Clock.from_stamp(ft),
                       self.kb, self.specs, schema=self.schema)
 
-    def score(self, task: dict, gt_actions: List[dict], agent_actions: List[dict]) -> dict:
-        """Replay gold and agent trajectories on the SAME union DB and compare hashes.
-        Untouched rows (every other task's) are seeded identically on both sides, so
-        they cancel out and the match reduces to this task's own writes — equivalent
-        to per-task scoring given the disjointness invariant, but over the shared world."""
+    def required_order(self, difficulty: str, task: dict) -> List[dict]:
+        """The tool order the task's problem tree imposes (erlbench.required_order)."""
+        return required_order(task.get("prerequisite_closure") or {},
+                              self.sc.target_tools.get(difficulty) or {})
+
+    def score(self, task: dict, gt_actions: List[dict], agent_calls: List[dict],
+              order: List[dict] = ()) -> dict:
+        """The order check first — each prerequisite's tool first called before the tool it
+        unblocks (erlbench.check_order) — and only when it passes, replay the gold
+        trajectory (its write effects) and the agent's recorded calls (verbatim, through the
+        Engine's own routing — the environment the agent was in, so a call refused live is
+        refused again) on the SAME union DB and compare hashes. Untouched rows (every other
+        task's) are seeded identically on both sides, so they cancel out and the match
+        reduces to this task's own writes — equivalent to per-task scoring given the
+        disjointness invariant, but over the shared world."""
         target = replay(self.engine_for(task), gt_actions)
-        predicted = replay(self.engine_for(task), agent_actions)
+        violations = check_order(order, agent_calls)
+        predicted = None if violations else replay_calls(self.engine_for(task), agent_calls)
         return {"match": target == predicted,
                 "reward": 1.0 if target == predicted else 0.0,
+                "order_ok": not violations, "order_violations": violations,
                 "target_hash": target, "predicted_hash": predicted}
 
 
@@ -235,11 +247,14 @@ def run_one(world: ScenarioWorld, difficulty: str, task_index: int, task: dict, 
         result = orch.run()
 
         gt_actions = task.get("evaluation_criteria") or []
-        sr = world.score(task, gt_actions, result.trajectory)  # scored on the same union DB
+        order = world.required_order(difficulty, task)
+        sr = world.score(task, gt_actions, result.trajectory, order)  # scored on the same union DB
         gated_reward = float(sr["reward"]) if result.completed_normally else 0.0
 
         record.update({
             "reward": gated_reward,
+            "order_ok": bool(sr["order_ok"]),
+            "order_violations": sr["order_violations"],
             "db_match": bool(sr["match"]),
             "db_reward": float(sr["reward"]),
             "termination": result.termination,
@@ -290,17 +305,20 @@ def summarize(records: List[dict]) -> dict:
     for key, rs in sorted(per_task.items()):
         task_pass[key] = {"pass@1": round(sum(x["reward"] for x in rs) / len(rs), 3),
                           "trials": len(rs),
+                          "order_ok": _rate(rs, lambda x: x.get("order_ok")),
                           "db_match": _rate(rs, lambda x: x.get("db_match")),
                           "completed": _rate(rs, lambda x: x.get("completed_normally"))}
     scen_pass = {}
     for key, rs in sorted(per_scen.items()):
         scen_pass[key] = {"rollouts": len(rs),
                           "reward_mean": round(sum(x["reward"] for x in rs) / len(rs), 4),
+                          "order_ok_rate": _rate(rs, lambda x: x.get("order_ok")),
                           "db_match_rate": _rate(rs, lambda x: x.get("db_match")),
                           "completion_rate": _rate(rs, lambda x: x.get("completed_normally"))}
     return {
         "rollouts": n,
         "reward_mean": round(mean("reward"), 4),
+        "order_ok_rate": round(sum(1 for r in records if r.get("order_ok")) / n, 4) if n else 0.0,
         "db_match_rate": round(sum(1 for r in records if r.get("db_match")) / n, 4) if n else 0.0,
         "completion_rate": round(sum(1 for r in records if r.get("completed_normally")) / n, 4) if n else 0.0,
         "avg_steps": round(mean("steps"), 1),

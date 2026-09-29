@@ -1,8 +1,8 @@
 """Live agent <-> user-simulator rollout for erlbench scenarios.
 
 This package is the missing runtime piece: `erlbench/` can load a scenario, bind
-its DB + KB + tools into an `Engine`, and score a trajectory by replaying its
-writes and comparing DB hashes — but nothing drives two LLMs through the Engine.
+its DB + KB + tools into an `Engine`, and score a trajectory by replaying it
+through the Engine and comparing DB hashes — but nothing drives two LLMs through the Engine.
 `rollout/` supplies exactly that:
 
   - `llm.LLMClient`      : LLM calls via litellm.

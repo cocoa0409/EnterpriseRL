@@ -85,7 +85,7 @@ How each file is derived:
 | `requirements.txt` | the repo's runtime dependencies (`pyproject.toml`) and their whole closure, pinned to the repo environment's versions — what the local rollout runs with |
 | `instruction.md` / `episode.json` | `rollout.prompts.build_agent_prompt` / `build_user_prompt` |
 | `user_simulator.md` | exact copy of `episode.json`'s `user_system_prompt`, saved at the task root for reference |
-| `tests/expected.json` | `evaluation_criteria` as `{owner, tool, arguments}` + `replay` hash |
+| `tests/expected.json` | `reference_actions`: `evaluation_criteria` as `{owner, tool, arguments}`; `reference_calls`: the same as live tool calls (the list `solution/oracle_calls.json` runs); `expected_db_hash`: the hash they reach; `required_order`: the tool pairs (`before`, `after`) the task's `prerequisite_closure` imposes, each edge's prerequisite policy's target tool before the blocked policy's |
 | `solution/oracle_calls.json` | `evaluation_criteria` as live tool calls |
 | `task.toml` metadata | `related_knowledge_base_documents`: every `<title>.md` filename whose `meta.policy_id` belongs to `charter_scope.extended_policies`, relative to `environment/knowledge_base/`. `difficulty`: `EASY` for `len(prerequisite_closure.resolution_order) <= 2`, `MEDIUM` for 3, `HARD` for >=4; also added to task keywords |
 
@@ -106,10 +106,19 @@ README.md           how to run
 ## Scoring
 
 Every tool call is appended to `state/calls.jsonl` as it happens; at the end the run records
-its termination (`state/episode.json`). `tests/grade.py` computes the rollout's reward:
-`replay(reference) == replay(recorded calls)` on fresh copies of the world, gated on
-`USER_STOP` / `USER_TRANSFER`. No end record (crash, timeout) → 0. A verifier failure writes
-no reward, so harbor shows a verifier error instead of a silent 0.
+its termination (`state/episode.json`). `tests/grade.py` computes the rollout's reward in
+two steps. First the order: `check_order(required_order, recorded calls)` — for every
+prerequisite edge of the task's problem tree, the prerequisite's tool must be first called
+(by either side, whatever the arguments or the outcome) before the blocked problem's tool;
+a violation scores 0 and skips the replay. Then the final state:
+`replay_calls(reference_calls) == replay_calls(recorded calls)` on fresh copies of the world,
+gated on `USER_STOP` / `USER_TRANSFER`. `replay_calls` re-runs each call, verbatim and in
+order, through `Engine.call` — the routing the conversation itself went through — so
+permissions, the unlock / hand-over state and argument checks apply on replay exactly as they
+did live: a call the conversation was refused is refused again and changes nothing, and the
+replay reproduces the session (`grade.json` records `live_matches_replay`). `reward.json`
+has `reward`, `reward_order` and `reward_db_match`. No end record (crash, timeout) → 0. A
+verifier failure writes no reward, so harbor shows a verifier error instead of a silent 0.
 
 ## Checks
 
@@ -117,14 +126,17 @@ Before writing, per scenario: the packed world, loaded in a fresh interpreter by
 own `runtime/runtime.py`, must define exactly the source's tools (names, owners, rw, kinds,
 descriptions, schemas, order), knowledge base (with any requested factor hints), schema and both tool lists. Per task: the DB
 survives its JSON round trip; the reference actions, executed **live** through the engine's
-routing, succeed call by call and reach the reference replay's hash.
+routing, succeed call by call and reach the reference replay's hash; the problem tree maps
+to a tool order and the reference calls follow it.
 
 In the image: the build fails if the tool / knowledge-base / DB fingerprints differ from
 `episode.json`; every `Session` re-checks them; `grade.py` re-checks them and the expected hash.
 
 `--selftest` runs each task without Docker — its real `oracle.py` and `grade.py`: oracle →
-1.0; the reference calls without a normal end → 0 (db match 1); an empty conversation → 0 —
-and runs `container/run_episode.py` once on a written task with scripted stand-ins for the two
+1.0; the reference calls without a normal end → 0 (db match 1); an empty conversation → 0;
+the reference calls without their unlock / hand-over steps → 0 (db match 0); the reference
+calls with a blocked problem's tool attempted first → 0 (order 0, no replay) — and runs
+`container/run_episode.py` once on a written task with scripted stand-ins for the two
 models (no model is called): it must end normally, record its tool call, delete its secrets
 file, write its outputs, and be graded.
 

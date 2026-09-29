@@ -6,22 +6,35 @@ but stays alive as a supervisor while claude runs:
 
   * every --poll seconds it re-probes the ACTIVE account (1-token Haiku request);
   * the moment that account reports `rejected` (5h or weekly window exhausted) it stops
-    claude, picks the account with the most headroom and resumes the SAME session
-    (`--resume <id>`), telling the model to carry on from where it was cut off;
-  * if every account is rate-limited it waits, re-probing every --wait seconds (sooner if
-    a 5h window is about to reset), and resumes as soon as one comes back;
+    claude, allocates another account and resumes the SAME session (`--resume <id>`),
+    telling the model to carry on from where it was cut off;
+  * if no account is allocatable it re-scans every --wait seconds and resumes as soon
+    as one is;
   * `-p` (headless) runs that die on a usage limit are re-run on another account too.
 
+Allocation (first launch and every switch use the same rule):
+  1. probe every account; drop the ones that are unreachable or `rejected`;
+  2. drop the ones with < --min-weekly-left % of the weekly window left (default 10)
+     or < --min-5h-left % of the 5h window left (default 20);
+  3. drop the ones already used by --max-per-account claude sessions on this machine
+     (default 2; counted from the CC_SUB_ACCOUNT variable of live `claude` processes,
+     so plain cc-sub sessions count too);
+  4. among the rest pick the fewest live sessions, then most 5h left, then most week left.
+  Probe -> pick -> launch runs under a file lock, so concurrent launches queue up and
+  each one sees the sessions the previous one started.
+
 Usage:
-  cc-sub-auto [claude args...]             pick best account, start claude, babysit it
+  cc-sub-auto [claude args...]             allocate an account, start claude, babysit it
   cc-sub-auto --list                       only print the table
   cc-sub-auto --use 3 [claude args...]     force account "3" for the FIRST launch
-  cc-sub-auto --min-weekly-left 50 ...     weekly threshold for picking (default 75%)
-  cc-sub-auto --poll 60 --wait 300 ...     probe cadence while running / while all limited
+  cc-sub-auto --min-weekly-left 10 --min-5h-left 20 --max-per-account 2 ...
+  cc-sub-auto --poll 60 --wait 300 ...     probe cadence while running / while nothing is allocatable
 
-Every switch is appended to ~/.claude-sub-auto/auto.log.
+Every launch, switch, wait and exit is appended to ~/.claude-sub-auto/auto.log.
 """
+import collections
 import concurrent.futures as cf
+import fcntl
 import importlib.util
 import os
 import re
@@ -30,6 +43,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import uuid
 from importlib.machinery import SourceFileLoader
 
@@ -37,23 +51,31 @@ HERE = os.path.dirname(os.path.abspath(__file__))              # ~/.claude-sub-a
 SUB_DIR = os.path.expanduser("~/.claude-sub")                   # cc-sub install: accounts, sessions, status
 CC_SUB = os.path.join(SUB_DIR, "cc-sub")
 LOG = os.path.join(HERE, "auto.log")
+PICK_LOCK = os.path.join(HERE, ".pick.lock")                    # serialises probe -> pick -> launch
 POLL_S = 60          # re-probe the active account this often while claude runs
-WAIT_S = 300         # re-probe everything this often while every account is limited
+WAIT_S = 300         # re-scan everything this often while nothing is allocatable
+MIN_WEEK_LEFT = 10.0 # % of the weekly window that must be left to be a candidate
+MIN_5H_LEFT = 20.0   # % of the 5h window that must be left to be a candidate
+MAX_PER_ACCOUNT = 2  # live claude sessions per account before it stops being a candidate
 TERM_GRACE_S = 10    # SIGTERM -> SIGKILL escalation
 # Passed as --model / --effort unless the caller gives them. cc-sub-auto has its own default
 # model (cc-sub's DEFAULT_MODEL is Fable); the /model picker rewrites settings.json's "model"
 # key, so the CLI flags are the only defaults that survive. In-session `/model` still works.
 DEFAULT_MODEL = "claude-opus-5-5"
 DEFAULT_EFFORT = "high"
+# CLAUDE_CODE_CHILD_SESSION marks a claude started from inside another claude session and
+# makes it skip transcript saving; a session without a transcript can never be resumed.
+STRIP_ENV_EXTRA = ("CLAUDE_CODE_CHILD_SESSION",)
 RESUME_PROMPT = ("The previous request was cut off because the subscription account ran out of usage; "
-                 "cc-sub-auto has switched to another account and resumed this session. "
+                 "I have switched to another account and resumed this session. "
                  "Continue the task you were working on from where it stopped. If the last tool call "
                  "never returned a result, run it again. Do not redo work that is already complete.")
 BOLD, DIM, RST = "\x1b[1m", "\x1b[2m", "\x1b[0m"
+RED, YEL, GRN = "\x1b[31m", "\x1b[33m", "\x1b[32m"
 
 
 def load_ccsub():
-    """Import ~/.claude-sub/cc-sub as a module: probe(), load_accounts(), print_report(), ..."""
+    """Import ~/.claude-sub/cc-sub as a module: probe(), load_accounts(), box(), cells(), ..."""
     if not os.path.exists(CC_SUB):
         sys.exit(f"cc-sub-auto needs {CC_SUB} (accounts, session store and probing live there)")
     loader = SourceFileLoader("ccsub", CC_SUB)
@@ -65,11 +87,17 @@ def load_ccsub():
 
 def log(msg):
     with open(LOG, "a") as f:
-        f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}  {msg}\n")
+        f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}  [{os.getpid()}] {msg}\n")
 
 
 def say(msg):
     print(msg, file=sys.stderr)
+
+
+def bye(rc, msg):
+    """Every exit goes through the log."""
+    log(f"exit rc={rc}: {msg}")
+    sys.exit(rc)
 
 
 # ---------------------------------------------------------------- argument handling
@@ -124,7 +152,8 @@ def split_args(rest, req, opt):
 
 
 def parse_own(argv):
-    o = {"list": False, "use": None, "min_weekly_left": 75.0, "poll": POLL_S, "wait": WAIT_S}
+    o = {"list": False, "use": None, "min_week_left": MIN_WEEK_LEFT, "min_5h_left": MIN_5H_LEFT,
+         "max_per_account": MAX_PER_ACCOUNT, "poll": POLL_S, "wait": WAIT_S}
     rest, i = [], 0
     while i < len(argv):
         a = argv[i]
@@ -133,7 +162,11 @@ def parse_own(argv):
         elif a == "--use":
             o["use"] = argv[i + 1]; i += 1
         elif a == "--min-weekly-left":
-            o["min_weekly_left"] = float(argv[i + 1]); i += 1
+            o["min_week_left"] = float(argv[i + 1]); i += 1
+        elif a == "--min-5h-left":
+            o["min_5h_left"] = float(argv[i + 1]); i += 1
+        elif a == "--max-per-account":
+            o["max_per_account"] = max(1, int(argv[i + 1])); i += 1
         elif a == "--poll":
             o["poll"] = max(15, int(argv[i + 1])); i += 1
         elif a == "--wait":
@@ -153,44 +186,122 @@ def probe_all(cs, accts):
     return res
 
 
-def choose(res, min_weekly_left, force=None, exclude=None):
-    """Same rule as cc-sub; `exclude` drops the account we are switching away from."""
-    ok = [r for r in res if "err" not in r and r["status"] in ("allowed", "allowed_warning")
-          and r["name"] != exclude]
-    eligible = [r for r in ok if (1 - r["u7"]) * 100 >= min_weekly_left]
-    key = lambda r: (r["u5"], r["u7"])
+def live_counts():
+    """Live `claude` processes per account on this machine, from the CC_SUB_ACCOUNT variable
+    cc-sub / cc-sub-auto put in their environment. Only this user's processes are readable,
+    which is exactly the set that shares accounts.txt."""
+    n = collections.Counter()
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            with open(f"/proc/{pid}/comm") as f:
+                if f.read().strip() != "claude":
+                    continue
+            with open(f"/proc/{pid}/environ", "rb") as f:
+                env = f.read().split(b"\0")
+        except OSError:
+            continue
+        for kv in env:
+            if kv.startswith(b"CC_SUB_ACCOUNT="):
+                n[kv.split(b"=", 1)[1].decode(errors="replace")] += 1
+                break
+    return n
+
+
+def why_excluded(r, live, o):
+    """None if r is a candidate, else a short reason."""
+    if "err" in r:
+        return r["err"]
+    if r["status"] == "rejected":
+        return "rate-limited"
+    if (1 - r["u7"]) * 100 < o["min_week_left"]:
+        return f"week < {o['min_week_left']:.0f}%"
+    if (1 - r["u5"]) * 100 < o["min_5h_left"]:
+        return f"5h < {o['min_5h_left']:.0f}%"
+    if live.get(r["name"], 0) >= o["max_per_account"]:
+        return f"busy ({live[r['name']]} sessions)"
+    return None
+
+
+def choose(res, live, o, force=None):
+    """Candidates = reachable, not rejected, above both window thresholds, below the
+    per-account session cap. Pick: fewest live sessions, then least 5h used, then least
+    week used. Returns (pick, candidates, {name: reason or None})."""
+    why = {r["name"]: why_excluded(r, live, o) for r in res}
+    cands = [r for r in res if why[r["name"]] is None]
     if force is not None:
-        return force, ok, False
-    if eligible:
-        return min(eligible, key=key)["name"], ok, False
-    if ok:
-        return min(ok, key=key)["name"], ok, True
-    return None, ok, False
+        pick = force
+    elif cands:
+        pick = min(cands, key=lambda r: (live.get(r["name"], 0), r["u5"], r["u7"]))["name"]
+    else:
+        pick = None
+    return pick, cands, why
 
 
-def wait_for_reset(cs, res, wait_s):
-    """Everything is limited or unreachable: sleep until the next probe (Ctrl+C quits)."""
-    resets = [r["r5"] for r in res if "err" not in r and r.get("r5")]
-    nxt = wait_s
+def report(cs, res, live, why, pick, cands, o):
+    rows = []
+    for r in sorted(res, key=cs.natkey):
+        n = str(live.get(r["name"], 0))
+        w = why[r["name"]]
+        if "err" in r:
+            rows.append([f"  {r['name']}", f"{DIM}{r['err']}{RST}", "", n, f"{RED}✖ unreachable{RST}"])
+            continue
+        name, c5, c7, _ = cs.cells(r, pick)
+        if r["name"] == pick:
+            verdict = f"{GRN}➜ picked{RST}"
+        elif w is None:
+            verdict = f"{GRN}● candidate{RST}"
+        elif w == "rate-limited":
+            verdict = f"{RED}✖ rate-limited{RST}"
+        else:
+            verdict = f"{YEL}– {w}{RST}"
+        rows.append([name, c5, c7, n, verdict])
+    title = (f"{BOLD}cc-sub-auto{RST} {DIM}· {len(res)} accounts · probed {time.strftime('%H:%M:%S')} · "
+             f"{len(cands)} candidates (week ≥ {o['min_week_left']:.0f}%, 5h ≥ {o['min_5h_left']:.0f}%, "
+             f"< {o['max_per_account']} live sessions){RST}")
+    cs.box(title, ["acct", "5h left · reset", "week left · reset", "live", "verdict"], rows, [4, 22, 25, 4, 19])
+
+
+def wait_for_candidate(cs, res, why, wait_s):
+    """Nothing is allocatable: sleep until the next scan (Ctrl+C quits). The note names the
+    earliest reset of the window that actually blocks each limited account."""
+    resets = []
+    for r in res:
+        w = why[r["name"]]
+        if "err" in r or w is None or w.startswith("busy"):
+            continue
+        blocking = r["r7"] if (1 - r["u7"]) * 100 < MIN_WEEK_LEFT or r["u7"] >= 1 else r["r5"]
+        if blocking:
+            resets.append((blocking, r["name"]))
     note = ""
     if resets:
-        soonest = min(resets)
-        nxt = int(min(wait_s, max(15, soonest - time.time() + 5)))
-        who = [r["name"] for r in res if "err" not in r and r.get("r5") == soonest]
-        note = f" · earliest 5h reset: acct {','.join(who)} in {cs.rel(soonest)}"
-    say(f"\n\x1b[33m! every account is rate-limited or unreachable · re-probing in {nxt}s{note} "
-        f"· Ctrl+C to quit{RST}")
-    log(f"all limited; waiting {nxt}s{note}")
-    time.sleep(nxt)
+        soonest = min(t for t, _ in resets)
+        who = ",".join(n for t, n in resets if t == soonest)
+        note = f" · earliest reset: acct {who} in {cs.rel(soonest)}"
+    summary = collections.Counter(w if w in (None, "rate-limited") or w.startswith(("week", "5h", "busy"))
+                                  else "unreachable" for w in why.values())
+    reasons = ", ".join(f"{v} {k}" for k, v in summary.items() if k is not None)
+    say(f"\n{YEL}! no account is allocatable ({reasons}) · re-scanning in {wait_s}s{note} · Ctrl+C to quit{RST}")
+    log(f"none allocatable ({reasons}); waiting {wait_s}s{note}")
+    time.sleep(wait_s)
 
 
 # ---------------------------------------------------------------- session bookkeeping
 
+def project_dir():
+    return os.path.join(SUB_DIR, "projects", re.sub(r"[^A-Za-z0-9]", "-", os.getcwd()))
+
+
+def has_transcript(sid):
+    return sid is not None and os.path.exists(os.path.join(project_dir(), sid + ".jsonl"))
+
+
 def latest_session(started):
     """Newest transcript of this cwd written since `started` (for -c launches whose id we
-    did not choose)."""
-    slug = re.sub(r"[^A-Za-z0-9]", "-", os.getcwd())
-    d = os.path.join(SUB_DIR, "projects", slug)
+    did not choose, and for sessions where the user ran /resume inside claude, so the
+    transcript lives under a different id than the one we launched with)."""
+    d = project_dir()
     try:
         files = [(os.path.getmtime(p), p) for p in os.listdir(d) if p.endswith(".jsonl")
                  for p in [os.path.join(d, p)]]
@@ -210,10 +321,12 @@ def tty_reset():
 
 # ---------------------------------------------------------------- running claude
 
-def run_claude(cs, args, name, tok, poll_s):
-    """Run claude on account `name`; poll that account while it runs. Returns
+def run_claude(cs, args, name, tok, poll_s, lock):
+    """Run claude on account `name`; poll that account while it runs. `lock` (the pick lock)
+    is released as soon as the process exists, so the next launcher can count it. Returns
     (returncode, killed_by_us, last_probe)."""
-    env = {k: v for k, v in os.environ.items() if k not in cs.STRIP_ENV}
+    strip = set(cs.STRIP_ENV) | set(STRIP_ENV_EXTRA)
+    env = {k: v for k, v in os.environ.items() if k not in strip}
     env.update({
         "HTTPS_PROXY": cs.PROXY, "HTTP_PROXY": cs.PROXY, "NO_PROXY": cs.NO_PROXY,
         "CLAUDE_CONFIG_DIR": SUB_DIR,
@@ -228,6 +341,7 @@ def run_claude(cs, args, name, tok, poll_s):
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     child = subprocess.Popen(["claude", *args], env=env,
                              preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+    fcntl.flock(lock, fcntl.LOCK_UN)
 
     def watch():
         while not stop.wait(poll_s):
@@ -276,18 +390,28 @@ def main():
     if o["use"] is not None and o["use"] not in tokens:
         sys.exit(f"unknown account {o['use']!r}; have: {', '.join(tokens)}")
 
-    force, exclude, attempt = o["use"], None, 0
+    lock = open(PICK_LOCK, "w")
+    force, attempt = o["use"], 0
     while True:
+        # ---- allocate, under the lock so concurrent launchers queue up
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            say(f"{DIM}another cc-sub-auto is picking an account · waiting for it{RST}")
+            fcntl.flock(lock, fcntl.LOCK_EX)
         say(f"probing {len(accts)} accounts ...")
         res = probe_all(cs, accts)
-        pick, ok, fallback = choose(res, o["min_weekly_left"], force, exclude)
-        cs.print_report(res, ok, pick, o["min_weekly_left"], fallback)
+        live = live_counts()
+        pick, cands, why = choose(res, live, o, force)
+        report(cs, res, live, why, pick, cands, o)
         if o["list"]:
+            fcntl.flock(lock, fcntl.LOCK_UN)
             return
-        if pick is None:
-            wait_for_reset(cs, res, o["wait"])
-            continue
         force = None                        # --use pins the first launch only
+        if pick is None:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+            wait_for_candidate(cs, res, why, o["wait"])
+            continue
 
         cs.ensure_config()
         if attempt == 0:
@@ -302,38 +426,39 @@ def main():
             tail = pos if (headless and pos) else [RESUME_PROMPT]
             args = ["--resume", sid, *flags, *tail]
 
-        picked = next((r for r in ok if r["name"] == pick), None)
+        picked = next((r for r in res if r["name"] == pick and "err" not in r), None)
         detail = (f" · 5h {cs.colour((1 - picked['u5']) * 100)} · week {cs.colour((1 - picked['u7']) * 100)}"
-                  if picked else "")
+                  f" · {live.get(pick, 0)} live" if picked else "")
         verb = "launching" if attempt == 0 else "resuming"
         say(f"\n\x1b[1;32m➜ {verb}{RST} claude on account {BOLD}{pick}{RST}{detail} · {DIM}{model}{RST}")
         say(f"{DIM}  auto-switch on · probing acct {pick} every {o['poll']}s · log: {LOG}{RST}")
-        log(f"{verb} on acct {pick} · session {sid or '(latest)'} · attempt {attempt}")
+        log(f"{verb} on acct {pick} (live {live.get(pick, 0)}) · session {sid or '(latest)'} · attempt {attempt}")
         if not headless:
             time.sleep(2)
         say("")
 
         started = time.time()
-        rc, killed, last = run_claude(cs, args, pick, tokens[pick], o["poll"])
-        if sid is None:
-            sid = latest_session(started)
+        rc, killed, last = run_claude(cs, args, pick, tokens[pick], o["poll"], lock)
+        if not has_transcript(sid):
+            # -c launch, or the user ran /resume inside claude: the id we hold has no
+            # transcript, so the work is in the newest transcript written since launch.
+            sid = latest_session(started) or sid
 
         # Why did claude stop? A completed headless run is never restarted; anything else
         # is re-checked against the account's live limit status.
         if headless and rc == 0 and not killed:
-            sys.exit(0)
+            bye(0, f"headless run finished on acct {pick}")
         r = last if killed else cs.probe(pick, tokens[pick])
         if "err" not in r:
             cs.write_status([r])
         limited = "err" not in r and r["status"] == "rejected"
         if not limited:
-            log(f"claude exited rc={rc} on acct {pick}; account not limited · done")
-            sys.exit(rc)
-        if sid is None:
-            say("\x1b[31m✖ acct limited but no session transcript found to resume{RST}")
-            sys.exit(rc or 1)
+            bye(rc, f"claude exited rc={rc} on acct {pick}; account not limited")
+        if not has_transcript(sid):
+            say(f"{RED}✖ acct limited but no session transcript found to resume{RST}")
+            bye(rc or 1, f"acct {pick} limited but no transcript for session {sid} under {project_dir()}")
 
-        say(f"\n\x1b[33m▲ account {pick} is rate-limited{RST} {DIM}(5h reset {cs.rel(r['r5'])} · "
+        say(f"\n{YEL}▲ account {pick} is rate-limited{RST} {DIM}(5h reset {cs.rel(r['r5'])} · "
             f"week reset {cs.rel(r['r7'], full=True)}){RST} · switching and resuming session {DIM}{sid}{RST}")
         if not killed and not headless:
             # claude quit on its own (probably the user); give them a way out
@@ -342,9 +467,9 @@ def main():
                 time.sleep(3)
             except KeyboardInterrupt:
                 say("\nquit")
-                sys.exit(rc)
+                bye(rc, "user quit instead of resuming")
         log(f"switch away from acct {pick} (rc={rc}, killed={killed}) · resume {sid}")
-        exclude, attempt = pick, attempt + 1
+        attempt += 1
 
 
 if __name__ == "__main__":
@@ -352,4 +477,10 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         say("\nquit")
+        log("exit rc=130: Ctrl+C")
         sys.exit(130)
+    except SystemExit:
+        raise
+    except BaseException:
+        log("crash: " + traceback.format_exc().strip().splitlines()[-1])
+        raise

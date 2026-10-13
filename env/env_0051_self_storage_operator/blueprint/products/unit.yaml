@@ -1,0 +1,1693 @@
+# Policy charter: storage unit rental agreements (enclosed units by climate class).
+category: unit
+display_name: Self-Storage Unit Rental Agreement
+
+binding:
+  holding_table: unit_rentals
+  event_tables: [unit_ledger, unit_lien_actions, unit_rate_changes, unit_transfers]
+  intake_tables: [unit_moveout_notices]
+  status_field: status
+  variant_field: variant_name
+  quantity_fields: {balance_due: rent_balance, deposit_held: security_deposit}
+
+lifecycle:
+  states: [reserved, active, delinquent, lien_noticed, auction_scheduled, moving_out, vacated, sold_at_lien_sale, reservation_cancelled]
+  transitions:
+    - {from: reserved, to: active, by: user, means: "The customer signs the month-to-month rental agreement at move-in and takes possession of the unit."}
+    - {from: reserved, to: reservation_cancelled, by: user, means: "The customer cancels an unclaimed reservation."}
+    - {from: reserved, to: reservation_cancelled, by: system, means: "An unclaimed reservation lapses at the end of its hold period."}
+    - {from: active, to: delinquent, by: system, means: "Rent for a billing period is still unpaid when that period's grace period ends."}
+    - {from: delinquent, to: active, by: system, means: "The delinquent balance is paid in full before any lien notice is sent."}
+    - {from: delinquent, to: lien_noticed, by: system, means: "The statutory lien notice is sent for the unpaid balance."}
+    - {from: lien_noticed, to: active, by: system, means: "The tenant redeems by paying the full balance, including lien fees, after the lien notice."}
+    - {from: lien_noticed, to: auction_scheduled, by: system, means: "The lien sale is advertised and a sale date is set."}
+    - {from: auction_scheduled, to: active, by: system, means: "The tenant redeems by paying the full balance before the lien sale opens."}
+    - {from: auction_scheduled, to: sold_at_lien_sale, by: system, means: "The contents are sold at the advertised lien sale and the agreement ends."}
+    - {from: active, to: moving_out, by: user, means: "The tenant gives notice to end the agreement on a planned vacate date."}
+    - {from: delinquent, to: moving_out, by: user, means: "A delinquent tenant gives notice to end the agreement; the unpaid balance stays owed."}
+    - {from: moving_out, to: active, by: user, means: "The tenant withdraws the move-out notice of a rental that owes nothing."}
+    - {from: moving_out, to: delinquent, by: user, means: "The tenant withdraws the move-out notice of a rental that still carries past-due rent."}
+    - {from: moving_out, to: vacated, by: agent, means: "The facility confirms the unit is empty and the tenant lock is removed, ending the agreement."}
+
+accounts:
+  - key: rent_balance
+    unit: USD
+    meaning: "Amount the tenant owes on the rental agreement: rent and fees increase it; payments, credits and applied sale proceeds decrease it; a negative value is a credit balance owed back to the tenant."
+  - key: security_deposit
+    unit: USD
+    meaning: "Refundable security deposit the company holds for the rental agreement (collected at move-in for unit classes that carry one)."
+
+parameter_schema:
+  admin_fee_usd: "One-time administrative fee charged at move-in, USD."
+  security_deposit_usd: "Refundable security deposit collected at move-in, USD; 0.0 means the class carries no deposit."
+  reservation_hold_days: "Calendar days a free reservation holds the unit after the reservation date, integer."
+  first_month_discount_pct: "Move-in discount on the first billing period's rent, fraction of monthly rent (0.5 = half off); 0.0 means no move-in discount."
+  military_discount_pct: "Standing discount on every billing period's rent for a tenant whose military discount is applied, fraction of monthly rent."
+  discount_stacking_rule: "How the move-in discount and the military discount combine on the first billing period, enum string (greater_of = only the larger applies)."
+  move_in_id_required: "Identity document the tenant must present at move-in, enum string."
+  lease_term_basis: "Term of the rental agreement, enum string (month_to_month)."
+  billing_cycle_basis: "How rent due dates are set, enum string (anniversary = due on the move-in day of each month)."
+  grace_period_days: "Calendar days after a rent due date during which rent may be paid without a late fee, integer."
+  late_fee_flat_usd: "Flat late fee floor, USD."
+  late_fee_pct_of_rent: "Late fee as a fraction of the monthly rent; the greater of this and the flat floor applies, fraction."
+  late_fee_max_usd: "Ceiling on one late fee, USD."
+  second_late_fee_days_after_due: "Calendar days after the rent due date at which a second late fee is assessed if the period's rent is still unpaid, integer."
+  second_late_fee_usd: "Second late fee for the same billing period, USD."
+  courtesy_waivers_per_12_months: "Courtesy late-fee waivers allowed per rental agreement in any rolling 365-day window, integer."
+  courtesy_waiver_min_tenure_months: "Calendar months since move-in before a tenant may receive a courtesy waiver, integer."
+  partial_payment_accepted_while_delinquent: "Whether a payment smaller than the balance due is accepted while the rental is delinquent, boolean."
+  partial_payment_accepted_after_lien_notice: "Whether a payment smaller than the balance due is accepted once a lien notice has been sent, boolean."
+  payment_application_order: "Order in which a payment is applied to open charges on one rental, enum string."
+  accepted_phone_payment_methods: "Payment methods the care center can take over the phone, list of enum strings."
+  returned_payment_fee_usd: "Fee charged when a payment is returned unpaid by the bank for insufficient funds or a closed account, USD."
+  overlock_days_after_due: "Calendar days after the due date of the oldest unpaid period at which the company overlocks the unit, integer."
+  overlock_fee_usd: "Fee charged when the company overlock is applied, USD."
+  preliminary_notice_days_after_due: "Calendar days after the due date of the oldest unpaid period at which the preliminary lien letter is sent, integer."
+  lien_notice_days_after_due: "Calendar days after the due date of the oldest unpaid period at which the formal lien notice may be sent, integer."
+  lien_notice_fee_usd: "Fee charged when the formal lien notice is sent, USD."
+  auction_advertisement_days_after_lien_notice: "Calendar days after the lien notice date at which the lien sale may be advertised, integer."
+  auction_advertisement_fee_usd: "Fee charged when the lien sale is advertised, USD."
+  lien_sale_min_days_after_advertisement: "Calendar days after the advertisement date before the lien sale may be held, integer."
+  lien_notice_delivery_method: "Delivery method for the formal lien notice, enum string."
+  lock_cut_fee_usd: "Fee charged when the tenant lock is cut to inventory contents ahead of the lien sale, USD."
+  redemption_requires_full_balance: "Whether redemption after a lien notice requires the full balance including lien fees, boolean."
+  sale_surplus_hold_days: "Calendar days lien-sale surplus proceeds are held for the former tenant to claim, integer."
+  rate_increase_first_eligible_months: "Calendar months after move-in before the first existing-customer rate increase notice may be sent, integer."
+  rate_increase_min_interval_months: "Calendar months that must pass after the last rent change before another rate increase notice may be sent, integer."
+  rate_increase_max_pct: "Largest single existing-customer rate increase, fraction of the current monthly rent."
+  rate_increase_notice_days: "Calendar days of written notice before an increased rent takes effect, integer."
+  retention_concession_pct_of_increase: "Share of a noticed increase the care center may give back as a retention concession, fraction."
+  retention_concessions_per_12_months: "Retention concessions allowed per rental agreement in any rolling 365-day window, integer."
+  retention_request_window_days: "Calendar days after the rate increase notice date within which the tenant may ask for a retention concession, integer."
+  transfer_fee_usd: "Fee for transferring the agreement to another unit at the same facility, USD."
+  transfers_per_12_months: "Unit transfers allowed per rental agreement in any rolling 365-day window, integer."
+  transfer_rent_basis: "How the monthly rent is set on the new unit after a transfer, enum string."
+  transfer_overlap_days: "Calendar days after the transfer date the tenant may keep using the old unit to move goods, without rent on the old unit, integer."
+  transfer_resets_rate_clock: "Whether a transfer counts as a rent change for the rate-increase interval, boolean."
+  moveout_notice_days: "Calendar days of notice required between the move-out notice date and the planned vacate date, integer."
+  moveout_prorated_refund: "Whether unused days of the final paid billing period are credited at move-out, boolean."
+  cleaning_fee_usd: "Fee charged when the facility walk-through finds debris or belongings left in the vacated unit, USD."
+  lock_left_removal_fee_usd: "Fee charged when the tenant lock is left on a unit the tenant reports as vacated, USD."
+  deposit_refund_days: "Calendar days after the vacate date by which the security deposit balance is released, integer."
+  credit_balance_refund_days: "Calendar days after the vacate date by which a credit balance is refunded, integer."
+  temperature_range_f: "Temperature band the unit class is held within, degrees Fahrenheit, enum string."
+  humidity_control: "Relative humidity control of the unit class, enum string."
+  door_alarm_included: "Whether an individual door alarm is included, boolean."
+  access_hours: "Gate access hours for the unit class, enum string."
+  drive_up_access: "Whether a vehicle can park directly at the unit door, boolean."
+  min_protection_coverage_usd: "Minimum contents coverage the tenant must carry for this unit class, USD."
+  own_insurance_proof_accepted: "Whether proof of the tenant's own homeowner's or renter's policy may satisfy the coverage requirement, boolean."
+
+variants:
+  - name: "Bluegate Drive-Up Standard"
+    rank: 1
+    entry_gate:
+      min_age_years: 18
+      government_photo_id: true
+      coverage_on_file: true
+    parameters:
+      admin_fee_usd: 29.0
+      security_deposit_usd: 0.0
+      reservation_hold_days: 7
+      first_month_discount_pct: 0.5
+      military_discount_pct: 0.1
+      discount_stacking_rule: "greater_of"
+      move_in_id_required: "government_photo_id"
+      lease_term_basis: "month_to_month"
+      billing_cycle_basis: "anniversary"
+      grace_period_days: 5
+      late_fee_flat_usd: 20.0
+      late_fee_pct_of_rent: 0.2
+      late_fee_max_usd: 45.0
+      second_late_fee_days_after_due: 15
+      second_late_fee_usd: 15.0
+      courtesy_waivers_per_12_months: 1
+      courtesy_waiver_min_tenure_months: 6
+      partial_payment_accepted_while_delinquent: true
+      partial_payment_accepted_after_lien_notice: false
+      payment_application_order: "oldest_period_first_fees_before_rent"
+      accepted_phone_payment_methods: ["credit_card", "debit_card", "ach_bank_account"]
+      returned_payment_fee_usd: 30.0
+      overlock_days_after_due: 10
+      overlock_fee_usd: 25.0
+      preliminary_notice_days_after_due: 20
+      lien_notice_days_after_due: 35
+      lien_notice_fee_usd: 45.0
+      auction_advertisement_days_after_lien_notice: 15
+      auction_advertisement_fee_usd: 50.0
+      lien_sale_min_days_after_advertisement: 10
+      lien_notice_delivery_method: "certified_mail_and_email"
+      lock_cut_fee_usd: 35.0
+      redemption_requires_full_balance: true
+      sale_surplus_hold_days: 365
+      rate_increase_first_eligible_months: 6
+      rate_increase_min_interval_months: 11
+      rate_increase_max_pct: 0.15
+      rate_increase_notice_days: 30
+      retention_concession_pct_of_increase: 0.5
+      retention_concessions_per_12_months: 1
+      retention_request_window_days: 30
+      transfer_fee_usd: 25.0
+      transfers_per_12_months: 2
+      transfer_rent_basis: "target_unit_street_rate"
+      transfer_overlap_days: 3
+      transfer_resets_rate_clock: true
+      moveout_notice_days: 0
+      moveout_prorated_refund: false
+      cleaning_fee_usd: 75.0
+      lock_left_removal_fee_usd: 25.0
+      deposit_refund_days: 30
+      credit_balance_refund_days: 21
+      temperature_range_f: "not_controlled"
+      humidity_control: "none"
+      door_alarm_included: false
+      access_hours: "06:00-22:00"
+      drive_up_access: true
+      min_protection_coverage_usd: 2000
+      own_insurance_proof_accepted: true
+  - name: "Bluegate Interior Standard"
+    rank: 2
+    entry_gate:
+      min_age_years: 18
+      government_photo_id: true
+      coverage_on_file: true
+    parameters:
+      admin_fee_usd: 29.0
+      security_deposit_usd: 0.0
+      reservation_hold_days: 7
+      first_month_discount_pct: 0.5
+      military_discount_pct: 0.1
+      discount_stacking_rule: "greater_of"
+      move_in_id_required: "government_photo_id"
+      lease_term_basis: "month_to_month"
+      billing_cycle_basis: "anniversary"
+      grace_period_days: 5
+      late_fee_flat_usd: 20.0
+      late_fee_pct_of_rent: 0.2
+      late_fee_max_usd: 45.0
+      second_late_fee_days_after_due: 15
+      second_late_fee_usd: 15.0
+      courtesy_waivers_per_12_months: 1
+      courtesy_waiver_min_tenure_months: 6
+      partial_payment_accepted_while_delinquent: true
+      partial_payment_accepted_after_lien_notice: false
+      payment_application_order: "oldest_period_first_fees_before_rent"
+      accepted_phone_payment_methods: ["credit_card", "debit_card", "ach_bank_account"]
+      returned_payment_fee_usd: 30.0
+      overlock_days_after_due: 10
+      overlock_fee_usd: 25.0
+      preliminary_notice_days_after_due: 20
+      lien_notice_days_after_due: 35
+      lien_notice_fee_usd: 45.0
+      auction_advertisement_days_after_lien_notice: 15
+      auction_advertisement_fee_usd: 50.0
+      lien_sale_min_days_after_advertisement: 10
+      lien_notice_delivery_method: "certified_mail_and_email"
+      lock_cut_fee_usd: 35.0
+      redemption_requires_full_balance: true
+      sale_surplus_hold_days: 365
+      rate_increase_first_eligible_months: 6
+      rate_increase_min_interval_months: 11
+      rate_increase_max_pct: 0.15
+      rate_increase_notice_days: 30
+      retention_concession_pct_of_increase: 0.5
+      retention_concessions_per_12_months: 1
+      retention_request_window_days: 30
+      transfer_fee_usd: 25.0
+      transfers_per_12_months: 2
+      transfer_rent_basis: "target_unit_street_rate"
+      transfer_overlap_days: 3
+      transfer_resets_rate_clock: true
+      moveout_notice_days: 0
+      moveout_prorated_refund: false
+      cleaning_fee_usd: 50.0
+      lock_left_removal_fee_usd: 25.0
+      deposit_refund_days: 30
+      credit_balance_refund_days: 21
+      temperature_range_f: "not_controlled"
+      humidity_control: "none"
+      door_alarm_included: false
+      access_hours: "06:00-22:00"
+      drive_up_access: false
+      min_protection_coverage_usd: 2000
+      own_insurance_proof_accepted: true
+  - name: "Bluegate Climate Controlled"
+    rank: 3
+    entry_gate:
+      min_age_years: 18
+      government_photo_id: true
+      coverage_on_file: true
+    parameters:
+      admin_fee_usd: 29.0
+      security_deposit_usd: 0.0
+      reservation_hold_days: 7
+      first_month_discount_pct: 0.5
+      military_discount_pct: 0.1
+      discount_stacking_rule: "greater_of"
+      move_in_id_required: "government_photo_id"
+      lease_term_basis: "month_to_month"
+      billing_cycle_basis: "anniversary"
+      grace_period_days: 5
+      late_fee_flat_usd: 25.0
+      late_fee_pct_of_rent: 0.15
+      late_fee_max_usd: 55.0
+      second_late_fee_days_after_due: 15
+      second_late_fee_usd: 15.0
+      courtesy_waivers_per_12_months: 1
+      courtesy_waiver_min_tenure_months: 6
+      partial_payment_accepted_while_delinquent: true
+      partial_payment_accepted_after_lien_notice: false
+      payment_application_order: "oldest_period_first_fees_before_rent"
+      accepted_phone_payment_methods: ["credit_card", "debit_card", "ach_bank_account"]
+      returned_payment_fee_usd: 30.0
+      overlock_days_after_due: 10
+      overlock_fee_usd: 25.0
+      preliminary_notice_days_after_due: 20
+      lien_notice_days_after_due: 35
+      lien_notice_fee_usd: 45.0
+      auction_advertisement_days_after_lien_notice: 15
+      auction_advertisement_fee_usd: 50.0
+      lien_sale_min_days_after_advertisement: 10
+      lien_notice_delivery_method: "certified_mail_and_email"
+      lock_cut_fee_usd: 35.0
+      redemption_requires_full_balance: true
+      sale_surplus_hold_days: 365
+      rate_increase_first_eligible_months: 6
+      rate_increase_min_interval_months: 11
+      rate_increase_max_pct: 0.12
+      rate_increase_notice_days: 30
+      retention_concession_pct_of_increase: 0.5
+      retention_concessions_per_12_months: 1
+      retention_request_window_days: 30
+      transfer_fee_usd: 25.0
+      transfers_per_12_months: 2
+      transfer_rent_basis: "target_unit_street_rate"
+      transfer_overlap_days: 3
+      transfer_resets_rate_clock: true
+      moveout_notice_days: 0
+      moveout_prorated_refund: false
+      cleaning_fee_usd: 50.0
+      lock_left_removal_fee_usd: 25.0
+      deposit_refund_days: 30
+      credit_balance_refund_days: 21
+      temperature_range_f: "55-85"
+      humidity_control: "none"
+      door_alarm_included: false
+      access_hours: "06:00-22:00"
+      drive_up_access: false
+      min_protection_coverage_usd: 2000
+      own_insurance_proof_accepted: true
+  - name: "Bluegate Climate Plus"
+    rank: 4
+    entry_gate:
+      min_age_years: 18
+      government_photo_id: true
+      coverage_on_file: true
+    parameters:
+      admin_fee_usd: 29.0
+      security_deposit_usd: 0.0
+      reservation_hold_days: 7
+      first_month_discount_pct: 0.5
+      military_discount_pct: 0.1
+      discount_stacking_rule: "greater_of"
+      move_in_id_required: "government_photo_id"
+      lease_term_basis: "month_to_month"
+      billing_cycle_basis: "anniversary"
+      grace_period_days: 5
+      late_fee_flat_usd: 25.0
+      late_fee_pct_of_rent: 0.15
+      late_fee_max_usd: 60.0
+      second_late_fee_days_after_due: 15
+      second_late_fee_usd: 20.0
+      courtesy_waivers_per_12_months: 1
+      courtesy_waiver_min_tenure_months: 6
+      partial_payment_accepted_while_delinquent: true
+      partial_payment_accepted_after_lien_notice: false
+      payment_application_order: "oldest_period_first_fees_before_rent"
+      accepted_phone_payment_methods: ["credit_card", "debit_card", "ach_bank_account"]
+      returned_payment_fee_usd: 30.0
+      overlock_days_after_due: 10
+      overlock_fee_usd: 25.0
+      preliminary_notice_days_after_due: 20
+      lien_notice_days_after_due: 35
+      lien_notice_fee_usd: 45.0
+      auction_advertisement_days_after_lien_notice: 15
+      auction_advertisement_fee_usd: 50.0
+      lien_sale_min_days_after_advertisement: 10
+      lien_notice_delivery_method: "certified_mail_and_email"
+      lock_cut_fee_usd: 35.0
+      redemption_requires_full_balance: true
+      sale_surplus_hold_days: 365
+      rate_increase_first_eligible_months: 6
+      rate_increase_min_interval_months: 11
+      rate_increase_max_pct: 0.12
+      rate_increase_notice_days: 30
+      retention_concession_pct_of_increase: 0.5
+      retention_concessions_per_12_months: 1
+      retention_request_window_days: 30
+      transfer_fee_usd: 25.0
+      transfers_per_12_months: 2
+      transfer_rent_basis: "target_unit_street_rate"
+      transfer_overlap_days: 3
+      transfer_resets_rate_clock: true
+      moveout_notice_days: 0
+      moveout_prorated_refund: false
+      cleaning_fee_usd: 50.0
+      lock_left_removal_fee_usd: 25.0
+      deposit_refund_days: 30
+      credit_balance_refund_days: 21
+      temperature_range_f: "55-80"
+      humidity_control: "max_55_pct_rh"
+      door_alarm_included: false
+      access_hours: "06:00-22:00"
+      drive_up_access: false
+      min_protection_coverage_usd: 3000
+      own_insurance_proof_accepted: true
+  - name: "Bluegate Premier Climate Suite"
+    rank: 5
+    entry_gate:
+      min_age_years: 18
+      government_photo_id: true
+      coverage_on_file: true
+      min_coverage_usd: 5000
+    parameters:
+      admin_fee_usd: 39.0
+      security_deposit_usd: 50.0
+      reservation_hold_days: 10
+      first_month_discount_pct: 0.0
+      military_discount_pct: 0.1
+      discount_stacking_rule: "greater_of"
+      move_in_id_required: "government_photo_id"
+      lease_term_basis: "month_to_month"
+      billing_cycle_basis: "anniversary"
+      grace_period_days: 7
+      late_fee_flat_usd: 30.0
+      late_fee_pct_of_rent: 0.1
+      late_fee_max_usd: 75.0
+      second_late_fee_days_after_due: 20
+      second_late_fee_usd: 25.0
+      courtesy_waivers_per_12_months: 2
+      courtesy_waiver_min_tenure_months: 3
+      partial_payment_accepted_while_delinquent: true
+      partial_payment_accepted_after_lien_notice: false
+      payment_application_order: "oldest_period_first_fees_before_rent"
+      accepted_phone_payment_methods: ["credit_card", "debit_card", "ach_bank_account"]
+      returned_payment_fee_usd: 35.0
+      overlock_days_after_due: 12
+      overlock_fee_usd: 30.0
+      preliminary_notice_days_after_due: 25
+      lien_notice_days_after_due: 40
+      lien_notice_fee_usd: 55.0
+      auction_advertisement_days_after_lien_notice: 15
+      auction_advertisement_fee_usd: 65.0
+      lien_sale_min_days_after_advertisement: 14
+      lien_notice_delivery_method: "certified_mail_and_email"
+      lock_cut_fee_usd: 35.0
+      redemption_requires_full_balance: true
+      sale_surplus_hold_days: 365
+      rate_increase_first_eligible_months: 9
+      rate_increase_min_interval_months: 12
+      rate_increase_max_pct: 0.09
+      rate_increase_notice_days: 45
+      retention_concession_pct_of_increase: 0.5
+      retention_concessions_per_12_months: 1
+      retention_request_window_days: 45
+      transfer_fee_usd: 0.0
+      transfers_per_12_months: 2
+      transfer_rent_basis: "target_unit_street_rate"
+      transfer_overlap_days: 5
+      transfer_resets_rate_clock: true
+      moveout_notice_days: 10
+      moveout_prorated_refund: true
+      cleaning_fee_usd: 75.0
+      lock_left_removal_fee_usd: 25.0
+      deposit_refund_days: 30
+      credit_balance_refund_days: 21
+      temperature_range_f: "55-80"
+      humidity_control: "max_55_pct_rh"
+      door_alarm_included: true
+      access_hours: "24_hours"
+      drive_up_access: true
+      min_protection_coverage_usd: 5000
+      own_insurance_proof_accepted: true
+  - name: "Bluegate Wine & Collectibles Vault"
+    rank: 6
+    entry_gate:
+      min_age_years: 21
+      government_photo_id: true
+      coverage_on_file: true
+      min_coverage_usd: 10000
+    parameters:
+      admin_fee_usd: 39.0
+      security_deposit_usd: 100.0
+      reservation_hold_days: 14
+      first_month_discount_pct: 0.0
+      military_discount_pct: 0.0
+      discount_stacking_rule: "greater_of"
+      move_in_id_required: "government_photo_id"
+      lease_term_basis: "month_to_month"
+      billing_cycle_basis: "anniversary"
+      grace_period_days: 7
+      late_fee_flat_usd: 30.0
+      late_fee_pct_of_rent: 0.1
+      late_fee_max_usd: 75.0
+      second_late_fee_days_after_due: 20
+      second_late_fee_usd: 25.0
+      courtesy_waivers_per_12_months: 2
+      courtesy_waiver_min_tenure_months: 3
+      partial_payment_accepted_while_delinquent: true
+      partial_payment_accepted_after_lien_notice: false
+      payment_application_order: "oldest_period_first_fees_before_rent"
+      accepted_phone_payment_methods: ["credit_card", "debit_card", "ach_bank_account"]
+      returned_payment_fee_usd: 35.0
+      overlock_days_after_due: 15
+      overlock_fee_usd: 30.0
+      preliminary_notice_days_after_due: 30
+      lien_notice_days_after_due: 45
+      lien_notice_fee_usd: 55.0
+      auction_advertisement_days_after_lien_notice: 21
+      auction_advertisement_fee_usd: 65.0
+      lien_sale_min_days_after_advertisement: 14
+      lien_notice_delivery_method: "certified_mail_and_email"
+      lock_cut_fee_usd: 35.0
+      redemption_requires_full_balance: true
+      sale_surplus_hold_days: 365
+      rate_increase_first_eligible_months: 12
+      rate_increase_min_interval_months: 12
+      rate_increase_max_pct: 0.07
+      rate_increase_notice_days: 60
+      retention_concession_pct_of_increase: 0.5
+      retention_concessions_per_12_months: 1
+      retention_request_window_days: 60
+      transfer_fee_usd: 0.0
+      transfers_per_12_months: 2
+      transfer_rent_basis: "target_unit_street_rate"
+      transfer_overlap_days: 5
+      transfer_resets_rate_clock: true
+      moveout_notice_days: 30
+      moveout_prorated_refund: true
+      cleaning_fee_usd: 95.0
+      lock_left_removal_fee_usd: 25.0
+      deposit_refund_days: 30
+      credit_balance_refund_days: 21
+      temperature_range_f: "55-60"
+      humidity_control: "60_to_70_pct_rh"
+      door_alarm_included: true
+      access_hours: "24_hours"
+      drive_up_access: false
+      min_protection_coverage_usd: 10000
+      own_insurance_proof_accepted: true
+
+events:
+  - type: unit_reservation
+    target: unit_rentals
+    mutation: create
+    meaning: "A customer reserves a specific available unit at a facility ahead of move-in."
+    grain: "One rental agreement record per reserved unit."
+    fields:
+      customer_id: "The customer making the reservation."
+      variant_name: "Unit class of the reserved unit, official full name."
+      facility_code: "Facility where the unit is located."
+      unit_number: "Unit number as posted at the facility."
+      unit_size: "Unit dimensions in feet."
+      monthly_rent: "Contracted monthly rent before discounts, set from the unit's posted street rate on the reservation date."
+      reservation_date: "Date the reservation is made."
+      promo_code: "Move-in promotion attached to the reservation."
+      military_discount_applied: "Whether the military discount applies to this agreement."
+    triggers: []
+  - type: unit_reservation_cancelled
+    target: unit_rentals
+    mutation: {transition: {from: reserved, to: reservation_cancelled}}
+    meaning: "An unclaimed reservation is cancelled by the customer or lapses at the end of its hold."
+    grain: "One transition per reservation."
+    fields:
+      status: "Set to reservation_cancelled."
+    triggers: []
+  - type: unit_move_in
+    target: unit_rentals
+    mutation: {transition: {from: reserved, to: active}}
+    meaning: "The tenant signs the rental agreement and takes possession of the reserved unit."
+    grain: "One transition per rental agreement."
+    fields:
+      move_in_date: "Date the agreement is signed and possession begins; also the first rent due date."
+      billing_day: "Day of month rent falls due, taken from the move-in date."
+      coverage_source: "How the tenant meets the contents coverage requirement at move-in."
+      lock_status: "Set to tenant_lock once the tenant's lock is on the unit."
+      deposit_held: "Security deposit collected at move-in for the unit class (0.00 where the class carries none)."
+    triggers:
+      - event: unit:unit_rent_charge
+        map: {}
+      - event: unit:unit_fee_charge
+        map: {fee_type: admin_fee}
+      - event: unit:unit_deposit_collected
+        when: {deposit_held: {not: 0}}
+        map: {}
+  - type: unit_rent_charge
+    target: unit_ledger
+    meaning: "Rent for one billing period is posted to the tenant ledger on its due date."
+    grain: "One row per rental agreement per billing period."
+    distinguish_by: [period_start]
+    fields:
+      amount: "Rent posted for the period after any discount, USD."
+      entry_date: "Date the charge is posted (the period's due date)."
+      period_start: "First day of the billing period, which is the rent due date."
+      period_end: "Last day of the billing period."
+    account: rent_balance
+    direction: in
+    triggers: []
+  - type: unit_fee_charge
+    target: unit_ledger
+    meaning: "A fee is posted to the tenant ledger (administrative, late, lien-process, returned payment, transfer or move-out fee)."
+    grain: "One row per fee type per billing period per source charge or payment."
+    distinguish_by: [fee_type, period_start, reference_entry_id]
+    fields:
+      fee_type: "Kind of fee posted."
+      amount: "Fee amount, USD."
+      entry_date: "Date the fee is posted."
+      period_start: "Due date of the billing period the fee relates to (the move-in date for the administrative fee)."
+      reference_entry_id: "Ledger entry the fee arises from: the unpaid rent charge for late fees, the returned payment for a returned-payment fee; empty otherwise."
+    account: rent_balance
+    direction: in
+    triggers: []
+  - type: unit_payment
+    target: unit_ledger
+    meaning: "A tenant payment is received and applied to the rental agreement."
+    grain: "One row per payment received."
+    distinguish_by: [entry_date, amount, payment_method, payment_channel, autopay_draft_id]
+    fields:
+      amount: "Amount paid, USD."
+      entry_date: "Date the payment is received."
+      payment_method: "Method used to pay."
+      payment_channel: "Where the payment was taken."
+      autopay_draft_id: "AutoPay draft that produced the payment; empty for one-time payments."
+    account: rent_balance
+    direction: out
+    triggers: []
+  - type: unit_payment_reversal
+    target: unit_ledger
+    meaning: "A previously applied payment is returned by the bank or charged back, re-opening the amount it paid."
+    grain: "One row per reversed payment."
+    distinguish_by: [reference_entry_id]
+    fields:
+      reference_entry_id: "The payment entry being reversed."
+      amount: "Amount reversed, USD (equal to the reversed payment)."
+      entry_date: "Date the return or chargeback is posted."
+      reversal_reason: "Why the payment was reversed."
+    account: rent_balance
+    direction: in
+    triggers:
+      - event: unit:unit_fee_charge
+        when: {reversal_reason: [ach_return_insufficient_funds, ach_return_account_closed]}
+        map: {fee_type: returned_payment_fee, reference_entry_id: reference_entry_id}
+  - type: unit_credit
+    target: unit_ledger
+    meaning: "A credit reduces what the tenant owes: a courtesy late-fee waiver, a billing-error correction, a prorated move-out credit or an applied deposit."
+    grain: "One row per credit type per source entry."
+    distinguish_by: [credit_type, reference_entry_id]
+    fields:
+      credit_type: "Kind of credit."
+      amount: "Credit amount, USD."
+      entry_date: "Date the credit is posted."
+      reference_entry_id: "Ledger entry the credit is applied against: the waived or corrected charge, the final rent charge for a prorated credit, or the deposit release."
+    account: rent_balance
+    direction: out
+    triggers: []
+  - type: unit_sale_proceeds_applied
+    target: unit_ledger
+    meaning: "Net lien-sale proceeds are applied against the balance of a rental sold at lien sale."
+    grain: "One row per lien sale."
+    distinguish_by: [entry_date]
+    fields:
+      amount: "Proceeds applied to the balance, USD (any surplus is held, not applied)."
+      entry_date: "Date of the lien sale."
+    account: rent_balance
+    direction: out
+    triggers: []
+  - type: unit_refund
+    target: unit_ledger
+    meaning: "A credit balance on a closed rental is refunded to the former tenant."
+    grain: "One row per refund issued."
+    distinguish_by: [entry_date, refund_method]
+    fields:
+      amount: "Amount refunded, USD."
+      entry_date: "Date the refund is issued."
+      refund_method: "How the refund is paid."
+    account: rent_balance
+    direction: in
+    triggers: []
+  - type: unit_deposit_collected
+    target: unit_ledger
+    meaning: "The security deposit for the unit class is collected at move-in."
+    grain: "One row per rental agreement."
+    distinguish_by: [entry_date]
+    fields:
+      amount: "Deposit collected, USD."
+      entry_date: "Date collected (the move-in date)."
+    account: security_deposit
+    direction: in
+    triggers: []
+  - type: unit_deposit_released
+    target: unit_ledger
+    meaning: "The held security deposit is released after move-out, applied to any balance owed and the rest returned to the tenant."
+    grain: "One row per release type per release date."
+    distinguish_by: [release_type, entry_date]
+    fields:
+      release_type: "Whether this portion is applied to the balance or refunded to the tenant."
+      amount: "Portion of the deposit released this way, USD."
+      entry_date: "Date released."
+    account: security_deposit
+    direction: out
+    triggers:
+      - event: unit:unit_credit
+        when: {release_type: applied_to_balance}
+        map: {credit_type: deposit_application}
+  - type: unit_delinquency_onset
+    target: unit_rentals
+    mutation: {transition: {from: active, to: delinquent}}
+    meaning: "Rent for a billing period remains unpaid when its grace period ends and the rental becomes delinquent."
+    grain: "One transition per delinquency cycle."
+    fields:
+      delinquent_since: "Due date of the oldest unpaid billing period, which anchors the lien schedule."
+    triggers:
+      - event: unit:unit_fee_charge
+        map: {fee_type: late_fee}
+  - type: unit_lien_step
+    target: unit_lien_actions
+    meaning: "A step of the delinquency and lien process is taken on a rental: overlock, preliminary letter, lien notice, sale advertisement, lock cut, hold or overlock removal."
+    grain: "One row per lien step per delinquency cycle."
+    distinguish_by: [lien_step, delinquency_anchor_date]
+    fields:
+      lien_step: "The step taken."
+      action_date: "Date the step is taken."
+      delinquency_anchor_date: "Due date of the oldest unpaid billing period of this delinquency cycle."
+      notice_method: "How the notice for this step is delivered (none for physical steps)."
+      scheduled_sale_date: "Lien sale date set by an advertisement step; empty otherwise."
+      hold_reason: "Reason a lien hold is placed or released; none for other steps."
+    triggers:
+      - event: unit:unit_fee_charge
+        when: {lien_step: overlock_applied}
+        map: {fee_type: overlock_fee}
+      - event: unit:unit_lock_status_update
+        when: {lien_step: overlock_applied}
+        map: {lock_status: company_overlock}
+      - event: unit:unit_fee_charge
+        when: {lien_step: lien_notice_sent}
+        map: {fee_type: lien_notice_fee}
+      - event: unit:unit_lien_stage_advance
+        when: {lien_step: lien_notice_sent}
+        map: {}
+      - event: unit:unit_fee_charge
+        when: {lien_step: sale_advertised}
+        map: {fee_type: auction_advertisement_fee}
+      - event: unit:unit_lien_stage_advance
+        when: {lien_step: sale_advertised}
+        map: {}
+      - event: unit:unit_fee_charge
+        when: {lien_step: lock_cut_for_inventory}
+        map: {fee_type: lock_cut_fee}
+      - event: unit:unit_lock_status_update
+        when: {lien_step: lock_cut_for_inventory}
+        map: {lock_status: lock_cut}
+      - event: unit:unit_lock_status_update
+        when: {lien_step: overlock_removed}
+        map: {lock_status: tenant_lock}
+  - type: unit_lien_stage_advance
+    target: unit_rentals
+    mutation: {transition: [{from: delinquent, to: lien_noticed}, {from: lien_noticed, to: auction_scheduled}]}
+    meaning: "The rental moves to the next lien stage when the lien notice is sent or the sale is advertised."
+    grain: "One transition per lien stage per delinquency cycle."
+    fields:
+      status: "Set to lien_noticed or auction_scheduled."
+    triggers: []
+  - type: unit_redemption
+    target: unit_rentals
+    mutation: {transition: [{from: delinquent, to: active}, {from: lien_noticed, to: active}, {from: auction_scheduled, to: active}]}
+    meaning: "The past-due balance is paid off and the rental returns to good standing."
+    grain: "One transition per delinquency cycle."
+    fields:
+      delinquent_since: "Cleared to empty once the rental is current."
+    triggers: []
+  - type: unit_lien_sale
+    target: unit_rentals
+    mutation: {transition: {from: auction_scheduled, to: sold_at_lien_sale}}
+    meaning: "The contents are sold at the advertised lien sale and the agreement ends."
+    grain: "One transition per rental agreement."
+    fields:
+      move_out_date: "Date of the lien sale, which ends the agreement."
+    triggers:
+      - event: unit:unit_sale_proceeds_applied
+        map: {}
+  - type: unit_rate_change_notice
+    target: unit_rate_changes
+    meaning: "A change to the monthly rent is noticed to the tenant: an existing-customer rate increase, a retention concession that reduces it, or a rescission."
+    grain: "One row per rent change per effective date."
+    distinguish_by: [change_reason, effective_date]
+    fields:
+      change_reason: "Why the rent changes."
+      previous_rent: "Monthly rent before the change, USD."
+      new_rent: "Monthly rent after the change, USD."
+      notice_date: "Date the notice is sent or the concession is granted."
+      effective_date: "Billing due date from which the new rent applies."
+      source_rate_change_id: "For a concession or rescission, the rate increase notice it modifies; empty for an increase."
+    triggers: []
+  - type: unit_rent_rate_update
+    target: unit_rentals
+    mutation: update
+    meaning: "The contracted monthly rent on the agreement is changed to the noticed new rent on its effective date."
+    grain: "One update per effective rent change."
+    fields:
+      monthly_rent: "New contracted monthly rent, USD."
+      last_rate_change_date: "Effective date of this rent change."
+    triggers: []
+  - type: unit_transfer_completed
+    target: unit_transfers
+    meaning: "The tenant moves the agreement to a different unit at the same facility."
+    grain: "One row per transfer."
+    distinguish_by: [transfer_date, unit_number]
+    fields:
+      transfer_date: "Date the transfer is completed."
+      from_unit_number: "Unit the tenant leaves."
+      from_variant_name: "Unit class of the unit left."
+      from_unit_size: "Size of the unit left."
+      unit_number: "Unit the tenant moves into."
+      variant_name: "Unit class of the new unit."
+      unit_size: "Size of the new unit."
+      monthly_rent: "Monthly rent on the new unit, USD."
+      transfer_fee_amount: "Transfer fee charged for this transfer, USD (0.00 when none)."
+    triggers:
+      - event: unit:unit_unit_reassigned
+        map: {unit_number: unit_number, variant_name: variant_name, unit_size: unit_size, monthly_rent: monthly_rent}
+      - event: unit:unit_fee_charge
+        when: {transfer_fee_amount: {not: 0}}
+        map: {fee_type: unit_transfer_fee}
+  - type: unit_unit_reassigned
+    target: unit_rentals
+    mutation: update
+    meaning: "The rental agreement is re-pointed to the new unit after a transfer."
+    grain: "One update per transfer."
+    fields:
+      unit_number: "New unit number."
+      unit_size: "New unit size."
+      variant_name: "Unit class of the new unit."
+      monthly_rent: "Monthly rent on the new unit, USD."
+      last_rate_change_date: "Set to the transfer date where the transfer resets the rate clock."
+    triggers: []
+  - type: unit_moveout_scheduled
+    target: unit_rentals
+    mutation: {transition: [{from: active, to: moving_out}, {from: delinquent, to: moving_out}]}
+    meaning: "The tenant gives notice to end the agreement on a planned vacate date."
+    grain: "One transition per move-out notice."
+    fields:
+      move_out_date: "Planned vacate date set by the notice."
+    triggers: []
+  - type: unit_moveout_withdrawn
+    target: unit_rentals
+    mutation: {transition: [{from: moving_out, to: active}, {from: moving_out, to: delinquent}]}
+    meaning: "The tenant withdraws a move-out notice before vacating."
+    grain: "One transition per withdrawn notice."
+    fields:
+      move_out_date: "Cleared to empty."
+    triggers: []
+  - type: unit_vacated
+    target: unit_rentals
+    mutation: {transition: {from: moving_out, to: vacated}}
+    meaning: "The facility confirms the unit is empty and the lock removed; the agreement ends."
+    grain: "One transition per rental agreement."
+    fields:
+      move_out_date: "Date the vacate is confirmed."
+    triggers: []
+  - type: unit_coverage_update
+    target: unit_rentals
+    mutation: update
+    meaning: "The way the tenant meets the contents coverage requirement is changed."
+    grain: "One update per coverage change."
+    fields:
+      coverage_source: "New coverage source."
+    triggers: []
+  - type: unit_lock_status_update
+    target: unit_rentals
+    mutation: update
+    meaning: "The lock on the unit changes: company overlock applied or removed, or tenant lock cut."
+    grain: "One update per lock change."
+    fields:
+      lock_status: "New lock status."
+    triggers: []
+
+measures:
+  - id: unit_msr_courtesy_waivers_365d
+    window: "Rolling 365 calendar days ending on the handling date (frozen date), inclusive, per rental agreement."
+    measure: "Count of unit_credit rows with credit_type courtesy_late_fee_waiver whose entry_date falls in the window."
+  - id: unit_msr_transfers_365d
+    window: "Rolling 365 calendar days ending on the handling date, inclusive, per rental agreement."
+    measure: "Count of unit_transfer_completed rows whose transfer_date falls in the window."
+  - id: unit_msr_retention_concessions_365d
+    window: "Rolling 365 calendar days ending on the handling date, inclusive, per rental agreement."
+    measure: "Count of unit_rate_change_notice rows with change_reason retention_concession whose notice_date falls in the window."
+  - id: unit_msr_open_reservations
+    window: "Point in time: the handling date, per customer."
+    measure: "Count of the customer's rental agreements in reserved status."
+
+policies:
+  - id: unit_agg_multi_holding
+    subject: [unit_reservation]
+    rule: >-
+      A customer may rent any number of storage units; each unit is its own rental agreement with its own ledger, due date and lien
+      schedule. A customer may hold at most max_open_reservations open reservations at one time, counted by
+      unit_msr_open_reservations before the new reservation is made. Every other rental agreement in the customer's name must be in
+      reserved, active, moving_out, vacated, reservation_cancelled or sold_at_lien_sale status before a new reservation is taken; a
+      customer with a delinquent, lien_noticed or auction_scheduled rental must bring that rental current first. A reservation is
+      made only on a unit the facility inventory shows as available.
+    eligibility:
+      - id: no_delinquent_rental
+        applies_to: [unit_reservation]
+        kind: state
+        condition: "Every other rental agreement in the customer's name must be in reserved, active, moving_out, vacated, reservation_cancelled or sold_at_lien_sale status before a new reservation is taken; a customer with a delinquent, lien_noticed or auction_scheduled rental must bring that rental current first."
+        evidence_fields: [unit_rentals.status, unit_rentals.customer_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[unit_rentals.customer_id]]
+          action_bindings: {unit_rentals.customer_id: customer_id}
+        state_contract:
+          field: unit_rentals.status
+          allowed: [reserved, active, moving_out, vacated, reservation_cancelled, sold_at_lien_sale]
+      - id: unit_available
+        applies_to: [unit_reservation]
+        kind: state
+        condition: "A reservation is made only on a unit the facility inventory shows as available."
+        evidence_fields: [facility_spaces.availability, facility_spaces.facility_space_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[facility_spaces.facility_space_id]]
+          action_bindings: {facility_spaces.facility_space_id: facility_space_id}
+        state_contract:
+          field: facility_spaces.availability
+          allowed: [available]
+    params:
+      max_per_customer: null
+      max_open_reservations: 3
+    measures: [unit_msr_open_reservations]
+
+  - id: unit_agg_payment_allocation
+    subject: [unit_payment]
+    rule: >-
+      When a customer with more than one rental agreement makes a payment without naming the unit it is for, the payment is applied
+      first to the rental whose delinquent_since date is earliest, then to the next-earliest, and only then to rentals that are
+      current; rentals with no delinquent_since date are taken in order of move_in_date, oldest first. A payment that names a unit is
+      applied only to that unit's agreement and never spills to another agreement; any excess stays on that agreement as a credit
+      balance. Within one agreement the payment is applied by payment_application_order: the oldest billing period first, and within
+      a billing period its fees before its rent. One payment is split into one unit_payment row per agreement it reaches, and the row
+      amounts add up to the payment taken.
+    eligibility: []
+    params:
+      allocation_basis: "earliest_delinquent_since_then_oldest_move_in"
+      intra_rental_order: "=payment_application_order"
+
+  - id: unit_evt_rent_billing
+    subject: [unit_move_in, unit_rent_charge]
+    rule: >-
+      Rent is billed on the anniversary basis: the first billing period starts on the move-in date and is charged at move-in, and each
+      later period starts on the same day of the month as the move-in date; where a month has no such day the period starts on that
+      month's last day. A billing period ends the day before the next period starts. The first period's rent is the monthly rent
+      reduced by the move-in discount or the military discount, whichever is greater, under discount_stacking_rule; they never add.
+      Every later period is charged the monthly rent, reduced by the military discount only where military_discount_applied is true.
+      Rent is charged only while the rental agreement is in active, delinquent, lien_noticed, auction_scheduled or moving_out status.
+      For a rental in moving_out status, a billing period whose start date falls on or after the planned vacate date is not charged.
+      Each billing period is charged once. Amounts are rounded to the cent, half up.
+      The agreement runs on lease_term_basis and its due dates follow billing_cycle_basis.
+    eligibility:
+      - id: billable_status
+        applies_to: [unit_rent_charge]
+        kind: state
+        condition: "Rent is charged only while the rental agreement is in active, delinquent, lien_noticed, auction_scheduled or moving_out status."
+        evidence_fields: [unit_rentals.status, unit_rentals.rental_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[unit_rentals.rental_id]]
+          action_bindings: {unit_rentals.rental_id: rental_id}
+        state_contract:
+          field: unit_rentals.status
+          allowed: [active, delinquent, lien_noticed, auction_scheduled, moving_out]
+      - id: one_charge_per_period
+        applies_to: [unit_rent_charge]
+        kind: dedup
+        condition: "Each billing period is charged once."
+        evidence_fields: [unit_ledger.rental_id, unit_ledger.period_start, unit_ledger.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[unit_ledger.rental_id, unit_ledger.period_start]]
+          action_bindings: {unit_ledger.rental_id: rental_id, unit_ledger.period_start: period_start}
+        dedup_contract:
+          table: unit_ledger
+          mode: separate_record
+          object_bindings: {rental_id: rental_id, period_start: period_start}
+          duplicate_filters: {event_type: [unit_rent_charge]}
+          distinct_fields: []
+    params:
+      rounding: "half_up_to_cent"
+      per_tier:
+        Bluegate Drive-Up Standard: {first_month_discount_pct: "=first_month_discount_pct", military_discount_pct: "=military_discount_pct"}
+        Bluegate Interior Standard: {first_month_discount_pct: "=first_month_discount_pct", military_discount_pct: "=military_discount_pct"}
+        Bluegate Climate Controlled: {first_month_discount_pct: "=first_month_discount_pct", military_discount_pct: "=military_discount_pct"}
+        Bluegate Climate Plus: {first_month_discount_pct: "=first_month_discount_pct", military_discount_pct: "=military_discount_pct"}
+        Bluegate Premier Climate Suite: {first_month_discount_pct: "=first_month_discount_pct", military_discount_pct: "=military_discount_pct"}
+        Bluegate Wine & Collectibles Vault: {first_month_discount_pct: "=first_month_discount_pct", military_discount_pct: "=military_discount_pct"}
+    formula:
+      first_period_rent: "round(monthly_rent * (1 - max(first_month_discount_pct if promo_code == 'first_month_discount' else 0, military_discount_pct if military_discount_applied == true else 0)), 2)"
+      recurring_rent: "round(monthly_rent * (1 - military_discount_pct), 2) if military_discount_applied == true else monthly_rent"
+
+  - id: unit_evt_late_fee
+    subject: [unit_delinquency_onset, unit_fee_charge]
+    rule: >-
+      A late fee is assessed once for a billing period when any part of that period's rent is still unpaid after the grace period. The
+      late fee may be posted only when the handling date is later than the rent due date of the unpaid billing period plus
+      grace_period_days. Grace days are counted as calendar days starting the day after the due date, so a payment received on the
+      last grace day is on time. The late fee is the greater of late_fee_flat_usd and late_fee_pct_of_rent times the monthly rent,
+      rounded to the cent, and never more than late_fee_max_usd. When the period's rent is still unpaid second_late_fee_days_after_due
+      calendar days after its due date, a second late fee of second_late_fee_usd is posted for the same period; no further late fees
+      accrue on that period. A late fee is assessed only while the rental is in active, delinquent, lien_noticed, auction_scheduled or
+      moving_out status. Each billing period carries at most one late fee and one second late fee. A period whose rent is fully paid on
+      or before the last grace day is never charged a late fee, and a late fee posted against such a period is a billing error. The
+      first late fee of a cycle moves an active rental to delinquent, with delinquent_since set to that period's due date.
+    eligibility:
+      - id: grace_expired
+        applies_to: [unit_fee_charge]
+        kind: time
+        condition: "The late fee may be posted only when the handling date is later than the rent due date of the unpaid billing period plus grace_period_days."
+        evidence_fields: [unit_ledger.period_start, unit_ledger.entry_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[unit_ledger.entry_id]]
+          action_bindings: {unit_ledger.entry_id: reference_entry_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the rent due date of the unpaid billing period"
+          anchor_source: unit_ledger.period_start
+          relation: not_before
+          duration_source: variants.grace_period_days
+          unit: calendar_days
+          counting_rule: "Grace days are counted as calendar days starting the day after the due date, so a payment received on the last grace day is on time."
+          boundary: exclusive
+      - id: late_fee_status
+        applies_to: [unit_fee_charge]
+        kind: state
+        condition: "A late fee is assessed only while the rental is in active, delinquent, lien_noticed, auction_scheduled or moving_out status."
+        evidence_fields: [unit_rentals.status, unit_rentals.rental_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[unit_rentals.rental_id]]
+          action_bindings: {unit_rentals.rental_id: rental_id}
+        state_contract:
+          field: unit_rentals.status
+          allowed: [active, delinquent, lien_noticed, auction_scheduled, moving_out]
+      - id: one_late_fee_per_period
+        applies_to: [unit_fee_charge]
+        kind: dedup
+        condition: "Each billing period carries at most one late fee and one second late fee."
+        evidence_fields: [unit_ledger.rental_id, unit_ledger.period_start, unit_ledger.fee_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[unit_ledger.rental_id, unit_ledger.period_start, unit_ledger.fee_type]]
+          action_bindings: {unit_ledger.rental_id: rental_id, unit_ledger.period_start: period_start, unit_ledger.fee_type: fee_type}
+        dedup_contract:
+          table: unit_ledger
+          mode: separate_record
+          object_bindings: {rental_id: rental_id, period_start: period_start, fee_type: fee_type}
+          duplicate_filters: {fee_type: [late_fee, second_late_fee]}
+          distinct_fields: []
+    params:
+      per_tier:
+        Bluegate Drive-Up Standard: {grace_period_days: "=grace_period_days", late_fee_flat_usd: "=late_fee_flat_usd", late_fee_pct_of_rent: "=late_fee_pct_of_rent", late_fee_max_usd: "=late_fee_max_usd"}
+        Bluegate Interior Standard: {grace_period_days: "=grace_period_days", late_fee_flat_usd: "=late_fee_flat_usd", late_fee_pct_of_rent: "=late_fee_pct_of_rent", late_fee_max_usd: "=late_fee_max_usd"}
+        Bluegate Climate Controlled: {grace_period_days: "=grace_period_days", late_fee_flat_usd: "=late_fee_flat_usd", late_fee_pct_of_rent: "=late_fee_pct_of_rent", late_fee_max_usd: "=late_fee_max_usd"}
+        Bluegate Climate Plus: {grace_period_days: "=grace_period_days", late_fee_flat_usd: "=late_fee_flat_usd", late_fee_pct_of_rent: "=late_fee_pct_of_rent", late_fee_max_usd: "=late_fee_max_usd"}
+        Bluegate Premier Climate Suite: {grace_period_days: "=grace_period_days", late_fee_flat_usd: "=late_fee_flat_usd", late_fee_pct_of_rent: "=late_fee_pct_of_rent", late_fee_max_usd: "=late_fee_max_usd"}
+        Bluegate Wine & Collectibles Vault: {grace_period_days: "=grace_period_days", late_fee_flat_usd: "=late_fee_flat_usd", late_fee_pct_of_rent: "=late_fee_pct_of_rent", late_fee_max_usd: "=late_fee_max_usd"}
+    formula:
+      late_fee_amount: "min(late_fee_max_usd, max(late_fee_flat_usd, round(monthly_rent * late_fee_pct_of_rent, 2)))"
+      second_late_fee_amount: "second_late_fee_usd"
+
+  - id: unit_evt_courtesy_waiver
+    subject: [unit_credit]
+    rule: >-
+      At the tenant's request the care center may waive one posted late fee or second late fee as a courtesy, crediting its full
+      amount; a courtesy waiver never covers part of a fee and never covers rent, lien-process fees, returned-payment fees, transfer
+      fees or move-out fees. The waived fee must be a late_fee or second_late_fee entry on the same rental agreement. A courtesy waiver
+      may be granted only when the handling date is not earlier than the move-in date plus courtesy_waiver_min_tenure_months. Months are
+      calendar months counted from the move-in date to the same day of the later month, falling back to that month's last day when the
+      day does not exist. The rental must be in active, delinquent or moving_out status; once a lien notice has been sent no courtesy
+      waiver is given. The number of courtesy waivers already granted on the agreement, counted by unit_msr_courtesy_waivers_365d, must
+      be below courtesy_waivers_per_12_months. A fee that has already been waived or corrected is not waived again. A late fee that was
+      posted in error is reversed under the billing-correction rule instead and does not use the courtesy allowance.
+    eligibility:
+      - id: tenure_met
+        applies_to: [unit_credit]
+        kind: time
+        condition: "A courtesy waiver may be granted only when the handling date is not earlier than the move-in date plus courtesy_waiver_min_tenure_months."
+        evidence_fields: [unit_rentals.move_in_date, unit_rentals.rental_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[unit_rentals.rental_id]]
+          action_bindings: {unit_rentals.rental_id: rental_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the move-in date"
+          anchor_source: unit_rentals.move_in_date
+          relation: not_before
+          duration_source: variants.courtesy_waiver_min_tenure_months
+          unit: calendar_months
+          counting_rule: "Months are calendar months counted from the move-in date to the same day of the later month, falling back to that month's last day when the day does not exist."
+          boundary: inclusive
+      - id: waiver_status
+        applies_to: [unit_credit]
+        kind: state
+        condition: "The rental must be in active, delinquent or moving_out status; once a lien notice has been sent no courtesy waiver is given."
+        evidence_fields: [unit_rentals.status, unit_rentals.rental_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[unit_rentals.rental_id]]
+          action_bindings: {unit_rentals.rental_id: rental_id}
+        state_contract:
+          field: unit_rentals.status
+          allowed: [active, delinquent, moving_out]
+      - id: waivable_fee
+        applies_to: [unit_credit]
+        kind: authorization
+        condition: "The waived fee must be a late_fee or second_late_fee entry on the same rental agreement."
+        evidence_fields: [unit_ledger.entry_id, unit_ledger.fee_type, unit_ledger.rental_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[unit_ledger.entry_id]]
+          action_bindings: {unit_ledger.entry_id: reference_entry_id}
+      - id: not_already_waived
+        applies_to: [unit_credit]
+        kind: dedup
+        condition: "A fee that has already been waived or corrected is not waived again."
+        evidence_fields: [unit_ledger.reference_entry_id, unit_ledger.credit_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[unit_ledger.reference_entry_id]]
+          action_bindings: {unit_ledger.reference_entry_id: reference_entry_id}
+        dedup_contract:
+          table: unit_ledger
+          mode: separate_record
+          object_bindings: {reference_entry_id: reference_entry_id}
+          duplicate_filters: {credit_type: [courtesy_late_fee_waiver, billing_error_correction]}
+          distinct_fields: []
+    params:
+      per_tier:
+        Bluegate Drive-Up Standard: {courtesy_waivers_per_12_months: "=courtesy_waivers_per_12_months", courtesy_waiver_min_tenure_months: "=courtesy_waiver_min_tenure_months"}
+        Bluegate Interior Standard: {courtesy_waivers_per_12_months: "=courtesy_waivers_per_12_months", courtesy_waiver_min_tenure_months: "=courtesy_waiver_min_tenure_months"}
+        Bluegate Climate Controlled: {courtesy_waivers_per_12_months: "=courtesy_waivers_per_12_months", courtesy_waiver_min_tenure_months: "=courtesy_waiver_min_tenure_months"}
+        Bluegate Climate Plus: {courtesy_waivers_per_12_months: "=courtesy_waivers_per_12_months", courtesy_waiver_min_tenure_months: "=courtesy_waiver_min_tenure_months"}
+        Bluegate Premier Climate Suite: {courtesy_waivers_per_12_months: "=courtesy_waivers_per_12_months", courtesy_waiver_min_tenure_months: "=courtesy_waiver_min_tenure_months"}
+        Bluegate Wine & Collectibles Vault: {courtesy_waivers_per_12_months: "=courtesy_waivers_per_12_months", courtesy_waiver_min_tenure_months: "=courtesy_waiver_min_tenure_months"}
+    formula:
+      allowed: "unit_msr_courtesy_waivers_365d < courtesy_waivers_per_12_months"
+    measures: [unit_msr_courtesy_waivers_365d]
+
+  - id: unit_evt_billing_correction
+    subject: [unit_credit]
+    rule: >-
+      A charge posted in error is reversed in full with a billing_error_correction credit referencing that charge. A late fee or second
+      late fee is in error when the ledger shows payments dated on or before the period's last grace day (or, for a second late fee,
+      before second_late_fee_days_after_due) that cover the period's rent. A rent charge is in error when a second rent charge exists
+      for the same billing period, or when it was posted for a period starting on or after the planned vacate date of a moving_out
+      rental. A billing-error correction is given in any status other than reserved or reservation_cancelled and does not count against
+      the courtesy allowance. A charge that has already been waived or corrected is not credited again.
+    eligibility:
+      - id: not_already_credited
+        applies_to: [unit_credit]
+        kind: dedup
+        condition: "A charge that has already been waived or corrected is not credited again."
+        evidence_fields: [unit_ledger.reference_entry_id, unit_ledger.credit_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[unit_ledger.reference_entry_id]]
+          action_bindings: {unit_ledger.reference_entry_id: reference_entry_id}
+        dedup_contract:
+          table: unit_ledger
+          mode: separate_record
+          object_bindings: {reference_entry_id: reference_entry_id}
+          duplicate_filters: {credit_type: [courtesy_late_fee_waiver, billing_error_correction]}
+          distinct_fields: []
+    params:
+      correction_share_of_charge: 1.0
+
+  - id: unit_evt_lien_process
+    subject: [unit_lien_step, unit_lien_stage_advance, unit_lien_sale]
+    rule: >-
+      The lien process runs from delinquent_since, the due date of the oldest unpaid billing period, and every step is dated in calendar
+      days. The company overlock may be applied when the handling date is not earlier than the delinquency anchor date plus
+      overlock_days_after_due. The preliminary lien letter is sent by first-class mail and email at preliminary_notice_days_after_due.
+      The formal lien notice may be sent when the handling date is not earlier than the delinquency anchor date plus
+      lien_notice_days_after_due, by lien_notice_delivery_method, and it moves the rental to lien_noticed. The sale may be advertised
+      when the handling date is not earlier than the lien notice date plus auction_advertisement_days_after_lien_notice; the
+      advertisement sets a scheduled sale date at least lien_sale_min_days_after_advertisement days after the advertisement date and
+      moves the rental to auction_scheduled. The tenant lock may be cut for inventory on or after the advertisement date. The lien sale
+      may be held when the handling date is not earlier than the advertisement date plus lien_sale_min_days_after_advertisement. Day
+      counts start the day after the anchor date and the step is allowed on the day the count is reached. Lien steps are taken only
+      while the rental is in delinquent, lien_noticed or auction_scheduled status. No lien notice, advertisement, lock cut or sale may
+      proceed while a lien hold is in place; a lien hold is placed when the tenant or a family member reports active-duty military
+      service backed by orders on file, or when the tenant reports a bankruptcy filing with a case number, and it stays until a
+      lien_hold_released step is recorded. Rent and late fees keep accruing during a hold. Each step is taken once per delinquency
+      cycle. The overlock is removed with an overlock_removed step when the rental is redeemed.
+      The overlock posts overlock_fee_usd, the lien notice lien_notice_fee_usd, the sale advertisement auction_advertisement_fee_usd and the lock cut lock_cut_fee_usd, each against the delinquency cycle's anchor date.
+    eligibility:
+      - id: overlock_due
+        applies_to: [unit_lien_step]
+        kind: time
+        condition: "The company overlock may be applied when the handling date is not earlier than the delinquency anchor date plus overlock_days_after_due."
+        evidence_fields: [unit_rentals.delinquent_since, unit_rentals.rental_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[unit_rentals.rental_id]]
+          action_bindings: {unit_rentals.rental_id: rental_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the delinquency anchor date"
+          anchor_source: unit_rentals.delinquent_since
+          relation: not_before
+          duration_source: variants.overlock_days_after_due
+          unit: calendar_days
+          counting_rule: "Day counts start the day after the anchor date and the step is allowed on the day the count is reached."
+          boundary: inclusive
+      - id: lien_notice_due
+        applies_to: [unit_lien_step]
+        kind: time
+        condition: "The formal lien notice may be sent when the handling date is not earlier than the delinquency anchor date plus lien_notice_days_after_due, by lien_notice_delivery_method, and it moves the rental to lien_noticed."
+        evidence_fields: [unit_rentals.delinquent_since, unit_rentals.rental_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[unit_rentals.rental_id]]
+          action_bindings: {unit_rentals.rental_id: rental_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the delinquency anchor date"
+          anchor_source: unit_rentals.delinquent_since
+          relation: not_before
+          duration_source: variants.lien_notice_days_after_due
+          unit: calendar_days
+          counting_rule: "Day counts start the day after the anchor date and the step is allowed on the day the count is reached."
+          boundary: inclusive
+      - id: advertisement_due
+        applies_to: [unit_lien_step]
+        kind: time
+        condition: "The sale may be advertised when the handling date is not earlier than the lien notice date plus auction_advertisement_days_after_lien_notice; the advertisement sets a scheduled sale date at least lien_sale_min_days_after_advertisement days after the advertisement date and moves the rental to auction_scheduled."
+        evidence_fields: [unit_lien_actions.action_date, unit_lien_actions.lien_step, unit_lien_actions.rental_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[unit_lien_actions.rental_id]]
+          action_bindings: {unit_lien_actions.rental_id: rental_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the lien notice date"
+          anchor_source: unit_lien_actions.action_date
+          relation: not_before
+          duration_source: variants.auction_advertisement_days_after_lien_notice
+          unit: calendar_days
+          counting_rule: "Day counts start the day after the anchor date and the step is allowed on the day the count is reached."
+          boundary: inclusive
+      - id: sale_due
+        applies_to: [unit_lien_sale]
+        kind: time
+        condition: "The lien sale may be held when the handling date is not earlier than the advertisement date plus lien_sale_min_days_after_advertisement."
+        evidence_fields: [unit_lien_actions.action_date, unit_lien_actions.lien_step, unit_lien_actions.rental_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[unit_lien_actions.rental_id]]
+          action_bindings: {unit_lien_actions.rental_id: rental_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the advertisement date"
+          anchor_source: unit_lien_actions.action_date
+          relation: not_before
+          duration_source: variants.lien_sale_min_days_after_advertisement
+          unit: calendar_days
+          counting_rule: "Day counts start the day after the anchor date and the step is allowed on the day the count is reached."
+          boundary: inclusive
+      - id: lien_status
+        applies_to: [unit_lien_step]
+        kind: state
+        condition: "Lien steps are taken only while the rental is in delinquent, lien_noticed or auction_scheduled status."
+        evidence_fields: [unit_rentals.status, unit_rentals.rental_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[unit_rentals.rental_id]]
+          action_bindings: {unit_rentals.rental_id: rental_id}
+        state_contract:
+          field: unit_rentals.status
+          allowed: [delinquent, lien_noticed, auction_scheduled]
+      - id: no_active_hold
+        applies_to: [unit_lien_step, unit_lien_sale]
+        kind: authorization
+        condition: "No lien notice, advertisement, lock cut or sale may proceed while a lien hold is in place; a lien hold is placed when the tenant or a family member reports active-duty military service backed by orders on file, or when the tenant reports a bankruptcy filing with a case number, and it stays until a lien_hold_released step is recorded."
+        evidence_fields: [unit_lien_actions.lien_step, unit_lien_actions.hold_reason, unit_lien_actions.rental_id, customers.military_status]
+        evidence_contract:
+          authority: mixed
+          timing: pre_action
+          correlation_keys: [[unit_lien_actions.rental_id]]
+          action_bindings: {unit_lien_actions.rental_id: rental_id}
+      - id: once_per_cycle
+        applies_to: [unit_lien_step]
+        kind: dedup
+        condition: "Each step is taken once per delinquency cycle."
+        evidence_fields: [unit_lien_actions.rental_id, unit_lien_actions.lien_step, unit_lien_actions.delinquency_anchor_date]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[unit_lien_actions.rental_id, unit_lien_actions.delinquency_anchor_date]]
+          action_bindings: {unit_lien_actions.rental_id: rental_id, unit_lien_actions.delinquency_anchor_date: delinquency_anchor_date}
+        dedup_contract:
+          table: unit_lien_actions
+          mode: separate_record
+          object_bindings: {rental_id: rental_id, delinquency_anchor_date: delinquency_anchor_date, lien_step: lien_step}
+          duplicate_filters: {event_type: [unit_lien_step]}
+          distinct_fields: [delinquency_anchor_date]
+    params:
+      preliminary_notice_method: "first_class_mail_and_email"
+      per_tier:
+        Bluegate Drive-Up Standard: {overlock_days_after_due: "=overlock_days_after_due", lien_notice_days_after_due: "=lien_notice_days_after_due", auction_advertisement_days_after_lien_notice: "=auction_advertisement_days_after_lien_notice", lien_sale_min_days_after_advertisement: "=lien_sale_min_days_after_advertisement"}
+        Bluegate Interior Standard: {overlock_days_after_due: "=overlock_days_after_due", lien_notice_days_after_due: "=lien_notice_days_after_due", auction_advertisement_days_after_lien_notice: "=auction_advertisement_days_after_lien_notice", lien_sale_min_days_after_advertisement: "=lien_sale_min_days_after_advertisement"}
+        Bluegate Climate Controlled: {overlock_days_after_due: "=overlock_days_after_due", lien_notice_days_after_due: "=lien_notice_days_after_due", auction_advertisement_days_after_lien_notice: "=auction_advertisement_days_after_lien_notice", lien_sale_min_days_after_advertisement: "=lien_sale_min_days_after_advertisement"}
+        Bluegate Climate Plus: {overlock_days_after_due: "=overlock_days_after_due", lien_notice_days_after_due: "=lien_notice_days_after_due", auction_advertisement_days_after_lien_notice: "=auction_advertisement_days_after_lien_notice", lien_sale_min_days_after_advertisement: "=lien_sale_min_days_after_advertisement"}
+        Bluegate Premier Climate Suite: {overlock_days_after_due: "=overlock_days_after_due", lien_notice_days_after_due: "=lien_notice_days_after_due", auction_advertisement_days_after_lien_notice: "=auction_advertisement_days_after_lien_notice", lien_sale_min_days_after_advertisement: "=lien_sale_min_days_after_advertisement"}
+        Bluegate Wine & Collectibles Vault: {overlock_days_after_due: "=overlock_days_after_due", lien_notice_days_after_due: "=lien_notice_days_after_due", auction_advertisement_days_after_lien_notice: "=auction_advertisement_days_after_lien_notice", lien_sale_min_days_after_advertisement: "=lien_sale_min_days_after_advertisement"}
+
+  - id: unit_evt_payment_acceptance
+    subject: [unit_payment, unit_redemption, unit_payment_reversal]
+    rule: >-
+      The care center takes payments by the methods in accepted_phone_payment_methods; cash and money orders are taken only at the
+      facility office. Payments are accepted while the rental is in active, delinquent, lien_noticed, auction_scheduled, moving_out or
+      vacated status. While the rental is delinquent a payment of any amount is accepted. Once a lien notice has been sent, a payment
+      is accepted only if it pays the full balance due, including lien-process fees; a smaller payment is declined and nothing is
+      posted. When a payment brings the balance due to zero or below on a delinquent, lien_noticed or auction_scheduled rental, the
+      rental is redeemed and returns to active, delinquent_since is cleared, and where the company overlock is on, an overlock_removed
+      step is recorded. A redemption is not possible once the lien sale has been held. When the bank returns a payment for insufficient
+      funds or a closed account, the payment is reversed in full and returned_payment_fee_usd is posted against the reversed payment; a
+      card chargeback is reversed without that fee. A reversal that leaves rent from a period past its grace period unpaid makes the
+      rental delinquent again under the late-fee rule.
+      Partial payments while delinquent follow partial_payment_accepted_while_delinquent, and the full-balance requirement after a lien notice follows partial_payment_accepted_after_lien_notice and redemption_requires_full_balance.
+    eligibility:
+      - id: payable_status
+        applies_to: [unit_payment]
+        kind: state
+        condition: "Payments are accepted while the rental is in active, delinquent, lien_noticed, auction_scheduled, moving_out or vacated status."
+        evidence_fields: [unit_rentals.status, unit_rentals.rental_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[unit_rentals.rental_id]]
+          action_bindings: {unit_rentals.rental_id: rental_id}
+        state_contract:
+          field: unit_rentals.status
+          allowed: [active, delinquent, lien_noticed, auction_scheduled, moving_out, vacated]
+      - id: full_payment_after_lien_notice
+        applies_to: [unit_payment]
+        kind: authorization
+        condition: "Once a lien notice has been sent, a payment is accepted only if it pays the full balance due, including lien-process fees; a smaller payment is declined and nothing is posted."
+        evidence_fields: [unit_rentals.status, unit_rentals.balance_due, unit_rentals.rental_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[unit_rentals.rental_id]]
+          action_bindings: {unit_rentals.rental_id: rental_id}
+      - id: reversal_once
+        applies_to: [unit_payment_reversal]
+        kind: dedup
+        condition: "When the bank returns a payment for insufficient funds or a closed account, the payment is reversed in full and returned_payment_fee_usd is posted against the reversed payment; a card chargeback is reversed without that fee."
+        evidence_fields: [unit_ledger.reference_entry_id, unit_ledger.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[unit_ledger.reference_entry_id]]
+          action_bindings: {unit_ledger.reference_entry_id: reference_entry_id}
+        dedup_contract:
+          table: unit_ledger
+          mode: separate_record
+          object_bindings: {reference_entry_id: reference_entry_id}
+          duplicate_filters: {event_type: [unit_payment_reversal]}
+          distinct_fields: []
+    params:
+      per_tier:
+        Bluegate Drive-Up Standard: {returned_payment_fee_usd: "=returned_payment_fee_usd"}
+        Bluegate Interior Standard: {returned_payment_fee_usd: "=returned_payment_fee_usd"}
+        Bluegate Climate Controlled: {returned_payment_fee_usd: "=returned_payment_fee_usd"}
+        Bluegate Climate Plus: {returned_payment_fee_usd: "=returned_payment_fee_usd"}
+        Bluegate Premier Climate Suite: {returned_payment_fee_usd: "=returned_payment_fee_usd"}
+        Bluegate Wine & Collectibles Vault: {returned_payment_fee_usd: "=returned_payment_fee_usd"}
+    formula:
+      redeemed: "balance_due <= 0"
+
+  - id: unit_evt_rate_increase
+    subject: [unit_rate_change_notice, unit_rent_rate_update]
+    rule: >-
+      The company may raise the rent of an existing tenant with an existing_customer_rate_increase notice. An increase notice may be
+      sent only when the handling date is not earlier than the move-in date plus rate_increase_first_eligible_months, and not earlier
+      than the last rent change date plus rate_increase_min_interval_months. Months are calendar months, counted to the same day of the
+      later month or that month's last day when the day does not exist. The new rent is at most the current monthly rent times one plus
+      rate_increase_max_pct, rounded down to the cent. The effective date is the first rent due date that falls at least
+      rate_increase_notice_days calendar days after the notice date. The new rent is applied to the agreement only when the handling
+      date is not earlier than the notice date plus rate_increase_notice_days. Notice and request windows count calendar days starting the day
+      after the notice date, and the last counted day is included. Rate increase notices are issued only to rentals in
+      active status. A tenant who calls about a noticed increase may be given one retention_concession that gives back
+      retention_concession_pct_of_increase of the increase, rounded down to the cent, with the same effective date and its
+      source_rate_change_id pointing at the increase. A retention concession may be granted only when the handling date is not later
+      than the increase notice date plus retention_request_window_days. Retention concessions on the agreement, counted by
+      unit_msr_retention_concessions_365d, must be below retention_concessions_per_12_months. While a prepaid rent plan in active status covers the rental, no
+      increase notice is sent and no increase takes effect before the prepaid term ends. An increase that has already taken effect
+      is not reduced by a concession; a rental with a move-out notice gets no concession. When a concession is granted, the agreement
+      rent applied on the effective date is the concession's new_rent.
+    eligibility:
+      - id: first_increase_wait
+        applies_to: [unit_rate_change_notice]
+        kind: time
+        condition: "An increase notice may be sent only when the handling date is not earlier than the move-in date plus rate_increase_first_eligible_months, and not earlier than the last rent change date plus rate_increase_min_interval_months."
+        evidence_fields: [unit_rentals.move_in_date, unit_rentals.rental_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[unit_rentals.rental_id]]
+          action_bindings: {unit_rentals.rental_id: rental_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the move-in date"
+          anchor_source: unit_rentals.move_in_date
+          relation: not_before
+          duration_source: variants.rate_increase_first_eligible_months
+          unit: calendar_months
+          counting_rule: "Months are calendar months, counted to the same day of the later month or that month's last day when the day does not exist."
+          boundary: inclusive
+      - id: interval_wait
+        applies_to: [unit_rate_change_notice]
+        kind: time
+        condition: "An increase notice may be sent only when the handling date is not earlier than the move-in date plus rate_increase_first_eligible_months, and not earlier than the last rent change date plus rate_increase_min_interval_months."
+        evidence_fields: [unit_rentals.last_rate_change_date, unit_rentals.rental_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[unit_rentals.rental_id]]
+          action_bindings: {unit_rentals.rental_id: rental_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the last rent change date"
+          anchor_source: unit_rentals.last_rate_change_date
+          relation: not_before
+          duration_source: variants.rate_increase_min_interval_months
+          unit: calendar_months
+          counting_rule: "Months are calendar months, counted to the same day of the later month or that month's last day when the day does not exist."
+          boundary: inclusive
+      - id: notice_period_elapsed
+        applies_to: [unit_rent_rate_update]
+        kind: time
+        condition: "The new rent is applied to the agreement only when the handling date is not earlier than the notice date plus rate_increase_notice_days."
+        evidence_fields: [unit_rate_changes.notice_date, unit_rate_changes.rate_change_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[unit_rate_changes.rate_change_id]]
+          action_bindings: {unit_rate_changes.rate_change_id: rate_change_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the notice date"
+          anchor_source: unit_rate_changes.notice_date
+          relation: not_before
+          duration_source: variants.rate_increase_notice_days
+          unit: calendar_days
+          counting_rule: "Notice and request windows count calendar days starting the day after the notice date, and the last counted day is included."
+          boundary: inclusive
+      - id: no_prepay_lock
+        applies_to: [unit_rate_change_notice, unit_rent_rate_update]
+        kind: authorization
+        condition: "While a prepaid rent plan in active status covers the rental, no increase notice is sent and no increase takes effect before the prepaid term ends."
+        evidence_fields: [prepay_plans.status, prepay_plans.agreement_id, prepay_plans.term_end_date]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[prepay_plans.agreement_id]]
+          action_bindings: {prepay_plans.agreement_id: rental_id}
+      - id: increase_status
+        applies_to: [unit_rate_change_notice]
+        kind: state
+        condition: "Rate increase notices are issued only to rentals in active status."
+        evidence_fields: [unit_rentals.status, unit_rentals.rental_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[unit_rentals.rental_id]]
+          action_bindings: {unit_rentals.rental_id: rental_id}
+        state_contract:
+          field: unit_rentals.status
+          allowed: [active]
+      - id: concession_window
+        applies_to: [unit_rate_change_notice]
+        kind: time
+        condition: "A retention concession may be granted only when the handling date is not later than the increase notice date plus retention_request_window_days."
+        evidence_fields: [unit_rate_changes.notice_date, unit_rate_changes.rate_change_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[unit_rate_changes.rate_change_id]]
+          action_bindings: {unit_rate_changes.rate_change_id: source_rate_change_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the increase notice date"
+          anchor_source: unit_rate_changes.notice_date
+          relation: not_after
+          duration_source: variants.retention_request_window_days
+          unit: calendar_days
+          counting_rule: "Notice and request windows count calendar days starting the day after the notice date, and the last counted day is included."
+          boundary: inclusive
+    params:
+      per_tier:
+        Bluegate Drive-Up Standard: {rate_increase_max_pct: "=rate_increase_max_pct", rate_increase_notice_days: "=rate_increase_notice_days"}
+        Bluegate Interior Standard: {rate_increase_max_pct: "=rate_increase_max_pct", rate_increase_notice_days: "=rate_increase_notice_days"}
+        Bluegate Climate Controlled: {rate_increase_max_pct: "=rate_increase_max_pct", rate_increase_notice_days: "=rate_increase_notice_days"}
+        Bluegate Climate Plus: {rate_increase_max_pct: "=rate_increase_max_pct", rate_increase_notice_days: "=rate_increase_notice_days"}
+        Bluegate Premier Climate Suite: {rate_increase_max_pct: "=rate_increase_max_pct", rate_increase_notice_days: "=rate_increase_notice_days"}
+        Bluegate Wine & Collectibles Vault: {rate_increase_max_pct: "=rate_increase_max_pct", rate_increase_notice_days: "=rate_increase_notice_days"}
+    formula:
+      max_new_rent: "previous_rent * (1 + rate_increase_max_pct)"
+      concession_new_rent: "new_rent - (new_rent - previous_rent) * retention_concession_pct_of_increase"
+    measures: [unit_msr_retention_concessions_365d]
+
+  - id: unit_evt_transfer
+    subject: [unit_transfer_completed, unit_unit_reassigned]
+    rule: >-
+      A tenant may move the agreement to another unit at the same facility. A transfer is made only from a rental in active status.
+      The rental must owe nothing at the time of transfer: balance_due must be zero or below. The target unit must be shown as
+      available in the facility inventory. Transfers already made on the agreement, counted by unit_msr_transfers_365d, must be below
+      transfers_per_12_months. The new unit's rent is its posted street rate on the transfer date (transfer_rent_basis), with no
+      move-in discount; a military discount already on the agreement carries over. The transfer fee for the class of the unit being
+      left is posted on the transfer date; the administrative fee is not charged again. Where transfer_resets_rate_clock is true, the
+      transfer date becomes last_rate_change_date. Rent already paid for the current billing period stays on the agreement and the
+      difference in rent is first charged from the next due date; the tenant may use the old unit for transfer_overlap_days calendar
+      days after the transfer date to move goods. A transfer into a unit class whose min_protection_coverage_usd is higher than the
+      tenant's current coverage requires the coverage to be raised first under the coverage rule.
+    eligibility:
+      - id: transfer_status
+        applies_to: [unit_transfer_completed]
+        kind: state
+        condition: "A transfer is made only from a rental in active status."
+        evidence_fields: [unit_rentals.status, unit_rentals.rental_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[unit_rentals.rental_id]]
+          action_bindings: {unit_rentals.rental_id: rental_id}
+        state_contract:
+          field: unit_rentals.status
+          allowed: [active]
+      - id: paid_current
+        applies_to: [unit_transfer_completed]
+        kind: authorization
+        condition: "The rental must owe nothing at the time of transfer: balance_due must be zero or below."
+        evidence_fields: [unit_rentals.balance_due, unit_rentals.rental_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[unit_rentals.rental_id]]
+          action_bindings: {unit_rentals.rental_id: rental_id}
+      - id: target_available
+        applies_to: [unit_transfer_completed]
+        kind: state
+        condition: "The target unit must be shown as available in the facility inventory."
+        evidence_fields: [facility_spaces.availability, facility_spaces.facility_space_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[facility_spaces.facility_space_id]]
+          action_bindings: {facility_spaces.facility_space_id: facility_space_id}
+        state_contract:
+          field: facility_spaces.availability
+          allowed: [available]
+    params:
+      per_tier:
+        Bluegate Drive-Up Standard: {transfer_fee_usd: "=transfer_fee_usd", transfers_per_12_months: "=transfers_per_12_months"}
+        Bluegate Interior Standard: {transfer_fee_usd: "=transfer_fee_usd", transfers_per_12_months: "=transfers_per_12_months"}
+        Bluegate Climate Controlled: {transfer_fee_usd: "=transfer_fee_usd", transfers_per_12_months: "=transfers_per_12_months"}
+        Bluegate Climate Plus: {transfer_fee_usd: "=transfer_fee_usd", transfers_per_12_months: "=transfers_per_12_months"}
+        Bluegate Premier Climate Suite: {transfer_fee_usd: "=transfer_fee_usd", transfers_per_12_months: "=transfers_per_12_months"}
+        Bluegate Wine & Collectibles Vault: {transfer_fee_usd: "=transfer_fee_usd", transfers_per_12_months: "=transfers_per_12_months"}
+    formula:
+      allowed: "unit_msr_transfers_365d < transfers_per_12_months"
+    measures: [unit_msr_transfers_365d]
+
+  - id: unit_evt_moveout
+    subject: [unit_moveout_scheduled, unit_moveout_withdrawn, unit_vacated, unit_refund, unit_deposit_released, unit_deposit_collected]
+    rule: >-
+      Only the tenant can end the agreement: the tenant gives a move-out notice naming a planned vacate date, which is recorded as a
+      received notice and moves the rental to moving_out. The planned vacate date is at least moveout_notice_days calendar days after the
+      notice date; an earlier date asked for is set to the notice date plus moveout_notice_days. Rent for a billing period that starts
+      before the planned vacate date is owed in full. Where moveout_prorated_refund is true, the unused days of the final charged period
+      after the vacate date are credited as monthly rent times unused days divided by the days in that period, rounded to the cent;
+      where it is false no part of a period is refunded. The vacate is recorded only for a rental whose move-out notice is in received
+      status. If the walk-through finds belongings or debris, cleaning_fee_usd is posted; if the tenant lock is still on, the lock is
+      cut and lock_left_removal_fee_usd is posted. The security deposit is released within deposit_refund_days of the vacate date: first
+      applied to any balance due, and the remainder refunded. A credit balance left after the deposit is refunded within
+      credit_balance_refund_days by the original payment method, or by mailed check when that method can no longer be credited. A
+      notice may be withdrawn by the tenant before the vacate is recorded; the rental returns to active if nothing is past due and to
+      delinquent otherwise.
+    eligibility:
+      - id: notice_on_file
+        applies_to: [unit_vacated]
+        kind: state
+        condition: "The vacate is recorded only for a rental whose move-out notice is in received status."
+        evidence_fields: [unit_moveout_notices.notice_status, unit_moveout_notices.rental_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[unit_moveout_notices.rental_id]]
+          action_bindings: {unit_moveout_notices.rental_id: rental_id}
+        state_contract:
+          field: unit_moveout_notices.notice_status
+          allowed: [received]
+    params:
+      per_tier:
+        Bluegate Drive-Up Standard: {moveout_notice_days: "=moveout_notice_days", moveout_prorated_refund: "=moveout_prorated_refund", cleaning_fee_usd: "=cleaning_fee_usd"}
+        Bluegate Interior Standard: {moveout_notice_days: "=moveout_notice_days", moveout_prorated_refund: "=moveout_prorated_refund", cleaning_fee_usd: "=cleaning_fee_usd"}
+        Bluegate Climate Controlled: {moveout_notice_days: "=moveout_notice_days", moveout_prorated_refund: "=moveout_prorated_refund", cleaning_fee_usd: "=cleaning_fee_usd"}
+        Bluegate Climate Plus: {moveout_notice_days: "=moveout_notice_days", moveout_prorated_refund: "=moveout_prorated_refund", cleaning_fee_usd: "=cleaning_fee_usd"}
+        Bluegate Premier Climate Suite: {moveout_notice_days: "=moveout_notice_days", moveout_prorated_refund: "=moveout_prorated_refund", cleaning_fee_usd: "=cleaning_fee_usd"}
+        Bluegate Wine & Collectibles Vault: {moveout_notice_days: "=moveout_notice_days", moveout_prorated_refund: "=moveout_prorated_refund", cleaning_fee_usd: "=cleaning_fee_usd"}
+
+  - id: unit_coverage_requirement
+    subject: [unit_move_in, unit_coverage_update, unit_unit_reassigned]
+    rule: >-
+      Every rental agreement must carry contents coverage at all times, from exactly one source: a Bluegate Tenant Protection plan
+      attached to the agreement, or the tenant's own homeowner's or renter's policy declared where own_insurance_proof_accepted is true.
+      The two sources are mutually exclusive on one agreement. Coverage source bluegate_protection is valid only while a protection plan
+      on that rental is in active status with a coverage limit of at least min_protection_coverage_usd for the agreement's unit class.
+      Switching to own_insurance takes effect only once the attached protection plan has been cancelled, and switching to
+      bluegate_protection only once a plan is active. A move-in, a transfer into a class with a higher minimum, or a coverage change that
+      would leave the agreement without valid coverage is not completed.
+    eligibility:
+      - id: plan_valid
+        applies_to: [unit_coverage_update, unit_move_in, unit_unit_reassigned]
+        kind: authorization
+        condition: "Coverage source bluegate_protection is valid only while a protection plan on that rental is in active status with a coverage limit of at least min_protection_coverage_usd for the agreement's unit class."
+        evidence_fields: [protect_plans.status, protect_plans.variant_name, protect_plans.rental_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[protect_plans.rental_id]]
+          action_bindings: {protect_plans.rental_id: rental_id}
+    params:
+      per_tier:
+        Bluegate Drive-Up Standard: {min_protection_coverage_usd: "=min_protection_coverage_usd"}
+        Bluegate Interior Standard: {min_protection_coverage_usd: "=min_protection_coverage_usd"}
+        Bluegate Climate Controlled: {min_protection_coverage_usd: "=min_protection_coverage_usd"}
+        Bluegate Climate Plus: {min_protection_coverage_usd: "=min_protection_coverage_usd"}
+        Bluegate Premier Climate Suite: {min_protection_coverage_usd: "=min_protection_coverage_usd"}
+        Bluegate Wine & Collectibles Vault: {min_protection_coverage_usd: "=min_protection_coverage_usd"}
+
+  - id: unit_evt_reservation
+    subject: [unit_reservation, unit_reservation_cancelled, unit_move_in]
+    rule: >-
+      Reservations are free and hold one specific available unit at its posted street rate on the reservation date. A move-in on a
+      reservation may be completed only when the handling date is not later than the reservation date plus reservation_hold_days.
+      The hold counts calendar days starting the day after the reservation date and ends at the close of the last counted day. A lapsed
+      reservation is cancelled by the system and the unit may be reserved again. At move-in the tenant presents move_in_id_required,
+      signs the month-to-month agreement, chooses a coverage source, and the first period's rent, admin_fee_usd and any
+      security_deposit_usd are posted. A promotion or military discount is attached at reservation and applied at move-in under the
+      rent-billing rule. A customer may cancel a reservation at any time before move-in at no charge.
+    eligibility:
+      - id: hold_not_lapsed
+        applies_to: [unit_move_in]
+        kind: time
+        condition: "A move-in on a reservation may be completed only when the handling date is not later than the reservation date plus reservation_hold_days."
+        evidence_fields: [unit_rentals.reservation_date, unit_rentals.rental_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[unit_rentals.rental_id]]
+          action_bindings: {unit_rentals.rental_id: rental_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the reservation date"
+          anchor_source: unit_rentals.reservation_date
+          relation: not_after
+          duration_source: variants.reservation_hold_days
+          unit: calendar_days
+          counting_rule: "The hold counts calendar days starting the day after the reservation date and ends at the close of the last counted day."
+          boundary: inclusive
+    params:
+      per_tier:
+        Bluegate Drive-Up Standard: {reservation_hold_days: "=reservation_hold_days", admin_fee_usd: "=admin_fee_usd", security_deposit_usd: "=security_deposit_usd"}
+        Bluegate Interior Standard: {reservation_hold_days: "=reservation_hold_days", admin_fee_usd: "=admin_fee_usd", security_deposit_usd: "=security_deposit_usd"}
+        Bluegate Climate Controlled: {reservation_hold_days: "=reservation_hold_days", admin_fee_usd: "=admin_fee_usd", security_deposit_usd: "=security_deposit_usd"}
+        Bluegate Climate Plus: {reservation_hold_days: "=reservation_hold_days", admin_fee_usd: "=admin_fee_usd", security_deposit_usd: "=security_deposit_usd"}
+        Bluegate Premier Climate Suite: {reservation_hold_days: "=reservation_hold_days", admin_fee_usd: "=admin_fee_usd", security_deposit_usd: "=security_deposit_usd"}
+        Bluegate Wine & Collectibles Vault: {reservation_hold_days: "=reservation_hold_days", admin_fee_usd: "=admin_fee_usd", security_deposit_usd: "=security_deposit_usd"}
+
+  - id: unit_evt_sale_proceeds
+    subject: [unit_sale_proceeds_applied, unit_lien_sale]
+    rule: >-
+      Net proceeds of a lien sale, after the sale costs already posted as lien-process fees, are applied against the rental's balance
+      due up to that balance, and never beyond it. Any surplus is not credited to the ledger; it is held for the former tenant for
+      sale_surplus_hold_days calendar days after the sale date and released only on a written claim handled by the facility district
+      office. A balance still owed after the proceeds are applied stays owed by the former tenant. Once sold, a rental is never
+      redeemed, transferred or reopened.
+    eligibility: []
+    params:
+      per_tier:
+        Bluegate Drive-Up Standard: {sale_surplus_hold_days: "=sale_surplus_hold_days"}
+        Bluegate Interior Standard: {sale_surplus_hold_days: "=sale_surplus_hold_days"}
+        Bluegate Climate Controlled: {sale_surplus_hold_days: "=sale_surplus_hold_days"}
+        Bluegate Climate Plus: {sale_surplus_hold_days: "=sale_surplus_hold_days"}
+        Bluegate Premier Climate Suite: {sale_surplus_hold_days: "=sale_surplus_hold_days"}
+        Bluegate Wine & Collectibles Vault: {sale_surplus_hold_days: "=sale_surplus_hold_days"}
+
+  - id: unit_evt_lock_and_coverage_records
+    subject: [unit_lock_status_update]
+    rule: >-
+      The lock status on the agreement follows the lien steps: company_overlock when the overlock is applied, tenant_lock when the
+      overlock is removed on redemption, and lock_cut when the tenant lock is cut for inventory or at move-out. The care center never
+      removes an overlock for a rental that still owes a past-due balance.
+    eligibility: []
+
+  - id: unit_evt_unit_class_features
+    subject: [unit_reservation, unit_unit_reassigned]
+    rule: >-
+      Each unit class carries the features listed for it and no others: the temperature band temperature_range_f, the humidity control
+      humidity_control, an individual door alarm where door_alarm_included is true, gate access during access_hours, and parking at the
+      door where drive_up_access is true. A tenant who needs a feature their class lacks is offered a transfer to a class that has it under
+      the transfer rule. A reading outside a class's temperature or humidity band is logged by the facility as a work order; it does not
+      change the rent, and damage it causes is a matter for the tenant's protection plan or own insurance.
+    eligibility: []

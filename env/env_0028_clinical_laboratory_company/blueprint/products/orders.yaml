@@ -1,0 +1,1351 @@
+category: orders
+display_name: Laboratory Test Orders
+
+# One holding = one accession: the tests of one requisition that are performed and billed under
+# one service class. A requisition listing tests of several service classes is accessioned as
+# several orders that share the requisition_number.
+binding:
+  holding_table: orders
+  event_tables: [order_events]
+  status_field: status
+  variant_field: variant_name
+  quantity_fields: {list_price_total: gross_charges}
+
+lifecycle:
+  states: [received, info_hold, accessioned, testing_hold, in_testing, resulted, cancelled]
+  transitions:
+    - {from: received, to: info_hold, by: agent, means: Order placed on a pre-collection hold because information needed before collection is missing (diagnosis codes, a Medicare ABN, genetic informed consent or verified coverage).}
+    - {from: info_hold, to: received, by: agent, means: Pre-collection hold released once the missing item is on file; the order again awaits its specimen.}
+    - {from: received, to: accessioned, by: system, means: Specimen received at the laboratory within stability and logged against the order.}
+    - {from: accessioned, to: received, by: system, means: The accessioned specimen was rejected; the order returns to awaiting a recollected specimen.}
+    - {from: accessioned, to: testing_hold, by: agent, means: Specimen in house but testing may not start yet (prior authorization pending or informed consent missing).}
+    - {from: testing_hold, to: in_testing, by: agent, means: Testing hold released once prior authorization is approved, consent is signed, or the patient elects self-pay.}
+    - {from: accessioned, to: in_testing, by: system, means: Testing started on an accessioned specimen with no hold.}
+    - {from: in_testing, to: resulted, by: system, means: Final report released to the ordering provider and the patient portal.}
+    - {from: received, to: cancelled, by: user, means: The patient cancels their own order before collection.}
+    - {from: info_hold, to: cancelled, by: user, means: The patient cancels their own order while it is on a pre-collection hold (including declining a test on a Medicare ABN with option 3).}
+    - {from: accessioned, to: cancelled, by: user, means: The patient cancels their own order after collection but before testing starts.}
+    - {from: testing_hold, to: cancelled, by: user, means: The patient cancels their own order while the specimen is held before testing.}
+    - {from: received, to: cancelled, by: system, means: The laboratory cancels an order whose requisition expired uncollected or whose recollection window lapsed.}
+    - {from: info_hold, to: cancelled, by: system, means: The laboratory cancels an order whose pre-collection hold exceeded its maximum length.}
+    - {from: testing_hold, to: cancelled, by: system, means: The laboratory cancels an order whose testing hold exceeded its maximum length.}
+
+accounts:
+  - key: gross_charges
+    unit: USD
+    meaning: List-price (chargemaster) charges standing on the accession; each ordered, reflex, add-on or fee line posts in, each credited line posts out, and list_price_total on the order is their running sum.
+
+parameter_schema:
+  test_menu: "Mapping of the service class's orderable lab test numbers -> {name, cpt, list_price (USD chargemaster), self_pay_price (USD published patient-pay price), fasting_hours (0 = no fasting)}; the single source of every per-test price."
+  reflex_map: "Mapping test number -> reflex test number performed automatically when the first result meets the laboratory's reflex criterion; {} when the class has no reflex testing."
+  reflex_testing_enabled: "Boolean; whether reflex tests are performed and charged for this class."
+  self_pay_payment_due_at_collection: "Boolean; whether a self-pay order must be paid in full at the time of collection (true) or is billed by statement after resulting (false)."
+  consumer_initiated_orderable: "Boolean; whether tests of this class can be purchased as a consumer-initiated order without a physician requisition."
+  consumer_physician_oversight_fee: "USD; independent-physician oversight fee charged once per consumer-initiated requisition encounter (0.00 where not orderable)."
+  consumer_order_valid_days: "Calendar days, counted from the order date, within which a consumer-initiated order must be collected before it expires (0 where not orderable)."
+  consumer_minimum_age_years: "Whole years; minimum patient age on the order date for a consumer-initiated order."
+  consumer_max_tests_per_order: "Integer; maximum number of tests on one consumer-initiated order (0 where not orderable)."
+  consumer_refund_retains_oversight_fee: "Boolean; whether the oversight fee is kept when an uncollected consumer order is cancelled or expires."
+  consumer_refund_processing_business_days: "Business days within which a consumer-order refund is issued after cancellation or expiry (0 where not orderable)."
+  add_on_window_days: "Calendar days after the collection date (collection date = day 0) through which an add-on test request is accepted on the existing specimen; 0 = add-ons not accepted."
+  max_add_on_tests_per_accession: "Integer; maximum add-on tests that may be posted on one order."
+  add_on_requires_ordering_provider: "Boolean; whether only the ordering provider or their office may request an add-on test."
+  primary_specimen_type: "Enum (serum, plasma_edta, whole_blood_edta, urine, swab, tissue); the specimen type the class's tests are drawn on."
+  specimen_stability_room_temp_hours: "Hours from collection a specimen stays acceptable at room temperature."
+  specimen_stability_refrigerated_hours: "Hours from collection a specimen stays acceptable refrigerated."
+  minimum_specimen_volume_ml: "Millilitres; minimum specimen volume below which the specimen is rejected as quantity_not_sufficient (0.0 = not volume-based)."
+  rejection_notice_business_days: "Business days after a rejection within which the patient and ordering provider are notified."
+  recollection_window_days: "Calendar days after the rejection date through which a no-charge recollection may be collected (0 = recollection not offered)."
+  max_no_charge_recollections: "Integer; maximum recollection requests per order."
+  recollection_requires_new_requisition: "Boolean; whether a recollection needs a new requisition (and therefore a new order) from the provider."
+  specimen_retention_days: "Calendar days the specimen (or block/slide) is retained after resulting."
+  standard_turnaround_business_days: "Business days from accession to final report for the class."
+  report_copy_fulfillment_business_days: "Business days within which a patient's request for a copy of a final report is fulfilled."
+  report_copy_paper_fee: "USD; fee for a mailed paper copy of a report (portal and provider copies are free)."
+  corrected_report_business_days: "Business days within which a corrected report is issued once the laboratory confirms an error."
+  diagnosis_code_required_for_insurance: "Boolean; whether ICD-10 diagnosis codes must be on file before an insurance-billed order is collected."
+  abn_screening_applies: "Boolean; whether Original Medicare medical-necessity and frequency screening (ABN) applies to the class."
+  medicare_frequency_limits_days: "Mapping test number -> minimum calendar days between Medicare-covered performances of the same test for the same patient; tests not listed have no frequency limit."
+  prior_auth_required_commercial: "Boolean; prior authorization required for commercial (in- and out-of-network) plans."
+  prior_auth_required_medicare_advantage: "Boolean; prior authorization (organization determination) required for Medicare Advantage plans."
+  prior_auth_required_medicaid: "Boolean; prior authorization required for Medicaid managed care plans."
+  prior_auth_required_tricare: "Boolean; prior authorization required for TRICARE."
+  info_hold_max_days: "Calendar days a pre-collection information hold may last before the laboratory cancels the order."
+  testing_hold_max_days: "Calendar days a specimen may stay on testing hold before the laboratory cancels the order."
+  informed_consent_required: "Boolean; whether a signed patient informed-consent form is required before testing."
+  informed_consent_valid_days: "Calendar days a signed informed consent remains valid for collection (0 where consent is not required)."
+  cancellation_handling_fee_after_accession: "USD; specimen handling fee posted when the patient cancels after accessioning (0.00 = none)."
+  insurance_to_self_pay_switch_window_days: "Calendar days after the collection date through which an insurance-billed order may be switched to self-pay (also requires that no claim has been submitted)."
+  self_pay_to_insurance_switch_window_days: "Calendar days after the collection date through which a self-pay order may be switched to insurance billing."
+  gfe_issue_business_days_on_request: "Business days within which a good faith estimate is issued after the patient requests one."
+  gfe_issue_business_days_when_scheduled: "Business days within which a good faith estimate is issued once a self-pay collection is scheduled at least three business days ahead."
+  gfe_valid_days: "Calendar days from the estimate date during which the estimate applies to a collection."
+  client_bill_allowed: "Boolean; whether the ordering practice may elect client billing for this class."
+  client_bill_allowed_for_medicare_beneficiaries: "Boolean; whether client billing is allowed when the patient's coverage is Original Medicare Part B (federal direct-billing rule)."
+  requisition_valid_days: "Calendar days from the order date within which a physician requisition must be collected before it expires."
+  standing_order_allowed: "Boolean; whether a standing (recurring) requisition is accepted for the class."
+  standing_order_max_months: "Calendar months a standing requisition stays valid from its order date (0 where not allowed)."
+  standing_order_max_draws: "Integer; maximum collections under one standing requisition (0 where not allowed)."
+  duplicate_test_window_days: "Calendar days within which a second charge of the same test for the same patient on another order is treated as a duplicate and credited."
+
+variants:
+  - name: Routine Clinical Testing
+    rank: 1
+    entry_gate: {order_channels: [electronic_physician_order, paper_physician_requisition, consumer_initiated], tests_from: test_menu}
+    parameters:
+      test_menu:
+        "6399": {name: "CBC (includes Differential and Platelets)", cpt: "85025", list_price: 41.00, self_pay_price: 24.00, fasting_hours: 0}
+        "10231": {name: "Comprehensive Metabolic Panel", cpt: "80053", list_price: 57.00, self_pay_price: 28.00, fasting_hours: 8}
+        "7600": {name: "Lipid Panel", cpt: "80061", list_price: 63.00, self_pay_price: 31.00, fasting_hours: 12}
+        "496": {name: "Hemoglobin A1c", cpt: "83036", list_price: 48.00, self_pay_price: 33.00, fasting_hours: 0}
+        "899": {name: "TSH with Reflex to Free T4", cpt: "84443", list_price: 76.00, self_pay_price: 39.00, fasting_hours: 0}
+        "866": {name: "Free T4 (reflex)", cpt: "84439", list_price: 58.00, self_pay_price: 34.00, fasting_hours: 0}
+        "5463": {name: "Urinalysis, Complete, with Reflex to Culture", cpt: "81001", list_price: 27.00, self_pay_price: 18.00, fasting_hours: 0}
+        "395": {name: "Urine Culture (reflex)", cpt: "87086", list_price: 64.00, self_pay_price: 39.00, fasting_hours: 0}
+        "927": {name: "Vitamin B12", cpt: "82607", list_price: 71.00, self_pay_price: 41.00, fasting_hours: 0}
+      reflex_map: {"899": "866", "5463": "395"}
+      reflex_testing_enabled: true
+      self_pay_payment_due_at_collection: true
+      consumer_initiated_orderable: true
+      consumer_physician_oversight_fee: 7.95
+      consumer_order_valid_days: 180
+      consumer_minimum_age_years: 18
+      consumer_max_tests_per_order: 12
+      consumer_refund_retains_oversight_fee: true
+      consumer_refund_processing_business_days: 7
+      add_on_window_days: 3
+      max_add_on_tests_per_accession: 4
+      add_on_requires_ordering_provider: true
+      primary_specimen_type: serum
+      specimen_stability_room_temp_hours: 8
+      specimen_stability_refrigerated_hours: 72
+      minimum_specimen_volume_ml: 1.0
+      rejection_notice_business_days: 1
+      recollection_window_days: 14
+      max_no_charge_recollections: 2
+      recollection_requires_new_requisition: false
+      specimen_retention_days: 7
+      standard_turnaround_business_days: 1
+      report_copy_fulfillment_business_days: 2
+      report_copy_paper_fee: 0.00
+      corrected_report_business_days: 1
+      diagnosis_code_required_for_insurance: true
+      abn_screening_applies: true
+      medicare_frequency_limits_days: {"496": 90, "7600": 365}
+      prior_auth_required_commercial: false
+      prior_auth_required_medicare_advantage: false
+      prior_auth_required_medicaid: false
+      prior_auth_required_tricare: false
+      info_hold_max_days: 14
+      testing_hold_max_days: 3
+      informed_consent_required: false
+      informed_consent_valid_days: 0
+      cancellation_handling_fee_after_accession: 0.00
+      insurance_to_self_pay_switch_window_days: 10
+      self_pay_to_insurance_switch_window_days: 90
+      gfe_issue_business_days_on_request: 3
+      gfe_issue_business_days_when_scheduled: 1
+      gfe_valid_days: 90
+      client_bill_allowed: true
+      client_bill_allowed_for_medicare_beneficiaries: false
+      requisition_valid_days: 180
+      standing_order_allowed: true
+      standing_order_max_months: 12
+      standing_order_max_draws: 24
+      duplicate_test_window_days: 1
+  - name: Specialty Clinical Testing
+    rank: 2
+    entry_gate: {order_channels: [electronic_physician_order, paper_physician_requisition, consumer_initiated], tests_from: test_menu}
+    parameters:
+      test_menu:
+        "17306": {name: "Vitamin D, 25-Hydroxy, Total", cpt: "82306", list_price: 112.00, self_pay_price: 59.00, fasting_hours: 0}
+        "15983": {name: "Testosterone, Total, LC/MS/MS", cpt: "84403", list_price: 129.00, self_pay_price: 62.00, fasting_hours: 0}
+        "249": {name: "ANA Screen, IFA, with Reflex to Titer and Pattern", cpt: "86038", list_price: 88.00, self_pay_price: 49.00, fasting_hours: 0}
+        "4377": {name: "ANA Titer and Pattern (reflex)", cpt: "86039", list_price: 52.00, self_pay_price: 29.00, fasting_hours: 0}
+        "8821": {name: "Tissue Transglutaminase Antibody, IgA", cpt: "86364", list_price: 104.00, self_pay_price: 58.00, fasting_hours: 0}
+        "367": {name: "Cortisol, A.M.", cpt: "82533", list_price: 79.00, self_pay_price: 45.00, fasting_hours: 0}
+        "4021": {name: "Estradiol", cpt: "82670", list_price: 96.00, self_pay_price: 55.00, fasting_hours: 0}
+      reflex_map: {"249": "4377"}
+      reflex_testing_enabled: true
+      self_pay_payment_due_at_collection: true
+      consumer_initiated_orderable: true
+      consumer_physician_oversight_fee: 7.95
+      consumer_order_valid_days: 180
+      consumer_minimum_age_years: 18
+      consumer_max_tests_per_order: 8
+      consumer_refund_retains_oversight_fee: true
+      consumer_refund_processing_business_days: 7
+      add_on_window_days: 5
+      max_add_on_tests_per_accession: 3
+      add_on_requires_ordering_provider: true
+      primary_specimen_type: serum
+      specimen_stability_room_temp_hours: 48
+      specimen_stability_refrigerated_hours: 168
+      minimum_specimen_volume_ml: 1.0
+      rejection_notice_business_days: 1
+      recollection_window_days: 14
+      max_no_charge_recollections: 2
+      recollection_requires_new_requisition: false
+      specimen_retention_days: 14
+      standard_turnaround_business_days: 3
+      report_copy_fulfillment_business_days: 2
+      report_copy_paper_fee: 0.00
+      corrected_report_business_days: 1
+      diagnosis_code_required_for_insurance: true
+      abn_screening_applies: true
+      medicare_frequency_limits_days: {"17306": 365}
+      prior_auth_required_commercial: false
+      prior_auth_required_medicare_advantage: false
+      prior_auth_required_medicaid: false
+      prior_auth_required_tricare: false
+      info_hold_max_days: 14
+      testing_hold_max_days: 7
+      informed_consent_required: false
+      informed_consent_valid_days: 0
+      cancellation_handling_fee_after_accession: 0.00
+      insurance_to_self_pay_switch_window_days: 10
+      self_pay_to_insurance_switch_window_days: 90
+      gfe_issue_business_days_on_request: 3
+      gfe_issue_business_days_when_scheduled: 1
+      gfe_valid_days: 90
+      client_bill_allowed: true
+      client_bill_allowed_for_medicare_beneficiaries: false
+      requisition_valid_days: 180
+      standing_order_allowed: true
+      standing_order_max_months: 12
+      standing_order_max_draws: 12
+      duplicate_test_window_days: 1
+  - name: Esoteric Reference Testing
+    rank: 3
+    entry_gate: {order_channels: [electronic_physician_order, paper_physician_requisition], tests_from: test_menu}
+    parameters:
+      test_menu:
+        "36169": {name: "Vitamins A and E", cpt: "84590", list_price: 186.00, self_pay_price: 119.00, fasting_hours: 12}
+        "17985": {name: "Chromogranin A", cpt: "86316", list_price: 172.00, self_pay_price: 109.00, fasting_hours: 0}
+        "16293": {name: "Immunofixation Electrophoresis, Serum", cpt: "86334", list_price: 154.00, self_pay_price: 98.00, fasting_hours: 0}
+        "34484": {name: "Heavy Metals Panel, Blood (Arsenic, Lead, Mercury)", cpt: "82175", list_price: 268.00, self_pay_price: 169.00, fasting_hours: 0}
+        "91716": {name: "Aldosterone/Plasma Renin Activity Ratio", cpt: "82088", list_price: 242.00, self_pay_price: 149.00, fasting_hours: 0}
+      reflex_map: {}
+      reflex_testing_enabled: false
+      self_pay_payment_due_at_collection: false
+      consumer_initiated_orderable: false
+      consumer_physician_oversight_fee: 0.00
+      consumer_order_valid_days: 0
+      consumer_minimum_age_years: 18
+      consumer_max_tests_per_order: 0
+      consumer_refund_retains_oversight_fee: false
+      consumer_refund_processing_business_days: 0
+      add_on_window_days: 7
+      max_add_on_tests_per_accession: 2
+      add_on_requires_ordering_provider: true
+      primary_specimen_type: serum
+      specimen_stability_room_temp_hours: 24
+      specimen_stability_refrigerated_hours: 168
+      minimum_specimen_volume_ml: 2.0
+      rejection_notice_business_days: 2
+      recollection_window_days: 21
+      max_no_charge_recollections: 2
+      recollection_requires_new_requisition: false
+      specimen_retention_days: 30
+      standard_turnaround_business_days: 6
+      report_copy_fulfillment_business_days: 2
+      report_copy_paper_fee: 0.00
+      corrected_report_business_days: 2
+      diagnosis_code_required_for_insurance: true
+      abn_screening_applies: true
+      medicare_frequency_limits_days: {"17985": 180}
+      prior_auth_required_commercial: false
+      prior_auth_required_medicare_advantage: false
+      prior_auth_required_medicaid: false
+      prior_auth_required_tricare: false
+      info_hold_max_days: 14
+      testing_hold_max_days: 7
+      informed_consent_required: false
+      informed_consent_valid_days: 0
+      cancellation_handling_fee_after_accession: 25.00
+      insurance_to_self_pay_switch_window_days: 10
+      self_pay_to_insurance_switch_window_days: 60
+      gfe_issue_business_days_on_request: 3
+      gfe_issue_business_days_when_scheduled: 1
+      gfe_valid_days: 90
+      client_bill_allowed: true
+      client_bill_allowed_for_medicare_beneficiaries: false
+      requisition_valid_days: 90
+      standing_order_allowed: false
+      standing_order_max_months: 0
+      standing_order_max_draws: 0
+      duplicate_test_window_days: 7
+  - name: Molecular Infectious Disease Testing
+    rank: 4
+    entry_gate: {order_channels: [electronic_physician_order, paper_physician_requisition, consumer_initiated], tests_from: test_menu}
+    parameters:
+      test_menu:
+        "91431": {name: "Chlamydia trachomatis and Neisseria gonorrhoeae RNA, TMA", cpt: "87491", list_price: 178.00, self_pay_price: 79.00, fasting_hours: 0}
+        "70051": {name: "Trichomonas vaginalis RNA, Qualitative, TMA", cpt: "87661", list_price: 96.00, self_pay_price: 59.00, fasting_hours: 0}
+        "97636": {name: "SARS-CoV-2, Influenza A/B and RSV RNA, PCR", cpt: "87637", list_price: 245.00, self_pay_price: 139.00, fasting_hours: 0}
+        "16890": {name: "HIV-1 RNA, Quantitative, Real-Time PCR", cpt: "87536", list_price: 289.00, self_pay_price: 179.00, fasting_hours: 0}
+        "35645": {name: "Hepatitis C Viral RNA, Quantitative, Real-Time PCR", cpt: "87522", list_price: 276.00, self_pay_price: 169.00, fasting_hours: 0}
+      reflex_map: {}
+      reflex_testing_enabled: false
+      self_pay_payment_due_at_collection: true
+      consumer_initiated_orderable: true
+      consumer_physician_oversight_fee: 7.95
+      consumer_order_valid_days: 90
+      consumer_minimum_age_years: 18
+      consumer_max_tests_per_order: 4
+      consumer_refund_retains_oversight_fee: true
+      consumer_refund_processing_business_days: 7
+      add_on_window_days: 2
+      max_add_on_tests_per_accession: 2
+      add_on_requires_ordering_provider: true
+      primary_specimen_type: swab
+      specimen_stability_room_temp_hours: 72
+      specimen_stability_refrigerated_hours: 168
+      minimum_specimen_volume_ml: 1.0
+      rejection_notice_business_days: 1
+      recollection_window_days: 7
+      max_no_charge_recollections: 2
+      recollection_requires_new_requisition: false
+      specimen_retention_days: 7
+      standard_turnaround_business_days: 2
+      report_copy_fulfillment_business_days: 2
+      report_copy_paper_fee: 0.00
+      corrected_report_business_days: 1
+      diagnosis_code_required_for_insurance: true
+      abn_screening_applies: true
+      medicare_frequency_limits_days: {"91431": 365}
+      prior_auth_required_commercial: false
+      prior_auth_required_medicare_advantage: false
+      prior_auth_required_medicaid: false
+      prior_auth_required_tricare: false
+      info_hold_max_days: 7
+      testing_hold_max_days: 3
+      informed_consent_required: false
+      informed_consent_valid_days: 0
+      cancellation_handling_fee_after_accession: 0.00
+      insurance_to_self_pay_switch_window_days: 10
+      self_pay_to_insurance_switch_window_days: 90
+      gfe_issue_business_days_on_request: 3
+      gfe_issue_business_days_when_scheduled: 1
+      gfe_valid_days: 90
+      client_bill_allowed: true
+      client_bill_allowed_for_medicare_beneficiaries: false
+      requisition_valid_days: 30
+      standing_order_allowed: false
+      standing_order_max_months: 0
+      standing_order_max_draws: 0
+      duplicate_test_window_days: 1
+  - name: Clinical Toxicology Testing
+    rank: 5
+    entry_gate: {order_channels: [electronic_physician_order, paper_physician_requisition], tests_from: test_menu}
+    parameters:
+      test_menu:
+        "90895": {name: "Prescription Drug Monitoring Screen, 11 Drug Classes, Immunoassay", cpt: "80307", list_price: 189.00, self_pay_price: 89.00, fasting_hours: 0}
+        "94177": {name: "Definitive Drug Testing, 1-7 Drug Classes, LC/MS/MS", cpt: "G0480", list_price: 248.00, self_pay_price: 139.00, fasting_hours: 0}
+        "94178": {name: "Definitive Drug Testing, 8-14 Drug Classes, LC/MS/MS", cpt: "G0481", list_price: 342.00, self_pay_price: 189.00, fasting_hours: 0}
+        "94179": {name: "Definitive Drug Testing, 15-21 Drug Classes, LC/MS/MS", cpt: "G0482", list_price: 445.00, self_pay_price: 239.00, fasting_hours: 0}
+        "36151": {name: "Fentanyl and Norfentanyl, Confirmation, Urine", cpt: "80354", list_price: 156.00, self_pay_price: 79.00, fasting_hours: 0}
+      reflex_map: {"90895": "94177"}
+      reflex_testing_enabled: true
+      self_pay_payment_due_at_collection: true
+      consumer_initiated_orderable: false
+      consumer_physician_oversight_fee: 0.00
+      consumer_order_valid_days: 0
+      consumer_minimum_age_years: 18
+      consumer_max_tests_per_order: 0
+      consumer_refund_retains_oversight_fee: false
+      consumer_refund_processing_business_days: 0
+      add_on_window_days: 10
+      max_add_on_tests_per_accession: 3
+      add_on_requires_ordering_provider: true
+      primary_specimen_type: urine
+      specimen_stability_room_temp_hours: 168
+      specimen_stability_refrigerated_hours: 720
+      minimum_specimen_volume_ml: 30.0
+      rejection_notice_business_days: 1
+      recollection_window_days: 7
+      max_no_charge_recollections: 1
+      recollection_requires_new_requisition: false
+      specimen_retention_days: 30
+      standard_turnaround_business_days: 4
+      report_copy_fulfillment_business_days: 2
+      report_copy_paper_fee: 0.00
+      corrected_report_business_days: 2
+      diagnosis_code_required_for_insurance: true
+      abn_screening_applies: true
+      medicare_frequency_limits_days: {}
+      prior_auth_required_commercial: false
+      prior_auth_required_medicare_advantage: false
+      prior_auth_required_medicaid: true
+      prior_auth_required_tricare: false
+      info_hold_max_days: 14
+      testing_hold_max_days: 14
+      informed_consent_required: false
+      informed_consent_valid_days: 0
+      cancellation_handling_fee_after_accession: 15.00
+      insurance_to_self_pay_switch_window_days: 10
+      self_pay_to_insurance_switch_window_days: 60
+      gfe_issue_business_days_on_request: 3
+      gfe_issue_business_days_when_scheduled: 1
+      gfe_valid_days: 90
+      client_bill_allowed: true
+      client_bill_allowed_for_medicare_beneficiaries: false
+      requisition_valid_days: 90
+      standing_order_allowed: true
+      standing_order_max_months: 12
+      standing_order_max_draws: 12
+      duplicate_test_window_days: 1
+  - name: Anatomic Pathology & Cytology
+    rank: 6
+    entry_gate: {order_channels: [electronic_physician_order, paper_physician_requisition], tests_from: test_menu}
+    parameters:
+      test_menu:
+        "91384": {name: "ThinPrep Pap Test, Image-Guided, with Reflex to HPV (ASC-US)", cpt: "88175", list_price: 118.00, self_pay_price: 69.00, fasting_hours: 0}
+        "14424": {name: "HPV mRNA E6/E7, High Risk, with Reflex to Genotypes 16, 18/45", cpt: "87624", list_price: 148.00, self_pay_price: 89.00, fasting_hours: 0}
+        "14460": {name: "HPV Genotypes 16, 18/45 (reflex)", cpt: "87625", list_price: 121.00, self_pay_price: 69.00, fasting_hours: 0}
+        "50013": {name: "Surgical Pathology, Level IV, Gross and Microscopic", cpt: "88305", list_price: 214.00, self_pay_price: 149.00, fasting_hours: 0}
+        "50251": {name: "Immunohistochemistry, First Single Antibody Stain", cpt: "88342", list_price: 186.00, self_pay_price: 119.00, fasting_hours: 0}
+      reflex_map: {"91384": "14424", "14424": "14460"}
+      reflex_testing_enabled: true
+      self_pay_payment_due_at_collection: false
+      consumer_initiated_orderable: false
+      consumer_physician_oversight_fee: 0.00
+      consumer_order_valid_days: 0
+      consumer_minimum_age_years: 18
+      consumer_max_tests_per_order: 0
+      consumer_refund_retains_oversight_fee: false
+      consumer_refund_processing_business_days: 0
+      add_on_window_days: 0
+      max_add_on_tests_per_accession: 0
+      add_on_requires_ordering_provider: true
+      primary_specimen_type: tissue
+      specimen_stability_room_temp_hours: 720
+      specimen_stability_refrigerated_hours: 720
+      minimum_specimen_volume_ml: 0.0
+      rejection_notice_business_days: 1
+      recollection_window_days: 0
+      max_no_charge_recollections: 0
+      recollection_requires_new_requisition: true
+      specimen_retention_days: 3650
+      standard_turnaround_business_days: 4
+      report_copy_fulfillment_business_days: 2
+      report_copy_paper_fee: 0.00
+      corrected_report_business_days: 2
+      diagnosis_code_required_for_insurance: true
+      abn_screening_applies: false
+      medicare_frequency_limits_days: {"91384": 730}
+      prior_auth_required_commercial: false
+      prior_auth_required_medicare_advantage: false
+      prior_auth_required_medicaid: false
+      prior_auth_required_tricare: false
+      info_hold_max_days: 30
+      testing_hold_max_days: 30
+      informed_consent_required: false
+      informed_consent_valid_days: 0
+      cancellation_handling_fee_after_accession: 35.00
+      insurance_to_self_pay_switch_window_days: 10
+      self_pay_to_insurance_switch_window_days: 60
+      gfe_issue_business_days_on_request: 3
+      gfe_issue_business_days_when_scheduled: 1
+      gfe_valid_days: 90
+      client_bill_allowed: true
+      client_bill_allowed_for_medicare_beneficiaries: false
+      requisition_valid_days: 30
+      standing_order_allowed: false
+      standing_order_max_months: 0
+      standing_order_max_draws: 0
+      duplicate_test_window_days: 0
+  - name: Hereditary & Reproductive Genetic Testing
+    rank: 7
+    entry_gate: {order_channels: [electronic_physician_order, paper_physician_requisition], tests_from: test_menu, informed_consent: required}
+    parameters:
+      test_menu:
+        "92340": {name: "BRCA1 and BRCA2 Full Sequencing and Deletion/Duplication", cpt: "81162", list_price: 3350.00, self_pay_price: 349.00, fasting_hours: 0}
+        "94820": {name: "Hereditary Cancer Panel, 36 Genes", cpt: "81432", list_price: 4150.00, self_pay_price: 349.00, fasting_hours: 0}
+        "92619": {name: "Expanded Carrier Screen, 274 Genes", cpt: "81443", list_price: 2295.00, self_pay_price: 349.00, fasting_hours: 0}
+        "93787": {name: "Cell-Free DNA Prenatal Screen", cpt: "81420", list_price: 1890.00, self_pay_price: 299.00, fasting_hours: 0}
+        "93910": {name: "Cystic Fibrosis Carrier Screen, 23 Variants", cpt: "81220", list_price: 785.00, self_pay_price: 199.00, fasting_hours: 0}
+      reflex_map: {}
+      reflex_testing_enabled: false
+      self_pay_payment_due_at_collection: false
+      consumer_initiated_orderable: false
+      consumer_physician_oversight_fee: 0.00
+      consumer_order_valid_days: 0
+      consumer_minimum_age_years: 18
+      consumer_max_tests_per_order: 0
+      consumer_refund_retains_oversight_fee: false
+      consumer_refund_processing_business_days: 0
+      add_on_window_days: 30
+      max_add_on_tests_per_accession: 1
+      add_on_requires_ordering_provider: true
+      primary_specimen_type: whole_blood_edta
+      specimen_stability_room_temp_hours: 168
+      specimen_stability_refrigerated_hours: 504
+      minimum_specimen_volume_ml: 3.0
+      rejection_notice_business_days: 2
+      recollection_window_days: 30
+      max_no_charge_recollections: 2
+      recollection_requires_new_requisition: false
+      specimen_retention_days: 60
+      standard_turnaround_business_days: 18
+      report_copy_fulfillment_business_days: 3
+      report_copy_paper_fee: 0.00
+      corrected_report_business_days: 3
+      diagnosis_code_required_for_insurance: true
+      abn_screening_applies: true
+      medicare_frequency_limits_days: {}
+      prior_auth_required_commercial: true
+      prior_auth_required_medicare_advantage: true
+      prior_auth_required_medicaid: true
+      prior_auth_required_tricare: true
+      info_hold_max_days: 30
+      testing_hold_max_days: 45
+      informed_consent_required: true
+      informed_consent_valid_days: 90
+      cancellation_handling_fee_after_accession: 150.00
+      insurance_to_self_pay_switch_window_days: 30
+      self_pay_to_insurance_switch_window_days: 30
+      gfe_issue_business_days_on_request: 3
+      gfe_issue_business_days_when_scheduled: 1
+      gfe_valid_days: 90
+      client_bill_allowed: true
+      client_bill_allowed_for_medicare_beneficiaries: false
+      requisition_valid_days: 90
+      standing_order_allowed: false
+      standing_order_max_months: 0
+      standing_order_max_draws: 0
+      duplicate_test_window_days: 365
+
+events:
+  - type: orders_order_placed
+    target: orders
+    mutation: create
+    meaning: A requisition (physician electronic or paper order, or a consumer purchase) is registered as an order for one service class.
+    grain: one row per accession (requisition x service class)
+    fields:
+      customer_id: The patient the tests are for.
+      variant_name: The service class of the tests on this order.
+      requisition_number: The requisition number printed on or assigned to the requisition, shared by every order of the requisition.
+      order_channel: How the order arrived.
+      billing_method: Who is billed for the order at placement.
+      coverage_id: The coverage billed when billing_method is insurance.
+      client_account_id: The ordering practice's client account; empty for consumer-initiated orders.
+      ordering_npi: NPI of the ordering (or consumer-oversight) physician.
+      diagnosis_status: Whether ICD-10 diagnosis codes came with the order.
+      prior_auth_status: Prior-authorization status at placement.
+      abn_status: ABN status at placement.
+      informed_consent_status: Informed-consent status at placement.
+      order_date: Date the requisition was signed or the consumer order was purchased.
+      standing_order: Whether the requisition is a standing order.
+    triggers:
+      - event: orders:orders_test_charge_posted
+        map: {charge_reason: ordered, event_date: order_date}
+      - event: orders:orders_test_charge_posted
+        when: {order_channel: consumer_initiated}
+        map: {charge_reason: physician_oversight_fee, event_date: order_date}
+  - type: orders_test_charge_posted
+    target: order_events
+    meaning: A charge line posts to the accession at list price - an ordered test, a reflex test, the consumer oversight fee, or a cancellation handling fee.
+    grain: one row per charge line (order x test number x charge reason)
+    distinguish_by: [test_code, charge_reason]
+    fields:
+      event_date: Date the charge posted.
+      test_code: The lab test number charged (the fee code for fee lines).
+      charge_amount: List price of the test from the test menu, or the fee amount; positive.
+      charge_reason: Why the line was charged.
+    account: gross_charges
+    direction: in
+    triggers: []
+  - type: orders_add_on_posted
+    target: order_events
+    meaning: The ordering provider adds a test to an existing accession, performed on the specimen already in the laboratory.
+    grain: one row per add-on test on an order
+    distinguish_by: [test_code]
+    fields:
+      event_date: Date the add-on request was accepted.
+      test_code: The lab test number added.
+      charge_amount: List price of the added test from the order's test menu; positive.
+      charge_reason: Always add_on.
+    account: gross_charges
+    direction: in
+    triggers: []
+  - type: orders_test_charge_credited
+    target: order_events
+    meaning: A previously posted charge line is credited off the accession in full.
+    grain: one row per credited charge line
+    distinguish_by: [credited_event_id]
+    fields:
+      event_date: Date of the credit.
+      test_code: The test number of the credited line.
+      charge_amount: Amount credited; equals the credited line's charge_amount; positive.
+      credit_reason: Why the line was credited.
+      credited_event_id: The charge or add-on line being credited.
+    account: gross_charges
+    direction: out
+    triggers: []
+  - type: orders_specimen_accessioned
+    target: orders
+    mutation: {transition: {from: received, to: accessioned}}
+    meaning: The specimen arrives at the laboratory within stability and is logged against the order.
+    grain: one row per transaction
+    fields:
+      collection_date: Date the specimen was collected.
+      received_date: Date the laboratory received and accessioned the specimen.
+    triggers: []
+  - type: orders_specimen_rejected
+    target: order_events
+    meaning: The laboratory rejects an accessioned specimen as unsuitable for testing.
+    grain: one row per rejected specimen
+    distinguish_by: [event_date, specimen_type, rejection_reason]
+    fields:
+      event_date: Date the specimen was rejected.
+      specimen_type: Type of the rejected specimen.
+      rejection_reason: The rejection criterion that failed.
+    triggers:
+      - event: orders:orders_awaiting_recollection
+        map: {}
+  - type: orders_awaiting_recollection
+    target: orders
+    mutation: {transition: {from: accessioned, to: received}}
+    meaning: After a rejection the order returns to awaiting a specimen.
+    grain: one row per transaction
+    fields:
+      received_date: Cleared to empty, since no acceptable specimen is in house.
+    triggers: []
+  - type: orders_recollection_requested
+    target: order_events
+    meaning: The laboratory asks the patient for a no-charge recollection after a rejection.
+    grain: one row per rejection that is offered a recollection
+    distinguish_by: [rejected_event_id]
+    fields:
+      event_date: Date the recollection was requested.
+      rejected_event_id: The rejection this recollection answers.
+      recollect_by_date: Last date on which the recollection may be collected.
+    triggers: []
+  - type: orders_hold_placed
+    target: orders
+    mutation: {transition: [{from: received, to: info_hold}, {from: accessioned, to: testing_hold}]}
+    meaning: The order is placed on a pre-collection information hold or a post-accession testing hold.
+    grain: one row per transaction
+    fields:
+      hold_reason: Why the order is held.
+      hold_placed_date: Date the hold started.
+    triggers: []
+  - type: orders_hold_released
+    target: orders
+    mutation: {transition: [{from: info_hold, to: received}, {from: testing_hold, to: in_testing}]}
+    meaning: The cause of a hold is cured and the order resumes.
+    grain: one row per transaction
+    fields:
+      hold_reason: Reset to none.
+    triggers: []
+  - type: orders_testing_started
+    target: orders
+    mutation: {transition: {from: accessioned, to: in_testing}}
+    meaning: Testing starts on an accessioned specimen with no hold.
+    grain: one row per transaction
+    fields:
+      received_date: The accession date the turnaround clock runs from (unchanged).
+    triggers: []
+  - type: orders_result_released
+    target: orders
+    mutation: {transition: {from: in_testing, to: resulted}}
+    meaning: The final report is released to the ordering provider and the patient portal.
+    grain: one row per transaction
+    fields:
+      result_released_date: Date the final report was released.
+    triggers: []
+  - type: orders_cancelled_by_patient
+    target: orders
+    mutation: {transition: [{from: received, to: cancelled}, {from: info_hold, to: cancelled}, {from: accessioned, to: cancelled}, {from: testing_hold, to: cancelled}]}
+    meaning: The patient cancels their own order before testing starts.
+    grain: one row per transaction
+    fields:
+      cancellation_reason: patient_request, or abn_option_3_declined when the patient declined every test on a Medicare ABN.
+      cancelled_date: Date of the cancellation.
+    triggers:
+      - event: orders:orders_test_charge_credited
+        map: {credit_reason: cancelled_before_testing, event_date: cancelled_date}
+  - type: orders_cancelled_by_laboratory
+    target: orders
+    mutation: {transition: [{from: received, to: cancelled}, {from: info_hold, to: cancelled}, {from: testing_hold, to: cancelled}]}
+    meaning: The laboratory cancels an order whose requisition, hold or recollection window ran out.
+    grain: one row per transaction
+    fields:
+      cancellation_reason: requisition_expired, info_hold_expired, testing_hold_expired or recollection_not_completed.
+      cancelled_date: Date of the cancellation.
+    triggers:
+      - event: orders:orders_test_charge_credited
+        when: {cancellation_reason: [requisition_expired, info_hold_expired, testing_hold_expired]}
+        map: {credit_reason: test_not_performed, event_date: cancelled_date}
+      - event: orders:orders_test_charge_credited
+        when: {cancellation_reason: recollection_not_completed}
+        map: {credit_reason: specimen_rejected_not_recollected, event_date: cancelled_date}
+  - type: orders_diagnosis_received
+    target: orders
+    mutation: update
+    meaning: The ordering provider supplies ICD-10 diagnosis codes for the order.
+    grain: one row per transaction
+    fields:
+      diagnosis_status: Set to provided.
+    triggers: []
+  - type: orders_abn_recorded
+    target: orders
+    mutation: update
+    meaning: The patient signs a Medicare Advance Beneficiary Notice and chooses an option.
+    grain: one row per transaction
+    fields:
+      abn_status: The option the patient signed.
+      billing_method: Set to self_pay when option 2 is chosen; otherwise unchanged.
+    triggers: []
+  - type: orders_prior_auth_recorded
+    target: orders
+    mutation: update
+    meaning: The payer's prior-authorization decision obtained by the ordering provider is recorded on the order.
+    grain: one row per transaction
+    fields:
+      prior_auth_status: approved or denied.
+      prior_auth_number: The payer's authorization number when approved.
+    triggers: []
+  - type: orders_consent_recorded
+    target: orders
+    mutation: update
+    meaning: The patient signs the genetic-testing informed consent.
+    grain: one row per transaction
+    fields:
+      informed_consent_status: Set to signed.
+      consent_signed_date: Date the patient signed.
+    triggers: []
+  - type: orders_billing_method_changed
+    target: orders
+    mutation: update
+    meaning: The party billed for the order changes (insurance to self-pay, self-pay to insurance, or to client bill).
+    grain: one row per transaction
+    fields:
+      billing_method: The new billing method.
+      coverage_id: The coverage billed after the change; empty when not insurance.
+    triggers: []
+  - type: orders_estimate_issued
+    target: orders
+    mutation: update
+    meaning: A good faith estimate of the self-pay price is issued for the requisition encounter.
+    grain: one row per transaction
+    fields:
+      good_faith_estimate_amount: Estimated self-pay amount for the whole requisition encounter.
+      estimate_date: Date the estimate was issued.
+    triggers: []
+  - type: orders_corrected_report_issued
+    target: order_events
+    meaning: A corrected final report replaces the released report.
+    grain: one row per corrected report
+    distinguish_by: [event_date, report_correction_reason]
+    fields:
+      event_date: Date the corrected report was released.
+      report_correction_reason: What was corrected.
+    triggers: []
+  - type: orders_result_copy_requested
+    target: order_events
+    meaning: The patient requests a copy of a final report.
+    grain: one row per copy request
+    distinguish_by: [event_date, copy_format]
+    fields:
+      event_date: Date of the request.
+      copy_format: How the copy is delivered.
+      charge_amount: Fee for the copy (report_copy_paper_fee for mailed paper, otherwise 0.00).
+    triggers: []
+
+measures:
+  - id: orders_msr_add_on_tests_on_order
+    window: the life of the order
+    measure: count of orders_add_on_posted rows on this order_id that no orders_test_charge_credited row references through credited_event_id
+  - id: orders_msr_recollections_on_order
+    window: the life of the order
+    measure: count of orders_recollection_requested rows on this order_id
+  - id: orders_msr_prior_same_test
+    window: the calendar days before this order's collection date given by the test's medicare_frequency_limits_days entry (for ABN screening) or by duplicate_test_window_days (for duplicate credit), counted back from the collection date (collection date = day 0)
+    measure: count of uncredited orders_test_charge_posted rows with the same test_code on the same customer's other non-cancelled orders whose collection_date falls inside the window
+
+policies:
+  - id: orders_agg_multi_holding
+    subject: [orders_order_placed]
+    rule: A patient may hold any number of orders at the same time, in any service classes and any statuses; each accession is its own order and nothing caps how many a patient holds.
+    eligibility: []
+    params: {max_per_customer: null}
+
+  - id: orders_agg_requisition_encounter
+    subject: [orders_order_placed, orders_estimate_issued, orders_test_charge_posted]
+    rule: >-
+      All orders of the same patient that carry the same requisition_number form one requisition encounter.
+      A requisition that lists tests of more than one service class is accessioned as one order per service
+      class, every order carrying the shared requisition_number, and each test is placed on the order whose
+      service-class test_menu lists it. A good faith estimate is issued per requisition encounter, never per
+      order: its amount is the sum, over every order of the encounter, of the self_pay_price in that order's
+      test_menu of each test currently charged and not credited on the order, plus the
+      consumer_physician_oversight_fee once when the encounter is consumer-initiated; the same amount and
+      the same estimate date are written to every order of the encounter. The consumer physician oversight
+      fee is charged once per requisition encounter, on the order of the encounter whose service class has
+      the lowest rank, at that class's consumer_physician_oversight_fee; the other orders of the encounter
+      carry no oversight fee line.
+    eligibility: []
+
+  - id: orders_order_intake
+    subject: [orders_order_placed, orders_test_charge_posted]
+    rule: >-
+      When an order is placed, one orders_test_charge_posted line with charge_reason ordered is posted for
+      every test on the order at that test's list_price in the order's test_menu, and the order's
+      list_price_total is the sum of its charge lines less its credited lines. A test that is not in the
+      order's test_menu cannot be charged on that order. Reflex lines (charge_reason reflex) are posted by the
+      laboratory only for classes whose reflex_testing_enabled is true and only for the reflex_map target of a
+      test already charged on the order, at the reflex test's list_price; a patient or provider cannot request
+      a reflex line. A consumer-initiated order is accepted only for a service class whose
+      consumer_initiated_orderable is true. The patient must be at least consumer_minimum_age_years whole years
+      old on the order date for a consumer-initiated order. A consumer-initiated order carries no more than
+      consumer_max_tests_per_order tests and is always billed self_pay and prepaid at purchase at the sum of the
+      tests' self_pay_price plus the oversight fee placed under the requisition-encounter rule. Client billing is
+      available only for classes whose client_bill_allowed is true. Client billing is never allowed when the
+      patient's coverage on the order date is Original Medicare Part B, because client_bill_allowed_for_medicare_beneficiaries is false for every class.
+      A physician requisition must be collected within requisition_valid_days calendar days of its order date;
+      a standing order is accepted only for classes whose standing_order_allowed is true and is valid for
+      standing_order_max_months calendar months from the order date and at most standing_order_max_draws
+      collections.
+    eligibility:
+      - id: consumer_age
+        applies_to: [orders_order_placed]
+        kind: authorization
+        condition: The patient must be at least consumer_minimum_age_years whole years old on the order date for a consumer-initiated order.
+        evidence_fields: [customers.date_of_birth, customers.customer_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[customers.customer_id]]
+          action_bindings: {customers.customer_id: customer_id}
+      - id: no_client_bill_for_original_medicare
+        applies_to: [orders_order_placed]
+        kind: authorization
+        condition: Client billing is never allowed when the patient's coverage on the order date is Original Medicare Part B, because client_bill_allowed_for_medicare_beneficiaries is false for every class.
+        evidence_fields: [coverages.variant_name, coverages.status, coverages.coverage_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[coverages.coverage_id]]
+          action_bindings: {coverages.coverage_id: coverage_id}
+    params:
+      per_tier:
+        Routine Clinical Testing: {consumer_initiated_orderable: "=consumer_initiated_orderable", consumer_max_tests_per_order: "=consumer_max_tests_per_order", requisition_valid_days: "=requisition_valid_days"}
+        Specialty Clinical Testing: {consumer_initiated_orderable: "=consumer_initiated_orderable", consumer_max_tests_per_order: "=consumer_max_tests_per_order", requisition_valid_days: "=requisition_valid_days"}
+        Esoteric Reference Testing: {consumer_initiated_orderable: "=consumer_initiated_orderable", consumer_max_tests_per_order: "=consumer_max_tests_per_order", requisition_valid_days: "=requisition_valid_days"}
+        Molecular Infectious Disease Testing: {consumer_initiated_orderable: "=consumer_initiated_orderable", consumer_max_tests_per_order: "=consumer_max_tests_per_order", requisition_valid_days: "=requisition_valid_days"}
+        Clinical Toxicology Testing: {consumer_initiated_orderable: "=consumer_initiated_orderable", consumer_max_tests_per_order: "=consumer_max_tests_per_order", requisition_valid_days: "=requisition_valid_days"}
+        Anatomic Pathology & Cytology: {consumer_initiated_orderable: "=consumer_initiated_orderable", consumer_max_tests_per_order: "=consumer_max_tests_per_order", requisition_valid_days: "=requisition_valid_days"}
+        Hereditary & Reproductive Genetic Testing: {consumer_initiated_orderable: "=consumer_initiated_orderable", consumer_max_tests_per_order: "=consumer_max_tests_per_order", requisition_valid_days: "=requisition_valid_days"}
+
+  - id: orders_evt_add_on
+    subject: [orders_add_on_posted]
+    rule: >-
+      An add-on test is a test requested for an existing accession after collection and performed on the
+      specimen already in the laboratory. An add-on request is accepted only from the ordering provider of the order or that provider's office.
+      Consumer-initiated orders never accept add-on tests; the patient places a new consumer order instead.
+      An add-on test may be posted only while the order status is accessioned, testing_hold, in_testing or resulted.
+      The add-on request must be received no later than add_on_window_days calendar days after the collection date recorded on the order.
+      The window is counted in calendar days with the collection date as day 0, so the last eligible day is the collection date plus add_on_window_days and a request received on that day is accepted.
+      The number of add-on tests already on the order (orders_msr_add_on_tests_on_order) must be below
+      max_add_on_tests_per_accession; a class whose add_on_window_days is 0 accepts no add-ons. The added test
+      must be in the test_menu of the order's own service class; a test of another class needs a new order. An
+      accepted add-on posts one orders_add_on_posted line at the test's list_price; a refused add-on posts
+      nothing, and the provider must send a new requisition, which needs a new collection.
+    eligibility:
+      - id: add_on_state
+        applies_to: [orders_add_on_posted]
+        kind: state
+        condition: An add-on test may be posted only while the order status is accessioned, testing_hold, in_testing or resulted.
+        evidence_fields: [orders.status, orders.order_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[orders.order_id]]
+          action_bindings: {orders.order_id: order_id}
+        state_contract:
+          field: orders.status
+          allowed: [accessioned, testing_hold, in_testing, resulted]
+      - id: add_on_window
+        applies_to: [orders_add_on_posted]
+        kind: time
+        condition: The add-on request must be received no later than add_on_window_days calendar days after the collection date recorded on the order.
+        evidence_fields: [orders.collection_date, orders.order_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[orders.order_id]]
+          action_bindings: {orders.order_id: order_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the collection date recorded on the order
+          anchor_source: orders.collection_date
+          relation: not_after
+          duration_source: variants.add_on_window_days
+          unit: calendar_days
+          counting_rule: The window is counted in calendar days with the collection date as day 0, so the last eligible day is the collection date plus add_on_window_days and a request received on that day is accepted.
+          boundary: inclusive
+      - id: add_on_requester
+        applies_to: [orders_add_on_posted]
+        kind: caller_fact
+        condition: An add-on request is accepted only from the ordering provider of the order or that provider's office.
+        evidence_fields: [orders.ordering_npi, orders.order_id]
+        evidence_contract:
+          authority: mixed
+          timing: pre_action
+          correlation_keys: [[orders.order_id]]
+          action_bindings: {orders.order_id: order_id}
+    measures: [orders_msr_add_on_tests_on_order]
+    params:
+      per_tier:
+        Routine Clinical Testing: {add_on_window_days: "=add_on_window_days", max_add_on_tests_per_accession: "=max_add_on_tests_per_accession"}
+        Specialty Clinical Testing: {add_on_window_days: "=add_on_window_days", max_add_on_tests_per_accession: "=max_add_on_tests_per_accession"}
+        Esoteric Reference Testing: {add_on_window_days: "=add_on_window_days", max_add_on_tests_per_accession: "=max_add_on_tests_per_accession"}
+        Molecular Infectious Disease Testing: {add_on_window_days: "=add_on_window_days", max_add_on_tests_per_accession: "=max_add_on_tests_per_accession"}
+        Clinical Toxicology Testing: {add_on_window_days: "=add_on_window_days", max_add_on_tests_per_accession: "=max_add_on_tests_per_accession"}
+        Anatomic Pathology & Cytology: {add_on_window_days: "=add_on_window_days", max_add_on_tests_per_accession: "=max_add_on_tests_per_accession"}
+        Hereditary & Reproductive Genetic Testing: {add_on_window_days: "=add_on_window_days", max_add_on_tests_per_accession: "=max_add_on_tests_per_accession"}
+    formula:
+      when_not: orders_msr_add_on_tests_on_order >= max_add_on_tests_per_accession or add_on_window_days == 0
+
+  - id: orders_evt_specimen_rejection
+    subject: [orders_specimen_rejected, orders_awaiting_recollection, orders_recollection_requested]
+    rule: >-
+      Each class's tests are drawn on its primary_specimen_type. A specimen is rejected when it fails an acceptance criterion: hemolysis, a volume below
+      minimum_specimen_volume_ml, missing or mismatched labels, arrival after specimen_stability_room_temp_hours
+      (or specimen_stability_refrigerated_hours when shipped refrigerated) from collection, the wrong container,
+      or leakage in transit. A rejection returns the order to received and the patient and the ordering
+      provider are told within rejection_notice_business_days business days. A recollection is offered only when the order's recollection count (orders_msr_recollections_on_order) is below max_no_charge_recollections and recollection_requires_new_requisition is false.
+      When a recollection is offered, one orders_recollection_requested line is written for that rejection
+      with recollect_by_date equal to the rejection date plus recollection_window_days calendar days (rejection
+      date = day 0); the recollection itself is collected at no charge to the patient. When no recollection is
+      offered (the count has reached the maximum, the class's maximum is 0, or a new requisition is required),
+      no request line is written, and the order is cancelled by the laboratory with reason
+      recollection_not_completed and every uncredited charge line credited with reason
+      specimen_rejected_not_recollected; a class that needs a new requisition is re-ordered by the provider as a
+      new order. When recollect_by_date passes without a new accession, the laboratory cancels the order on the
+      following day with the same reason and credits.
+    eligibility:
+      - id: recollection_offered
+        applies_to: [orders_recollection_requested]
+        kind: authorization
+        condition: A recollection is offered only when the order's recollection count (orders_msr_recollections_on_order) is below max_no_charge_recollections and recollection_requires_new_requisition is false.
+        evidence_fields: [order_events.event_type, order_events.order_id, orders.variant_name]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[order_events.order_id]]
+          action_bindings: {order_events.order_id: order_id}
+    measures: [orders_msr_recollections_on_order]
+    params:
+      per_tier:
+        Routine Clinical Testing: {recollection_window_days: "=recollection_window_days", max_no_charge_recollections: "=max_no_charge_recollections"}
+        Specialty Clinical Testing: {recollection_window_days: "=recollection_window_days", max_no_charge_recollections: "=max_no_charge_recollections"}
+        Esoteric Reference Testing: {recollection_window_days: "=recollection_window_days", max_no_charge_recollections: "=max_no_charge_recollections"}
+        Molecular Infectious Disease Testing: {recollection_window_days: "=recollection_window_days", max_no_charge_recollections: "=max_no_charge_recollections"}
+        Clinical Toxicology Testing: {recollection_window_days: "=recollection_window_days", max_no_charge_recollections: "=max_no_charge_recollections"}
+        Anatomic Pathology & Cytology: {recollection_window_days: "=recollection_window_days", max_no_charge_recollections: "=max_no_charge_recollections"}
+        Hereditary & Reproductive Genetic Testing: {recollection_window_days: "=recollection_window_days", max_no_charge_recollections: "=max_no_charge_recollections"}
+
+  - id: orders_evt_order_holds
+    subject: [orders_hold_placed, orders_hold_released, orders_diagnosis_received, orders_cancelled_by_laboratory]
+    rule: >-
+      A pre-collection information hold (status info_hold) is placed on a received order for exactly one of
+      these reasons, checked in this order: missing_diagnosis when the order is billed to insurance,
+      diagnosis_code_required_for_insurance is true and diagnosis_status is missing; abn_required when the
+      order's coverage is Original Medicare Part B, abn_screening_applies is true and a test fails Medicare
+      medical-necessity or frequency screening; informed_consent_missing when informed_consent_required is true
+      and the consent is not signed; coverage_unverified when the order is billed to a coverage whose status is
+      not active. A testing hold (status testing_hold) is placed on an accessioned order for prior_auth_pending
+      when the class requires prior authorization for the coverage's payer class and prior_auth_status is not
+      approved, or for informed_consent_missing when consent is still unsigned. The ordering provider supplies diagnosis codes; a patient cannot supply or change a diagnosis code.
+      A hold is released only when its own cause is cured: diagnosis codes received, an ABN signed with option
+      1 or 2, consent signed, prior authorization approved, the coverage verified active, or the patient
+      switching the order to self-pay; when several causes apply, each is cured in the order above before
+      release. An information hold may be ended by the laboratory only after it has lasted more than info_hold_max_days calendar days from the hold date.
+      The hold length is counted in calendar days with the hold date as day 0, and the laboratory may cancel on the first day after the hold date plus the maximum, never on that day itself.
+      A testing hold is measured the same way against testing_hold_max_days. On cancellation every uncredited
+      charge line is credited with reason test_not_performed.
+    eligibility:
+      - id: diagnosis_from_provider
+        applies_to: [orders_diagnosis_received]
+        kind: caller_fact
+        condition: The ordering provider supplies diagnosis codes; a patient cannot supply or change a diagnosis code.
+        evidence_fields: [orders.ordering_npi, orders.order_id]
+        evidence_contract:
+          authority: mixed
+          timing: pre_action
+          correlation_keys: [[orders.order_id]]
+          action_bindings: {orders.order_id: order_id}
+      - id: info_hold_expiry
+        applies_to: [orders_cancelled_by_laboratory]
+        kind: time
+        condition: An information hold may be ended by the laboratory only after it has lasted more than info_hold_max_days calendar days from the hold date.
+        evidence_fields: [orders.hold_placed_date, orders.order_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[orders.order_id]]
+          action_bindings: {orders.order_id: order_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the hold date
+          anchor_source: orders.hold_placed_date
+          relation: not_before
+          duration_source: variants.info_hold_max_days
+          unit: calendar_days
+          counting_rule: The hold length is counted in calendar days with the hold date as day 0, and the laboratory may cancel on the first day after the hold date plus the maximum, never on that day itself.
+          boundary: exclusive
+    params:
+      per_tier:
+        Routine Clinical Testing: {info_hold_max_days: "=info_hold_max_days", testing_hold_max_days: "=testing_hold_max_days"}
+        Specialty Clinical Testing: {info_hold_max_days: "=info_hold_max_days", testing_hold_max_days: "=testing_hold_max_days"}
+        Esoteric Reference Testing: {info_hold_max_days: "=info_hold_max_days", testing_hold_max_days: "=testing_hold_max_days"}
+        Molecular Infectious Disease Testing: {info_hold_max_days: "=info_hold_max_days", testing_hold_max_days: "=testing_hold_max_days"}
+        Clinical Toxicology Testing: {info_hold_max_days: "=info_hold_max_days", testing_hold_max_days: "=testing_hold_max_days"}
+        Anatomic Pathology & Cytology: {info_hold_max_days: "=info_hold_max_days", testing_hold_max_days: "=testing_hold_max_days"}
+        Hereditary & Reproductive Genetic Testing: {info_hold_max_days: "=info_hold_max_days", testing_hold_max_days: "=testing_hold_max_days"}
+
+  - id: orders_evt_medicare_abn
+    subject: [orders_abn_recorded]
+    rule: >-
+      The Advance Beneficiary Notice of Noncoverage is used only for patients whose coverage on the order is
+      Original Medicare Part B; it is never used for Medicare Advantage, Medicare Supplement, Medicaid,
+      commercial or TRICARE coverage. A test fails Medicare screening when its test number is listed in
+      medicare_frequency_limits_days and orders_msr_prior_same_test, measured over that test's listed days, is
+      at least 1, or when the diagnosis codes on the order do not support medical necessity under the
+      applicable coverage determination. An ABN may be recorded only while the order status is info_hold.
+      The ABN is signed by the patient personally before collection. Option 1 keeps the order billed to Medicare and makes the
+      patient liable if Medicare denies the test; option 2 switches the order to self_pay, Medicare is not billed
+      and the patient pays the test's self_pay_price; option 3 means the patient declines the test, which is
+      credited with reason test_not_performed, and when every test on the order is declined the patient cancels
+      the order with reason abn_option_3_declined. Without a signed ABN the laboratory may not bill the patient
+      for a Medicare denial of that test.
+    eligibility:
+      - id: abn_only_original_medicare
+        applies_to: [orders_abn_recorded]
+        kind: authorization
+        condition: The Advance Beneficiary Notice of Noncoverage is used only for patients whose coverage on the order is Original Medicare Part B; it is never used for Medicare Advantage, Medicare Supplement, Medicaid, commercial or TRICARE coverage.
+        evidence_fields: [orders.coverage_id, coverages.variant_name, coverages.coverage_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[orders.coverage_id]]
+          action_bindings: {orders.coverage_id: coverage_id}
+      - id: abn_while_on_hold
+        applies_to: [orders_abn_recorded]
+        kind: state
+        condition: An ABN may be recorded only while the order status is info_hold.
+        evidence_fields: [orders.status, orders.order_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[orders.order_id]]
+          action_bindings: {orders.order_id: order_id}
+        state_contract:
+          field: orders.status
+          allowed: [info_hold]
+    measures: [orders_msr_prior_same_test]
+    params:
+      per_tier:
+        Routine Clinical Testing: {abn_screening_applies: "=abn_screening_applies", medicare_frequency_limits_days: "=medicare_frequency_limits_days"}
+        Specialty Clinical Testing: {abn_screening_applies: "=abn_screening_applies", medicare_frequency_limits_days: "=medicare_frequency_limits_days"}
+        Esoteric Reference Testing: {abn_screening_applies: "=abn_screening_applies", medicare_frequency_limits_days: "=medicare_frequency_limits_days"}
+        Molecular Infectious Disease Testing: {abn_screening_applies: "=abn_screening_applies", medicare_frequency_limits_days: "=medicare_frequency_limits_days"}
+        Clinical Toxicology Testing: {abn_screening_applies: "=abn_screening_applies", medicare_frequency_limits_days: "=medicare_frequency_limits_days"}
+        Anatomic Pathology & Cytology: {abn_screening_applies: "=abn_screening_applies", medicare_frequency_limits_days: "=medicare_frequency_limits_days"}
+        Hereditary & Reproductive Genetic Testing: {abn_screening_applies: "=abn_screening_applies", medicare_frequency_limits_days: "=medicare_frequency_limits_days"}
+
+  - id: orders_evt_prior_authorization
+    subject: [orders_prior_auth_recorded]
+    rule: >-
+      Prior authorization is required when the order is billed to insurance and the class's flag for the
+      coverage's payer class is true: prior_auth_required_commercial for Commercial In-Network Plan and
+      Commercial Out-of-Network Plan, prior_auth_required_medicare_advantage for Medicare Advantage Plan,
+      prior_auth_required_medicaid for Medicaid Managed Care Plan, and prior_auth_required_tricare for TRICARE
+      Prime and Select; Original Medicare Part B and Medicare Supplement Plan never require it. Prior authorization is requested from the payer by the ordering provider; the laboratory records the payer's decision and authorization number only as supplied by the provider's office or the payer, never as stated by the patient.
+      An approved authorization releases a prior_auth_pending testing hold; a denied authorization leaves the
+      order on hold, and the patient may switch the order to self-pay or cancel it, failing which the testing
+      hold expires under the hold rule.
+    eligibility:
+      - id: auth_source
+        applies_to: [orders_prior_auth_recorded]
+        kind: caller_fact
+        condition: Prior authorization is requested from the payer by the ordering provider; the laboratory records the payer's decision and authorization number only as supplied by the provider's office or the payer, never as stated by the patient.
+        evidence_fields: [orders.ordering_npi, orders.order_id]
+        evidence_contract:
+          authority: mixed
+          timing: pre_action
+          correlation_keys: [[orders.order_id]]
+          action_bindings: {orders.order_id: order_id}
+    params:
+      per_tier:
+        Routine Clinical Testing: {prior_auth_required_commercial: "=prior_auth_required_commercial", prior_auth_required_medicare_advantage: "=prior_auth_required_medicare_advantage", prior_auth_required_medicaid: "=prior_auth_required_medicaid", prior_auth_required_tricare: "=prior_auth_required_tricare"}
+        Specialty Clinical Testing: {prior_auth_required_commercial: "=prior_auth_required_commercial", prior_auth_required_medicare_advantage: "=prior_auth_required_medicare_advantage", prior_auth_required_medicaid: "=prior_auth_required_medicaid", prior_auth_required_tricare: "=prior_auth_required_tricare"}
+        Esoteric Reference Testing: {prior_auth_required_commercial: "=prior_auth_required_commercial", prior_auth_required_medicare_advantage: "=prior_auth_required_medicare_advantage", prior_auth_required_medicaid: "=prior_auth_required_medicaid", prior_auth_required_tricare: "=prior_auth_required_tricare"}
+        Molecular Infectious Disease Testing: {prior_auth_required_commercial: "=prior_auth_required_commercial", prior_auth_required_medicare_advantage: "=prior_auth_required_medicare_advantage", prior_auth_required_medicaid: "=prior_auth_required_medicaid", prior_auth_required_tricare: "=prior_auth_required_tricare"}
+        Clinical Toxicology Testing: {prior_auth_required_commercial: "=prior_auth_required_commercial", prior_auth_required_medicare_advantage: "=prior_auth_required_medicare_advantage", prior_auth_required_medicaid: "=prior_auth_required_medicaid", prior_auth_required_tricare: "=prior_auth_required_tricare"}
+        Anatomic Pathology & Cytology: {prior_auth_required_commercial: "=prior_auth_required_commercial", prior_auth_required_medicare_advantage: "=prior_auth_required_medicare_advantage", prior_auth_required_medicaid: "=prior_auth_required_medicaid", prior_auth_required_tricare: "=prior_auth_required_tricare"}
+        Hereditary & Reproductive Genetic Testing: {prior_auth_required_commercial: "=prior_auth_required_commercial", prior_auth_required_medicare_advantage: "=prior_auth_required_medicare_advantage", prior_auth_required_medicaid: "=prior_auth_required_medicaid", prior_auth_required_tricare: "=prior_auth_required_tricare"}
+
+  - id: orders_evt_informed_consent
+    subject: [orders_consent_recorded]
+    rule: >-
+      Classes whose informed_consent_required is true may not be collected or tested until the patient has
+      signed the informed consent. The consent is signed by the patient personally (a parent or legal guardian
+      for a minor); the agent cannot sign or attest it. A consent remains valid for collection for
+      informed_consent_valid_days calendar days from consent_signed_date (signing date = day 0, the last day
+      included); a consent older than that must be signed again before collection.
+    eligibility:
+      - id: consent_by_patient
+        applies_to: [orders_consent_recorded]
+        kind: caller_fact
+        condition: The consent is signed by the patient personally (a parent or legal guardian for a minor); the agent cannot sign or attest it.
+        evidence_fields: [orders.informed_consent_status, orders.order_id]
+        evidence_contract:
+          authority: caller_statement
+          timing: pre_action
+          correlation_keys: [[orders.order_id]]
+          action_bindings: {orders.order_id: order_id}
+    params:
+      per_tier:
+        Routine Clinical Testing: {informed_consent_required: "=informed_consent_required", informed_consent_valid_days: "=informed_consent_valid_days"}
+        Specialty Clinical Testing: {informed_consent_required: "=informed_consent_required", informed_consent_valid_days: "=informed_consent_valid_days"}
+        Esoteric Reference Testing: {informed_consent_required: "=informed_consent_required", informed_consent_valid_days: "=informed_consent_valid_days"}
+        Molecular Infectious Disease Testing: {informed_consent_required: "=informed_consent_required", informed_consent_valid_days: "=informed_consent_valid_days"}
+        Clinical Toxicology Testing: {informed_consent_required: "=informed_consent_required", informed_consent_valid_days: "=informed_consent_valid_days"}
+        Anatomic Pathology & Cytology: {informed_consent_required: "=informed_consent_required", informed_consent_valid_days: "=informed_consent_valid_days"}
+        Hereditary & Reproductive Genetic Testing: {informed_consent_required: "=informed_consent_required", informed_consent_valid_days: "=informed_consent_valid_days"}
+
+  - id: orders_evt_patient_cancellation
+    subject: [orders_cancelled_by_patient, orders_test_charge_credited, orders_test_charge_posted]
+    rule: >-
+      A patient may cancel their own order only before testing starts, that is from status received, info_hold,
+      accessioned or testing_hold; an order in_testing or resulted cannot be cancelled, and its charges stand.
+      Cancellation is the patient's own decision and is confirmed by the patient personally. On cancellation
+      every uncredited charge and add-on line of the order is credited with reason cancelled_before_testing.
+      When the order was cancelled from accessioned or testing_hold and the class's
+      cancellation_handling_fee_after_accession is above 0.00, one orders_test_charge_posted line with
+      charge_reason cancellation_handling_fee is posted at that amount; no handling fee applies to a cancellation
+      before accessioning. On a consumer-initiated order the oversight-fee line is not credited when
+      consumer_refund_retains_oversight_fee is true, and the prepaid amount less any line kept is refunded within
+      consumer_refund_processing_business_days business days. A consumer-initiated order not collected within
+      consumer_order_valid_days calendar days of its order date expires and is cancelled by the laboratory with
+      reason requisition_expired and refunded the same way.
+    eligibility:
+      - id: patient_confirms
+        applies_to: [orders_cancelled_by_patient]
+        kind: caller_fact
+        condition: Cancellation is the patient's own decision and is confirmed by the patient personally.
+        evidence_fields: [orders.customer_id, orders.order_id]
+        evidence_contract:
+          authority: caller_statement
+          timing: pre_action
+          correlation_keys: [[orders.order_id]]
+          action_bindings: {orders.order_id: order_id}
+    params:
+      per_tier:
+        Routine Clinical Testing: {cancellation_handling_fee_after_accession: "=cancellation_handling_fee_after_accession", consumer_refund_retains_oversight_fee: "=consumer_refund_retains_oversight_fee"}
+        Specialty Clinical Testing: {cancellation_handling_fee_after_accession: "=cancellation_handling_fee_after_accession", consumer_refund_retains_oversight_fee: "=consumer_refund_retains_oversight_fee"}
+        Esoteric Reference Testing: {cancellation_handling_fee_after_accession: "=cancellation_handling_fee_after_accession", consumer_refund_retains_oversight_fee: "=consumer_refund_retains_oversight_fee"}
+        Molecular Infectious Disease Testing: {cancellation_handling_fee_after_accession: "=cancellation_handling_fee_after_accession", consumer_refund_retains_oversight_fee: "=consumer_refund_retains_oversight_fee"}
+        Clinical Toxicology Testing: {cancellation_handling_fee_after_accession: "=cancellation_handling_fee_after_accession", consumer_refund_retains_oversight_fee: "=consumer_refund_retains_oversight_fee"}
+        Anatomic Pathology & Cytology: {cancellation_handling_fee_after_accession: "=cancellation_handling_fee_after_accession", consumer_refund_retains_oversight_fee: "=consumer_refund_retains_oversight_fee"}
+        Hereditary & Reproductive Genetic Testing: {cancellation_handling_fee_after_accession: "=cancellation_handling_fee_after_accession", consumer_refund_retains_oversight_fee: "=consumer_refund_retains_oversight_fee"}
+
+  - id: orders_evt_billing_method_change
+    subject: [orders_billing_method_changed]
+    rule: >-
+      An insurance-billed order may be switched to self-pay only while no claim has been submitted for it: there must be no coverage_claim_submitted line for the order in the claims record.
+      The switch to self-pay must be made no later than insurance_to_self_pay_switch_window_days calendar days after the collection date on the order.
+      Both windows on this policy count calendar days with the collection date as day 0, the last day included; for an order not yet collected the switch is open without a time limit.
+      A switch to self-pay is the patient's election to pay the self_pay_price of every test in full and to
+      have the order withheld from the health plan; when self_pay_payment_due_at_collection is true payment is
+      due at collection. A self-pay order may be switched to insurance only when the coverage named for the switch is active and its effective date is on or before the collection date with no termination date before it.
+      The switch to insurance must be made no later than self_pay_to_insurance_switch_window_days calendar days after the collection date on the order.
+      When the class requires prior authorization for that coverage's payer class, the switched order also
+      needs an approved authorization before testing. Client billing is elected only by the ordering practice,
+      never by the patient, and only where the intake rule allows it.
+    eligibility:
+      - id: no_claim_submitted
+        applies_to: [orders_billing_method_changed]
+        kind: authorization
+        condition: "An insurance-billed order may be switched to self-pay only while no claim has been submitted for it: there must be no coverage_claim_submitted line for the order in the claims record."
+        evidence_fields: [claim_events.event_type, claim_events.order_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[claim_events.order_id]]
+          action_bindings: {claim_events.order_id: order_id}
+      - id: self_pay_switch_window
+        applies_to: [orders_billing_method_changed]
+        kind: time
+        condition: The switch to self-pay must be made no later than insurance_to_self_pay_switch_window_days calendar days after the collection date on the order.
+        evidence_fields: [orders.collection_date, orders.order_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[orders.order_id]]
+          action_bindings: {orders.order_id: order_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the collection date on the order
+          anchor_source: orders.collection_date
+          relation: not_after
+          duration_source: variants.insurance_to_self_pay_switch_window_days
+          unit: calendar_days
+          counting_rule: Both windows on this policy count calendar days with the collection date as day 0, the last day included; for an order not yet collected the switch is open without a time limit.
+          boundary: inclusive
+      - id: insurance_switch_window
+        applies_to: [orders_billing_method_changed]
+        kind: time
+        condition: The switch to insurance must be made no later than self_pay_to_insurance_switch_window_days calendar days after the collection date on the order.
+        evidence_fields: [orders.collection_date, orders.order_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[orders.order_id]]
+          action_bindings: {orders.order_id: order_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the collection date on the order
+          anchor_source: orders.collection_date
+          relation: not_after
+          duration_source: variants.self_pay_to_insurance_switch_window_days
+          unit: calendar_days
+          counting_rule: Both windows on this policy count calendar days with the collection date as day 0, the last day included; for an order not yet collected the switch is open without a time limit.
+          boundary: inclusive
+      - id: coverage_active_on_dos
+        applies_to: [orders_billing_method_changed]
+        kind: authorization
+        condition: A self-pay order may be switched to insurance only when the coverage named for the switch is active and its effective date is on or before the collection date with no termination date before it.
+        evidence_fields: [coverages.status, coverages.effective_date, coverages.termination_date, coverages.coverage_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[coverages.coverage_id]]
+          action_bindings: {coverages.coverage_id: coverage_id}
+    params:
+      per_tier:
+        Routine Clinical Testing: {insurance_to_self_pay_switch_window_days: "=insurance_to_self_pay_switch_window_days", self_pay_to_insurance_switch_window_days: "=self_pay_to_insurance_switch_window_days"}
+        Specialty Clinical Testing: {insurance_to_self_pay_switch_window_days: "=insurance_to_self_pay_switch_window_days", self_pay_to_insurance_switch_window_days: "=self_pay_to_insurance_switch_window_days"}
+        Esoteric Reference Testing: {insurance_to_self_pay_switch_window_days: "=insurance_to_self_pay_switch_window_days", self_pay_to_insurance_switch_window_days: "=self_pay_to_insurance_switch_window_days"}
+        Molecular Infectious Disease Testing: {insurance_to_self_pay_switch_window_days: "=insurance_to_self_pay_switch_window_days", self_pay_to_insurance_switch_window_days: "=self_pay_to_insurance_switch_window_days"}
+        Clinical Toxicology Testing: {insurance_to_self_pay_switch_window_days: "=insurance_to_self_pay_switch_window_days", self_pay_to_insurance_switch_window_days: "=self_pay_to_insurance_switch_window_days"}
+        Anatomic Pathology & Cytology: {insurance_to_self_pay_switch_window_days: "=insurance_to_self_pay_switch_window_days", self_pay_to_insurance_switch_window_days: "=self_pay_to_insurance_switch_window_days"}
+        Hereditary & Reproductive Genetic Testing: {insurance_to_self_pay_switch_window_days: "=insurance_to_self_pay_switch_window_days", self_pay_to_insurance_switch_window_days: "=self_pay_to_insurance_switch_window_days"}
+
+  - id: orders_evt_good_faith_estimate
+    subject: [orders_estimate_issued]
+    rule: >-
+      A good faith estimate is issued only for an order billed self_pay or for a patient with no active coverage on file.
+      It is issued within gfe_issue_business_days_on_request business days of the patient's request, or within
+      gfe_issue_business_days_when_scheduled business days once a self-pay collection is booked at least three
+      business days ahead (business days are Monday to Friday excluding federal holidays). The amount follows the
+      requisition-encounter rule. An estimate applies to a collection made within gfe_valid_days calendar days of
+      the estimate date (estimate date = day 0, last day included); when an add-on test is accepted on a self-pay
+      order, or the estimate has lapsed before collection, a new estimate replaces the old one on every order of
+      the encounter. Insured patients billing their plan receive no good faith estimate; their cost is
+      determined by the plan's adjudication.
+    eligibility:
+      - id: gfe_self_pay_only
+        applies_to: [orders_estimate_issued]
+        kind: authorization
+        condition: A good faith estimate is issued only for an order billed self_pay or for a patient with no active coverage on file.
+        evidence_fields: [orders.billing_method, orders.order_id, coverages.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[orders.order_id]]
+          action_bindings: {orders.order_id: order_id}
+    params:
+      per_tier:
+        Routine Clinical Testing: {gfe_valid_days: "=gfe_valid_days", gfe_issue_business_days_on_request: "=gfe_issue_business_days_on_request"}
+        Specialty Clinical Testing: {gfe_valid_days: "=gfe_valid_days", gfe_issue_business_days_on_request: "=gfe_issue_business_days_on_request"}
+        Esoteric Reference Testing: {gfe_valid_days: "=gfe_valid_days", gfe_issue_business_days_on_request: "=gfe_issue_business_days_on_request"}
+        Molecular Infectious Disease Testing: {gfe_valid_days: "=gfe_valid_days", gfe_issue_business_days_on_request: "=gfe_issue_business_days_on_request"}
+        Clinical Toxicology Testing: {gfe_valid_days: "=gfe_valid_days", gfe_issue_business_days_on_request: "=gfe_issue_business_days_on_request"}
+        Anatomic Pathology & Cytology: {gfe_valid_days: "=gfe_valid_days", gfe_issue_business_days_on_request: "=gfe_issue_business_days_on_request"}
+        Hereditary & Reproductive Genetic Testing: {gfe_valid_days: "=gfe_valid_days", gfe_issue_business_days_on_request: "=gfe_issue_business_days_on_request"}
+
+  - id: orders_evt_charge_credit
+    subject: [orders_test_charge_credited]
+    rule: >-
+      Each credit line points through credited_event_id to exactly one orders_test_charge_posted or
+      orders_add_on_posted line of the same order and credits that line's full charge_amount; partial credits do
+      not exist. A charge line may be credited at most once. Credit reasons are fixed: cancelled_before_testing
+      (patient cancellation), test_not_performed (hold expiry, requisition expiry, or an ABN option 3 decline),
+      specimen_rejected_not_recollected (rejection with no recollection, or a lapsed recollection window),
+      duplicate_test, and billing_correction (a line posted at a price other than its test_menu list_price, which
+      is credited and re-posted at the correct price). A charge is a duplicate when orders_msr_prior_same_test,
+      measured over duplicate_test_window_days, is at least 1 for its test number; the later-collected line is the
+      one credited, and a class whose duplicate_test_window_days is 0 never treats a repeat as a duplicate.
+    eligibility:
+      - id: credit_once
+        applies_to: [orders_test_charge_credited]
+        kind: dedup
+        condition: A charge line may be credited at most once.
+        evidence_fields: [order_events.credited_event_id, order_events.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[order_events.credited_event_id]]
+          action_bindings: {order_events.credited_event_id: credited_event_id}
+        dedup_contract:
+          table: order_events
+          mode: separate_record
+          object_bindings: {credited_event_id: credited_event_id}
+          duplicate_filters: {event_type: [orders_test_charge_credited]}
+          distinct_fields: []
+    measures: [orders_msr_prior_same_test]
+    params:
+      per_tier:
+        Routine Clinical Testing: {duplicate_test_window_days: "=duplicate_test_window_days"}
+        Specialty Clinical Testing: {duplicate_test_window_days: "=duplicate_test_window_days"}
+        Esoteric Reference Testing: {duplicate_test_window_days: "=duplicate_test_window_days"}
+        Molecular Infectious Disease Testing: {duplicate_test_window_days: "=duplicate_test_window_days"}
+        Clinical Toxicology Testing: {duplicate_test_window_days: "=duplicate_test_window_days"}
+        Anatomic Pathology & Cytology: {duplicate_test_window_days: "=duplicate_test_window_days"}
+        Hereditary & Reproductive Genetic Testing: {duplicate_test_window_days: "=duplicate_test_window_days"}
+
+  - id: orders_evt_results_and_reports
+    subject: [orders_specimen_accessioned, orders_testing_started, orders_result_released, orders_corrected_report_issued, orders_result_copy_requested]
+    rule: >-
+      A specimen is accessioned only if it arrives within its stability limit; otherwise it is rejected under
+      the rejection rule. The expected report date is the accession (received) date plus
+      standard_turnaround_business_days business days (Monday to Friday excluding federal holidays; the accession
+      date is day 0), extended by any days the order spent on testing hold. The final report is released to the
+      ordering provider and to the patient portal at the same moment; the laboratory does not delay patient
+      access and its staff do not interpret results, which is left to the ordering provider. A patient may
+      request a copy of a final report of their own order at any time while the order is resulted; the copy is
+      sent within report_copy_fulfillment_business_days business days, free through the portal or to the provider and at
+      report_copy_paper_fee when mailed on paper. When the laboratory confirms a demographic error, a result
+      amendment or an added interpretive comment, a corrected report is issued within
+      corrected_report_business_days business days at no charge; a patient's disagreement with a result is not
+      an error and is referred to the ordering provider. A specimen is kept for specimen_retention_days calendar
+      days after the report date and then discarded; once discarded, no add-on, repeat or confirmation can be run
+      on it.
+    eligibility:
+      - id: copy_of_resulted_order
+        applies_to: [orders_result_copy_requested]
+        kind: state
+        condition: A patient may request a copy of a final report of their own order at any time while the order is resulted
+        evidence_fields: [orders.status, orders.order_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[orders.order_id]]
+          action_bindings: {orders.order_id: order_id}
+        state_contract:
+          field: orders.status
+          allowed: [resulted]
+    params:
+      per_tier:
+        Routine Clinical Testing: {standard_turnaround_business_days: "=standard_turnaround_business_days", report_copy_fulfillment_business_days: "=report_copy_fulfillment_business_days", corrected_report_business_days: "=corrected_report_business_days"}
+        Specialty Clinical Testing: {standard_turnaround_business_days: "=standard_turnaround_business_days", report_copy_fulfillment_business_days: "=report_copy_fulfillment_business_days", corrected_report_business_days: "=corrected_report_business_days"}
+        Esoteric Reference Testing: {standard_turnaround_business_days: "=standard_turnaround_business_days", report_copy_fulfillment_business_days: "=report_copy_fulfillment_business_days", corrected_report_business_days: "=corrected_report_business_days"}
+        Molecular Infectious Disease Testing: {standard_turnaround_business_days: "=standard_turnaround_business_days", report_copy_fulfillment_business_days: "=report_copy_fulfillment_business_days", corrected_report_business_days: "=corrected_report_business_days"}
+        Clinical Toxicology Testing: {standard_turnaround_business_days: "=standard_turnaround_business_days", report_copy_fulfillment_business_days: "=report_copy_fulfillment_business_days", corrected_report_business_days: "=corrected_report_business_days"}
+        Anatomic Pathology & Cytology: {standard_turnaround_business_days: "=standard_turnaround_business_days", report_copy_fulfillment_business_days: "=report_copy_fulfillment_business_days", corrected_report_business_days: "=corrected_report_business_days"}
+        Hereditary & Reproductive Genetic Testing: {standard_turnaround_business_days: "=standard_turnaround_business_days", report_copy_fulfillment_business_days: "=report_copy_fulfillment_business_days", corrected_report_business_days: "=corrected_report_business_days"}

@@ -1,0 +1,943 @@
+
+# Marketplace Orders — the buyer-side order contract of the Northloop marketplace.
+category: order
+display_name: Marketplace Orders
+
+binding:
+  holding_table: order_orders
+  event_tables: [order_events]
+  status_field: status
+  variant_field: variant_name
+  quantity_fields: {net_paid_amount: order_paid}
+
+lifecycle:
+  states: [placed, shipped, delivered, undeliverable, cancelled, closed]
+  transitions:
+    - {from: placed, to: shipped, by: system, means: "The seller (or a Northloop fulfillment center) confirms shipment and uploads carrier tracking."}
+    - {from: placed, to: cancelled, by: user, means: "The buyer cancels the order before it ships."}
+    - {from: placed, to: cancelled, by: system, means: "The seller or Northloop cancels an order that cannot be fulfilled (out of stock, pricing error, address cannot be served)."}
+    - {from: shipped, to: delivered, by: system, means: "The carrier posts a delivered scan (or the freight carrier closes the delivery appointment)."}
+    - {from: shipped, to: undeliverable, by: system, means: "The carrier reports the package lost, destroyed, refused, or returned to sender."}
+    - {from: delivered, to: closed, by: system, means: "Both the return window and the Northloop Guarantee claim window have elapsed and no return or claim is open."}
+    - {from: undeliverable, to: closed, by: system, means: "The undeliverable order has been refunded or replaced in full."}
+
+accounts:
+  - key: order_paid
+    unit: USD
+    meaning: "Net amount the buyer has paid on this order: captures booked in, refunds booked out; the holding's net_paid_amount is its running sum."
+
+parameter_schema:
+  fulfilled_by: 'Who picks, packs and ships the order and processes its returns: seller | northloop (enum string).'
+  max_handling_business_days: Business days after the order date by which the order must ship (integer; 0 = ships the same business day).
+  max_transit_business_days: Maximum carrier transit time in business days used to set the promised delivery date (integer; 0 = delivered the day it ships).
+  business_day_calendar: Business-day calendar for every business-day count of this category (enum string).
+  nonmember_shipping_charge: Shipping charge per order for a buyer without an active Loop+ membership, USD.
+  nonmember_free_shipping_threshold: Item subtotal (USD) at or above which a non-member pays no shipping; not_offered = no free-shipping threshold.
+  member_shipping_charge: Shipping charge per order for a buyer holding an active Loop+ membership, USD.
+  member_same_day_free_subtotal: Item subtotal (USD) at or above which a Loop+ member's Same-Day shipping charge is waived; not_applicable outside Same-Day.
+  same_day_order_cutoff_time: Local time (HH:MM) by which a Same-Day order must be placed to be promised for that day; not_applicable elsewhere.
+  freight_appointment_window_hours: Length of the scheduled freight delivery appointment window, hours; not_applicable for parcel options.
+  guaranteed_delivery: Whether the promised delivery date is guaranteed (a late delivery earns a shipping-charge refund) (boolean).
+  late_refund_request_window_days: Calendar days after the delivered date within which a late-delivery shipping refund may be requested; not_applicable when delivery is not guaranteed.
+  charge_capture_point: 'When the buyer''s payment is captured: at_shipment | at_order (enum string).'
+  tax_collected_by: Party that collects and remits sales tax on the order as marketplace facilitator (enum string).
+  standard_return_window_days: Calendar days after the delivered date within which a return may be requested for new and used items (integer).
+  renewed_return_window_days: Calendar days after the delivered date within which a return may be requested for items sold in renewed condition (integer).
+  holiday_extension_applies: Whether the holiday return calendar extends the return deadline for this delivery option (boolean).
+  holiday_return_calendar: 'Holiday extension calendar: orders delivered from delivered_from to delivered_to (MM-DD, inclusive) may be returned until return_by (MM-DD) of the following calendar year (mapping).'
+  non_returnable_item_categories: Item categories that cannot be returned for a refund (list of item_category values).
+  return_ship_by_days: Calendar days after the return request within which the returned item must receive its first carrier scan (integer).
+  late_return_grace_days: Calendar days after the ship-by deadline during which a late first scan is still accepted with a deduction; 0 = late returns are rejected.
+  late_return_deduction_rate: Share of the returned item price withheld when the return is scanned inside the late grace period (decimal fraction); not_applicable when there is no grace.
+  remorse_return_shipping_fee: Return shipping fee deducted from the refund of a return whose reason is not a seller-fault reason, USD per return.
+  allowed_return_methods: Return methods a return request may use besides returnless (list of return_method values).
+  restocking_rate_opened: Restocking fee as a share of the returned item price when the item arrives opened but resellable on a non-seller-fault return (decimal fraction).
+  restocking_rate_used_or_incomplete: Restocking fee as a share of the returned item price when the item arrives used, incomplete or damaged by the buyer on a non-seller-fault return (decimal fraction).
+  seller_fault_return_reasons: 'Return reasons treated as the seller''s fault: no return shipping fee, no restocking fee, original shipping refunded (list of return_reason values).'
+  returnless_refund_max_unit_price: Highest item unit price (USD) for which a seller-fault return is refunded without the item being sent back; not_offered = always returned.
+  refund_trigger: 'Earliest return milestone that releases the item refund: carrier_first_scan | seller_receipt (enum string).'
+  first_scan_refund_max_order_total: Highest order total (USD) for which the refund is released at first carrier scan; not_applicable where the trigger is receipt.
+  first_scan_min_buyer_account_age_days: Minimum age of the buyer's Northloop profile, in calendar days counted from account_opened_date, for a first-scan refund; not_applicable where the trigger is receipt.
+  refund_deadline_after_receipt_business_days: Business days after the received-at-destination scan by which the item refund must be issued (integer).
+  refund_rounding: Rounding applied to every computed refund component and deduction (enum string).
+  gift_return_refund_destination: Where the refund of an order marked as a gift is sent when the return is requested (refund_destination value).
+  undeliverable_refund_includes_shipping: Whether the original shipping charge is refunded when an order is returned to sender for a bad address or refused (boolean).
+  replacement_offered: Whether a free replacement may be shipped instead of a refund for a seller-fault return or a lost package (boolean).
+  replacement_request_window_days: Calendar days after the delivered date within which a replacement may be requested; not_applicable when replacements are not offered.
+  replacement_max_per_order: Maximum number of replacements shipped against one order; not_applicable when replacements are not offered.
+  unreturned_replacement_charge_days: Calendar days after a replacement ships by which the original item must receive its first carrier scan, failing which the buyer is charged for the replacement; not_applicable when replacements are not offered.
+  item_not_received_wait_days: Calendar days after the promised delivery date before an undelivered shipment may be reported lost or claimed under the Northloop Guarantee (integer).
+  liability_party: 'Party that funds refunds owed for loss, fulfillment error or a granted Northloop Guarantee claim: seller | northloop (enum string).'
+  guarantee_claim_window_days: Calendar days after the promised delivery date within which a Northloop Guarantee claim may be filed (integer).
+  guarantee_claim_cap: Maximum amount payable on one Northloop Guarantee claim, USD.
+  guarantee_claims_per_order: Maximum number of Northloop Guarantee claims that may be filed on one order (integer).
+  seller_claim_response_business_days: Business days the seller has to respond to a Northloop Guarantee claim before it is decided; not_applicable when Northloop is the liability party.
+  guarantee_appeal_window_days: Calendar days after a guarantee decision within which the buyer or the seller may appeal it once (integer).
+  invalid_tracking_auto_grant: Whether an item-not-received claim on an order shipped without valid tracking is granted against the seller without a seller response (boolean; not_applicable for Northloop-fulfilled orders).
+  signature_confirmation_threshold: Order total (USD) at or above which a delivered scan protects the seller against an item-not-received claim only when signature confirmation was obtained; not_applicable for Northloop-fulfilled orders.
+  transit_damage_report_days: Calendar days after the delivered date within which damage in transit must be reported to qualify as damaged_in_transit (integer).
+  seller_cancel_counts_as_defect: Whether a cancellation initiated by the seller is recorded against the seller's performance standing (boolean).
+
+variants:
+  - name: Seller Fulfilled Standard Shipping
+    rank: 1
+    entry_gate: {fulfilled_by: seller, max_item_weight_lb: 150}
+    parameters:
+      fulfilled_by: seller
+      max_handling_business_days: 2
+      max_transit_business_days: 5
+      business_day_calendar: mon_fri_excluding_us_federal_holidays
+      nonmember_shipping_charge: 5.99
+      nonmember_free_shipping_threshold: 35.0
+      member_shipping_charge: 5.99
+      member_same_day_free_subtotal: not_applicable
+      same_day_order_cutoff_time: not_applicable
+      freight_appointment_window_hours: not_applicable
+      guaranteed_delivery: false
+      late_refund_request_window_days: not_applicable
+      charge_capture_point: at_shipment
+      tax_collected_by: northloop
+      standard_return_window_days: 30
+      renewed_return_window_days: 90
+      holiday_extension_applies: true
+      holiday_return_calendar: {delivered_from: 11-01, delivered_to: 12-31, return_by: 01-31}
+      non_returnable_item_categories: [grocery]
+      return_ship_by_days: 14
+      late_return_grace_days: 15
+      late_return_deduction_rate: 0.2
+      remorse_return_shipping_fee: 7.99
+      allowed_return_methods: [ups_dropoff]
+      restocking_rate_opened: 0.15
+      restocking_rate_used_or_incomplete: 0.5
+      seller_fault_return_reasons: [defective, damaged_in_transit, wrong_item, not_as_described, missing_parts]
+      returnless_refund_max_unit_price: 10.0
+      refund_trigger: seller_receipt
+      first_scan_refund_max_order_total: not_applicable
+      first_scan_min_buyer_account_age_days: not_applicable
+      refund_deadline_after_receipt_business_days: 2
+      refund_rounding: half_up_to_cent
+      gift_return_refund_destination: gift_card_balance
+      undeliverable_refund_includes_shipping: false
+      replacement_offered: false
+      replacement_request_window_days: not_applicable
+      replacement_max_per_order: not_applicable
+      unreturned_replacement_charge_days: not_applicable
+      item_not_received_wait_days: 3
+      liability_party: seller
+      guarantee_claim_window_days: 90
+      guarantee_claim_cap: 2500.0
+      guarantee_claims_per_order: 1
+      seller_claim_response_business_days: 3
+      guarantee_appeal_window_days: 30
+      invalid_tracking_auto_grant: true
+      signature_confirmation_threshold: 750.0
+      transit_damage_report_days: 30
+      seller_cancel_counts_as_defect: true
+  - name: Seller Fulfilled Expedited Shipping
+    rank: 2
+    entry_gate: {fulfilled_by: seller, max_item_weight_lb: 150, seller_offers_expedited: true}
+    parameters:
+      fulfilled_by: seller
+      max_handling_business_days: 1
+      max_transit_business_days: 2
+      business_day_calendar: mon_fri_excluding_us_federal_holidays
+      nonmember_shipping_charge: 12.99
+      nonmember_free_shipping_threshold: not_offered
+      member_shipping_charge: 12.99
+      member_same_day_free_subtotal: not_applicable
+      same_day_order_cutoff_time: not_applicable
+      freight_appointment_window_hours: not_applicable
+      guaranteed_delivery: true
+      late_refund_request_window_days: 30
+      charge_capture_point: at_shipment
+      tax_collected_by: northloop
+      standard_return_window_days: 30
+      renewed_return_window_days: 90
+      holiday_extension_applies: true
+      holiday_return_calendar: {delivered_from: 11-01, delivered_to: 12-31, return_by: 01-31}
+      non_returnable_item_categories: [grocery]
+      return_ship_by_days: 14
+      late_return_grace_days: 15
+      late_return_deduction_rate: 0.2
+      remorse_return_shipping_fee: 7.99
+      allowed_return_methods: [ups_dropoff]
+      restocking_rate_opened: 0.15
+      restocking_rate_used_or_incomplete: 0.5
+      seller_fault_return_reasons: [defective, damaged_in_transit, wrong_item, not_as_described, missing_parts]
+      returnless_refund_max_unit_price: 10.0
+      refund_trigger: seller_receipt
+      first_scan_refund_max_order_total: not_applicable
+      first_scan_min_buyer_account_age_days: not_applicable
+      refund_deadline_after_receipt_business_days: 2
+      refund_rounding: half_up_to_cent
+      gift_return_refund_destination: gift_card_balance
+      undeliverable_refund_includes_shipping: false
+      replacement_offered: false
+      replacement_request_window_days: not_applicable
+      replacement_max_per_order: not_applicable
+      unreturned_replacement_charge_days: not_applicable
+      item_not_received_wait_days: 3
+      liability_party: seller
+      guarantee_claim_window_days: 90
+      guarantee_claim_cap: 2500.0
+      guarantee_claims_per_order: 1
+      seller_claim_response_business_days: 3
+      guarantee_appeal_window_days: 30
+      invalid_tracking_auto_grant: true
+      signature_confirmation_threshold: 750.0
+      transit_damage_report_days: 30
+      seller_cancel_counts_as_defect: true
+  - name: Fulfilled by Northloop Standard
+    rank: 3
+    entry_gate: {fulfilled_by: northloop, inventory_in_fbn_warehouse: true}
+    parameters:
+      fulfilled_by: northloop
+      max_handling_business_days: 1
+      max_transit_business_days: 4
+      business_day_calendar: mon_fri_excluding_us_federal_holidays
+      nonmember_shipping_charge: 5.99
+      nonmember_free_shipping_threshold: 35.0
+      member_shipping_charge: 0.0
+      member_same_day_free_subtotal: not_applicable
+      same_day_order_cutoff_time: not_applicable
+      freight_appointment_window_hours: not_applicable
+      guaranteed_delivery: false
+      late_refund_request_window_days: not_applicable
+      charge_capture_point: at_shipment
+      tax_collected_by: northloop
+      standard_return_window_days: 30
+      renewed_return_window_days: 90
+      holiday_extension_applies: true
+      holiday_return_calendar: {delivered_from: 11-01, delivered_to: 12-31, return_by: 01-31}
+      non_returnable_item_categories: [grocery]
+      return_ship_by_days: 30
+      late_return_grace_days: 15
+      late_return_deduction_rate: 0.2
+      remorse_return_shipping_fee: 0.0
+      allowed_return_methods: [ups_dropoff, carrier_pickup]
+      restocking_rate_opened: 0.0
+      restocking_rate_used_or_incomplete: 0.5
+      seller_fault_return_reasons: [defective, damaged_in_transit, wrong_item, not_as_described, missing_parts]
+      returnless_refund_max_unit_price: 15.0
+      refund_trigger: carrier_first_scan
+      first_scan_refund_max_order_total: 500.0
+      first_scan_min_buyer_account_age_days: 90
+      refund_deadline_after_receipt_business_days: 2
+      refund_rounding: half_up_to_cent
+      gift_return_refund_destination: gift_card_balance
+      undeliverable_refund_includes_shipping: true
+      replacement_offered: true
+      replacement_request_window_days: 30
+      replacement_max_per_order: 1
+      unreturned_replacement_charge_days: 30
+      item_not_received_wait_days: 2
+      liability_party: northloop
+      guarantee_claim_window_days: 90
+      guarantee_claim_cap: 2500.0
+      guarantee_claims_per_order: 1
+      seller_claim_response_business_days: not_applicable
+      guarantee_appeal_window_days: 30
+      invalid_tracking_auto_grant: not_applicable
+      signature_confirmation_threshold: not_applicable
+      transit_damage_report_days: 30
+      seller_cancel_counts_as_defect: false
+  - name: Fulfilled by Northloop Two-Day
+    rank: 4
+    entry_gate: {fulfilled_by: northloop, inventory_in_fbn_warehouse: true, two_day_zip_coverage: true}
+    parameters:
+      fulfilled_by: northloop
+      max_handling_business_days: 0
+      max_transit_business_days: 2
+      business_day_calendar: mon_fri_excluding_us_federal_holidays
+      nonmember_shipping_charge: 9.99
+      nonmember_free_shipping_threshold: not_offered
+      member_shipping_charge: 0.0
+      member_same_day_free_subtotal: not_applicable
+      same_day_order_cutoff_time: not_applicable
+      freight_appointment_window_hours: not_applicable
+      guaranteed_delivery: true
+      late_refund_request_window_days: 30
+      charge_capture_point: at_shipment
+      tax_collected_by: northloop
+      standard_return_window_days: 30
+      renewed_return_window_days: 90
+      holiday_extension_applies: true
+      holiday_return_calendar: {delivered_from: 11-01, delivered_to: 12-31, return_by: 01-31}
+      non_returnable_item_categories: [grocery]
+      return_ship_by_days: 30
+      late_return_grace_days: 15
+      late_return_deduction_rate: 0.2
+      remorse_return_shipping_fee: 0.0
+      allowed_return_methods: [ups_dropoff, carrier_pickup]
+      restocking_rate_opened: 0.0
+      restocking_rate_used_or_incomplete: 0.5
+      seller_fault_return_reasons: [defective, damaged_in_transit, wrong_item, not_as_described, missing_parts]
+      returnless_refund_max_unit_price: 15.0
+      refund_trigger: carrier_first_scan
+      first_scan_refund_max_order_total: 500.0
+      first_scan_min_buyer_account_age_days: 90
+      refund_deadline_after_receipt_business_days: 2
+      refund_rounding: half_up_to_cent
+      gift_return_refund_destination: gift_card_balance
+      undeliverable_refund_includes_shipping: true
+      replacement_offered: true
+      replacement_request_window_days: 30
+      replacement_max_per_order: 1
+      unreturned_replacement_charge_days: 30
+      item_not_received_wait_days: 2
+      liability_party: northloop
+      guarantee_claim_window_days: 90
+      guarantee_claim_cap: 2500.0
+      guarantee_claims_per_order: 1
+      seller_claim_response_business_days: not_applicable
+      guarantee_appeal_window_days: 30
+      invalid_tracking_auto_grant: not_applicable
+      signature_confirmation_threshold: not_applicable
+      transit_damage_report_days: 30
+      seller_cancel_counts_as_defect: false
+  - name: Fulfilled by Northloop Same-Day
+    rank: 5
+    entry_gate: {fulfilled_by: northloop, delivery_zip_in_same_day_area: true, placed_before_same_day_cutoff: true}
+    parameters:
+      fulfilled_by: northloop
+      max_handling_business_days: 0
+      max_transit_business_days: 0
+      business_day_calendar: mon_fri_excluding_us_federal_holidays
+      nonmember_shipping_charge: 12.99
+      nonmember_free_shipping_threshold: not_offered
+      member_shipping_charge: 2.99
+      member_same_day_free_subtotal: 25.0
+      same_day_order_cutoff_time: '12:00'
+      freight_appointment_window_hours: not_applicable
+      guaranteed_delivery: true
+      late_refund_request_window_days: 30
+      charge_capture_point: at_shipment
+      tax_collected_by: northloop
+      standard_return_window_days: 30
+      renewed_return_window_days: 90
+      holiday_extension_applies: true
+      holiday_return_calendar: {delivered_from: 11-01, delivered_to: 12-31, return_by: 01-31}
+      non_returnable_item_categories: [grocery]
+      return_ship_by_days: 30
+      late_return_grace_days: 15
+      late_return_deduction_rate: 0.2
+      remorse_return_shipping_fee: 0.0
+      allowed_return_methods: [ups_dropoff, carrier_pickup]
+      restocking_rate_opened: 0.0
+      restocking_rate_used_or_incomplete: 0.5
+      seller_fault_return_reasons: [defective, damaged_in_transit, wrong_item, not_as_described, missing_parts]
+      returnless_refund_max_unit_price: 15.0
+      refund_trigger: carrier_first_scan
+      first_scan_refund_max_order_total: 500.0
+      first_scan_min_buyer_account_age_days: 90
+      refund_deadline_after_receipt_business_days: 2
+      refund_rounding: half_up_to_cent
+      gift_return_refund_destination: gift_card_balance
+      undeliverable_refund_includes_shipping: true
+      replacement_offered: true
+      replacement_request_window_days: 30
+      replacement_max_per_order: 1
+      unreturned_replacement_charge_days: 30
+      item_not_received_wait_days: 1
+      liability_party: northloop
+      guarantee_claim_window_days: 90
+      guarantee_claim_cap: 2500.0
+      guarantee_claims_per_order: 1
+      seller_claim_response_business_days: not_applicable
+      guarantee_appeal_window_days: 30
+      invalid_tracking_auto_grant: not_applicable
+      signature_confirmation_threshold: not_applicable
+      transit_damage_report_days: 30
+      seller_cancel_counts_as_defect: false
+  - name: Large Item Freight Delivery
+    rank: 6
+    entry_gate: {min_item_weight_lb: 150, delivery_appointment_scheduled: true}
+    parameters:
+      fulfilled_by: seller
+      max_handling_business_days: 3
+      max_transit_business_days: 7
+      business_day_calendar: mon_fri_excluding_us_federal_holidays
+      nonmember_shipping_charge: 89.0
+      nonmember_free_shipping_threshold: not_offered
+      member_shipping_charge: 89.0
+      member_same_day_free_subtotal: not_applicable
+      same_day_order_cutoff_time: not_applicable
+      freight_appointment_window_hours: 4
+      guaranteed_delivery: true
+      late_refund_request_window_days: 30
+      charge_capture_point: at_order
+      tax_collected_by: northloop
+      standard_return_window_days: 30
+      renewed_return_window_days: 90
+      holiday_extension_applies: false
+      holiday_return_calendar: {delivered_from: 11-01, delivered_to: 12-31, return_by: 01-31}
+      non_returnable_item_categories: [grocery]
+      return_ship_by_days: 14
+      late_return_grace_days: 0
+      late_return_deduction_rate: not_applicable
+      remorse_return_shipping_fee: 149.0
+      allowed_return_methods: [freight_pickup]
+      restocking_rate_opened: 0.15
+      restocking_rate_used_or_incomplete: 0.5
+      seller_fault_return_reasons: [defective, damaged_in_transit, wrong_item, not_as_described, missing_parts]
+      returnless_refund_max_unit_price: not_offered
+      refund_trigger: seller_receipt
+      first_scan_refund_max_order_total: not_applicable
+      first_scan_min_buyer_account_age_days: not_applicable
+      refund_deadline_after_receipt_business_days: 3
+      refund_rounding: half_up_to_cent
+      gift_return_refund_destination: gift_card_balance
+      undeliverable_refund_includes_shipping: false
+      replacement_offered: false
+      replacement_request_window_days: not_applicable
+      replacement_max_per_order: not_applicable
+      unreturned_replacement_charge_days: not_applicable
+      item_not_received_wait_days: 7
+      liability_party: seller
+      guarantee_claim_window_days: 90
+      guarantee_claim_cap: 2500.0
+      guarantee_claims_per_order: 1
+      seller_claim_response_business_days: 3
+      guarantee_appeal_window_days: 30
+      invalid_tracking_auto_grant: true
+      signature_confirmation_threshold: 750.0
+      transit_damage_report_days: 2
+      seller_cancel_counts_as_defect: true
+
+events:
+  - type: order_place
+    target: order_orders
+    mutation: create
+    meaning: "A buyer places an order for one listing from one seller with a chosen delivery option."
+    grain: "one row per order"
+    fields:
+      order_id: "Order number."
+      customer_id: "The buyer."
+      seller_customer_id: "The seller's customer reference."
+      variant_name: "The delivery option chosen at checkout (official option name)."
+      order_placed_at: "Moment the order was placed."
+      order_date: "Date the order was placed."
+      item_title: "Listing title as shown at checkout."
+      sku: "Seller SKU of the item."
+      item_category: "Item category of the listing."
+      item_condition: "Condition the item was sold in."
+      quantity: "Units ordered."
+      unit_price: "Price per unit."
+      shipping_charge: "Shipping charged on the order."
+      tax_amount: "Sales tax collected."
+      order_total: "Units times price plus shipping plus tax."
+      is_gift: "Whether the buyer marked the order as a gift."
+      promised_delivery_date: "Latest delivery date promised at checkout."
+      payment_last4: "Last four digits of the card charged."
+    triggers:
+      - event: order:order_charge
+        when: {variant_name: "Large Item Freight Delivery"}
+        map: {order_id: order_id, customer_id: customer_id, charge_reason: order_capture}
+  - type: order_charge
+    target: order_events
+    meaning: "The buyer's payment for the order (or for an unreturned replacement) is captured."
+    grain: "one row per capture"
+    distinguish_by: [charge_reason, event_date]
+    fields:
+      order_id: "The order the capture belongs to."
+      customer_id: "The buyer."
+      event_date: "Date captured."
+      amount: "Amount captured, positive."
+      charge_reason: "order_capture for the order total; unreturned_replacement_item when a replaced item was never sent back."
+    account: order_paid
+    direction: in
+    triggers:
+      - event: payout:payout_sale_credit
+        when: {charge_reason: order_capture}
+        map: {order_id: order_id}
+      - event: selling:selling_final_value_fee
+        when: {charge_reason: order_capture}
+        map: {order_id: order_id}
+  - type: order_ship
+    target: order_orders
+    mutation: {transition: {from: placed, to: shipped}}
+    meaning: "The order leaves the seller or the Northloop fulfillment center with carrier tracking."
+    grain: "one row per transaction"
+    fields:
+      variant_name: "Delivery option of the order (read, unchanged)."
+      sku: "Seller SKU shipped (read, unchanged)."
+      shipped_date: "Date of the first carrier scan."
+      tracking_status: "Whether the uploaded tracking is valid."
+      signature_confirmed: "Whether signature confirmation was purchased for the shipment."
+    triggers:
+      - event: order:order_charge
+        when: {variant_name: {not: "Large Item Freight Delivery"}}
+        map: {charge_reason: order_capture}
+      - event: fulfill:fulfill_outbound_shipment
+        when: {variant_name: ["Fulfilled by Northloop Standard", "Fulfilled by Northloop Two-Day", "Fulfilled by Northloop Same-Day"]}
+        map: {order_id: order_id, sku: sku}
+  - type: order_cancel
+    target: order_orders
+    mutation: {transition: {from: placed, to: cancelled}}
+    meaning: "The order is cancelled before it ships, by the buyer, the seller or Northloop."
+    grain: "one row per transaction"
+    fields:
+      variant_name: "Delivery option of the order (read, unchanged)."
+      cancel_initiator: "Who cancelled."
+      closed_date: "Date of the cancellation."
+    triggers:
+      - event: order:order_refund
+        when: {variant_name: "Large Item Freight Delivery"}
+        map: {order_id: order_id}
+      - event: standing:standing_defect_record
+        when: {cancel_initiator: seller}
+        map: {order_id: order_id, defect_type: seller_cancellation}
+  - type: order_deliver
+    target: order_orders
+    mutation: {transition: {from: shipped, to: delivered}}
+    meaning: "The carrier confirms delivery."
+    grain: "one row per transaction"
+    fields:
+      delivered_date: "Date of the delivered scan."
+      delivery_promise_met: "Whether the delivered date is on or before the promised delivery date."
+    triggers: []
+  - type: order_mark_undeliverable
+    target: order_orders
+    mutation: {transition: {from: shipped, to: undeliverable}}
+    meaning: "The carrier reports the shipment lost, destroyed, refused or returned to sender."
+    grain: "one row per transaction"
+    fields:
+      delivery_exception: "The carrier's exception reason."
+    triggers: []
+  - type: order_close
+    target: order_orders
+    mutation: {transition: [{from: delivered, to: closed}, {from: undeliverable, to: closed}]}
+    meaning: "The order is closed once nothing further can be requested on it."
+    grain: "one row per transaction"
+    fields:
+      closed_date: "Date closed."
+    triggers: []
+  - type: order_return_request
+    target: order_events
+    meaning: "The buyer opens a return for some or all units of a delivered order and chooses a return method."
+    grain: "one row per return request (one return number)"
+    distinguish_by: [return_id]
+    fields:
+      order_id: "The order being returned."
+      customer_id: "The buyer."
+      return_id: "Return number issued for this request."
+      event_date: "Date the return was requested."
+      return_reason: "Reason selected by the buyer."
+      return_quantity: "Units being returned."
+      return_method: "How the item goes back (or returnless)."
+    triggers: []
+  - type: order_return_receipt
+    target: order_events
+    meaning: "A carrier milestone of a returned item: its first scan, or its receipt and inspection at the destination."
+    grain: "one row per return per scan milestone"
+    distinguish_by: [return_id, carrier_scan_type]
+    fields:
+      order_id: "The order the return belongs to."
+      customer_id: "The buyer."
+      return_id: "Return number the scan belongs to."
+      event_date: "Date of the scan."
+      carrier_scan_type: "first_scan or received_at_destination."
+      return_destination: "Where the return is addressed."
+      received_condition: "Inspection result at the destination (blank on a first scan)."
+    triggers:
+      - event: fulfill:fulfill_return_restock
+        when: {carrier_scan_type: received_at_destination, return_destination: northloop_returns_center, received_condition: [unopened, opened_resellable]}
+        map: {order_id: order_id}
+  - type: order_refund
+    target: order_events
+    meaning: "Money is returned to the buyer for one component of an order (item, original shipping, tax, or late-delivery shipping)."
+    grain: "one row per refunded component per return, claim or cancellation"
+    distinguish_by: [refund_component, return_id, claim_id, event_date]
+    fields:
+      order_id: "The order refunded."
+      customer_id: "The buyer."
+      event_date: "Date the refund was issued."
+      amount: "Amount refunded for this component after deductions, positive."
+      refund_component: "Which component is refunded."
+      return_id: "Return number the refund settles (blank for cancellations, claims, lost packages and late-delivery refunds)."
+      claim_id: "Northloop Guarantee claim the refund settles (blank otherwise)."
+      refund_quantity: "Units the item component covers."
+      funded_by: "Who bears the refund."
+      refund_destination: "Original payment method or gift card balance."
+      restocking_fee_amount: "Restocking fee withheld from this component."
+      return_shipping_fee_amount: "Return shipping fee withheld from this component."
+      late_return_deduction_amount: "Late-return deduction withheld from this component."
+    account: order_paid
+    direction: out
+    triggers:
+      - event: payout:payout_refund_debit
+        when: {funded_by: seller}
+        map: {order_id: order_id, order_refund_ref: order_event_id, amount: amount}
+      - event: selling:selling_fee_credit
+        when: {funded_by: seller, refund_component: item}
+        map: {order_id: order_id, credit_reason: order_refund}
+  - type: order_replacement
+    target: order_events
+    meaning: "A free replacement unit is shipped instead of a refund."
+    grain: "one row per replacement shipment"
+    distinguish_by: [replacement_order_id]
+    fields:
+      order_id: "The original order."
+      customer_id: "The buyer."
+      event_date: "Date the replacement was created."
+      return_id: "Return number of the original unit coming back (blank for a lost package)."
+      replacement_order_id: "Order number of the zero-priced replacement order."
+      replacement_reason: "Why the unit is replaced."
+    triggers:
+      - event: order:order_place
+        map: {order_id: replacement_order_id, customer_id: customer_id}
+  - type: order_claim_file
+    target: order_events
+    meaning: "The buyer files a Northloop Guarantee claim on an order."
+    grain: "one row per claim"
+    distinguish_by: [claim_id]
+    fields:
+      order_id: "The order claimed on."
+      customer_id: "The buyer."
+      claim_id: "Claim number."
+      event_date: "Date filed."
+      claim_reason: "Reason for the claim."
+      claim_amount: "Amount claimed."
+    triggers: []
+  - type: order_guarantee_decision
+    target: order_events
+    meaning: "Northloop decides a Northloop Guarantee claim, or decides the single appeal against that decision."
+    grain: "one row per claim per decision stage"
+    distinguish_by: [claim_id, claim_decision]
+    fields:
+      order_id: "The order claimed on."
+      customer_id: "The buyer."
+      claim_id: "Claim decided."
+      event_date: "Date decided."
+      claim_decision: "granted, denied, appeal_granted or appeal_denied."
+      amount: "Amount granted (0.00 when denied)."
+      funded_by: "Who bears a granted amount."
+    triggers:
+      - event: order:order_refund
+        when: {claim_decision: [granted, appeal_granted]}
+        map: {order_id: order_id, claim_id: claim_id, funded_by: funded_by, amount: amount}
+      - event: standing:standing_defect_record
+        when: {claim_decision: [granted, appeal_granted], funded_by: seller}
+        map: {order_id: order_id, defect_type: guarantee_claim}
+
+measures:
+  - id: order_msr_buyer_remorse_returns_365d
+    window: "Rolling 365 calendar days ending on the handling date (frozen time), inclusive of both ends, over every order of the buyer."
+    measure: "Count of order_return_request rows of the buyer whose event_date falls in the window and whose return_reason is not one of the seller-fault return reasons."
+  - id: order_msr_replacements_on_order
+    window: "Lifetime of the order."
+    measure: "Count of order_replacement rows carrying this order_id."
+  - id: order_msr_claims_on_order
+    window: "Lifetime of the order."
+    measure: "Count of order_claim_file rows carrying this order_id."
+
+policies:
+  - id: order_agg_multi_holding
+    subject: [order_place]
+    rule: >-
+      A buyer may hold any number of orders at the same time, in any delivery option and with any number of sellers.
+      Every order is its own record: its charges, returns, refunds, replacements and Northloop Guarantee claims are
+      computed on that order alone and are never pooled with another order. The only buyer-level figure that reads
+      across orders is the buyer's remorse-return history used by the return history policy.
+    eligibility: []
+    params: {max_per_customer: null}
+  - id: order_agg_return_history
+    subject: [order_refund, order_return_request]
+    rule: >-
+      The buyer's remorse-return history is the count of the buyer's return requests over the measure window whose
+      reason is not a seller-fault reason, across all of the buyer's orders. When the history count is at or above the
+      history threshold before the new request is counted, a first-scan refund is not available: the item refund
+      waits for the received-at-destination scan whatever the delivery option, and a returnless refund is not
+      available either. A history below the threshold changes nothing. Seller-fault returns never count toward the
+      history and are never delayed by it.
+    eligibility: []
+    params: {history_threshold_count: 12}
+    measures: [order_msr_buyer_remorse_returns_365d]
+    formula:
+      first_scan_blocked: "order_msr_buyer_remorse_returns_365d >= history_threshold_count"
+  - id: order_capture_and_shipping_charge
+    subject: [order_place, order_charge, order_ship]
+    rule: >-
+      The shipping charge on an order is fixed at checkout from the delivery option's parameter column. A buyer whose
+      Loop+ membership is in status trial, active, payment_hold or cancel_pending at the moment the order is placed
+      pays the member shipping charge; every other buyer pays the non-member charge, waived when the item subtotal (unit price times quantity)
+      is at or above the non-member free-shipping threshold. On Same-Day orders a member's shipping charge is waived
+      when the item subtotal is at or above the member Same-Day free subtotal. A membership that is pending,
+      lapsed or cancelled does not count. The buyer's payment is captured
+      once, for the order total, at the delivery option's capture point: at shipment for parcel options and at order
+      placement for freight. Sales tax is collected and remitted by Northloop and never forms part of the seller's
+      proceeds.
+    eligibility: []
+    formula:
+      order_total: "round(unit_price * quantity + shipping_charge + tax_amount, 2)"
+  - id: order_delivery_and_close
+    subject: [order_deliver, order_mark_undeliverable, order_close]
+    rule: >-
+      The promised delivery date is the order date plus the option's maximum handling business days plus its maximum
+      transit business days, counted on the option's business-day calendar. A delivered scan on or before the promised
+      delivery date sets delivery_promise_met to met, a later scan sets it to missed. A carrier exception moves a
+      shipped order to undeliverable with the carrier's exception reason. An order closes only when the later of the
+      return window end and the Northloop Guarantee claim window end has passed and the order has no return without a
+      settled refund and no claim without a final decision; an undeliverable order closes once it has been refunded or
+      replaced in full.
+    eligibility: []
+  - id: order_cancellation
+    subject: [order_cancel, order_refund]
+    rule: >-
+      An order can be cancelled only while it is still placed; once it has shipped the buyer's only route is a
+      return. A buyer cancellation is the buyer's own decision and is confirmed by the buyer. Because parcel options
+      capture payment at shipment, cancelling a placed parcel order books no refund; a freight order, captured at
+      placement, is refunded in full on cancellation (item, shipping and tax components), funded by the seller. A
+      cancellation initiated by the seller is recorded against the seller's performance standing when the option's
+      seller_cancel_counts_as_defect is true; cancellations by the buyer or by Northloop never are.
+    eligibility: []
+  - id: order_return_window
+    subject: [order_return_request]
+    rule: >-
+      A return may be requested only on a delivered order. Items in a non-returnable item category cannot be returned
+      for a refund. The return is requested no later than the return window after the order is delivered. The window
+      is the standard return window, or the renewed return window when the item was sold in renewed condition; the
+      count starts the calendar day after the delivered_date, each calendar day counts as one, and the request is in
+      time on the last day of the window. When the option's holiday extension applies and the delivered_date falls
+      inside the holiday calendar's delivered_from to delivered_to range, the deadline is the later of the normal
+      window end and the holiday return_by date of the following year. The returned quantity may not exceed the units
+      ordered less units already covered by earlier return requests on the order. The return method must be one of
+      the option's allowed return methods, or returnless when the returnless refund policy allows it.
+    eligibility:
+      - id: order_delivered
+        applies_to: [order_return_request]
+        kind: state
+        condition: "A return may be requested only on a delivered order."
+        evidence_fields: [order_orders.status, order_orders.order_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [order_orders.order_id]
+          action_bindings:
+            order_orders.order_id: order_id
+        state_contract:
+          field: order_orders.status
+          allowed: [delivered]
+      - id: category_returnable
+        applies_to: [order_return_request]
+        kind: state
+        condition: "Items in a non-returnable item category cannot be returned for a refund."
+        evidence_fields: [order_orders.item_category, order_orders.order_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [order_orders.order_id]
+          action_bindings:
+            order_orders.order_id: order_id
+        state_contract:
+          field: order_orders.item_category
+          allowed: [electronics, computers, apparel, shoes, home_kitchen, toys, beauty, large_appliances, furniture]
+      - id: within_return_window
+        applies_to: [order_return_request]
+        kind: time
+        condition: "The return is requested no later than the return window after the order is delivered."
+        evidence_fields: [order_orders.delivered_date, order_orders.item_condition, order_orders.order_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [order_orders.order_id]
+          action_bindings:
+            order_orders.order_id: order_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the order is delivered"
+          anchor_source: order_orders.delivered_date
+          relation: not_after
+          duration_source: variants.standard_return_window_days
+          unit: calendar_days
+          counting_rule: "the count starts the calendar day after the delivered_date, each calendar day counts as one, and the request is in time on the last day of the window"
+          boundary: inclusive
+  - id: order_return_deductions
+    subject: [order_refund]
+    rule: >-
+      Deductions apply only to the item component of a return refund and only when the return reason is not a
+      seller-fault reason. The return shipping fee is the option's remorse return shipping fee, withheld once per
+      return. The restocking fee is the restocking rate for the received condition times the item price of the
+      returned units: the opened rate for opened_resellable, the used-or-incomplete rate for used_or_incomplete and
+      damaged_by_buyer, and nothing for unopened. When the first carrier scan falls after the ship-by deadline (the
+      return request date plus the option's return ship-by days) but within the late grace days after it, the
+      late-return deduction rate times the item price of the returned units is also withheld; a first scan after the
+      grace period, or after the deadline where there is no grace, means the return is rejected and no item refund is
+      booked. A received condition of wrong_item_returned means no item refund is booked. Deductions never
+      exceed the item price of the returned units, and every amount is rounded with the option's refund rounding.
+    eligibility: []
+    formula:
+      when_not: "return_reason in seller_fault_return_reasons"
+      returned_item_price: "unit_price * refund_quantity"
+      restocking_fee_amount: "round(returned_item_price * (restocking_rate_opened if received_condition == 'opened_resellable' else (restocking_rate_used_or_incomplete if received_condition in ['used_or_incomplete', 'damaged_by_buyer'] else 0)), 2)"
+      return_shipping_fee_amount: "remorse_return_shipping_fee"
+  - id: order_refund_amount
+    subject: [order_refund]
+    rule: >-
+      A return refund is booked per component. The item component is the item price of the returned units less the
+      deductions of the return deductions policy. The original shipping component is refunded only when the return
+      reason is a seller-fault reason and all ordered units are being returned, or when an undeliverable order is
+      refunded for loss or destruction, or for a bad address or refusal when the option's
+      undeliverable_refund_includes_shipping is true. The tax component is the order's tax times the share that the
+      refunded item and shipping amounts (before deductions) bear to the order's item subtotal plus shipping. Total
+      refunds on an order never exceed its net_paid_amount. The refund goes back to the original payment method,
+      except that a return on an order marked as a gift is refunded to the option's gift return refund
+      destination (Northloop gift card balance). The funded_by party is the seller for every return refund and for cancellations; for loss,
+      fulfillment error and granted Northloop Guarantee claims it is the option's liability party.
+    eligibility:
+      - id: one_refund_per_component
+        applies_to: [order_refund]
+        kind: dedup
+        condition: "A return refund is booked per component."
+        evidence_fields: [order_events.return_id, order_events.refund_component, order_events.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [order_events.return_id, order_events.refund_component]
+          action_bindings:
+            order_events.return_id: return_id
+            order_events.refund_component: refund_component
+        dedup_contract:
+          table: order_events
+          mode: separate_record
+          object_bindings: {return_id: return_id, refund_component: refund_component}
+          duplicate_filters: {event_type: [order_refund]}
+          distinct_fields: []
+    formula:
+      item_refund: "round(unit_price * refund_quantity - restocking_fee_amount - return_shipping_fee_amount - late_return_deduction_amount, 2)"
+      tax_refund: "round(tax_amount * (unit_price * refund_quantity) / (unit_price * quantity + shipping_charge), 2)"
+  - id: order_refund_timing
+    subject: [order_refund, order_return_receipt]
+    rule: >-
+      The item refund of a return is released at the option's refund trigger. Where the trigger is the first carrier
+      scan, the refund is released at that scan only when the order total is at or below the first-scan maximum, the
+      buyer's profile is at least the first-scan minimum account age old on the scan date, and the return history
+      policy does not block it; otherwise it waits for the received-at-destination scan. Where the trigger is seller
+      receipt, the refund is released at the received-at-destination scan after inspection. In every case the refund
+      is due no later than the option's refund deadline in business days after the received-at-destination scan; when
+      a seller has not refunded by then, Northloop issues the refund on the seller's behalf, still funded by the
+      seller. A seller-fault return whose item unit price is at or below the option's returnless maximum may be
+      requested as returnless and is refunded on the request date without any scan. Original shipping and tax
+      components are released together with the item component.
+    eligibility: []
+  - id: order_replacement_terms
+    subject: [order_replacement, order_charge]
+    rule: >-
+      A replacement is available only on delivery options that offer replacements. A replacement may be shipped
+      instead of an item refund when the return reason is damaged_in_transit, defective or wrong_item and the request
+      is made within the replacement request window counted in calendar days from the delivered_date, or when the
+      shipment is undeliverable for loss or destruction. A replacement and an item refund are mutually exclusive for
+      the same units: once one is booked, the other is not. No more than the option's replacement maximum may be
+      shipped per order. Except for a lost package, the original unit must receive its first carrier scan within the
+      option's unreturned replacement days after the replacement ships; otherwise the buyer is charged the item price
+      of the replaced units as an unreturned_replacement_item capture.
+    eligibility:
+      - id: replacement_state
+        applies_to: [order_replacement]
+        kind: state
+        condition: "A replacement is available only on delivery options that offer replacements."
+        evidence_fields: [order_orders.status, order_orders.variant_name, order_orders.order_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [order_orders.order_id]
+          action_bindings:
+            order_orders.order_id: order_id
+        state_contract:
+          field: order_orders.variant_name
+          allowed: ["Fulfilled by Northloop Standard", "Fulfilled by Northloop Two-Day", "Fulfilled by Northloop Same-Day"]
+    params:
+      per_tier:
+        "Seller Fulfilled Standard Shipping": {replacement_cap: "=replacement_max_per_order"}
+        "Seller Fulfilled Expedited Shipping": {replacement_cap: "=replacement_max_per_order"}
+        "Fulfilled by Northloop Standard": {replacement_cap: "=replacement_max_per_order"}
+        "Fulfilled by Northloop Two-Day": {replacement_cap: "=replacement_max_per_order"}
+        "Fulfilled by Northloop Same-Day": {replacement_cap: "=replacement_max_per_order"}
+        "Large Item Freight Delivery": {replacement_cap: "=replacement_max_per_order"}
+    measures: [order_msr_replacements_on_order]
+  - id: order_lost_and_undeliverable
+    subject: [order_mark_undeliverable, order_refund]
+    rule: >-
+      A shipment still not delivered on the item-not-received wait days after the promised delivery date may be
+      reported lost and is moved to undeliverable with exception lost_in_transit. A lost or destroyed shipment is
+      refunded in full (item, original shipping and tax), or replaced where the replacement policy allows, funded by
+      the option's liability party. A shipment returned to sender for a bad address or refused by the buyer is
+      refunded for the item and tax once the seller or the returns center records it as received; the original
+      shipping is refunded only when the option's undeliverable_refund_includes_shipping is true, and a refusal of a
+      non-defective item is treated as a remorse return for deductions.
+    eligibility: []
+  - id: order_late_delivery
+    subject: [order_refund]
+    rule: >-
+      On a delivery option with guaranteed delivery, an order whose delivery_promise_met is missed earns a refund of
+      the shipping charge actually paid on the order, booked as the late_delivery_shipping component and funded by the
+      option's liability party. The request must be made within the late refund request window counted in calendar
+      days from the delivered_date. An order whose shipping charge was zero earns nothing under this policy, and
+      options without guaranteed delivery never earn it.
+    eligibility:
+      - id: late_request_window
+        applies_to: [order_refund]
+        kind: time
+        condition: "The request must be made within the late refund request window counted in calendar days from the delivered_date."
+        evidence_fields: [order_orders.delivered_date, order_orders.order_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [order_orders.order_id]
+          action_bindings:
+            order_orders.order_id: order_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the delivered_date"
+          anchor_source: order_orders.delivered_date
+          relation: not_after
+          duration_source: variants.late_refund_request_window_days
+          unit: calendar_days
+          counting_rule: "counted in calendar days from the delivered_date"
+          boundary: inclusive
+  - id: order_guarantee_claim
+    subject: [order_claim_file, order_guarantee_decision, order_refund]
+    rule: >-
+      A Northloop Guarantee claim is filed no later than the claim window counted in calendar days from the order's
+      promised delivery date, and no more than the option's claims-per-order limit may be filed on one order. An
+      item_not_received claim may be filed only once the item-not-received wait days after the promised delivery date
+      have passed without a delivered scan. A not_as_described, damaged_item or return_not_refunded claim requires a
+      return request on the order; return_not_refunded additionally requires that the refund deadline after the
+      received-at-destination scan has passed without an item refund. Where the seller is the liability party the
+      seller has the response business days to refund before the claim is decided. An item_not_received claim on a
+      seller-shipped order with invalid tracking is granted against the seller when invalid_tracking_auto_grant is
+      true; one with a valid delivered scan is denied unless the order total is at or above the signature threshold
+      and no signature was confirmed. The granted amount is the order's net_paid_amount at decision time, capped at
+      the claim cap, and is funded by the option's liability party. A granted claim and a return refund cannot both
+      pay the same units. Either party may appeal once within the appeal window after the decision.
+    eligibility:
+      - id: claim_window
+        applies_to: [order_claim_file]
+        kind: time
+        condition: "A Northloop Guarantee claim is filed no later than the claim window counted in calendar days from the order's promised delivery date"
+        evidence_fields: [order_orders.promised_delivery_date, order_orders.order_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [order_orders.order_id]
+          action_bindings:
+            order_orders.order_id: order_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the order's promised delivery date"
+          anchor_source: order_orders.promised_delivery_date
+          relation: not_after
+          duration_source: variants.guarantee_claim_window_days
+          unit: calendar_days
+          counting_rule: "counted in calendar days from the order's promised delivery date"
+          boundary: inclusive
+    measures: [order_msr_claims_on_order]
+    formula:
+      granted_amount: "min(net_paid_amount, guarantee_claim_cap)"

@@ -1,0 +1,2571 @@
+{
+    "frozen_time": "2026-10-05 10:20:00 EDT",
+    "design_rationale": "WORKLOG / DOSSIER - task 0 of auto_loan_servicing (category finance), env_0041_online_used_car_retailer.\n\n[Step 0 - draw] `.venv/bin/python skills/erl-task-instantiate/scripts/draw_counts.py env/env_0041_online_used_car_retailer/tasks/auto_loan_servicing --task 0` printed {\"task\": 0, \"key\": \"env_0041_online_used_car_retailer/auto_loan_servicing/0\", \"prerequisite_problems\": 3, \"problems\": 4, \"factor_counts\": [5, 4, 6, 6]}. Assignment: deferral fee (root) 6, returned-payment fee 6, deferral qualifying payment 5, late fee 4. `--tasks 2` also showed task 1 = 1 prerequisite problem, factor counts [6, 4].\n\n[Scope snapshot] Occupied before this task: nothing (first task). Claimed here: finance_ext_returned_payment_fee, finance_ext_late_fee_assessment, finance_ext_deferral_qualifying_payment, finance_ext_deferral_fee and their tools assess_returned_payment_fee_ca20439d, assess_late_fee_56686208, pay_deferral_qualifying_amount_eaa14a46 (owner=user), grant_payment_deferral_f4f9e9cb. Reserved headroom for task 1 (1 prerequisite problem, a customer's own write): the goodwill relief of a paid late fee (finance_principal_credited) and the borrower's own cure payment of a past-due installment (scheduled-installment payment) - disjoint subjects/tools, a different ledger state (late fee already assessed and unpaid), so task 1 needs nothing claimed here.\n\n[Why a good test] Teresa asks one thing: move her September installment to the end of the loan. The deferral fee rule says the fee is not fixed until a partial payment on the request date has cleared the fees and the accrued interest; the qualifying-payment rule says that payment is fixed only after every unpaid-after-grace installment carries a late fee and not until every returned payment carries its returned-payment fee. The ledger shows both are missing (the 2026-09-28 return has no fee; the 2026-09-23 installment passed its grace on 2026-10-03 with no late fee). So the agent must discover two state-due fees, compute each (4 and 6 factors), hand the customer her own payment with a 5-factor amount and split, then compute the 6-factor deferral fee on the world those writes produce. Difficulty is reading policy, reconciling a 28-entry ledger and stacking tiers - not tool guessing (each problem has exactly one tool, named by its policy).\n\n[Design thesis] surface goal \"move my September payment to the end of the loan\" -> deferral fee (root) waits on qualifying partial payment -> qualifying payment waits on the late fee and the returned-payment fee -> observable terminal state: two fee entries, a partial payment entry + fee-paid entry, a deferral entry + deferral fee entry, contract fees 4.81, principal 19064.18, last payment 2026-10-05, next due 2026-10-23, maturity 2030-04-23, deferrals used 1. Depth 3 hops (D <- P <- {C, N}); breadth: registration state (purchase), vehicle program (purchase), KestrelCare service contract (warranty), maintenance plan (maintenance), 12- and 6-month windows of returns and late fees, earlier deferral entries, tenure counts, contract age, days past due.\n\n[Problem-tree card]\n- Root finance_ext_deferral_fee (agent, grant_payment_deferral_f4f9e9cb). Edge D -> P: kind value_input, gate partial_payments_today, form state, sentence \"A deferral fee is not fixed until a partial payment posted on the request date has cleared the fees due and the interest accrued on the contract.\" (negated direction; the desk tells a borrower the deferral is not booked until...). Exactly one write of this difficulty posts a partial payment: pay_deferral_qualifying_amount_eaa14a46 (the cure tool posts scheduled-installment payments). Opening evidence: last_payment_date 2026-08-23, no partial-payment entry. Resolved by the customer (owner=user).\n- P -> C: value_input, gate fees_outstanding, form state, \"The deferral qualifying payment is fixed only after the loan history carries a late-fee entry naming every installment that is still unpaid after its grace period.\" (affirmative). Only assess_late_fee_56686208 books late-fee entries. Opening evidence: next_due_date 2026-09-23 unpaid (return of 2026-09-28), grace over 2026-10-03, no late-fee entry naming 2026-09-23.\n- P -> N: value_input, gate fees_outstanding, form state, \"The deferral qualifying payment is not fixed until the loan history carries a returned-payment fee entry naming every borrower payment the bank has returned.\" (negated). Only assess_returned_payment_fee_ca20439d books returned-payment fee entries. Opening evidence: return 8cd6...(2026-09-28) whose source payment has no fee entry naming it.\n- Four-point test, each sentence: ordering connective (only after / not until), record-visible state on the waited side (an entry kind on the ledger, fees due, the last payment date), no tool/policy id/snake_case token, scope = 'every installment ... unpaid after grace' / 'every borrower payment the bank has returned' / 'a partial payment posted on the request date' exactly as the condition fields. Derivation: sentence + ledger (missing entries) + the depended-on rule (which says what entry it books) -> exactly one resolving write each.\n- Topological order N, C, P, D; N and C commute (proved by a swapped-order run: same results and the same terminal hash). Deletion sensitivity: skip P -> deferral fee 7.81 (not 4.81); skip C -> qualifying payment 443.67 (not 512.55); skip N -> 457.55. user_scenario names none of these problems; tools validate none of them.\n\n[Base-invariant card] Late fee and returned-payment fee writes (subject finance_fee_assessed): finance_payment_application.payment_active (status active - finance_contracts.status = active); finance_late_fees.after_grace (time: anchor finance_contracts.next_due_date 2026-09-23 = day 0, duration variants.payment_grace_days 10, calendar days, relation not_before, boundary exclusive; 2026-10-03 still in grace, 2026-10-04 first assessable day, 2026-10-05 passes); finance_late_fees.one_late_fee_per_installment (dedup on finance_contract_id + installment_due_date 2026-09-23: no late fee for that installment exists, and the returned-payment fee is not a late fee). Qualifying payment (finance_payment_posted): payment_active; card_limits (online bank transfer, not a debit card; no card payment this month). Deferral (finance_deferral_granted/applied): deferral_active; deferral_dpd (anchor next due date 2026-09-23 day 0, max 30 inclusive: 2026-10-23 last qualifying day, 2026-10-24 refused; 2026-10-05 = 12). Non-structured base conditions also hold: installments paid 17 >= tier B minimum 6; deferrals in 12 months 0 < 2; deferrals used 0 < 4; no due-date change in October.\n\n[Business-object card] Contract 'fc' (the only finance contract). Returned-payment fee object = payment 68396be3 (2026-09-23) whose return 8cd6ea04 has no fee; the January return 3bbe9e94 is excluded because fee 33e1e2d4 (38.00) names its payment. Late-fee object = installment 2026-09-23; installments 2025-07-23 and 2026-03-23 already carry fees 12.50 and 13.19 (both paid); every other installment was paid within grace. Qualifying payment = all fees due at handling time (55.00 + 11.54) + interest from 2026-08-23. Deferral object = installment at the next due date 2026-09-23.\n\n[Factor card] (tier taken / evidence / baseline figure of result)\n- Returned fee (6): state schedule FL 30.00 (purchase registration_state; baseline 47.50); amount add-on 10.00 (return total 549.45 > 500; baseline 40.00); repeat-return x1.5 (returns 2026-01-27 and 2026-09-28; baseline 35.00); tenure credit 3.00 (17 paid; baseline 58.00); protection-plan credit 4.00 (warranty KestrelCare Gold financed + maintenance plan, multi-source; baseline 59.00); channel charge 2.00 (online_ach; baseline 53.00). Whole baseline 25.00 vs gold 55.00. Near-misses: the purchase order's selling_dealer_state is GA (Kestrel's Georgia hub) while the rule reads the registration state FL - a reader taking the dealer's state charges the Georgia and Texas fee and lands on 62.50; and the return entry's amount 351.93 (principal reinstated) against its total_received 549.45 - the rule's 'full amount' selects the large-return add-on (a reader using amount takes the medium add-on and 47.50).\n- Late fee (4): FL percentage 4.0 (baseline 14.84); tenure reduction 0.5 (baseline 13.19); courtesy x0.6 (multi-source: 1 late fee in 12 months AND 1 return in 6 months; baseline 19.23); small-payment floor 10.00 (multi-source: payment 549.45 < 600 AND age 18 months; baseline 15.00). Whole baseline 27.47 vs 11.54. Near-misses: late fee 2025-08-03 is 14 whole months back (outside 12); return 2026-01-27 is 8 whole months back (outside 6); selling dealer state GA (a reader taking it gets the Georgia and Texas percentage and 16.48).\n- Qualifying payment (5): standing 15 days (multi-source: 17 paid AND returns in 12 months; baseline 369.19); lateness x1.5 (2 late fees in 12 months once step 10 lands; baseline 455.21); program 2 days (purchase Kestrel Certified; baseline 493.44); delinquency 2 days (12 days past due; baseline 493.44); seasoning -1 day (18 months; baseline 522.11). Whole baseline 340.52 (interest + fees only) vs 512.55.\n- Deferral fee (6): FL one-month interest method 5.54 (baseline 34.00); return-risk x1.5 (baseline 2.04); good-faith credit 3.00 (multi-source: 17 paid AND partial payment dated today; baseline 7.81); delinquency surcharge 2.50 (baseline 2.31); seasoning credit 1.00 (baseline 5.81); first-extension credit 2.00 (no earlier deferral entry; baseline 6.81). Whole baseline 25.00 vs 4.81. Near-miss: the purchase order's selling dealer state GA - the rule reads the registration state FL; a reader who takes the dealer's state applies the Georgia lesser-of method (25.00) and computes 34.00.\nCross-difficulty factors read seeded rows of purchase (purchase_orders FL / Kestrel Certified), warranty (service_contracts KestrelCare Gold financed in fc) and maintenance (maintenance_plans active, for the returned-fee protection-plan credit). Overrides are declared in each policy's overwrite (late fee formula, returned-payment fee, deferral fee); the qualifying payment has no base provision for its quantity (overwrite []).\n\n[initial_state rows] customers (identity), purchase_orders (registration_state FL, selling_dealer_state GA as the near-miss, Kestrel Certified: 4 factors read it), finance_contracts (tier B, monthly 549.45, APR 12.09, principal 19236.21, fees 0.00, next due 2026-09-23, last payment 2026-08-23, contract 2025-03-10), finance_transactions (28 rows: funding; 19 scheduled payments; returns 2026-01-27 and 2026-09-28; late fees 2025-08-03 12.50 and 2026-04-03 13.19 and returned fee 2026-01-27 38.00, each cleared by the next payment's fee portion), service_contracts (KestrelCare Gold active financed), maintenance_plans (Standard, active). Removing the 2026-09-28 return removes both state-due fees and the tree; removing the service contract or maintenance plan moves the protection-plan credit; removing the purchase order breaks four state/program factors. Every historical fee equals what the extended policies give on its own date (seed_consistency rows). Automatic clauses checked: no further late fee is due (2026-10-23 not yet due), no payoff, no GAP, no unwind.\n\n[Persona] Teresa is anxious and apologetic, volunteers only the goal and that the September payment 'never went through' (true: payment 2026-09-23 returned 2026-09-28). Identity (8135553417, 1987-06-14, 3862) on request; email/ZIP/car only if asked. Passive branches: pays herself, exactly as handed, only if told a payment is needed; accepts a deferral fee if told; ends when told the September payment is moved and the next due date. She never names a fee, a figure or a step.\n\n[Standard solution] find_customers(8135553417) -> verify (phone, DOB, SSN4) -> find_finance_contracts -> find_finance_transactions -> find_purchase_orders -> find_service_contracts -> find_maintenance_plans -> unlock/call assess_returned_payment_fee (55.00, payment 68396be3, installment 2026-09-23) -> unlock/call assess_late_fee (11.54, installment 2026-09-23) -> unlock_user / customer calls pay_deferral_qualifying_amount (512.55 = 273.98 + 66.54 + 172.03) -> unlock/call grant_payment_deferral (2026-09-23, next 2026-10-23, maturity 2030-04-23, fee 4.81).\n\n[Verification] The verification run (check_compute.py --task 0, which replays the gold writes with the real tools) replays the gold writes with the real tools and evaluates every compute on its handling-time world: returned fee 55.0 (baseline 25.0), late fee 11.54 (27.47), qualifying payment 512.55 (340.52), deferral fee 4.81 (25.0); per-factor baselines as in computations[].factor_sensitivity. Prerequisite sensitivity run: P without N 457.55, P without C 443.67, D without P 7.81; swapped N/C order -> identical results and terminal hash.\n\n[Blind draft from visible context] Using only the rule prose, the tool docstrings, the persona and the finder returns: the deferral rule's prerequisite sentence sends the reader to the qualifying payment; its two sentences send the reader to the ledger, where the 2026-09-28 return lacks a fee and the 2026-09-23 installment is unpaid after grace; each fee rule then gives one number from the purchase order, the plans and the ledger windows; the payment and deferral figures follow. The draft reproduces 55.00, 11.54, 512.55 (273.98/66.54/172.03) and 4.81 with the same write order.\n\n[Gates run for this task] From the repository root, with DIFF=env/env_0041_online_used_car_retailer/tasks/auto_loan_servicing: check_extended.py $DIFF --task 0 -> EXTENDED OK; check_task_tools.py $DIFF --task 0 -> TASK TOOL CONTRACT OK; replay_tasks.py $DIFF --task 0 -> REPLAY OK (deterministic, non-vacuous, 0 errors, closure = initial_state); check_solvability.py $DIFF --task 0 -> SOLVABILITY OK; check_compute.py $DIFF --task 0 -> COMPUTE OK (handling-time recompute = expected = gold, every factor baseline moves the result and equals factor_sensitivity, whole baseline = baseline_result); check_grounding.py $DIFF --task 0 -> GROUNDING OK; check_cache_diff.py $DIFF --task 0 -> CACHE-DIFF INFO (no cache trap designed); check_cross_fire.py $DIFF --task 0 -> SCOPE OK. check_traceability.py is deferred until the KB is published.\n\n[Revisions] r1: first draft had a historical deferral in 2025; dropped because tier rules (6 installments before a first deferral) and the qualifying-payment rule would have required a matching partial payment on that date - the deferral-count factor was replaced by the return-risk multiplier. r2: the qualifying payment's good-faith amount is applied to principal (the waterfall would send any amount beyond accrued interest and fees to principal), so the prose names it a good-faith amount rather than prepaid interest.\nr3 (audit round 2, audits/policy_task/auto_loan_servicing): F-1 - the deferral maintenance-plan credit split on prepaid visits remaining, which no lender weighs for a deferral fee, was replaced by the first-extension credit (no earlier deferral entry 2.00, one earlier 1.00, two or more none), a standard servicing practice; the deferral fee becomes 4.81 (baseline 25.00) and the skipped-payment figure 7.81. Task-0 RED 1 (no near-miss in the deferral fee) - the financed purchase order now shows selling_dealer_state GA with transfer_distance_miles 455 (sold from Kestrel's Georgia hub, registered in Florida); the rules read the registration state, so a reader who takes the dealer's state gets 34.00 for the deferral fee, 16.48 for the late fee and 62.50 for the returned fee; no balance moves. O-1: the two qualifying-payment prerequisite sentences now say 'the loan history carries ... entry naming every ...' so an old, already-paid fee still satisfies them literally. O-2/O-3: the goodwill rule and tool no longer say 'a late fee the borrower has paid'. O-4: the goodwill counts are worded as exactly what they count (every waived late fee and every billing-correction credit). O-5: the returned-fee rule states that a fee not charged on the date of the return is charged on the date it is assessed. O-6: the cure payment's due-date advance is declared as an overwrite of the base sentence and keeps 'never beyond the maturity date'. Re-ran every gate (all OK). O-7 (multipliers labelled method) and O-8 (relationship credits, channel charge, program allowances) are kept as recorded observations: the instantiate contract names a multiplier on an intermediate as a method family, and the relationship and channel ladders are plausible servicing treatments the audit did not red-light; none moves a figure other than by its own documented tier.\n",
+    "user_scenario": "You are Teresa Navarro, 39, a dental assistant in Tampa, Florida. In September the clinic you work for cut your hours, and your September car payment on the 2021 Toyota RAV4 you bought from Kestrel never went through. You are calling Kestrel Auto Finance because you want to push your September payment to the end of your loan so you can get back on your feet; your October payment you can cover from your next paycheck. You speak warmly but a little anxiously, you apologise more than you need to, and you keep things practical.\n\nYou open by saying you are behind on your September car payment and asking whether that September payment can be moved to the end of your loan. You do not know your loan or account number. When the representative asks who you are, you give your mobile number 8135553417; when asked to confirm your identity you give your date of birth, 1987-06-14, and the last four of your Social Security number, 3862. Only if they ask for something more, your email is teresa.navarro.tampa@gmail.com and your home ZIP code is 33611. If they ask which car, it is the 2021 Toyota RAV4.\n\nYou are happy for the representative to set up the change to your loan for you. If the representative tells you that you need to make a payment yourself before the September payment can be moved, you ask how much it is and you agree to pay it today from your checking account; when they hand the payment to you in the Kestrel app, you submit it exactly as they give it to you, with the same total, the same split between interest, fees and principal, and the loan reference they read out, and you read back the confirmation it shows. If they tell you there is a fee for moving the payment, you accept it without arguing. You do not know any of the amounts yourself and never suggest one. Once the representative confirms that your September payment has been moved to the end of your loan and tells you when your next payment is due, you thank them and end the call.",
+    "initial_state": {
+        "customers": {
+            "627350d9-b78f-41ee-820e-26bbb60f1d2e": {
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "name": "Teresa Navarro",
+                "phone_number": "8135553417",
+                "email": "teresa.navarro.tampa@gmail.com",
+                "date_of_birth": "1987-06-14",
+                "ssn_last4": "3862",
+                "residential_zip": "33611",
+                "home_state": "FL",
+                "profile_opened_date": "2025-02-26"
+            }
+        },
+        "purchase_orders": {
+            "16649959-f6cd-4b17-a78b-dfce30f8f366": {
+                "purchase_order_id": "16649959-f6cd-4b17-a78b-dfce30f8f366",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "variant_name": "Kestrel Certified",
+                "status": "completed",
+                "vin": "2T3P1RFV5MC318472",
+                "vehicle_description": "2021 Toyota RAV4 XLE",
+                "model_year": "2021",
+                "listing_odometer": 41210,
+                "handover_odometer": 41236,
+                "vehicle_price": 27990.0,
+                "payment_method": "kestrel_financing",
+                "selling_dealer_state": "GA",
+                "registration_state": "FL",
+                "transfer_distance_miles": 455,
+                "insurance_verified": true,
+                "reserved_date": "2025-03-02",
+                "hold_expires_date": "2025-03-09",
+                "hold_extensions_used": 1,
+                "contract_signed_date": "2025-03-10",
+                "handover_date": "2025-03-14",
+                "return_odometer": null,
+                "exchange_source_order_id": null,
+                "closed_date": "2025-03-21",
+                "closure_reason": "sale_final",
+                "order_balance": 0.0,
+                "deposit_held": 0.0
+            }
+        },
+        "finance_contracts": {
+            "c8665e83-1373-4579-8555-0d68335d2442": {
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "purchase_order_id": "16649959-f6cd-4b17-a78b-dfce30f8f366",
+                "variant_name": "Kestrel Finance Tier B",
+                "status": "active",
+                "application_date": "2025-03-04",
+                "approval_expires_date": "2025-04-03",
+                "amount_financed": 24650.0,
+                "apr": 12.09,
+                "term_months": 60,
+                "monthly_payment": 549.45,
+                "contract_date": "2025-03-10",
+                "first_payment_date": "2025-04-23",
+                "payment_due_day": 23,
+                "next_due_date": "2026-09-23",
+                "maturity_date": "2030-03-23",
+                "last_payment_date": "2026-08-23",
+                "autopay_enrolled": false,
+                "stips_verified": true,
+                "deferrals_used": 0,
+                "due_date_changes_used": 0,
+                "closed_date": "",
+                "principal_balance": 19236.21,
+                "fees_due": 0
+            }
+        },
+        "finance_transactions": {
+            "0545d7c2-a595-49c6-a7d1-396c16fed996": {
+                "total_received": 0.0,
+                "interest_portion": 0.0,
+                "fee_portion": 0.0,
+                "payment_channel": "not_applicable",
+                "payment_type": "not_applicable",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "0545d7c2-a595-49c6-a7d1-396c16fed996",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_contract_funded",
+                "txn_date": "2025-03-10",
+                "amount": 24650.0
+            },
+            "05344e5b-2589-4597-8474-d8a038f4bf74": {
+                "total_received": 549.45,
+                "interest_portion": 359.26,
+                "fee_portion": 0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2025-04-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "05344e5b-2589-4597-8474-d8a038f4bf74",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2025-04-23",
+                "amount": 190.19
+            },
+            "97478a80-fbff-4d20-b06c-f51a54be9fd1": {
+                "total_received": 549.45,
+                "interest_portion": 243.06,
+                "fee_portion": 0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2025-05-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "97478a80-fbff-4d20-b06c-f51a54be9fd1",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2025-05-23",
+                "amount": 306.39
+            },
+            "a0305318-c3b1-49b3-a172-9065ca925984": {
+                "total_received": 549.45,
+                "interest_portion": 248.01,
+                "fee_portion": 0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2025-06-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "a0305318-c3b1-49b3-a172-9065ca925984",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2025-06-23",
+                "amount": 301.44
+            },
+            "c1df1371-d3f0-4d22-81e6-db60ab1578e4": {
+                "total_received": 0.0,
+                "interest_portion": 0.0,
+                "fee_portion": 0.0,
+                "payment_channel": "not_applicable",
+                "payment_type": "not_applicable",
+                "fee_type": "late_fee",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2025-07-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "c1df1371-d3f0-4d22-81e6-db60ab1578e4",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_fee_assessed",
+                "txn_date": "2025-08-03",
+                "amount": 12.5
+            },
+            "f6925c16-7bca-424f-8596-22737f80090d": {
+                "total_received": 561.95,
+                "interest_portion": 339.72,
+                "fee_portion": 12.5,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2025-07-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "f6925c16-7bca-424f-8596-22737f80090d",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2025-08-05",
+                "amount": 209.73
+            },
+            "01a49762-8526-4315-8ab9-05dc9201c01b": {
+                "total_received": 0.0,
+                "interest_portion": 0.0,
+                "fee_portion": 0.0,
+                "payment_channel": "not_applicable",
+                "payment_type": "not_applicable",
+                "fee_type": "late_fee",
+                "clearance_type": "paid",
+                "credit_source": "not_applicable",
+                "installment_due_date": "",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": "c1df1371-d3f0-4d22-81e6-db60ab1578e4",
+                "linked_reference_id": null,
+                "finance_txn_id": "01a49762-8526-4315-8ab9-05dc9201c01b",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_fee_cleared",
+                "txn_date": "2025-08-05",
+                "amount": 12.5
+            },
+            "524403f3-6917-4bcf-b90e-c44a7487912d": {
+                "total_received": 549.45,
+                "interest_portion": 140.96,
+                "fee_portion": 0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2025-08-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "524403f3-6917-4bcf-b90e-c44a7487912d",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2025-08-23",
+                "amount": 408.49
+            },
+            "0327441d-7dc1-4f90-b749-3f9386003fde": {
+                "total_received": 549.45,
+                "interest_portion": 238.57,
+                "fee_portion": 0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2025-09-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "0327441d-7dc1-4f90-b749-3f9386003fde",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2025-09-23",
+                "amount": 310.88
+            },
+            "74c267ca-6743-4acf-a425-82e7d40a8faa": {
+                "total_received": 549.45,
+                "interest_portion": 227.78,
+                "fee_portion": 0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2025-10-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "74c267ca-6743-4acf-a425-82e7d40a8faa",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2025-10-23",
+                "amount": 321.67
+            },
+            "c5494439-4acf-4851-8c5b-030effd59af6": {
+                "total_received": 549.45,
+                "interest_portion": 232.07,
+                "fee_portion": 0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2025-11-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "c5494439-4acf-4851-8c5b-030effd59af6",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2025-11-23",
+                "amount": 317.38
+            },
+            "0ce0d1b7-49d0-4152-a30f-2d937068f08f": {
+                "total_received": 549.45,
+                "interest_portion": 221.43,
+                "fee_portion": 0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2025-12-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "0ce0d1b7-49d0-4152-a30f-2d937068f08f",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2025-12-23",
+                "amount": 328.02
+            },
+            "5d2ce6cc-b676-42a6-97c6-b5a1251a0ca1": {
+                "total_received": 549.45,
+                "interest_portion": 225.45,
+                "fee_portion": 0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2026-01-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "5d2ce6cc-b676-42a6-97c6-b5a1251a0ca1",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2026-01-23",
+                "amount": 324.0
+            },
+            "3bbe9e94-f39f-43b0-be7f-f8c241a7e602": {
+                "total_received": 549.45,
+                "interest_portion": 0.0,
+                "fee_portion": 0.0,
+                "payment_channel": "online_ach",
+                "payment_type": "not_applicable",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2026-01-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": "5d2ce6cc-b676-42a6-97c6-b5a1251a0ca1",
+                "linked_reference_id": null,
+                "finance_txn_id": "3bbe9e94-f39f-43b0-be7f-f8c241a7e602",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_returned",
+                "txn_date": "2026-01-27",
+                "amount": 324.0
+            },
+            "33e1e2d4-1a45-42ea-a89a-226171ed4642": {
+                "total_received": 0.0,
+                "interest_portion": 0.0,
+                "fee_portion": 0.0,
+                "payment_channel": "not_applicable",
+                "payment_type": "not_applicable",
+                "fee_type": "returned_payment_fee",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2026-01-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": "5d2ce6cc-b676-42a6-97c6-b5a1251a0ca1",
+                "linked_reference_id": null,
+                "finance_txn_id": "33e1e2d4-1a45-42ea-a89a-226171ed4642",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_fee_assessed",
+                "txn_date": "2026-01-27",
+                "amount": 38.0
+            },
+            "68bec9bc-bf5e-47bd-bfd5-58edf27e2808": {
+                "total_received": 587.45,
+                "interest_portion": 276.35,
+                "fee_portion": 38.0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2026-01-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "68bec9bc-bf5e-47bd-bfd5-58edf27e2808",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2026-01-30",
+                "amount": 273.1
+            },
+            "70f689a3-dc5c-4428-8fb6-8dedbd2df443": {
+                "total_received": 0.0,
+                "interest_portion": 0.0,
+                "fee_portion": 0.0,
+                "payment_channel": "not_applicable",
+                "payment_type": "not_applicable",
+                "fee_type": "returned_payment_fee",
+                "clearance_type": "paid",
+                "credit_source": "not_applicable",
+                "installment_due_date": "",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": "33e1e2d4-1a45-42ea-a89a-226171ed4642",
+                "linked_reference_id": null,
+                "finance_txn_id": "70f689a3-dc5c-4428-8fb6-8dedbd2df443",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_fee_cleared",
+                "txn_date": "2026-01-30",
+                "amount": 38.0
+            },
+            "ad1b8207-a12c-48dd-a7b6-42e4f4b552dd": {
+                "total_received": 549.45,
+                "interest_portion": 172.37,
+                "fee_portion": 0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2026-02-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "ad1b8207-a12c-48dd-a7b6-42e4f4b552dd",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2026-02-23",
+                "amount": 377.08
+            },
+            "4c5aa7b4-c885-4024-a92a-bf5ce5704599": {
+                "total_received": 0.0,
+                "interest_portion": 0.0,
+                "fee_portion": 0.0,
+                "payment_channel": "not_applicable",
+                "payment_type": "not_applicable",
+                "fee_type": "late_fee",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2026-03-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "4c5aa7b4-c885-4024-a92a-bf5ce5704599",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_fee_assessed",
+                "txn_date": "2026-04-03",
+                "amount": 13.19
+            },
+            "25b8b22e-a368-43bd-9c09-276c8e9bd0bd": {
+                "total_received": 562.64,
+                "interest_portion": 296.4,
+                "fee_portion": 13.19,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2026-03-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "25b8b22e-a368-43bd-9c09-276c8e9bd0bd",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2026-04-06",
+                "amount": 253.05
+            },
+            "5d47cd34-8a42-4a58-bc4f-e743c2e57e39": {
+                "total_received": 0.0,
+                "interest_portion": 0.0,
+                "fee_portion": 0.0,
+                "payment_channel": "not_applicable",
+                "payment_type": "not_applicable",
+                "fee_type": "late_fee",
+                "clearance_type": "paid",
+                "credit_source": "not_applicable",
+                "installment_due_date": "",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": "4c5aa7b4-c885-4024-a92a-bf5ce5704599",
+                "linked_reference_id": null,
+                "finance_txn_id": "5d47cd34-8a42-4a58-bc4f-e743c2e57e39",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_fee_cleared",
+                "txn_date": "2026-04-06",
+                "amount": 13.19
+            },
+            "5184f385-8586-4d8b-8ae3-8115e94823e2": {
+                "total_received": 549.45,
+                "interest_portion": 118.55,
+                "fee_portion": 0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2026-04-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "5184f385-8586-4d8b-8ae3-8115e94823e2",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2026-04-23",
+                "amount": 430.9
+            },
+            "91360e92-79aa-4241-894f-fd54f9f76bd9": {
+                "total_received": 549.45,
+                "interest_portion": 204.92,
+                "fee_portion": 0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2026-05-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "91360e92-79aa-4241-894f-fd54f9f76bd9",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2026-05-23",
+                "amount": 344.53
+            },
+            "3821405b-5cdb-4d10-8f46-982b639c03f7": {
+                "total_received": 549.45,
+                "interest_portion": 208.21,
+                "fee_portion": 0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2026-06-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "3821405b-5cdb-4d10-8f46-982b639c03f7",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2026-06-23",
+                "amount": 341.24
+            },
+            "f862ad86-7754-4ffe-b0b3-402f657e4a5f": {
+                "total_received": 549.45,
+                "interest_portion": 198.1,
+                "fee_portion": 0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2026-07-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "f862ad86-7754-4ffe-b0b3-402f657e4a5f",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2026-07-23",
+                "amount": 351.35
+            },
+            "40076dc9-e6d5-4e28-8f8c-1474e16ff30d": {
+                "total_received": 549.45,
+                "interest_portion": 201.1,
+                "fee_portion": 0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2026-08-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "40076dc9-e6d5-4e28-8f8c-1474e16ff30d",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2026-08-23",
+                "amount": 348.35
+            },
+            "68396be3-ed1b-4c5a-8976-e26d9357fd92": {
+                "total_received": 549.45,
+                "interest_portion": 197.52,
+                "fee_portion": 0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2026-09-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "68396be3-ed1b-4c5a-8976-e26d9357fd92",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2026-09-23",
+                "amount": 351.93
+            },
+            "8cd6ea04-9af1-41be-826a-52a6eda006e4": {
+                "total_received": 549.45,
+                "interest_portion": 0.0,
+                "fee_portion": 0.0,
+                "payment_channel": "online_ach",
+                "payment_type": "not_applicable",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2026-09-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": "68396be3-ed1b-4c5a-8976-e26d9357fd92",
+                "linked_reference_id": null,
+                "finance_txn_id": "8cd6ea04-9af1-41be-826a-52a6eda006e4",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_returned",
+                "txn_date": "2026-09-28",
+                "amount": 351.93
+            }
+        },
+        "service_contracts": {
+            "835485bd-7261-4ac1-8a66-aea9c5138d64": {
+                "service_contract_id": "835485bd-7261-4ac1-8a66-aea9c5138d64",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "purchase_order_id": "16649959-f6cd-4b17-a78b-dfce30f8f366",
+                "vin": "2T3P1RFV5MC318472",
+                "variant_name": "KestrelCare Gold",
+                "status": "active",
+                "contract_price": 2395.0,
+                "term_months": 48,
+                "term_miles": 50000,
+                "deductible_usd": 100.0,
+                "sale_date": "2025-03-10",
+                "sold_with_vehicle": true,
+                "odometer_at_sale": 41236,
+                "coverage_start_date": "2025-03-14",
+                "coverage_start_odometer": 41236,
+                "expiration_date": "2029-03-14",
+                "expiration_odometer": 91236,
+                "financed": true,
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "transfer_count": 0,
+                "closed_date": "",
+                "coverage_remaining": 20000.0
+            }
+        },
+        "maintenance_plans": {
+            "3eef8b82-6059-40d2-b460-882ca3decdb5": {
+                "maintenance_plan_id": "3eef8b82-6059-40d2-b460-882ca3decdb5",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "purchase_order_id": "16649959-f6cd-4b17-a78b-dfce30f8f366",
+                "vin": "2T3P1RFV5MC318472",
+                "variant_name": "KestrelCare Maintenance Standard",
+                "status": "active",
+                "plan_price": 699.0,
+                "sale_date": "2025-03-10",
+                "odometer_at_sale": 41236,
+                "expiration_date": "2027-03-14",
+                "expiration_odometer": 61236,
+                "financed": true,
+                "closed_date": "",
+                "visits_remaining": 2
+            }
+        }
+    },
+    "db_closure": {
+        "finance_transactions": {
+            "33e1e2d4-1a45-42ea-a89a-226171ed4642": {
+                "total_received": 0.0,
+                "interest_portion": 0.0,
+                "fee_portion": 0.0,
+                "payment_channel": "not_applicable",
+                "payment_type": "not_applicable",
+                "fee_type": "returned_payment_fee",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2026-01-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": "5d2ce6cc-b676-42a6-97c6-b5a1251a0ca1",
+                "linked_reference_id": null,
+                "finance_txn_id": "33e1e2d4-1a45-42ea-a89a-226171ed4642",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_fee_assessed",
+                "txn_date": "2026-01-27",
+                "amount": 38.0
+            },
+            "0327441d-7dc1-4f90-b749-3f9386003fde": {
+                "total_received": 549.45,
+                "interest_portion": 238.57,
+                "fee_portion": 0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2025-09-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "0327441d-7dc1-4f90-b749-3f9386003fde",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2025-09-23",
+                "amount": 310.88
+            },
+            "40076dc9-e6d5-4e28-8f8c-1474e16ff30d": {
+                "total_received": 549.45,
+                "interest_portion": 201.1,
+                "fee_portion": 0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2026-08-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "40076dc9-e6d5-4e28-8f8c-1474e16ff30d",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2026-08-23",
+                "amount": 348.35
+            },
+            "8cd6ea04-9af1-41be-826a-52a6eda006e4": {
+                "total_received": 549.45,
+                "interest_portion": 0.0,
+                "fee_portion": 0.0,
+                "payment_channel": "online_ach",
+                "payment_type": "not_applicable",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2026-09-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": "68396be3-ed1b-4c5a-8976-e26d9357fd92",
+                "linked_reference_id": null,
+                "finance_txn_id": "8cd6ea04-9af1-41be-826a-52a6eda006e4",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_returned",
+                "txn_date": "2026-09-28",
+                "amount": 351.93
+            },
+            "97478a80-fbff-4d20-b06c-f51a54be9fd1": {
+                "total_received": 549.45,
+                "interest_portion": 243.06,
+                "fee_portion": 0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2025-05-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "97478a80-fbff-4d20-b06c-f51a54be9fd1",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2025-05-23",
+                "amount": 306.39
+            },
+            "05344e5b-2589-4597-8474-d8a038f4bf74": {
+                "total_received": 549.45,
+                "interest_portion": 359.26,
+                "fee_portion": 0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2025-04-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "05344e5b-2589-4597-8474-d8a038f4bf74",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2025-04-23",
+                "amount": 190.19
+            },
+            "74c267ca-6743-4acf-a425-82e7d40a8faa": {
+                "total_received": 549.45,
+                "interest_portion": 227.78,
+                "fee_portion": 0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2025-10-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "74c267ca-6743-4acf-a425-82e7d40a8faa",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2025-10-23",
+                "amount": 321.67
+            },
+            "524403f3-6917-4bcf-b90e-c44a7487912d": {
+                "total_received": 549.45,
+                "interest_portion": 140.96,
+                "fee_portion": 0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2025-08-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "524403f3-6917-4bcf-b90e-c44a7487912d",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2025-08-23",
+                "amount": 408.49
+            },
+            "f6925c16-7bca-424f-8596-22737f80090d": {
+                "total_received": 561.95,
+                "interest_portion": 339.72,
+                "fee_portion": 12.5,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2025-07-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "f6925c16-7bca-424f-8596-22737f80090d",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2025-08-05",
+                "amount": 209.73
+            },
+            "4c5aa7b4-c885-4024-a92a-bf5ce5704599": {
+                "total_received": 0.0,
+                "interest_portion": 0.0,
+                "fee_portion": 0.0,
+                "payment_channel": "not_applicable",
+                "payment_type": "not_applicable",
+                "fee_type": "late_fee",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2026-03-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "4c5aa7b4-c885-4024-a92a-bf5ce5704599",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_fee_assessed",
+                "txn_date": "2026-04-03",
+                "amount": 13.19
+            },
+            "3bbe9e94-f39f-43b0-be7f-f8c241a7e602": {
+                "total_received": 549.45,
+                "interest_portion": 0.0,
+                "fee_portion": 0.0,
+                "payment_channel": "online_ach",
+                "payment_type": "not_applicable",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2026-01-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": "5d2ce6cc-b676-42a6-97c6-b5a1251a0ca1",
+                "linked_reference_id": null,
+                "finance_txn_id": "3bbe9e94-f39f-43b0-be7f-f8c241a7e602",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_returned",
+                "txn_date": "2026-01-27",
+                "amount": 324.0
+            },
+            "5d47cd34-8a42-4a58-bc4f-e743c2e57e39": {
+                "total_received": 0.0,
+                "interest_portion": 0.0,
+                "fee_portion": 0.0,
+                "payment_channel": "not_applicable",
+                "payment_type": "not_applicable",
+                "fee_type": "late_fee",
+                "clearance_type": "paid",
+                "credit_source": "not_applicable",
+                "installment_due_date": "",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": "4c5aa7b4-c885-4024-a92a-bf5ce5704599",
+                "linked_reference_id": null,
+                "finance_txn_id": "5d47cd34-8a42-4a58-bc4f-e743c2e57e39",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_fee_cleared",
+                "txn_date": "2026-04-06",
+                "amount": 13.19
+            },
+            "25b8b22e-a368-43bd-9c09-276c8e9bd0bd": {
+                "total_received": 562.64,
+                "interest_portion": 296.4,
+                "fee_portion": 13.19,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2026-03-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "25b8b22e-a368-43bd-9c09-276c8e9bd0bd",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2026-04-06",
+                "amount": 253.05
+            },
+            "0545d7c2-a595-49c6-a7d1-396c16fed996": {
+                "total_received": 0.0,
+                "interest_portion": 0.0,
+                "fee_portion": 0.0,
+                "payment_channel": "not_applicable",
+                "payment_type": "not_applicable",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "0545d7c2-a595-49c6-a7d1-396c16fed996",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_contract_funded",
+                "txn_date": "2025-03-10",
+                "amount": 24650.0
+            },
+            "68bec9bc-bf5e-47bd-bfd5-58edf27e2808": {
+                "total_received": 587.45,
+                "interest_portion": 276.35,
+                "fee_portion": 38.0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2026-01-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "68bec9bc-bf5e-47bd-bfd5-58edf27e2808",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2026-01-30",
+                "amount": 273.1
+            },
+            "5184f385-8586-4d8b-8ae3-8115e94823e2": {
+                "total_received": 549.45,
+                "interest_portion": 118.55,
+                "fee_portion": 0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2026-04-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "5184f385-8586-4d8b-8ae3-8115e94823e2",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2026-04-23",
+                "amount": 430.9
+            },
+            "91360e92-79aa-4241-894f-fd54f9f76bd9": {
+                "total_received": 549.45,
+                "interest_portion": 204.92,
+                "fee_portion": 0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2026-05-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "91360e92-79aa-4241-894f-fd54f9f76bd9",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2026-05-23",
+                "amount": 344.53
+            },
+            "c5494439-4acf-4851-8c5b-030effd59af6": {
+                "total_received": 549.45,
+                "interest_portion": 232.07,
+                "fee_portion": 0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2025-11-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "c5494439-4acf-4851-8c5b-030effd59af6",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2025-11-23",
+                "amount": 317.38
+            },
+            "ad1b8207-a12c-48dd-a7b6-42e4f4b552dd": {
+                "total_received": 549.45,
+                "interest_portion": 172.37,
+                "fee_portion": 0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2026-02-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "ad1b8207-a12c-48dd-a7b6-42e4f4b552dd",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2026-02-23",
+                "amount": 377.08
+            },
+            "3821405b-5cdb-4d10-8f46-982b639c03f7": {
+                "total_received": 549.45,
+                "interest_portion": 208.21,
+                "fee_portion": 0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2026-06-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "3821405b-5cdb-4d10-8f46-982b639c03f7",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2026-06-23",
+                "amount": 341.24
+            },
+            "f862ad86-7754-4ffe-b0b3-402f657e4a5f": {
+                "total_received": 549.45,
+                "interest_portion": 198.1,
+                "fee_portion": 0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2026-07-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "f862ad86-7754-4ffe-b0b3-402f657e4a5f",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2026-07-23",
+                "amount": 351.35
+            },
+            "c1df1371-d3f0-4d22-81e6-db60ab1578e4": {
+                "total_received": 0.0,
+                "interest_portion": 0.0,
+                "fee_portion": 0.0,
+                "payment_channel": "not_applicable",
+                "payment_type": "not_applicable",
+                "fee_type": "late_fee",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2025-07-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "c1df1371-d3f0-4d22-81e6-db60ab1578e4",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_fee_assessed",
+                "txn_date": "2025-08-03",
+                "amount": 12.5
+            },
+            "70f689a3-dc5c-4428-8fb6-8dedbd2df443": {
+                "total_received": 0.0,
+                "interest_portion": 0.0,
+                "fee_portion": 0.0,
+                "payment_channel": "not_applicable",
+                "payment_type": "not_applicable",
+                "fee_type": "returned_payment_fee",
+                "clearance_type": "paid",
+                "credit_source": "not_applicable",
+                "installment_due_date": "",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": "33e1e2d4-1a45-42ea-a89a-226171ed4642",
+                "linked_reference_id": null,
+                "finance_txn_id": "70f689a3-dc5c-4428-8fb6-8dedbd2df443",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_fee_cleared",
+                "txn_date": "2026-01-30",
+                "amount": 38.0
+            },
+            "01a49762-8526-4315-8ab9-05dc9201c01b": {
+                "total_received": 0.0,
+                "interest_portion": 0.0,
+                "fee_portion": 0.0,
+                "payment_channel": "not_applicable",
+                "payment_type": "not_applicable",
+                "fee_type": "late_fee",
+                "clearance_type": "paid",
+                "credit_source": "not_applicable",
+                "installment_due_date": "",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": "c1df1371-d3f0-4d22-81e6-db60ab1578e4",
+                "linked_reference_id": null,
+                "finance_txn_id": "01a49762-8526-4315-8ab9-05dc9201c01b",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_fee_cleared",
+                "txn_date": "2025-08-05",
+                "amount": 12.5
+            },
+            "68396be3-ed1b-4c5a-8976-e26d9357fd92": {
+                "total_received": 549.45,
+                "interest_portion": 197.52,
+                "fee_portion": 0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2026-09-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "68396be3-ed1b-4c5a-8976-e26d9357fd92",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2026-09-23",
+                "amount": 351.93
+            },
+            "5d2ce6cc-b676-42a6-97c6-b5a1251a0ca1": {
+                "total_received": 549.45,
+                "interest_portion": 225.45,
+                "fee_portion": 0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2026-01-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "5d2ce6cc-b676-42a6-97c6-b5a1251a0ca1",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2026-01-23",
+                "amount": 324.0
+            },
+            "0ce0d1b7-49d0-4152-a30f-2d937068f08f": {
+                "total_received": 549.45,
+                "interest_portion": 221.43,
+                "fee_portion": 0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2025-12-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "0ce0d1b7-49d0-4152-a30f-2d937068f08f",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2025-12-23",
+                "amount": 328.02
+            },
+            "a0305318-c3b1-49b3-a172-9065ca925984": {
+                "total_received": 549.45,
+                "interest_portion": 248.01,
+                "fee_portion": 0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2025-06-23",
+                "good_through_date": "",
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null,
+                "finance_txn_id": "a0305318-c3b1-49b3-a172-9065ca925984",
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2025-06-23",
+                "amount": 301.44
+            }
+        },
+        "finance_contracts": {
+            "c8665e83-1373-4579-8555-0d68335d2442": {
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "purchase_order_id": "16649959-f6cd-4b17-a78b-dfce30f8f366",
+                "variant_name": "Kestrel Finance Tier B",
+                "status": "active",
+                "application_date": "2025-03-04",
+                "approval_expires_date": "2025-04-03",
+                "amount_financed": 24650.0,
+                "apr": 12.09,
+                "term_months": 60,
+                "monthly_payment": 549.45,
+                "contract_date": "2025-03-10",
+                "first_payment_date": "2025-04-23",
+                "payment_due_day": 23,
+                "next_due_date": "2026-09-23",
+                "maturity_date": "2030-03-23",
+                "last_payment_date": "2026-08-23",
+                "autopay_enrolled": false,
+                "stips_verified": true,
+                "deferrals_used": 0,
+                "due_date_changes_used": 0,
+                "closed_date": "",
+                "principal_balance": 19236.21,
+                "fees_due": 0
+            }
+        },
+        "maintenance_plans": {
+            "3eef8b82-6059-40d2-b460-882ca3decdb5": {
+                "maintenance_plan_id": "3eef8b82-6059-40d2-b460-882ca3decdb5",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "purchase_order_id": "16649959-f6cd-4b17-a78b-dfce30f8f366",
+                "vin": "2T3P1RFV5MC318472",
+                "variant_name": "KestrelCare Maintenance Standard",
+                "status": "active",
+                "plan_price": 699.0,
+                "sale_date": "2025-03-10",
+                "odometer_at_sale": 41236,
+                "expiration_date": "2027-03-14",
+                "expiration_odometer": 61236,
+                "financed": true,
+                "closed_date": "",
+                "visits_remaining": 2
+            }
+        },
+        "purchase_orders": {
+            "16649959-f6cd-4b17-a78b-dfce30f8f366": {
+                "purchase_order_id": "16649959-f6cd-4b17-a78b-dfce30f8f366",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "variant_name": "Kestrel Certified",
+                "status": "completed",
+                "vin": "2T3P1RFV5MC318472",
+                "vehicle_description": "2021 Toyota RAV4 XLE",
+                "model_year": "2021",
+                "listing_odometer": 41210,
+                "handover_odometer": 41236,
+                "vehicle_price": 27990.0,
+                "payment_method": "kestrel_financing",
+                "selling_dealer_state": "GA",
+                "registration_state": "FL",
+                "transfer_distance_miles": 455,
+                "insurance_verified": true,
+                "reserved_date": "2025-03-02",
+                "hold_expires_date": "2025-03-09",
+                "hold_extensions_used": 1,
+                "contract_signed_date": "2025-03-10",
+                "handover_date": "2025-03-14",
+                "return_odometer": null,
+                "exchange_source_order_id": null,
+                "closed_date": "2025-03-21",
+                "closure_reason": "sale_final",
+                "order_balance": 0.0,
+                "deposit_held": 0.0
+            }
+        },
+        "customers": {
+            "627350d9-b78f-41ee-820e-26bbb60f1d2e": {
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "name": "Teresa Navarro",
+                "phone_number": "8135553417",
+                "email": "teresa.navarro.tampa@gmail.com",
+                "date_of_birth": "1987-06-14",
+                "ssn_last4": "3862",
+                "residential_zip": "33611",
+                "home_state": "FL",
+                "profile_opened_date": "2025-02-26"
+            }
+        },
+        "service_contracts": {
+            "835485bd-7261-4ac1-8a66-aea9c5138d64": {
+                "service_contract_id": "835485bd-7261-4ac1-8a66-aea9c5138d64",
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "purchase_order_id": "16649959-f6cd-4b17-a78b-dfce30f8f366",
+                "vin": "2T3P1RFV5MC318472",
+                "variant_name": "KestrelCare Gold",
+                "status": "active",
+                "contract_price": 2395.0,
+                "term_months": 48,
+                "term_miles": 50000,
+                "deductible_usd": 100.0,
+                "sale_date": "2025-03-10",
+                "sold_with_vehicle": true,
+                "odometer_at_sale": 41236,
+                "coverage_start_date": "2025-03-14",
+                "coverage_start_odometer": 41236,
+                "expiration_date": "2029-03-14",
+                "expiration_odometer": 91236,
+                "financed": true,
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                "transfer_count": 0,
+                "closed_date": "",
+                "coverage_remaining": 20000.0
+            }
+        }
+    },
+    "db_closure_matches_initial_state": true,
+    "solvability_contract": {
+        "request_binding_version": 1,
+        "request_alignment": [
+            {
+                "claim": "The customer asks for her September installment to be moved to the end of her loan, and agrees to pay herself if told a payment is needed.",
+                "evidence": [
+                    "user_scenario:asking whether that September payment can be moved to the end of your loan",
+                    "user_scenario:If the representative tells you that you need to make a payment yourself before the September payment can be moved, you ask how much it is and you agree to pay it today from your checking account"
+                ]
+            }
+        ],
+        "gold_actions": [
+            {
+                "step": 8,
+                "business_effect": "A returned-payment fee entry of 55.00 naming the payment of 2026-09-23 that the bank returned on 2026-09-28 is booked and the contract's fees due rise from 0.00 to 55.00.",
+                "request_binding": {
+                    "action_semantics": "The ledger holds a returned payment (2026-09-28) with no returned-payment fee entry naming it; a returned-payment fee is owed for every returned payment whatever the borrower called about, so the obligation itself selects the returned-payment fee write rather than a late fee or a waiver.",
+                    "intent_source": {
+                        "kind": "initial_state",
+                        "evidence": [
+                            "initial_state.finance_transactions.8cd6ea04-9af1-41be-826a-52a6eda006e4",
+                            "initial_state.finance_transactions.68396be3-ed1b-4c5a-8976-e26d9357fd92"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "returned-payment fee owed for the payment the bank returned on 2026-09-28",
+                        "evidence": [
+                            "initial_state.finance_transactions.8cd6ea04-9af1-41be-826a-52a6eda006e4.event_type",
+                            "initial_state.finance_transactions.8cd6ea04-9af1-41be-826a-52a6eda006e4.source_txn_id"
+                        ],
+                        "action_arg": "returned_payment_id",
+                        "value": "68396be3-ed1b-4c5a-8976-e26d9357fd92"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "performed_by_this_tool",
+                    "fact": "The bank return of the 2026-09-23 payment is already on the ledger as of 2026-09-28; this write books the fee owed for it, on the spot.",
+                    "evidence": [
+                        "initial_state.finance_transactions.8cd6ea04-9af1-41be-826a-52a6eda006e4"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "finance_payment_application",
+                        "eligibility_id": "payment_active",
+                        "condition": "Payments post only to a contract whose status is active.",
+                        "evidence": [
+                            "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442.status",
+                            "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442.finance_contract_id"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "finance_contracts.finance_contract_id",
+                                "source": "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442.finance_contract_id",
+                                "action_arg": "finance_contract_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "finance_late_fees",
+                        "eligibility_id": "after_grace",
+                        "condition": "A late fee may be assessed only after the grace period counted from the installment's due date has passed.",
+                        "evidence": [
+                            "frozen_time",
+                            "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442.next_due_date",
+                            "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442.finance_contract_id"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "finance_contracts.finance_contract_id",
+                                "source": "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442.finance_contract_id",
+                                "action_arg": "finance_contract_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "finance_late_fees",
+                        "eligibility_id": "one_late_fee_per_installment",
+                        "condition": "Each installment bears at most one late fee.",
+                        "evidence": [
+                            "initial_state.finance_transactions.8cd6ea04-9af1-41be-826a-52a6eda006e4.installment_due_date",
+                            "initial_state.finance_transactions.8cd6ea04-9af1-41be-826a-52a6eda006e4.fee_type",
+                            "initial_state.finance_transactions.8cd6ea04-9af1-41be-826a-52a6eda006e4.finance_contract_id"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "finance_transactions.finance_contract_id",
+                                "source": "initial_state.finance_transactions.8cd6ea04-9af1-41be-826a-52a6eda006e4.finance_contract_id",
+                                "action_arg": "finance_contract_id"
+                            },
+                            {
+                                "gate_field": "finance_transactions.installment_due_date",
+                                "source": "initial_state.finance_transactions.8cd6ea04-9af1-41be-826a-52a6eda006e4.installment_due_date",
+                                "action_arg": "installment_due_date"
+                            }
+                        ],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 10,
+                "business_effect": "A late-fee entry of 11.54 for the 2026-09-23 installment is booked and fees due rise from 55.00 to 66.54.",
+                "request_binding": {
+                    "action_semantics": "The 2026-09-23 installment is unpaid (its payment was returned) and its grace period ended 2026-10-03 with no late-fee entry naming it; the late fee is owed by the state of the contract, so the obligation selects the late-fee write.",
+                    "intent_source": {
+                        "kind": "initial_state",
+                        "evidence": [
+                            "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442.next_due_date",
+                            "initial_state.finance_transactions.8cd6ea04-9af1-41be-826a-52a6eda006e4"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "late fee owed on the 2026-09-23 installment unpaid after its grace period",
+                        "evidence": [
+                            "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442.next_due_date",
+                            "initial_state.finance_transactions.8cd6ea04-9af1-41be-826a-52a6eda006e4.installment_due_date"
+                        ],
+                        "action_arg": "installment_due_date",
+                        "value": "2026-09-23"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "performed_by_this_tool",
+                    "fact": "The installment's grace period has already ended (2026-10-03 is the last grace day); this write books the late fee on the spot.",
+                    "evidence": [
+                        "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442.next_due_date"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "finance_payment_application",
+                        "eligibility_id": "payment_active",
+                        "condition": "Payments post only to a contract whose status is active.",
+                        "evidence": [
+                            "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442.status",
+                            "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442.finance_contract_id"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "finance_contracts.finance_contract_id",
+                                "source": "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442.finance_contract_id",
+                                "action_arg": "finance_contract_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "finance_late_fees",
+                        "eligibility_id": "after_grace",
+                        "condition": "A late fee may be assessed only after the grace period counted from the installment's due date has passed.",
+                        "evidence": [
+                            "frozen_time",
+                            "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442.next_due_date",
+                            "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442.finance_contract_id"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "finance_contracts.finance_contract_id",
+                                "source": "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442.finance_contract_id",
+                                "action_arg": "finance_contract_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "finance_late_fees",
+                        "eligibility_id": "one_late_fee_per_installment",
+                        "condition": "Each installment bears at most one late fee.",
+                        "evidence": [
+                            "initial_state.finance_transactions.8cd6ea04-9af1-41be-826a-52a6eda006e4.installment_due_date",
+                            "initial_state.finance_transactions.8cd6ea04-9af1-41be-826a-52a6eda006e4.fee_type",
+                            "initial_state.finance_transactions.8cd6ea04-9af1-41be-826a-52a6eda006e4.finance_contract_id"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "finance_transactions.finance_contract_id",
+                                "source": "initial_state.finance_transactions.8cd6ea04-9af1-41be-826a-52a6eda006e4.finance_contract_id",
+                                "action_arg": "finance_contract_id"
+                            },
+                            {
+                                "gate_field": "finance_transactions.installment_due_date",
+                                "source": "initial_state.finance_transactions.8cd6ea04-9af1-41be-826a-52a6eda006e4.installment_due_date",
+                                "action_arg": "installment_due_date"
+                            }
+                        ],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 12,
+                "business_effect": "Teresa's own partial payment of 512.55 posts by online bank transfer: 273.98 to accrued interest, 66.54 to fees, 172.03 to principal; fees due fall to 0.00, principal to 19064.18 and the last payment date becomes 2026-10-05.",
+                "request_binding": {
+                    "action_semantics": "Teresa asked to move her September payment to the end of the loan and agreed to make any payment the representative says is needed herself; the deferral rule waits on a partial payment posted on the request date, and only her own payment from her own account can be that payment.",
+                    "intent_source": {
+                        "kind": "user_scenario",
+                        "evidence": [
+                            "user_scenario:If the representative tells you that you need to make a payment yourself before the September payment can be moved, you ask how much it is and you agree to pay it today from your checking account",
+                            "user_scenario:asking whether that September payment can be moved to the end of your loan"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "make a payment yourself",
+                        "evidence": [
+                            "user_scenario:If the representative tells you that you need to make a payment yourself before the September payment can be moved, you ask how much it is and you agree to pay it today from your checking account"
+                        ],
+                        "action_arg": "total_received",
+                        "value": 512.55
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "performed_by_this_tool",
+                    "fact": "The payment is made and posted by this call, from the borrower's own account, on 2026-10-05.",
+                    "evidence": [
+                        "user_scenario:you submit it exactly as they give it to you, with the same total, the same split between interest, fees and principal, and the loan reference they read out",
+                        "prior_step:10"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "finance_payment_application",
+                        "eligibility_id": "payment_active",
+                        "condition": "Payments post only to a contract whose status is active.",
+                        "evidence": [
+                            "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442.status",
+                            "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442.finance_contract_id"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "finance_contracts.finance_contract_id",
+                                "source": "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442.finance_contract_id",
+                                "action_arg": "finance_contract_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "finance_payment_application",
+                        "eligibility_id": "card_limits",
+                        "condition": "A single debit card payment may not exceed the tier's maximum debit card payment, and no more than the tier's maximum debit card payments may post in one calendar month, counted by finance_msr_card_payments_month.",
+                        "evidence": [
+                            "initial_state.finance_transactions.68396be3-ed1b-4c5a-8976-e26d9357fd92.payment_channel",
+                            "initial_state.finance_transactions.68396be3-ed1b-4c5a-8976-e26d9357fd92.txn_date",
+                            "initial_state.finance_transactions.68396be3-ed1b-4c5a-8976-e26d9357fd92.finance_contract_id"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "finance_transactions.finance_contract_id",
+                                "source": "initial_state.finance_transactions.68396be3-ed1b-4c5a-8976-e26d9357fd92.finance_contract_id",
+                                "action_arg": "finance_contract_id"
+                            }
+                        ],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 14,
+                "business_effect": "The 2026-09-23 installment is deferred to the end of the contract: next due date 2026-10-23, maturity 2030-04-23, deferrals used 1, and a deferral fee entry of 4.81.",
+                "request_binding": {
+                    "action_semantics": "Teresa asked to move her September payment to the end of her loan, which is exactly a payment deferral of the installment at the next due date; it is not a due-date change (that moves every future due day) nor a payment.",
+                    "intent_source": {
+                        "kind": "user_scenario",
+                        "evidence": [
+                            "user_scenario:asking whether that September payment can be moved to the end of your loan"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "moved to the end of your loan",
+                        "evidence": [
+                            "user_scenario:asking whether that September payment can be moved to the end of your loan"
+                        ],
+                        "action_arg": "installment_due_date",
+                        "value": "2026-09-23"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "established_by_prior_tool",
+                    "fact": "The partial payment of step 12 cleared the fees and the accrued interest on the request date, the state the deferral fee waits on.",
+                    "evidence": [
+                        "prior_step:12",
+                        "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442.next_due_date"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "finance_deferral",
+                        "eligibility_id": "deferral_active",
+                        "condition": "A deferral is granted only on a contract whose status is active.",
+                        "evidence": [
+                            "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442.status",
+                            "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442.finance_contract_id"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "finance_contracts.finance_contract_id",
+                                "source": "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442.finance_contract_id",
+                                "action_arg": "finance_contract_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "finance_deferral",
+                        "eligibility_id": "deferral_dpd",
+                        "condition": "The deferral is granted only when the request date is no more than the tier's deferral maximum days past due counted from the next due date.",
+                        "evidence": [
+                            "frozen_time",
+                            "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442.next_due_date",
+                            "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442.finance_contract_id"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "finance_contracts.finance_contract_id",
+                                "source": "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442.finance_contract_id",
+                                "action_arg": "finance_contract_id"
+                            }
+                        ],
+                        "satisfied": true
+                    }
+                ]
+            }
+        ],
+        "temporal_feasibility": [
+            {
+                "step": 8,
+                "policy_id": "finance_late_fees",
+                "eligibility_id": "after_grace",
+                "condition": "A late fee may be assessed only after the grace period counted from the installment's due date has passed.",
+                "temporal_basis": {
+                    "clock": "frozen_time",
+                    "anchor_event": "the installment's due date",
+                    "anchor_source": "finance_contracts.next_due_date",
+                    "relation": "not_before",
+                    "duration_source": "variants.payment_grace_days",
+                    "unit": "calendar_days",
+                    "counting_rule": "Grace is counted in calendar days with the due date as day 0; a late fee may be assessed from the day after the last grace day if the installment is still unpaid.",
+                    "boundary": "exclusive"
+                },
+                "as_of": "frozen_time",
+                "evidence": [
+                    "frozen_time",
+                    "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442.next_due_date",
+                    "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442.variant_name"
+                ],
+                "satisfied": true,
+                "boundary_check": {
+                    "just_before": "Anchor next due date 2026-09-23 is day 0; grace days 10 end 2026-10-03; on 2026-10-03 the fee could not be assessed (still in grace).",
+                    "at_boundary": "From 2026-10-04 (the day after the last grace day) the fee may be assessed; 2026-10-05 is past it, so the gate holds."
+                }
+            },
+            {
+                "step": 10,
+                "policy_id": "finance_late_fees",
+                "eligibility_id": "after_grace",
+                "condition": "A late fee may be assessed only after the grace period counted from the installment's due date has passed.",
+                "temporal_basis": {
+                    "clock": "frozen_time",
+                    "anchor_event": "the installment's due date",
+                    "anchor_source": "finance_contracts.next_due_date",
+                    "relation": "not_before",
+                    "duration_source": "variants.payment_grace_days",
+                    "unit": "calendar_days",
+                    "counting_rule": "Grace is counted in calendar days with the due date as day 0; a late fee may be assessed from the day after the last grace day if the installment is still unpaid.",
+                    "boundary": "exclusive"
+                },
+                "as_of": "frozen_time",
+                "evidence": [
+                    "frozen_time",
+                    "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442.next_due_date",
+                    "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442.variant_name"
+                ],
+                "satisfied": true,
+                "boundary_check": {
+                    "just_before": "On 2026-10-03, the last grace day counted from the 2026-09-23 due date as day 0, no late fee may be assessed.",
+                    "at_boundary": "On 2026-10-04 and after (2026-10-05 here) the installment is still unpaid, so the late fee may be assessed."
+                }
+            },
+            {
+                "step": 14,
+                "policy_id": "finance_deferral",
+                "eligibility_id": "deferral_dpd",
+                "condition": "The deferral is granted only when the request date is no more than the tier's deferral maximum days past due counted from the next due date.",
+                "temporal_basis": {
+                    "clock": "frozen_time",
+                    "anchor_event": "the next due date",
+                    "anchor_source": "finance_contracts.next_due_date",
+                    "relation": "not_after",
+                    "duration_source": "variants.deferral_max_days_past_due",
+                    "unit": "calendar_days",
+                    "counting_rule": "Days past due are counted in calendar days from the next due date as day 0; a request on the day that is exactly the maximum qualifies.",
+                    "boundary": "inclusive"
+                },
+                "as_of": "frozen_time",
+                "evidence": [
+                    "frozen_time",
+                    "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442.next_due_date",
+                    "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442.variant_name"
+                ],
+                "satisfied": true,
+                "boundary_check": {
+                    "just_before": "Days past due count from the next due date 2026-09-23 as day 0; on 2026-10-24 the request would be day 31 (> 30, refused).",
+                    "at_boundary": "On 2026-10-23, exactly day 30, the request still qualifies (inclusive); 2026-10-05 is day 12."
+                }
+            }
+        ],
+        "required_user_inputs": [
+            {
+                "information": "Locating detail: mobile number",
+                "source": "user_scenario:you give your mobile number 8135553417"
+            },
+            {
+                "information": "Verification: date of birth",
+                "source": "user_scenario:1987-06-14"
+            },
+            {
+                "information": "Verification: last four of the Social Security number",
+                "source": "user_scenario:the last four of your Social Security number, 3862"
+            },
+            {
+                "information": "The installment the customer wants moved",
+                "source": "user_scenario:asking whether that September payment can be moved to the end of your loan"
+            },
+            {
+                "information": "Whether she will pay herself and from where",
+                "source": "user_scenario:If the representative tells you that you need to make a payment yourself before the September payment can be moved, you ask how much it is and you agree to pay it today from your checking account"
+            },
+            {
+                "information": "Vehicle, if asked (never enters gold)",
+                "source": "user_scenario:If they ask which car, it is the 2021 Toyota RAV4."
+            }
+        ],
+        "seed_consistency": [
+            {
+                "row": "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442",
+                "policy_id": "finance_contract_signing",
+                "check": "Tier B contract funded 2025-03-10 for 24650.00 at 12.09% over 60 months; monthly payment 549.45 is the level-payment amortisation; first due 2025-04-23 (44 days after the contract date, inside 30-45), due day 23, maturity 2030-03-23 = first due plus 59 months; principal 19236.21 equals funding less every principal portion plus both reinstated portions; fees due 0.00 equals every fee assessed less every fee cleared; last payment date 2026-08-23 and next due date 2026-09-23 are the values reverted by the 2026-09-28 return; deferrals used 0 matches the absence of any deferral entry.",
+                "evidence": [
+                    "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442",
+                    "initial_state.purchase_orders.16649959-f6cd-4b17-a78b-dfce30f8f366"
+                ]
+            },
+            {
+                "row": "initial_state.finance_transactions.0545d7c2-a595-49c6-a7d1-396c16fed996",
+                "policy_id": "finance_contract_signing",
+                "check": "funding of the amount financed 24650.00 as principal on the contract date 2025-03-10.",
+                "evidence": [
+                    "initial_state.finance_transactions.0545d7c2-a595-49c6-a7d1-396c16fed996"
+                ]
+            },
+            {
+                "row": "initial_state.finance_transactions.05344e5b-2589-4597-8474-d8a038f4bf74",
+                "policy_id": "finance_payment_application",
+                "check": "scheduled_installment payment of 549.45 by online_ach on 2025-04-23 split by the base waterfall: interest 359.26 (principal x APR / 365 x days since the previous interest-bearing payment), fees 0.00 oldest first, principal 190.19; installment 2025-04-23.",
+                "evidence": [
+                    "initial_state.finance_transactions.05344e5b-2589-4597-8474-d8a038f4bf74"
+                ]
+            },
+            {
+                "row": "initial_state.finance_transactions.97478a80-fbff-4d20-b06c-f51a54be9fd1",
+                "policy_id": "finance_payment_application",
+                "check": "scheduled_installment payment of 549.45 by online_ach on 2025-05-23 split by the base waterfall: interest 243.06 (principal x APR / 365 x days since the previous interest-bearing payment), fees 0.00 oldest first, principal 306.39; installment 2025-05-23.",
+                "evidence": [
+                    "initial_state.finance_transactions.97478a80-fbff-4d20-b06c-f51a54be9fd1"
+                ]
+            },
+            {
+                "row": "initial_state.finance_transactions.a0305318-c3b1-49b3-a172-9065ca925984",
+                "policy_id": "finance_payment_application",
+                "check": "scheduled_installment payment of 549.45 by online_ach on 2025-06-23 split by the base waterfall: interest 248.01 (principal x APR / 365 x days since the previous interest-bearing payment), fees 0.00 oldest first, principal 301.44; installment 2025-06-23.",
+                "evidence": [
+                    "initial_state.finance_transactions.a0305318-c3b1-49b3-a172-9065ca925984"
+                ]
+            },
+            {
+                "row": "initial_state.finance_transactions.c1df1371-d3f0-4d22-81e6-db60ab1578e4",
+                "policy_id": "finance_payment_application",
+                "check": "late fee 12.50 on 2025-08-03 for installment 2025-07-23, as the late-fee policy gives it on that date: Florida 4.0 percent less the tenure reduction then due, courtesy multiplier and small-payment floor from the record then standing.",
+                "evidence": [
+                    "initial_state.finance_transactions.c1df1371-d3f0-4d22-81e6-db60ab1578e4"
+                ]
+            },
+            {
+                "row": "initial_state.finance_transactions.f6925c16-7bca-424f-8596-22737f80090d",
+                "policy_id": "finance_payment_application",
+                "check": "scheduled_installment payment of 561.95 by online_ach on 2025-08-05 split by the base waterfall: interest 339.72 (principal x APR / 365 x days since the previous interest-bearing payment), fees 12.50 oldest first, principal 209.73; installment 2025-07-23.",
+                "evidence": [
+                    "initial_state.finance_transactions.f6925c16-7bca-424f-8596-22737f80090d"
+                ]
+            },
+            {
+                "row": "initial_state.finance_transactions.01a49762-8526-4315-8ab9-05dc9201c01b",
+                "policy_id": "finance_late_fees",
+                "check": "late_fee entry it names cleared paid for 12.50 on 2025-08-05.",
+                "evidence": [
+                    "initial_state.finance_transactions.01a49762-8526-4315-8ab9-05dc9201c01b",
+                    "initial_state.finance_transactions.c1df1371-d3f0-4d22-81e6-db60ab1578e4"
+                ]
+            },
+            {
+                "row": "initial_state.finance_transactions.524403f3-6917-4bcf-b90e-c44a7487912d",
+                "policy_id": "finance_payment_application",
+                "check": "scheduled_installment payment of 549.45 by online_ach on 2025-08-23 split by the base waterfall: interest 140.96 (principal x APR / 365 x days since the previous interest-bearing payment), fees 0.00 oldest first, principal 408.49; installment 2025-08-23.",
+                "evidence": [
+                    "initial_state.finance_transactions.524403f3-6917-4bcf-b90e-c44a7487912d"
+                ]
+            },
+            {
+                "row": "initial_state.finance_transactions.0327441d-7dc1-4f90-b749-3f9386003fde",
+                "policy_id": "finance_payment_application",
+                "check": "scheduled_installment payment of 549.45 by online_ach on 2025-09-23 split by the base waterfall: interest 238.57 (principal x APR / 365 x days since the previous interest-bearing payment), fees 0.00 oldest first, principal 310.88; installment 2025-09-23.",
+                "evidence": [
+                    "initial_state.finance_transactions.0327441d-7dc1-4f90-b749-3f9386003fde"
+                ]
+            },
+            {
+                "row": "initial_state.finance_transactions.74c267ca-6743-4acf-a425-82e7d40a8faa",
+                "policy_id": "finance_payment_application",
+                "check": "scheduled_installment payment of 549.45 by online_ach on 2025-10-23 split by the base waterfall: interest 227.78 (principal x APR / 365 x days since the previous interest-bearing payment), fees 0.00 oldest first, principal 321.67; installment 2025-10-23.",
+                "evidence": [
+                    "initial_state.finance_transactions.74c267ca-6743-4acf-a425-82e7d40a8faa"
+                ]
+            },
+            {
+                "row": "initial_state.finance_transactions.c5494439-4acf-4851-8c5b-030effd59af6",
+                "policy_id": "finance_payment_application",
+                "check": "scheduled_installment payment of 549.45 by online_ach on 2025-11-23 split by the base waterfall: interest 232.07 (principal x APR / 365 x days since the previous interest-bearing payment), fees 0.00 oldest first, principal 317.38; installment 2025-11-23.",
+                "evidence": [
+                    "initial_state.finance_transactions.c5494439-4acf-4851-8c5b-030effd59af6"
+                ]
+            },
+            {
+                "row": "initial_state.finance_transactions.0ce0d1b7-49d0-4152-a30f-2d937068f08f",
+                "policy_id": "finance_payment_application",
+                "check": "scheduled_installment payment of 549.45 by online_ach on 2025-12-23 split by the base waterfall: interest 221.43 (principal x APR / 365 x days since the previous interest-bearing payment), fees 0.00 oldest first, principal 328.02; installment 2025-12-23.",
+                "evidence": [
+                    "initial_state.finance_transactions.0ce0d1b7-49d0-4152-a30f-2d937068f08f"
+                ]
+            },
+            {
+                "row": "initial_state.finance_transactions.5d2ce6cc-b676-42a6-97c6-b5a1251a0ca1",
+                "policy_id": "finance_payment_application",
+                "check": "scheduled_installment payment of 549.45 by online_ach on 2026-01-23 split by the base waterfall: interest 225.45 (principal x APR / 365 x days since the previous interest-bearing payment), fees 0.00 oldest first, principal 324.00; installment 2026-01-23.",
+                "evidence": [
+                    "initial_state.finance_transactions.5d2ce6cc-b676-42a6-97c6-b5a1251a0ca1"
+                ]
+            },
+            {
+                "row": "initial_state.finance_transactions.3bbe9e94-f39f-43b0-be7f-f8c241a7e602",
+                "policy_id": "finance_returned_payments",
+                "check": "return on 2026-01-27 of the payment it names, reinstating its principal portion 324.00; total 549.45; the last payment date and next due date on the contract revert to their values before that payment.",
+                "evidence": [
+                    "initial_state.finance_transactions.3bbe9e94-f39f-43b0-be7f-f8c241a7e602",
+                    "initial_state.finance_transactions.5d2ce6cc-b676-42a6-97c6-b5a1251a0ca1"
+                ]
+            },
+            {
+                "row": "initial_state.finance_transactions.33e1e2d4-1a45-42ea-a89a-226171ed4642",
+                "policy_id": "finance_payment_application",
+                "check": "returned-payment fee 38.00 on 2026-01-27 for the payment returned that day, as the returned-payment fee policy gives it then: Florida 30.00 plus the large-return add-on 10.00, one return in 12 months (no multiplier), 9 installments paid (no tenure credit), two-plan credit 4.00, electronic return charge 2.00.",
+                "evidence": [
+                    "initial_state.finance_transactions.33e1e2d4-1a45-42ea-a89a-226171ed4642",
+                    "initial_state.finance_transactions.5d2ce6cc-b676-42a6-97c6-b5a1251a0ca1"
+                ]
+            },
+            {
+                "row": "initial_state.finance_transactions.68bec9bc-bf5e-47bd-bfd5-58edf27e2808",
+                "policy_id": "finance_payment_application",
+                "check": "scheduled_installment payment of 587.45 by online_ach on 2026-01-30 split by the base waterfall: interest 276.35 (principal x APR / 365 x days since the previous interest-bearing payment), fees 38.00 oldest first, principal 273.10; installment 2026-01-23.",
+                "evidence": [
+                    "initial_state.finance_transactions.68bec9bc-bf5e-47bd-bfd5-58edf27e2808"
+                ]
+            },
+            {
+                "row": "initial_state.finance_transactions.70f689a3-dc5c-4428-8fb6-8dedbd2df443",
+                "policy_id": "finance_late_fees",
+                "check": "returned_payment_fee entry it names cleared paid for 38.00 on 2026-01-30.",
+                "evidence": [
+                    "initial_state.finance_transactions.70f689a3-dc5c-4428-8fb6-8dedbd2df443",
+                    "initial_state.finance_transactions.33e1e2d4-1a45-42ea-a89a-226171ed4642"
+                ]
+            },
+            {
+                "row": "initial_state.finance_transactions.ad1b8207-a12c-48dd-a7b6-42e4f4b552dd",
+                "policy_id": "finance_payment_application",
+                "check": "scheduled_installment payment of 549.45 by online_ach on 2026-02-23 split by the base waterfall: interest 172.37 (principal x APR / 365 x days since the previous interest-bearing payment), fees 0.00 oldest first, principal 377.08; installment 2026-02-23.",
+                "evidence": [
+                    "initial_state.finance_transactions.ad1b8207-a12c-48dd-a7b6-42e4f4b552dd"
+                ]
+            },
+            {
+                "row": "initial_state.finance_transactions.4c5aa7b4-c885-4024-a92a-bf5ce5704599",
+                "policy_id": "finance_payment_application",
+                "check": "late fee 13.19 on 2026-04-03 for installment 2026-03-23, as the late-fee policy gives it on that date: Florida 4.0 percent less the tenure reduction then due, courtesy multiplier and small-payment floor from the record then standing.",
+                "evidence": [
+                    "initial_state.finance_transactions.4c5aa7b4-c885-4024-a92a-bf5ce5704599"
+                ]
+            },
+            {
+                "row": "initial_state.finance_transactions.25b8b22e-a368-43bd-9c09-276c8e9bd0bd",
+                "policy_id": "finance_payment_application",
+                "check": "scheduled_installment payment of 562.64 by online_ach on 2026-04-06 split by the base waterfall: interest 296.40 (principal x APR / 365 x days since the previous interest-bearing payment), fees 13.19 oldest first, principal 253.05; installment 2026-03-23.",
+                "evidence": [
+                    "initial_state.finance_transactions.25b8b22e-a368-43bd-9c09-276c8e9bd0bd"
+                ]
+            },
+            {
+                "row": "initial_state.finance_transactions.5d47cd34-8a42-4a58-bc4f-e743c2e57e39",
+                "policy_id": "finance_late_fees",
+                "check": "late_fee entry it names cleared paid for 13.19 on 2026-04-06.",
+                "evidence": [
+                    "initial_state.finance_transactions.5d47cd34-8a42-4a58-bc4f-e743c2e57e39",
+                    "initial_state.finance_transactions.4c5aa7b4-c885-4024-a92a-bf5ce5704599"
+                ]
+            },
+            {
+                "row": "initial_state.finance_transactions.5184f385-8586-4d8b-8ae3-8115e94823e2",
+                "policy_id": "finance_payment_application",
+                "check": "scheduled_installment payment of 549.45 by online_ach on 2026-04-23 split by the base waterfall: interest 118.55 (principal x APR / 365 x days since the previous interest-bearing payment), fees 0.00 oldest first, principal 430.90; installment 2026-04-23.",
+                "evidence": [
+                    "initial_state.finance_transactions.5184f385-8586-4d8b-8ae3-8115e94823e2"
+                ]
+            },
+            {
+                "row": "initial_state.finance_transactions.91360e92-79aa-4241-894f-fd54f9f76bd9",
+                "policy_id": "finance_payment_application",
+                "check": "scheduled_installment payment of 549.45 by online_ach on 2026-05-23 split by the base waterfall: interest 204.92 (principal x APR / 365 x days since the previous interest-bearing payment), fees 0.00 oldest first, principal 344.53; installment 2026-05-23.",
+                "evidence": [
+                    "initial_state.finance_transactions.91360e92-79aa-4241-894f-fd54f9f76bd9"
+                ]
+            },
+            {
+                "row": "initial_state.finance_transactions.3821405b-5cdb-4d10-8f46-982b639c03f7",
+                "policy_id": "finance_payment_application",
+                "check": "scheduled_installment payment of 549.45 by online_ach on 2026-06-23 split by the base waterfall: interest 208.21 (principal x APR / 365 x days since the previous interest-bearing payment), fees 0.00 oldest first, principal 341.24; installment 2026-06-23.",
+                "evidence": [
+                    "initial_state.finance_transactions.3821405b-5cdb-4d10-8f46-982b639c03f7"
+                ]
+            },
+            {
+                "row": "initial_state.finance_transactions.f862ad86-7754-4ffe-b0b3-402f657e4a5f",
+                "policy_id": "finance_payment_application",
+                "check": "scheduled_installment payment of 549.45 by online_ach on 2026-07-23 split by the base waterfall: interest 198.10 (principal x APR / 365 x days since the previous interest-bearing payment), fees 0.00 oldest first, principal 351.35; installment 2026-07-23.",
+                "evidence": [
+                    "initial_state.finance_transactions.f862ad86-7754-4ffe-b0b3-402f657e4a5f"
+                ]
+            },
+            {
+                "row": "initial_state.finance_transactions.40076dc9-e6d5-4e28-8f8c-1474e16ff30d",
+                "policy_id": "finance_payment_application",
+                "check": "scheduled_installment payment of 549.45 by online_ach on 2026-08-23 split by the base waterfall: interest 201.10 (principal x APR / 365 x days since the previous interest-bearing payment), fees 0.00 oldest first, principal 348.35; installment 2026-08-23.",
+                "evidence": [
+                    "initial_state.finance_transactions.40076dc9-e6d5-4e28-8f8c-1474e16ff30d"
+                ]
+            },
+            {
+                "row": "initial_state.finance_transactions.68396be3-ed1b-4c5a-8976-e26d9357fd92",
+                "policy_id": "finance_payment_application",
+                "check": "scheduled_installment payment of 549.45 by online_ach on 2026-09-23 split by the base waterfall: interest 197.52 (principal x APR / 365 x days since the previous interest-bearing payment), fees 0.00 oldest first, principal 351.93; installment 2026-09-23.",
+                "evidence": [
+                    "initial_state.finance_transactions.68396be3-ed1b-4c5a-8976-e26d9357fd92"
+                ]
+            },
+            {
+                "row": "initial_state.finance_transactions.8cd6ea04-9af1-41be-826a-52a6eda006e4",
+                "policy_id": "finance_returned_payments",
+                "check": "return on 2026-09-28 of the payment it names, reinstating its principal portion 351.93; total 549.45; the last payment date and next due date on the contract revert to their values before that payment.",
+                "evidence": [
+                    "initial_state.finance_transactions.8cd6ea04-9af1-41be-826a-52a6eda006e4",
+                    "initial_state.finance_transactions.68396be3-ed1b-4c5a-8976-e26d9357fd92"
+                ]
+            }
+        ]
+    },
+    "evaluation_criteria": [
+        {
+            "owner": "agent",
+            "tool": "find_customers",
+            "arguments": {
+                "phone_number": "8135553417"
+            },
+            "objective": "Locate the caller's Kestrel profile from the mobile number she gives, returning her customer reference number.",
+            "necessity": "Every later read and write is keyed by the customer reference number; nothing about the loan can be looked up without it."
+        },
+        {
+            "owner": "agent",
+            "tool": "verify_customer_identity",
+            "arguments": {
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e",
+                "phone_number": "8135553417",
+                "date_of_birth": "1987-06-14",
+                "ssn_last4": "3862"
+            },
+            "objective": "Verify Teresa Navarro with three profile details she states: mobile number, date of birth and the last four digits of her Social Security number.",
+            "necessity": "The share tool requires a passed identity verification before any account information is discussed or any fee, payment or deferral is booked; three matching details are its threshold."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_finance_contracts",
+            "arguments": {
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e"
+            },
+            "objective": "Read the active Kestrel Finance Tier B contract: monthly payment 549.45, APR 12.09, principal 19236.21, fees due 0.00, next due date 2026-09-23, last payment date 2026-08-23, contract date 2025-03-10, maturity 2030-03-23, deferrals used 0, purchase order reference.",
+            "necessity": "The tier parameters, monthly payment, APR, principal, next due date (12 days past due on 2026-10-05), last payment date (43 days of accrued interest) and contract age (18 whole months) feed every one of the four computations, and the status active satisfies each base state gate."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_finance_transactions",
+            "arguments": {
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442"
+            },
+            "objective": "Read the whole loan ledger: 19 scheduled-installment payments with 2 returned (2026-01-27 and 2026-09-28, both one-time online payments of 549.45), the returned-payment fee of 2026-01-27, late fees of 2025-08-03 and 2026-04-03, and no late fee or returned-payment fee yet for the 2026-09-23 installment and the 2026-09-28 return.",
+            "necessity": "This ledger is the evidence of both state-due prerequisites (the 2026-09-28 return has no returned-payment fee entry naming it; the 2026-09-23 installment is unpaid after its grace period with no late-fee entry) and of the history factors: installments paid 17, returned payments 2 in 12 months and 1 in 6 months, late fees 1 in 12 months, the returned amount and channel."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_purchase_orders",
+            "arguments": {
+                "purchase_order_id": "16649959-f6cd-4b17-a78b-dfce30f8f366"
+            },
+            "objective": "Read the financed purchase order: registration state FL, vehicle program Kestrel Certified, and selling dealer state GA (the vehicle was sold from Kestrel's Georgia hub and shipped 455 miles).",
+            "necessity": "The registration state (FL, not the selling dealer state GA) decides the late-fee percentage tier, the returned-payment fee for the state and the deferral charge method; the vehicle program decides the good-faith vehicle-program allowance."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_service_contracts",
+            "arguments": {
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e"
+            },
+            "objective": "Read the KestrelCare Gold service contract: status active, financed in this finance contract.",
+            "necessity": "An active KestrelCare service contract financed in this contract is one of the two conditions of the returned-payment protection-plan credit tier."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_maintenance_plans",
+            "arguments": {
+                "customer_id": "627350d9-b78f-41ee-820e-26bbb60f1d2e"
+            },
+            "objective": "Read the KestrelCare Maintenance Standard plan: status active.",
+            "necessity": "The active maintenance plan, together with the financed service contract, puts the returned-payment protection-plan credit on its two-plan tier."
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "assess_returned_payment_fee_ca20439d"
+            },
+            "objective": "Unlock the returned-payment fee tool so the missing fee for the 2026-09-28 return can be charged.",
+            "necessity": "The first half of the unlock/call pair for the returned-payment fee problem; no DB effect."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "assess_returned_payment_fee_ca20439d",
+                "arguments": {
+                    "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                    "returned_payment_id": "68396be3-ed1b-4c5a-8976-e26d9357fd92",
+                    "installment_due_date": "2026-09-23",
+                    "returned_fee_amount": 55.0
+                }
+            },
+            "objective": "Book the returned-payment fee entry for the 2026-09-23 payment the bank returned on 2026-09-28, raising fees due by 55.00.",
+            "necessity": "finance_ext_returned_payment_fee computes returned_fee_amount; the qualifying payment is not fixed until every returned payment carries its returned-payment fee entry.",
+            "argument_uniqueness_tracing": {
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442; basis: the finance contract lookup by the verified customer returns exactly one contract (Kestrel Finance Tier B, active) and the tool docstring asks for 'the reference number of the finance contract ... as returned by the finance contract lookup for this borrower'; unique because the customer holds no other finance contract.",
+                "returned_payment_id": "68396be3-ed1b-4c5a-8976-e26d9357fd92; basis: docstring 'the ledger reference number of the borrower payment the bank returned, as shown on the original payment entry'; the 2026-09-28 return entry's source names this 2026-09-23 payment. Unique: the only other return (2026-01-27) already has its returned-payment fee entry (38.00, 2026-01-27), so only this payment lacks the fee the rule 'charged once for each borrower payment the borrower's bank returns' requires.",
+                "installment_due_date": "2026-09-23; basis: the rule names 'the installment it was made for' and the returned payment entry shows installment due date 2026-09-23. Unique: the payment was made for no other installment.",
+                "returned_fee_amount": "55.00; computed: Florida returned-payment fee 30.00 (registration FL) + large-return add-on 10.00 (549.45 > 500.00) = 40.00, x second-return multiplier 1.5 (two returns in 12 whole months) = 60.00, - mid-tenure credit 3.00 (17 installments paid) - two-plan credit 4.00 (active financed KestrelCare Gold and active maintenance plan) + electronic return charge 2.00 (online_ach) = 55.00, rounded to the cent."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "assess_late_fee_56686208"
+            },
+            "objective": "Unlock the late-fee tool so the late fee owed on the 2026-09-23 installment can be charged.",
+            "necessity": "The first half of the unlock/call pair for the late-fee problem; no DB effect."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "assess_late_fee_56686208",
+                "arguments": {
+                    "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                    "installment_due_date": "2026-09-23",
+                    "late_fee_amount": 11.54
+                }
+            },
+            "objective": "Book the late-fee entry for the 2026-09-23 installment, still unpaid after its grace period ended 2026-10-03, raising fees due by 11.54.",
+            "necessity": "finance_ext_late_fee_assessment computes late_fee_amount; the qualifying payment is fixed only after every installment unpaid after grace carries its late-fee entry.",
+            "argument_uniqueness_tracing": {
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442; basis: the finance contract lookup by the verified customer returns exactly one contract (Kestrel Finance Tier B, active) and the tool docstring asks for 'the reference number of the finance contract ... as returned by the finance contract lookup for this borrower'; unique because the customer holds no other finance contract.",
+                "installment_due_date": "2026-09-23; basis: 'A late fee is charged once on an installment that is still unpaid after its grace period ... that names the installment'; the contract's next due date is 2026-09-23 and its grace ended 2026-10-03. Unique: every earlier installment is paid; 2026-10-23 is not yet due.",
+                "late_fee_amount": "11.54; computed: Florida late-fee percentage 4.0 - mid-tenure reduction 0.5 = 3.5% of 549.45 = 19.23075, under the 50.00 maximum; x returned-payment courtesy 0.6 (one late fee in 12 months, one return in 6 months) = 11.54 rounded; above the seasoned small-payment floor 10.00 (payment < 600.00, contract 18 months old), so 11.54."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "pay_deferral_qualifying_amount_eaa14a46"
+            },
+            "objective": "Unlock the borrower's own partial-payment tool and hand it to Teresa with the amount and its split.",
+            "necessity": "The qualifying payment is the borrower's own payment from her bank account; the agent unlocks and hands it over, with no DB effect."
+        },
+        {
+            "owner": "user",
+            "tool": "call_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "pay_deferral_qualifying_amount_eaa14a46",
+                "arguments": {
+                    "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                    "total_received": 512.55,
+                    "interest_portion": 273.98,
+                    "fee_portion": 66.54,
+                    "principal_portion": 172.03
+                }
+            },
+            "objective": "Teresa posts her deferral qualifying payment of 512.55 as a partial payment: 273.98 to accrued interest, 66.54 to the two fees, 172.03 good-faith amount to principal; fees due fall to 0.00 and the last payment date becomes 2026-10-05.",
+            "necessity": "finance_ext_deferral_qualifying_payment computes total_received; the deferral fee is not fixed until a partial payment posted on the request date has cleared the fees due and the accrued interest.",
+            "argument_uniqueness_tracing": {
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442; basis: docstring 'the reference number of your finance contract, as the representative reads it to you from the contract record'; the customer copies it from the agent's message, which took it from the contract lookup.",
+                "total_received": "512.55; computed at handling time (after steps 8 and 10): accrued interest RND(19236.21 x 12.09/100/365 x 43) = 273.98 + fees due 66.54 + good-faith amount RND(19236.21 x 12.09/100/365 x 27) = 172.03, where the good-faith days are (seasoned 15 + certified program 2 + early-stage 2 - mid seasoning 1) x two-late multiplier 1.5 = 27.",
+                "interest_portion": "273.98; basis: base waterfall 'Each payment is applied in this order: accrued interest to the posting date, then outstanding fees oldest first, then principal' and the rule's 'applied to that accrued interest'; interest from 2026-08-23 to 2026-10-05 (43 days) on 19236.21 at 12.09% over 365. Unique by arithmetic.",
+                "fee_portion": "66.54; basis: the waterfall applies the next part to all fees due (55.00 returned-payment fee + 11.54 late fee) since the payment exceeds them. Unique by arithmetic.",
+                "principal_portion": "172.03; basis: the remainder after interest and fees goes to principal, which is exactly the good-faith amount 'applied to principal'. 512.55 - 273.98 - 66.54 = 172.03."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "grant_payment_deferral_f4f9e9cb"
+            },
+            "objective": "Unlock the deferral tool so the 2026-09-23 installment can be moved to the end of the contract.",
+            "necessity": "The first half of the unlock/call pair for the deferral problem; no DB effect."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "grant_payment_deferral_f4f9e9cb",
+                "arguments": {
+                    "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442",
+                    "installment_due_date": "2026-09-23",
+                    "next_due_date": "2026-10-23",
+                    "maturity_date": "2030-04-23",
+                    "deferral_fee": 4.81
+                }
+            },
+            "objective": "Grant the deferral of the 2026-09-23 installment: next due date 2026-10-23, maturity 2030-04-23, deferrals used 1, and a deferral fee entry of 4.81.",
+            "necessity": "finance_ext_deferral_fee computes deferral_fee; this is the write the customer asked for.",
+            "argument_uniqueness_tracing": {
+                "finance_contract_id": "c8665e83-1373-4579-8555-0d68335d2442; basis: the finance contract lookup by the verified customer returns exactly one contract (Kestrel Finance Tier B, active) and the tool docstring asks for 'the reference number of the finance contract ... as returned by the finance contract lookup for this borrower'; unique because the customer holds no other finance contract.",
+                "installment_due_date": "2026-09-23; basis: base 'defer the installment at the next due date to the end of the contract' and the contract's next due date 2026-09-23 (unchanged by a partial payment, which 'never moves the next due date'). Unique.",
+                "next_due_date": "2026-10-23; basis: 'the next due date and the maturity date each move one month later' applied to 2026-09-23. Unique.",
+                "maturity_date": "2030-04-23; basis: the same sentence applied to the contract's maturity date 2030-03-23. Unique.",
+                "deferral_fee": "4.81; computed: Florida registration (purchase order registration_state FL; the selling dealer state GA is not the registration state and is excluded) gives one month of interest on the deferred installment RND(549.45 x 12.09/100/12) = 5.54, x repeat-return risk factor 1.5 (returns 2026-01-27 and 2026-09-28) = 8.31, + early-stage surcharge 2.50 (12 days past due), - seasoned good-faith credit 3.00 (17 paid and the partial payment dated 2026-10-05) - mid-seasoning credit 1.00 (18 months) - first-extension credit 2.00 (no earlier deferral entry) = 4.81."
+            }
+        }
+    ],
+    "computations": [
+        {
+            "policy_id": "finance_ext_returned_payment_fee",
+            "target_holding_id": "c8665e83-1373-4579-8555-0d68335d2442",
+            "step": 8,
+            "arg": "returned_fee_amount",
+            "expected": 55.0,
+            "factor_trace": [
+                "returned_fee_state_schedule (parameter, cross-difficulty purchase): purchase order registration_state = FL -> Florida returned-payment fee 30.00; baseline the tier's returned-payment fee 25.00.",
+                "returned_amount_addon (parameter): most recent returned payment 2026-09-28 total 549.45 > large-return limit 500.00 -> add-on 10.00; baseline no add-on (0).",
+                "repeat_return_multiplier (method): returned payments dated fewer than 12 whole months before 2026-10-05 = 2 (2026-01-27, 2026-09-28) -> (30.00 + 10.00) x second-return multiplier 1.5 = 60.00; baseline taken as it stands (x1).",
+                "returned_fee_tenure_credit (parameter): installments paid = 19 scheduled-installment payments - 2 returned = 17 (12 to 23) -> mid-tenure credit 3.00; baseline no credit.",
+                "returned_fee_protection_plan_credit (parameter, cross-difficulty warranty, multi-source): KestrelCare Gold active and financed in this contract AND KestrelCare Maintenance Standard active -> two-plan credit 4.00; baseline no credit.",
+                "returned_payment_channel_charge (parameter): the 2026-09-28 return entry shows online_ach (a one-time online bank payment) -> electronic return charge 2.00; baseline no charge.",
+                "plumbing: result = RND(MX(0, (30.00 + 10.00) x 1.5 - 3.00 - 4.00 + 2.00), 2) = 55.00."
+            ],
+            "baseline_result": 25.0,
+            "factor_sensitivity": [
+                {
+                    "factor": "returned_fee_state_schedule",
+                    "tier_taken": "a vehicle registered in Florida",
+                    "baseline_result": 47.5
+                },
+                {
+                    "factor": "returned_amount_addon",
+                    "tier_taken": "an amount above the large-return limit",
+                    "baseline_result": 40.0
+                },
+                {
+                    "factor": "repeat_return_multiplier",
+                    "tier_taken": "exactly two returned payments",
+                    "baseline_result": 35.0
+                },
+                {
+                    "factor": "returned_fee_tenure_credit",
+                    "tier_taken": "12 to 23 installments paid",
+                    "baseline_result": 58.0
+                },
+                {
+                    "factor": "returned_fee_protection_plan_credit",
+                    "tier_taken": "active service contract financed in this contract together with an active maintenance plan",
+                    "baseline_result": 59.0
+                },
+                {
+                    "factor": "returned_payment_channel_charge",
+                    "tier_taken": "a one-time online bank payment",
+                    "baseline_result": 53.0
+                }
+            ]
+        },
+        {
+            "policy_id": "finance_ext_late_fee_assessment",
+            "target_holding_id": "c8665e83-1373-4579-8555-0d68335d2442",
+            "step": 10,
+            "arg": "late_fee_amount",
+            "expected": 11.54,
+            "factor_trace": [
+                "late_fee_state_percentage (parameter, cross-difficulty purchase): registration_state FL -> Florida and North Carolina late-fee percentage 4.0; baseline the tier's 5.",
+                "late_fee_tenure_reduction (parameter): installments paid 17 (12 to 23) -> mid-tenure reduction 0.5 points; applied percentage 3.5; baseline no reduction.",
+                "late_fee_courtesy (method, multi-source): late fees in the prior 12 whole months = 1 (2026-04-03; 2025-08-03 is 14 months back and excluded) AND returned payments in the prior 6 whole months = 1 (2026-09-28; 2026-01-27 is 8 months back) -> returned-payment courtesy 0.6; baseline charged in full.",
+                "late_fee_small_payment_floor (parameter): monthly payment 549.45 < 600.00 AND contract age 18 whole months (>= 12) -> seasoned small-payment floor 10.00; baseline the tier's minimum 15.00.",
+                "plumbing: capped = MN(3.5/100 x 549.45 = 19.23075, 50.00); result = MX(10.00, RND(19.23075 x 0.6, 2) = 11.54) = 11.54."
+            ],
+            "baseline_result": 27.47,
+            "factor_sensitivity": [
+                {
+                    "factor": "late_fee_state_percentage",
+                    "tier_taken": "a vehicle registered in Florida or North Carolina",
+                    "baseline_result": 14.84
+                },
+                {
+                    "factor": "late_fee_tenure_reduction",
+                    "tier_taken": "12 to 23 installments paid",
+                    "baseline_result": 13.19
+                },
+                {
+                    "factor": "late_fee_courtesy",
+                    "tier_taken": "at most one late fee in 12 months and a returned payment in 6 months",
+                    "baseline_result": 19.23
+                },
+                {
+                    "factor": "late_fee_small_payment_floor",
+                    "tier_taken": "monthly payment below the small-payment limit on a contract at least 12 whole months old",
+                    "baseline_result": 15.0
+                }
+            ]
+        },
+        {
+            "policy_id": "finance_ext_deferral_qualifying_payment",
+            "target_holding_id": "c8665e83-1373-4579-8555-0d68335d2442",
+            "step": 12,
+            "arg": "total_received",
+            "expected": 512.55,
+            "factor_trace": [
+                "qualifying_standing_days (parameter, multi-source): installments paid 17 (>= 12) AND returned payments in 12 months 2 (>= 1) -> seasoned-borrower 15 days; baseline none.",
+                "qualifying_lateness_multiplier (method): late fees in the prior 12 whole months at handling time = 2 (2026-04-03 and the 2026-10-05 fee of step 10) -> two-late multiplier 1.5; baseline taken as they stand.",
+                "qualifying_program_allowance (parameter, cross-difficulty purchase): purchase order variant Kestrel Certified -> certified-program 2 days; baseline none.",
+                "qualifying_delinquency_allowance (parameter): days past due from 2026-09-23 to 2026-10-05 = 12 (1 to 15) -> early-stage 2 days; baseline none.",
+                "qualifying_seasoning_reduction (parameter): contract age 18 whole months (12 to 23) -> mid-seasoning reduction 1 day; baseline none.",
+                "plumbing: accrued interest = RND(19236.21 x 12.09/100/365 x 43, 2) = 273.98; fees due at handling time = 55.00 + 11.54 = 66.54 (value inputs of steps 8 and 10); good-faith days = (15 + 2 + 2 - 1) x 1.5 = 27; good-faith amount = RND(19236.21 x 12.09/100/365 x 27, 2) = 172.03; result = 273.98 + 66.54 + 172.03 = 512.55."
+            ],
+            "baseline_result": 340.52,
+            "factor_sensitivity": [
+                {
+                    "factor": "qualifying_standing_days",
+                    "tier_taken": "12 or more installments paid with a returned payment in 12 months",
+                    "baseline_result": 369.19
+                },
+                {
+                    "factor": "qualifying_lateness_multiplier",
+                    "tier_taken": "exactly two late fees in 12 months",
+                    "baseline_result": 455.21
+                },
+                {
+                    "factor": "qualifying_program_allowance",
+                    "tier_taken": "vehicle sold under Kestrel Certified",
+                    "baseline_result": 493.44
+                },
+                {
+                    "factor": "qualifying_delinquency_allowance",
+                    "tier_taken": "1 to 15 days past due",
+                    "baseline_result": 493.44
+                },
+                {
+                    "factor": "qualifying_seasoning_reduction",
+                    "tier_taken": "contract 12 to 23 whole months old",
+                    "baseline_result": 522.11
+                }
+            ]
+        },
+        {
+            "policy_id": "finance_ext_deferral_fee",
+            "target_holding_id": "c8665e83-1373-4579-8555-0d68335d2442",
+            "step": 14,
+            "arg": "deferral_fee",
+            "expected": 4.81,
+            "factor_trace": [
+                "deferral_state_charge_method (method, cross-difficulty purchase): registration_state FL -> one month of interest on the deferred installment = RND(549.45 x 12.09/100/12, 2) = 5.54; baseline the tier's deferral fee 25.00. Near-miss: the same purchase order's selling_dealer_state is GA; a reader who takes the dealer's state charges the Georgia lesser-of method (25.00) and lands on 34.00.",
+                "deferral_return_risk (method): returned payments in the prior 12 whole months = 2 -> x repeat-return risk factor 1.5 = 8.31; baseline taken as it stands.",
+                "deferral_good_faith_credit (parameter, multi-source): installments paid 17 (>= 12) AND one partial payment dated 2026-10-05 (step 12) -> seasoned good-faith credit 3.00; baseline none.",
+                "deferral_delinquency_surcharge (parameter): days past due 12 (1 to 15) -> early-stage surcharge 2.50; baseline none.",
+                "deferral_seasoning_credit (parameter): contract age 18 whole months -> mid-seasoning credit 1.00; baseline none.",
+                "deferral_first_extension_credit (parameter): deferral entries on the contract = 0 (no earlier deferral) -> first-extension credit 2.00; baseline none.",
+                "plumbing: result = RND(MX(0, 5.54 x 1.5 + 2.50 - 3.00 - 1.00 - 2.00), 2) = 4.81."
+            ],
+            "baseline_result": 25.0,
+            "factor_sensitivity": [
+                {
+                    "factor": "deferral_state_charge_method",
+                    "tier_taken": "a vehicle registered in Florida or Texas",
+                    "baseline_result": 34.0
+                },
+                {
+                    "factor": "deferral_return_risk",
+                    "tier_taken": "two or more returned payments",
+                    "baseline_result": 2.04
+                },
+                {
+                    "factor": "deferral_good_faith_credit",
+                    "tier_taken": "12 or more installments paid with a partial payment on the request date",
+                    "baseline_result": 7.81
+                },
+                {
+                    "factor": "deferral_delinquency_surcharge",
+                    "tier_taken": "1 to 15 days past due",
+                    "baseline_result": 2.31
+                },
+                {
+                    "factor": "deferral_seasoning_credit",
+                    "tier_taken": "contract 12 to 23 whole months old",
+                    "baseline_result": 5.81
+                },
+                {
+                    "factor": "deferral_first_extension_credit",
+                    "tier_taken": "no earlier deferral entry on the contract",
+                    "baseline_result": 6.81
+                }
+            ]
+        }
+    ],
+    "prerequisite_closure": {
+        "root_problem": "finance_ext_deferral_fee",
+        "edges": [
+            {
+                "from": "finance_ext_deferral_fee",
+                "to": "finance_ext_deferral_qualifying_payment",
+                "kind": "value_input",
+                "gate": "partial_payments_today",
+                "form": "state",
+                "condition": "The loan history carries a partial-payment entry dated the request date, the contract's fees due stand at zero and its last payment date equals the request date.",
+                "policy_source": "A deferral fee is not fixed until a partial payment posted on the request date has cleared the fees due and the interest accrued on the contract.",
+                "resolved_by": "pay_deferral_qualifying_amount_eaa14a46",
+                "unresolved_at_frozen_time": {
+                    "why_false": "At 2026-10-05 no partial-payment entry dated 2026-10-05 exists on the ledger; the last payment date is 2026-08-23, so 43 days of interest are accrued and unpaid.",
+                    "evidence": [
+                        "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442.last_payment_date = 2026-08-23",
+                        "initial_state.finance_transactions.68396be3-ed1b-4c5a-8976-e26d9357fd92.payment_type = scheduled_installment",
+                        "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442.fees_due = 0.0"
+                    ],
+                    "flips_to_true_by": "Step 12 posts a partial payment dated 2026-10-05 that pays the 273.98 accrued interest and the 66.54 fees: fees due 0.00, last payment date 2026-10-05, partial_payments_today 0 -> 1, good-faith credit 0 -> 3.00."
+                }
+            },
+            {
+                "from": "finance_ext_deferral_qualifying_payment",
+                "to": "finance_ext_late_fee_assessment",
+                "kind": "value_input",
+                "gate": "fees_outstanding",
+                "form": "state",
+                "condition": "Every installment of the contract whose due date plus the tier's grace days lies before the payment date and that no scheduled-installment payment has satisfied carries a late-fee entry naming it, so the contract's fees due include that late fee.",
+                "policy_source": "The deferral qualifying payment is fixed only after the loan history carries a late-fee entry naming every installment that is still unpaid after its grace period.",
+                "resolved_by": "assess_late_fee_56686208",
+                "unresolved_at_frozen_time": {
+                    "why_false": "The 2026-09-23 installment is unpaid (its payment was returned 2026-09-28), its grace period ended 2026-10-03, and no late-fee entry names it.",
+                    "evidence": [
+                        "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442.next_due_date = 2026-09-23",
+                        "initial_state.finance_transactions.8cd6ea04-9af1-41be-826a-52a6eda006e4.installment_due_date = 2026-09-23",
+                        "initial_state.finance_transactions.8cd6ea04-9af1-41be-826a-52a6eda006e4.event_type = finance_payment_returned"
+                    ],
+                    "flips_to_true_by": "Step 10 books the late fee 11.54 for installment 2026-09-23: fees due +11.54 and late fees in 12 months 1 -> 2 (lateness multiplier 1 -> 1.5)."
+                }
+            },
+            {
+                "from": "finance_ext_deferral_qualifying_payment",
+                "to": "finance_ext_returned_payment_fee",
+                "kind": "value_input",
+                "gate": "fees_outstanding",
+                "form": "state",
+                "condition": "Every returned-payment entry on the contract is matched by a returned-payment fee entry whose source names the payment the bank returned, so the contract's fees due include that fee.",
+                "policy_source": "The deferral qualifying payment is not fixed until the loan history carries a returned-payment fee entry naming every borrower payment the bank has returned.",
+                "resolved_by": "assess_returned_payment_fee_ca20439d",
+                "unresolved_at_frozen_time": {
+                    "why_false": "The return of 2026-09-28 has no returned-payment fee entry whose source names the returned payment; fees due are 0.00.",
+                    "evidence": [
+                        "initial_state.finance_transactions.8cd6ea04-9af1-41be-826a-52a6eda006e4.source_txn_id = 68396be3-ed1b-4c5a-8976-e26d9357fd92",
+                        "initial_state.finance_contracts.c8665e83-1373-4579-8555-0d68335d2442.fees_due = 0.0"
+                    ],
+                    "flips_to_true_by": "Step 8 books the returned-payment fee 55.00 naming that payment: fees due 0.00 -> 55.00."
+                }
+            }
+        ],
+        "resolution_order": [
+            "finance_ext_returned_payment_fee",
+            "finance_ext_late_fee_assessment",
+            "finance_ext_deferral_qualifying_payment",
+            "finance_ext_deferral_fee"
+        ],
+        "order_uniqueness": "The returned-payment fee (N) and the late fee (C) are parallel prerequisites of the qualifying payment and commute: neither computation reads what the other writes (N counts returned payments, the returned amount and channel, tenure and plans; C counts late fees and returned payments, never a returned-payment fee), and each write only adds its own fee entry (ids made from its own arguments) and raises fees due by its own amount. A swapped-order replay (steps 7-8 exchanged with 9-10): N=55.0, C=11.54, P=512.55, D=4.81 in both orders and the terminal DB hash is identical (True). The chain N,C -> P -> D is fixed by the two prerequisite sentences of the qualifying payment and the one of the deferral fee.",
+        "edge_load_bearing": [
+            {
+                "edge": "finance_ext_deferral_fee -> finance_ext_deferral_qualifying_payment",
+                "skipped_effect": "Without the partial payment the deferral fee is 7.81 instead of 4.81 (good-faith credit 3.00 -> 0), the partial-payment entry and fee-paid entry are missing, and fees due stay 66.54 instead of 0.00."
+            },
+            {
+                "edge": "finance_ext_deferral_qualifying_payment -> finance_ext_late_fee_assessment",
+                "skipped_effect": "Without the late fee the qualifying payment is 443.67 instead of 512.55 (fees 55.00 instead of 66.54; late fees in 12 months 1, multiplier 1, good-faith days 18 instead of 27), and the late-fee entry is missing."
+            },
+            {
+                "edge": "finance_ext_deferral_qualifying_payment -> finance_ext_returned_payment_fee",
+                "skipped_effect": "Without the returned-payment fee the qualifying payment is 457.55 instead of 512.55 (fees 11.54 instead of 66.54), and the fee entry is missing."
+            }
+        ],
+        "no_user_hint": "user_scenario says only that the September payment 'never went through' and asks for it to be moved to the end of the loan; it never mentions a late fee, a returned-payment fee, a fee owed, interest owed or a qualifying payment, and contains none of the policy ids. Her only line about paying is a passive branch: she pays only if the representative tells her a payment of her own is needed, and she asks how much.",
+        "tools_do_not_block": "In task_tools.py, grant_payment_deferral_f4f9e9cb books the deferral with whatever dates and fee it is given and never reads the fees due, the last payment date or the ledger for a partial payment; pay_deferral_qualifying_amount_eaa14a46 posts the split it is given and never looks for unassessed fees; assess_late_fee_56686208 and assess_returned_payment_fee_ca20439d create their fee entries unconditionally. None of them returns an error or a hint when a prerequisite is unmet."
+    },
+    "charter_scope": {
+        "extended_policies": [
+            "finance_ext_returned_payment_fee",
+            "finance_ext_late_fee_assessment",
+            "finance_ext_deferral_qualifying_payment",
+            "finance_ext_deferral_fee"
+        ],
+        "task_tools": [
+            "assess_returned_payment_fee_ca20439d",
+            "assess_late_fee_56686208",
+            "pay_deferral_qualifying_amount_eaa14a46",
+            "grant_payment_deferral_f4f9e9cb"
+        ]
+    },
+    "required_documents": [
+        "finance_ext_returned_payment_fee",
+        "finance_ext_late_fee_assessment",
+        "finance_ext_deferral_qualifying_payment",
+        "finance_ext_deferral_fee"
+    ]
+}

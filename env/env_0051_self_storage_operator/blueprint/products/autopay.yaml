@@ -1,0 +1,930 @@
+# Policy charter: Bluegate AutoPay recurring payment authorizations.
+category: autopay
+display_name: Bluegate AutoPay Authorization
+
+binding:
+  holding_table: autopay_enrollments
+  event_tables: [autopay_drafts, autopay_notices]
+  status_field: status
+  variant_field: variant_name
+
+lifecycle:
+  states: [pending_verification, active, suspended, cancelled, replaced]
+  transitions:
+    - {from: pending_verification, to: active, by: system, means: "The payment method is verified and AutoPay starts drafting."}
+    - {from: pending_verification, to: cancelled, by: system, means: "Verification fails or is not completed inside the verification window."}
+    - {from: pending_verification, to: cancelled, by: user, means: "The tenant withdraws the authorization before it is verified."}
+    - {from: active, to: suspended, by: system, means: "Drafting stops after repeated failed drafts or a return that ends the authorization's usability."}
+    - {from: suspended, to: active, by: user, means: "The tenant re-authorizes the same payment method after the cause of the suspension is fixed."}
+    - {from: active, to: cancelled, by: user, means: "The tenant revokes the AutoPay authorization."}
+    - {from: suspended, to: cancelled, by: user, means: "The tenant revokes a suspended authorization."}
+    - {from: active, to: replaced, by: system, means: "A new authorization on the same agreement is verified and takes over drafting."}
+    - {from: suspended, to: replaced, by: system, means: "A new authorization on the same agreement is verified and takes over from a suspended one."}
+
+accounts: []
+
+parameter_schema:
+  payment_rail: "Payment network the drafts run on, enum string."
+  ach_sec_code: "NACHA standard entry class used for web and phone authorizations of this method; none for cards, enum string."
+  phone_authorization_allowed: "Whether the authorization can be taken by recorded phone call at the care center, boolean."
+  phone_authorization_sec_code: "NACHA entry class for a phone-taken ACH authorization; none for cards, enum string."
+  authorization_copy_delivery: "How the tenant receives a copy of the authorization, enum string."
+  verification_method: "How the payment method is verified before drafting, enum string."
+  verification_window_days: "Calendar days after enrollment within which verification must be completed, integer."
+  micro_deposit_attempts_allowed: "Wrong micro-deposit amount entries allowed before verification fails, integer."
+  customer_type_required: "Customer profile type that may use this method, enum string."
+  account_holder_must_match: "Whose name the card or bank account must be in, enum string."
+  accepted_card_networks: "Card networks accepted, list of enum strings (empty for bank accounts)."
+  prepaid_cards_accepted: "Whether prepaid or gift cards are accepted, boolean."
+  hsa_fsa_cards_accepted: "Whether HSA or FSA cards are accepted, boolean."
+  covered_agreement_kinds: "Kinds of agreement this method can draft for, list of enum strings."
+  max_agreements_per_enrollment: "Agreements one authorization covers, integer."
+  draft_timing: "When the draft runs relative to the rent due date, enum string."
+  draft_days_before_due: "Calendar days before the due date the draft runs, integer (0 = on the due date)."
+  enrollment_cutoff_days_before_due: "Calendar days before a due date by which the method must be verified for that period to be drafted, integer."
+  cancel_cutoff_days_before_due: "Calendar days before a due date by which a revocation stops that period's draft, integer."
+  draft_amount_basis: "What the draft collects, enum string."
+  draft_cap_usd: "Largest amount drafted without the tenant's express approval; a larger balance is not drafted, USD."
+  over_cap_handling: "What happens when the balance exceeds the draft cap, enum string."
+  partial_draft_allowed: "Whether a draft may collect less than the amount basis, boolean."
+  skip_a_month_allowed: "Whether a tenant may skip one period's draft while staying enrolled, boolean."
+  varying_amount_notice_days: "Calendar days before the draft date that the tenant must be told of an amount different from the last draft, integer (0 = no notice rule)."
+  retry_on_decline: "Whether a declined card draft is retried, boolean."
+  retry_interval_days: "Calendar days between a failed draft and its retry, integer."
+  max_retries_per_draft: "Retries after the first attempt for one due date, integer."
+  ach_represent_on_nsf: "Whether an ACH draft returned for insufficient or uncollected funds is presented again, boolean."
+  max_represents_per_entry: "Times one returned ACH entry may be presented again, integer."
+  consecutive_failures_to_suspend: "Consecutive due dates with no successful draft after which AutoPay is suspended, integer."
+  immediate_suspend_return_codes: "ACH return codes or card decline reasons that suspend AutoPay at once, list of enum strings."
+  unauthorized_return_codes: "Return codes that mean the tenant disputes authorizing the draft, list of enum strings."
+  return_window_banking_days: "Banking days after settlement within which an ordinary ACH return may arrive, integer (0 for cards)."
+  unauthorized_return_window_days: "Calendar days after settlement within which an unauthorized-debit return may arrive, integer (0 for cards)."
+  chargeback_window_days: "Calendar days after a card draft within which a chargeback may arrive, integer (0 for bank accounts)."
+  payment_posts_on: "When a successful draft is posted to the agreement ledger, enum string."
+  account_updater_enabled: "Whether card number and expiry changes from the issuer are applied automatically, boolean."
+  expiry_reminder_days_before: "Calendar days before card expiry that a reminder is sent, integer (0 for bank accounts)."
+  same_method_update_allowed: "Whether a replacement card or corrected bank details of the same method can be updated on the existing authorization, boolean."
+  method_change_requires_new_enrollment: "Whether switching to a different method requires a new authorization, boolean."
+  reinstatement_requires: "What a suspended authorization needs to be reinstated, enum string."
+  reinstatement_window_days: "Calendar days after suspension within which reinstatement is possible; after that a new enrollment is needed, integer."
+  failure_notice_channels: "How the tenant is told of a failed draft, list of enum strings."
+  confirmation_channels: "How the tenant is told of enrollment, changes and cancellation, list of enum strings."
+  draft_time_of_day: "Time of day drafts are submitted, facility local time, enum string."
+  business_days_calendar: "Banking calendar used for ACH settlement and return windows, enum string."
+  max_enrollment_changes_per_12_months: "New authorizations a tenant may set up on one agreement in any rolling 365-day window, integer."
+
+variants:
+  - name: "Bluegate AutoPay (Debit Card)"
+    rank: 1
+    entry_gate:
+      customer_type: "individual"
+      holder_is_tenant: true
+      card_not_prepaid: true
+    parameters:
+      payment_rail: "card_network"
+      ach_sec_code: "none"
+      phone_authorization_allowed: true
+      phone_authorization_sec_code: "none"
+      authorization_copy_delivery: "email"
+      verification_method: "zero_dollar_authorization"
+      verification_window_days: 0
+      micro_deposit_attempts_allowed: 0
+      customer_type_required: "individual"
+      account_holder_must_match: "tenant"
+      accepted_card_networks: ["visa", "mastercard", "discover"]
+      prepaid_cards_accepted: false
+      hsa_fsa_cards_accepted: false
+      covered_agreement_kinds: ["unit_rental", "parking_rental"]
+      max_agreements_per_enrollment: 1
+      draft_timing: "on_due_date"
+      draft_days_before_due: 0
+      enrollment_cutoff_days_before_due: 1
+      cancel_cutoff_days_before_due: 1
+      draft_amount_basis: "full_balance_due"
+      draft_cap_usd: 1500.0
+      over_cap_handling: "skip_and_notify"
+      partial_draft_allowed: false
+      skip_a_month_allowed: false
+      varying_amount_notice_days: 0
+      retry_on_decline: true
+      retry_interval_days: 3
+      max_retries_per_draft: 2
+      ach_represent_on_nsf: false
+      max_represents_per_entry: 0
+      consecutive_failures_to_suspend: 2
+      immediate_suspend_return_codes: ["declined_card_closed", "declined_lost_stolen", "card_chargeback_unauthorized"]
+      unauthorized_return_codes: ["card_chargeback_unauthorized"]
+      return_window_banking_days: 0
+      unauthorized_return_window_days: 0
+      chargeback_window_days: 120
+      payment_posts_on: "draft_date"
+      account_updater_enabled: true
+      expiry_reminder_days_before: 30
+      same_method_update_allowed: true
+      method_change_requires_new_enrollment: true
+      reinstatement_requires: "tenant_reauthorization"
+      reinstatement_window_days: 30
+      failure_notice_channels: ["email", "sms"]
+      confirmation_channels: ["email"]
+      draft_time_of_day: "06:00"
+      business_days_calendar: "none"
+      max_enrollment_changes_per_12_months: 4
+  - name: "Bluegate AutoPay (Credit Card)"
+    rank: 2
+    entry_gate:
+      customer_type: "individual"
+      holder_is_tenant: true
+      card_not_prepaid: true
+    parameters:
+      payment_rail: "card_network"
+      ach_sec_code: "none"
+      phone_authorization_allowed: true
+      phone_authorization_sec_code: "none"
+      authorization_copy_delivery: "email"
+      verification_method: "zero_dollar_authorization"
+      verification_window_days: 0
+      micro_deposit_attempts_allowed: 0
+      customer_type_required: "individual"
+      account_holder_must_match: "tenant"
+      accepted_card_networks: ["visa", "mastercard", "discover", "american_express"]
+      prepaid_cards_accepted: false
+      hsa_fsa_cards_accepted: false
+      covered_agreement_kinds: ["unit_rental", "parking_rental"]
+      max_agreements_per_enrollment: 1
+      draft_timing: "on_due_date"
+      draft_days_before_due: 0
+      enrollment_cutoff_days_before_due: 1
+      cancel_cutoff_days_before_due: 1
+      draft_amount_basis: "full_balance_due"
+      draft_cap_usd: 2500.0
+      over_cap_handling: "skip_and_notify"
+      partial_draft_allowed: false
+      skip_a_month_allowed: false
+      varying_amount_notice_days: 0
+      retry_on_decline: true
+      retry_interval_days: 3
+      max_retries_per_draft: 2
+      ach_represent_on_nsf: false
+      max_represents_per_entry: 0
+      consecutive_failures_to_suspend: 2
+      immediate_suspend_return_codes: ["declined_card_closed", "declined_lost_stolen", "card_chargeback_unauthorized"]
+      unauthorized_return_codes: ["card_chargeback_unauthorized"]
+      return_window_banking_days: 0
+      unauthorized_return_window_days: 0
+      chargeback_window_days: 120
+      payment_posts_on: "draft_date"
+      account_updater_enabled: true
+      expiry_reminder_days_before: 30
+      same_method_update_allowed: true
+      method_change_requires_new_enrollment: true
+      reinstatement_requires: "tenant_reauthorization"
+      reinstatement_window_days: 30
+      failure_notice_channels: ["email", "sms"]
+      confirmation_channels: ["email"]
+      draft_time_of_day: "06:00"
+      business_days_calendar: "none"
+      max_enrollment_changes_per_12_months: 4
+  - name: "Bluegate AutoPay (Personal Checking ACH)"
+    rank: 3
+    entry_gate:
+      customer_type: "individual"
+      holder_is_tenant: true
+      us_bank_account: true
+    parameters:
+      payment_rail: "ach"
+      ach_sec_code: "WEB"
+      phone_authorization_allowed: true
+      phone_authorization_sec_code: "TEL"
+      authorization_copy_delivery: "email"
+      verification_method: "micro_deposits"
+      verification_window_days: 5
+      micro_deposit_attempts_allowed: 3
+      customer_type_required: "individual"
+      account_holder_must_match: "tenant_or_joint_holder"
+      accepted_card_networks: []
+      prepaid_cards_accepted: false
+      hsa_fsa_cards_accepted: false
+      covered_agreement_kinds: ["unit_rental", "parking_rental"]
+      max_agreements_per_enrollment: 1
+      draft_timing: "before_due_date"
+      draft_days_before_due: 2
+      enrollment_cutoff_days_before_due: 3
+      cancel_cutoff_days_before_due: 3
+      draft_amount_basis: "full_balance_due"
+      draft_cap_usd: 1500.0
+      over_cap_handling: "skip_and_notify"
+      partial_draft_allowed: false
+      skip_a_month_allowed: false
+      varying_amount_notice_days: 10
+      retry_on_decline: false
+      retry_interval_days: 3
+      max_retries_per_draft: 0
+      ach_represent_on_nsf: true
+      max_represents_per_entry: 1
+      consecutive_failures_to_suspend: 2
+      immediate_suspend_return_codes: ["R02_account_closed", "R03_no_account", "R07_authorization_revoked", "R10_not_authorized"]
+      unauthorized_return_codes: ["R07_authorization_revoked", "R10_not_authorized"]
+      return_window_banking_days: 2
+      unauthorized_return_window_days: 60
+      chargeback_window_days: 0
+      payment_posts_on: "settlement_date"
+      account_updater_enabled: false
+      expiry_reminder_days_before: 0
+      same_method_update_allowed: true
+      method_change_requires_new_enrollment: true
+      reinstatement_requires: "tenant_reauthorization"
+      reinstatement_window_days: 30
+      failure_notice_channels: ["email", "sms"]
+      confirmation_channels: ["email"]
+      draft_time_of_day: "06:00"
+      business_days_calendar: "federal_reserve"
+      max_enrollment_changes_per_12_months: 4
+  - name: "Bluegate AutoPay (Personal Savings ACH)"
+    rank: 4
+    entry_gate:
+      customer_type: "individual"
+      holder_is_tenant: true
+      us_bank_account: true
+    parameters:
+      payment_rail: "ach"
+      ach_sec_code: "WEB"
+      phone_authorization_allowed: true
+      phone_authorization_sec_code: "TEL"
+      authorization_copy_delivery: "email"
+      verification_method: "micro_deposits"
+      verification_window_days: 5
+      micro_deposit_attempts_allowed: 3
+      customer_type_required: "individual"
+      account_holder_must_match: "tenant_or_joint_holder"
+      accepted_card_networks: []
+      prepaid_cards_accepted: false
+      hsa_fsa_cards_accepted: false
+      covered_agreement_kinds: ["unit_rental", "parking_rental"]
+      max_agreements_per_enrollment: 1
+      draft_timing: "before_due_date"
+      draft_days_before_due: 2
+      enrollment_cutoff_days_before_due: 3
+      cancel_cutoff_days_before_due: 3
+      draft_amount_basis: "full_balance_due"
+      draft_cap_usd: 1500.0
+      over_cap_handling: "skip_and_notify"
+      partial_draft_allowed: false
+      skip_a_month_allowed: false
+      varying_amount_notice_days: 10
+      retry_on_decline: false
+      retry_interval_days: 3
+      max_retries_per_draft: 0
+      ach_represent_on_nsf: true
+      max_represents_per_entry: 1
+      consecutive_failures_to_suspend: 2
+      immediate_suspend_return_codes: ["R02_account_closed", "R03_no_account", "R07_authorization_revoked", "R10_not_authorized"]
+      unauthorized_return_codes: ["R07_authorization_revoked", "R10_not_authorized"]
+      return_window_banking_days: 2
+      unauthorized_return_window_days: 60
+      chargeback_window_days: 0
+      payment_posts_on: "settlement_date"
+      account_updater_enabled: false
+      expiry_reminder_days_before: 0
+      same_method_update_allowed: true
+      method_change_requires_new_enrollment: true
+      reinstatement_requires: "tenant_reauthorization"
+      reinstatement_window_days: 30
+      failure_notice_channels: ["email", "sms"]
+      confirmation_channels: ["email"]
+      draft_time_of_day: "06:00"
+      business_days_calendar: "federal_reserve"
+      max_enrollment_changes_per_12_months: 4
+  - name: "Bluegate AutoPay (Business Checking ACH)"
+    rank: 5
+    entry_gate:
+      customer_type: "business"
+      holder_is_business_on_profile: true
+      us_bank_account: true
+    parameters:
+      payment_rail: "ach"
+      ach_sec_code: "CCD"
+      phone_authorization_allowed: false
+      phone_authorization_sec_code: "none"
+      authorization_copy_delivery: "email"
+      verification_method: "micro_deposits"
+      verification_window_days: 7
+      micro_deposit_attempts_allowed: 3
+      customer_type_required: "business"
+      account_holder_must_match: "business_on_profile"
+      accepted_card_networks: []
+      prepaid_cards_accepted: false
+      hsa_fsa_cards_accepted: false
+      covered_agreement_kinds: ["unit_rental", "parking_rental"]
+      max_agreements_per_enrollment: 1
+      draft_timing: "before_due_date"
+      draft_days_before_due: 2
+      enrollment_cutoff_days_before_due: 3
+      cancel_cutoff_days_before_due: 3
+      draft_amount_basis: "full_balance_due"
+      draft_cap_usd: 10000.0
+      over_cap_handling: "skip_and_notify"
+      partial_draft_allowed: false
+      skip_a_month_allowed: false
+      varying_amount_notice_days: 0
+      retry_on_decline: false
+      retry_interval_days: 3
+      max_retries_per_draft: 0
+      ach_represent_on_nsf: true
+      max_represents_per_entry: 2
+      consecutive_failures_to_suspend: 3
+      immediate_suspend_return_codes: ["R02_account_closed", "R03_no_account", "R29_corporate_not_authorized"]
+      unauthorized_return_codes: ["R29_corporate_not_authorized"]
+      return_window_banking_days: 2
+      unauthorized_return_window_days: 2
+      chargeback_window_days: 0
+      payment_posts_on: "settlement_date"
+      account_updater_enabled: false
+      expiry_reminder_days_before: 0
+      same_method_update_allowed: true
+      method_change_requires_new_enrollment: true
+      reinstatement_requires: "tenant_reauthorization"
+      reinstatement_window_days: 45
+      failure_notice_channels: ["email"]
+      confirmation_channels: ["email"]
+      draft_time_of_day: "06:00"
+      business_days_calendar: "federal_reserve"
+      max_enrollment_changes_per_12_months: 6
+  - name: "Bluegate AutoPay (Business Card)"
+    rank: 6
+    entry_gate:
+      customer_type: "business"
+      holder_is_business_on_profile: true
+      card_not_prepaid: true
+    parameters:
+      payment_rail: "card_network"
+      ach_sec_code: "none"
+      phone_authorization_allowed: true
+      phone_authorization_sec_code: "none"
+      authorization_copy_delivery: "email"
+      verification_method: "zero_dollar_authorization"
+      verification_window_days: 0
+      micro_deposit_attempts_allowed: 0
+      customer_type_required: "business"
+      account_holder_must_match: "business_on_profile"
+      accepted_card_networks: ["visa", "mastercard", "american_express"]
+      prepaid_cards_accepted: false
+      hsa_fsa_cards_accepted: false
+      covered_agreement_kinds: ["unit_rental", "parking_rental"]
+      max_agreements_per_enrollment: 1
+      draft_timing: "on_due_date"
+      draft_days_before_due: 0
+      enrollment_cutoff_days_before_due: 1
+      cancel_cutoff_days_before_due: 1
+      draft_amount_basis: "full_balance_due"
+      draft_cap_usd: 7500.0
+      over_cap_handling: "skip_and_notify"
+      partial_draft_allowed: false
+      skip_a_month_allowed: false
+      varying_amount_notice_days: 0
+      retry_on_decline: true
+      retry_interval_days: 3
+      max_retries_per_draft: 2
+      ach_represent_on_nsf: false
+      max_represents_per_entry: 0
+      consecutive_failures_to_suspend: 3
+      immediate_suspend_return_codes: ["declined_card_closed", "declined_lost_stolen", "card_chargeback_unauthorized"]
+      unauthorized_return_codes: ["card_chargeback_unauthorized"]
+      return_window_banking_days: 0
+      unauthorized_return_window_days: 0
+      chargeback_window_days: 120
+      payment_posts_on: "draft_date"
+      account_updater_enabled: true
+      expiry_reminder_days_before: 30
+      same_method_update_allowed: true
+      method_change_requires_new_enrollment: true
+      reinstatement_requires: "tenant_reauthorization"
+      reinstatement_window_days: 45
+      failure_notice_channels: ["email"]
+      confirmation_channels: ["email"]
+      draft_time_of_day: "06:00"
+      business_days_calendar: "none"
+      max_enrollment_changes_per_12_months: 6
+
+events:
+  - type: autopay_enrollment
+    target: autopay_enrollments
+    mutation: create
+    meaning: "The tenant authorizes Bluegate to draft one rental agreement's balance from a card or bank account."
+    grain: "One authorization record per agreement per method set up."
+    fields:
+      customer_id: "Tenant authorizing."
+      variant_name: "AutoPay method, official full name."
+      agreement_kind: "Kind of agreement drafted for."
+      agreement_id: "Agreement drafted for."
+      enrollment_date: "Date the authorization is given."
+      method_last4: "Last four digits of the card or bank account, as stated by the tenant."
+      card_expiry: "Card expiry as printed (MM/YY); empty for bank accounts."
+      account_holder_name: "Name on the card or bank account, exactly as stated."
+      authorization_channel: "Channel the authorization came through."
+    triggers: []
+  - type: autopay_verified
+    target: autopay_enrollments
+    mutation: {transition: {from: pending_verification, to: active}}
+    meaning: "The payment method passes verification and the authorization becomes active."
+    grain: "One transition per authorization."
+    fields:
+      verified_date: "Date verified."
+      first_draft_due_date: "First rent due date that will be drafted, under the cutoff rule."
+      next_draft_due_date: "Next due date the authorization will draft."
+    triggers: []
+  - type: autopay_verification_failed
+    target: autopay_enrollments
+    mutation: {transition: {from: pending_verification, to: cancelled}}
+    meaning: "Verification fails or lapses and the authorization is cancelled."
+    grain: "One transition per authorization."
+    fields:
+      cancellation_date: "Date cancelled."
+      end_reason: "Why the authorization ended."
+    triggers: []
+  - type: autopay_draft
+    target: autopay_drafts
+    meaning: "One attempt to collect a rent due date's balance under the authorization."
+    grain: "One row per due date per attempt."
+    distinguish_by: [due_date, attempt_number]
+    fields:
+      agreement_kind: "Kind of agreement drafted."
+      agreement_id: "Agreement drafted."
+      due_date: "Rent due date the draft is for."
+      draft_date: "Date submitted."
+      attempt_number: "1 for the first attempt, 2 and up for retries or re-presentments."
+      amount: "Amount drafted, USD (0.00 when skipped)."
+      result: "Outcome of the attempt."
+    triggers:
+      - event: unit:unit_payment
+        when: {result: [approved, ach_settled], agreement_kind: unit_rental}
+        map: {amount: amount, autopay_draft_id: autopay_draft_id, payment_channel: autopay}
+      - event: parking:parking_payment
+        when: {result: [approved, ach_settled], agreement_kind: parking_rental}
+        map: {amount: amount, autopay_draft_id: autopay_draft_id, payment_channel: autopay}
+      - event: autopay:autopay_suspension
+        when: {result: [declined_card_closed, declined_lost_stolen]}
+        map: {suspension_reason: card_closed_or_lost}
+      - event: autopay:autopay_notice
+        when: {result: [declined_insufficient_funds, declined_expired_card, declined_card_closed, declined_lost_stolen, skipped_over_cap]}
+        map: {notice_type: draft_failure_notice}
+  - type: autopay_draft_returned
+    target: autopay_drafts
+    meaning: "A settled ACH draft is returned by the tenant's bank, or a card draft is charged back."
+    grain: "One row per returned draft."
+    distinguish_by: [reference_draft_id]
+    fields:
+      agreement_kind: "Kind of agreement the draft paid."
+      agreement_id: "Agreement the draft paid."
+      reference_draft_id: "The draft returned."
+      draft_date: "Date the return or chargeback is received."
+      amount: "Amount returned, USD."
+      return_code: "Return code or chargeback reason."
+    triggers:
+      - event: unit:unit_payment_reversal
+        when: {agreement_kind: unit_rental}
+        map: {amount: amount}
+      - event: parking:parking_payment_reversal
+        when: {agreement_kind: parking_rental}
+        map: {amount: amount}
+      - event: autopay:autopay_suspension
+        when: {return_code: [R02_account_closed, R03_no_account, R07_authorization_revoked, R10_not_authorized, R29_corporate_not_authorized, card_chargeback_unauthorized]}
+        map: {suspension_reason: return_ends_authorization}
+  - type: autopay_suspension
+    target: autopay_enrollments
+    mutation: {transition: {from: active, to: suspended}}
+    meaning: "Drafting stops because of repeated failures or a return or decline that makes the method unusable."
+    grain: "One transition per suspension."
+    fields:
+      suspension_date: "Date suspended."
+      suspension_reason: "Why suspended."
+    triggers: []
+  - type: autopay_reinstatement
+    target: autopay_enrollments
+    mutation: {transition: {from: suspended, to: active}}
+    meaning: "The tenant re-authorizes the same method after fixing the cause of the suspension."
+    grain: "One transition per reinstatement."
+    fields:
+      reinstated_date: "Date reinstated."
+    triggers: []
+  - type: autopay_cancellation
+    target: autopay_enrollments
+    mutation: {transition: [{from: active, to: cancelled}, {from: suspended, to: cancelled}, {from: pending_verification, to: cancelled}]}
+    meaning: "The tenant revokes the AutoPay authorization."
+    grain: "One transition per authorization."
+    fields:
+      cancellation_date: "Date the revocation is received."
+      end_reason: "Set to tenant_revoked."
+    triggers: []
+  - type: autopay_replacement
+    target: autopay_enrollments
+    mutation: {transition: [{from: active, to: replaced}, {from: suspended, to: replaced}]}
+    meaning: "An older authorization on the same agreement is retired when a new one is verified."
+    grain: "One transition per retired authorization."
+    fields:
+      cancellation_date: "Date retired."
+      end_reason: "Set to replaced_by_new_method."
+    triggers: []
+  - type: autopay_method_update
+    target: autopay_enrollments
+    mutation: update
+    meaning: "A replacement card of the same method, or a new expiry, is recorded on the existing authorization."
+    grain: "One update per change of card details."
+    fields:
+      method_last4: "Last four digits of the replacement card."
+      card_expiry: "New expiry as printed (MM/YY)."
+    triggers: []
+  - type: autopay_notice
+    target: autopay_notices
+    meaning: "A notice is sent to the tenant about AutoPay: a varying-amount notice, a card expiry reminder, a failed-draft notice or a suspension notice."
+    grain: "One row per notice type per due date."
+    distinguish_by: [notice_type, related_due_date]
+    fields:
+      notice_type: "Kind of notice."
+      notice_date: "Date sent."
+      related_due_date: "Due date the notice concerns (for an expiry reminder, the first due date after expiry)."
+      notified_amount: "Amount the tenant is told will be drafted, USD; empty for other notices."
+    triggers: []
+
+measures:
+  - id: autopay_msr_consecutive_failed_due_dates
+    window: "Due dates of the authorization in order up to the handling date, counted back from the latest one until a due date with a successful draft is reached."
+    measure: "Count of consecutive due dates whose every autopay_draft attempt has a result other than approved or ach_settled, or whose settled draft was later returned."
+  - id: autopay_msr_enrollments_365d
+    window: "Rolling 365 calendar days ending on the handling date, inclusive, per agreement."
+    measure: "Count of autopay_enrollments rows on the agreement whose enrollment_date falls in the window."
+
+policies:
+  - id: autopay_agg_multi_holding
+    subject: [autopay_enrollment]
+    rule: >-
+      A tenant may have one AutoPay authorization per rental agreement, so a tenant with several agreements holds several
+      authorizations, each drafting only its own agreement. An agreement may have only one authorization in pending_verification or
+      active status at one time from the tenant's point of view: a new enrollment on an agreement that already has one is accepted as a
+      replacement, and the older one is retired when the new one is verified. AutoPay covers storage unit and parking agreements only;
+      truck rentals, protection fees billed separately and business invoices are not drafted. New authorizations on one agreement,
+      counted by autopay_msr_enrollments_365d, must be below max_enrollment_changes_per_12_months.
+    eligibility: []
+    params:
+      max_per_customer: null
+    measures: [autopay_msr_enrollments_365d]
+
+  - id: autopay_agg_one_draft_per_agreement
+    subject: [autopay_draft, autopay_replacement]
+    rule: >-
+      Only one authorization drafts an agreement for a given due date: when a new authorization is verified before the cutoff of the
+      next due date, that due date is drafted by the new authorization and the old one is retired; when it is verified after the cutoff,
+      the old authorization still drafts that due date and is retired the day after. A due date is never drafted by two authorizations.
+      Each attempt number on a due date is used once.
+    eligibility:
+      - id: one_attempt_per_number
+        applies_to: [autopay_draft]
+        kind: dedup
+        condition: "Each attempt number on a due date is used once."
+        evidence_fields: [autopay_drafts.agreement_id, autopay_drafts.due_date, autopay_drafts.attempt_number]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[autopay_drafts.agreement_id, autopay_drafts.due_date]]
+          action_bindings: {autopay_drafts.agreement_id: agreement_id, autopay_drafts.due_date: due_date}
+        dedup_contract:
+          table: autopay_drafts
+          mode: separate_record
+          object_bindings: {agreement_id: agreement_id, due_date: due_date, attempt_number: attempt_number}
+          duplicate_filters: {event_type: [autopay_draft]}
+          distinct_fields: [attempt_number]
+
+  - id: autopay_evt_enrollment_verification
+    subject: [autopay_enrollment, autopay_verified, autopay_verification_failed]
+    rule: >-
+      Only the tenant can authorize AutoPay; the care center records the authorization the tenant gives online or on a recorded call
+      where phone_authorization_allowed is true, and sends a copy by authorization_copy_delivery. The covered agreement must be in active,
+      delinquent or moving_out status for a storage unit, or active, delinquent, termination_noticed or moving_out status for parking, and
+      must belong to the authorizing tenant. The card or account must be in the name required by account_holder_must_match, on a network
+      in accepted_card_networks for cards, and of the customer type in customer_type_required; prepaid and HSA or FSA cards are refused
+      where the switches say so. Cards are verified at once by verification_method; bank accounts by micro-deposits, which must be
+      confirmed within verification_window_days, with micro_deposit_attempts_allowed wrong entries before verification fails. A
+      verification may be completed only when the handling date is not later than the enrollment date plus verification_window_days.
+      Window days are calendar days counted from the day after the enrollment date, and the last counted day is included. The first due
+      date drafted is the first due date that falls at least enrollment_cutoff_days_before_due calendar days after the verified date;
+      an earlier due date is paid by the tenant directly.
+      Drafts run on payment_rail; ACH authorizations use ach_sec_code online and phone_authorization_sec_code by phone. Prepaid cards are taken only where prepaid_cards_accepted is true and HSA or FSA cards only where hsa_fsa_cards_accepted is true. One authorization covers max_agreements_per_enrollment agreement of a kind in covered_agreement_kinds.
+    eligibility:
+      - id: agreement_status
+        applies_to: [autopay_enrollment]
+        kind: authorization
+        condition: "The covered agreement must be in active, delinquent or moving_out status for a storage unit, or active, delinquent, termination_noticed or moving_out status for parking, and must belong to the authorizing tenant."
+        evidence_fields: [unit_rentals.status, parking_rentals.status, autopay_enrollments.agreement_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[autopay_enrollments.agreement_id]]
+          action_bindings: {autopay_enrollments.agreement_id: agreement_id}
+      - id: holder_match
+        applies_to: [autopay_enrollment]
+        kind: caller_fact
+        condition: "The card or account must be in the name required by account_holder_must_match, on a network in accepted_card_networks for cards, and of the customer type in customer_type_required; prepaid and HSA or FSA cards are refused where the switches say so."
+        evidence_fields: [customers.customer_id, customers.full_name, customers.business_name, customers.customer_type, autopay_enrollments.account_holder_name]
+        evidence_contract:
+          authority: mixed
+          timing: pre_action
+          correlation_keys: [[customers.customer_id]]
+          action_bindings: {customers.customer_id: customer_id}
+      - id: verification_window
+        applies_to: [autopay_verified]
+        kind: time
+        condition: "A verification may be completed only when the handling date is not later than the enrollment date plus verification_window_days."
+        evidence_fields: [autopay_enrollments.enrollment_date, autopay_enrollments.autopay_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[autopay_enrollments.autopay_id]]
+          action_bindings: {autopay_enrollments.autopay_id: autopay_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the enrollment date"
+          anchor_source: autopay_enrollments.enrollment_date
+          relation: not_after
+          duration_source: variants.verification_window_days
+          unit: calendar_days
+          counting_rule: "Window days are calendar days counted from the day after the enrollment date, and the last counted day is included."
+          boundary: inclusive
+    params:
+      per_tier:
+        Bluegate AutoPay (Debit Card): {verification_method: "=verification_method", verification_window_days: "=verification_window_days", enrollment_cutoff_days_before_due: "=enrollment_cutoff_days_before_due", customer_type_required: "=customer_type_required"}
+        Bluegate AutoPay (Credit Card): {verification_method: "=verification_method", verification_window_days: "=verification_window_days", enrollment_cutoff_days_before_due: "=enrollment_cutoff_days_before_due", customer_type_required: "=customer_type_required"}
+        Bluegate AutoPay (Personal Checking ACH): {verification_method: "=verification_method", verification_window_days: "=verification_window_days", enrollment_cutoff_days_before_due: "=enrollment_cutoff_days_before_due", customer_type_required: "=customer_type_required"}
+        Bluegate AutoPay (Personal Savings ACH): {verification_method: "=verification_method", verification_window_days: "=verification_window_days", enrollment_cutoff_days_before_due: "=enrollment_cutoff_days_before_due", customer_type_required: "=customer_type_required"}
+        Bluegate AutoPay (Business Checking ACH): {verification_method: "=verification_method", verification_window_days: "=verification_window_days", enrollment_cutoff_days_before_due: "=enrollment_cutoff_days_before_due", customer_type_required: "=customer_type_required"}
+        Bluegate AutoPay (Business Card): {verification_method: "=verification_method", verification_window_days: "=verification_window_days", enrollment_cutoff_days_before_due: "=enrollment_cutoff_days_before_due", customer_type_required: "=customer_type_required"}
+
+  - id: autopay_evt_draft_amount_timing
+    subject: [autopay_draft]
+    rule: >-
+      Drafts run on the agreement's rent due date (draft_timing), draft_days_before_due days before it, at draft_time_of_day. A draft runs
+      only while the authorization is in active status. The draft collects the agreement's full balance due on the draft date
+      (draft_amount_basis), including past-due rent and fees; it never collects less (partial_draft_allowed) and a period cannot be
+      skipped while enrolled (skip_a_month_allowed). When the balance due is zero or below, no draft is made. When the balance due is
+      above draft_cap_usd, the draft is recorded as skipped_over_cap with amount 0.00, the tenant is notified, and the tenant pays
+      directly (over_cap_handling). A successful card draft posts to the agreement ledger on the draft date and a settled ACH draft on its
+      settlement date (payment_posts_on), as an autopay payment carrying the draft's reference.
+    eligibility:
+      - id: draft_status
+        applies_to: [autopay_draft]
+        kind: state
+        condition: "A draft runs only while the authorization is in active status."
+        evidence_fields: [autopay_enrollments.status, autopay_enrollments.autopay_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[autopay_enrollments.autopay_id]]
+          action_bindings: {autopay_enrollments.autopay_id: autopay_id}
+        state_contract:
+          field: autopay_enrollments.status
+          allowed: [active]
+    params:
+      per_tier:
+        Bluegate AutoPay (Debit Card): {draft_cap_usd: "=draft_cap_usd", draft_days_before_due: "=draft_days_before_due"}
+        Bluegate AutoPay (Credit Card): {draft_cap_usd: "=draft_cap_usd", draft_days_before_due: "=draft_days_before_due"}
+        Bluegate AutoPay (Personal Checking ACH): {draft_cap_usd: "=draft_cap_usd", draft_days_before_due: "=draft_days_before_due"}
+        Bluegate AutoPay (Personal Savings ACH): {draft_cap_usd: "=draft_cap_usd", draft_days_before_due: "=draft_days_before_due"}
+        Bluegate AutoPay (Business Checking ACH): {draft_cap_usd: "=draft_cap_usd", draft_days_before_due: "=draft_days_before_due"}
+        Bluegate AutoPay (Business Card): {draft_cap_usd: "=draft_cap_usd", draft_days_before_due: "=draft_days_before_due"}
+    formula:
+      draft_amount: "0 if amount > draft_cap_usd else amount"
+
+  - id: autopay_evt_varying_amount_notice
+    subject: [autopay_notice, autopay_draft]
+    rule: >-
+      For a method whose varying_amount_notice_days is above zero, a draft whose amount differs from the previous successful draft on the
+      same authorization, for example after a rent change or because late fees are due, may be submitted only when the handling date is
+      not earlier than the varying-amount notice date plus varying_amount_notice_days. Notice days are calendar days counted from the day
+      after the notice date, and the draft may run on the day the count is reached. A varying-amount notice states the amount to be
+      drafted and the due date; when no timely notice was sent, the draft for that due date collects only the previous draft amount and
+      the remainder stays owed for the tenant to pay. A first draft on a new authorization is not a varying amount. Each notice type is
+      sent once per due date.
+    eligibility:
+      - id: notice_period_met
+        applies_to: [autopay_draft]
+        kind: time
+        condition: "For a method whose varying_amount_notice_days is above zero, a draft whose amount differs from the previous successful draft on the same authorization, for example after a rent change or because late fees are due, may be submitted only when the handling date is not earlier than the varying-amount notice date plus varying_amount_notice_days."
+        evidence_fields: [autopay_notices.notice_date, autopay_notices.notice_type, autopay_notices.autopay_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[autopay_notices.autopay_id]]
+          action_bindings: {autopay_notices.autopay_id: autopay_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the varying-amount notice date"
+          anchor_source: autopay_notices.notice_date
+          relation: not_before
+          duration_source: variants.varying_amount_notice_days
+          unit: calendar_days
+          counting_rule: "Notice days are calendar days counted from the day after the notice date, and the draft may run on the day the count is reached."
+          boundary: inclusive
+      - id: notice_once
+        applies_to: [autopay_notice]
+        kind: dedup
+        condition: "Each notice type is sent once per due date."
+        evidence_fields: [autopay_notices.autopay_id, autopay_notices.notice_type, autopay_notices.related_due_date]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[autopay_notices.autopay_id, autopay_notices.related_due_date]]
+          action_bindings: {autopay_notices.autopay_id: autopay_id, autopay_notices.related_due_date: related_due_date}
+        dedup_contract:
+          table: autopay_notices
+          mode: separate_record
+          object_bindings: {autopay_id: autopay_id, notice_type: notice_type, related_due_date: related_due_date}
+          duplicate_filters: {event_type: [autopay_notice]}
+          distinct_fields: []
+    params:
+      per_tier:
+        Bluegate AutoPay (Debit Card): {varying_amount_notice_days: "=varying_amount_notice_days"}
+        Bluegate AutoPay (Credit Card): {varying_amount_notice_days: "=varying_amount_notice_days"}
+        Bluegate AutoPay (Personal Checking ACH): {varying_amount_notice_days: "=varying_amount_notice_days"}
+        Bluegate AutoPay (Personal Savings ACH): {varying_amount_notice_days: "=varying_amount_notice_days"}
+        Bluegate AutoPay (Business Checking ACH): {varying_amount_notice_days: "=varying_amount_notice_days"}
+        Bluegate AutoPay (Business Card): {varying_amount_notice_days: "=varying_amount_notice_days"}
+
+  - id: autopay_evt_retry_and_suspension
+    subject: [autopay_draft, autopay_suspension]
+    rule: >-
+      A declined card draft is retried retry_interval_days calendar days later, up to max_retries_per_draft retries for the due date,
+      where retry_on_decline is true. A retry may be submitted only when the handling date is not earlier than the failed attempt's
+      draft date plus retry_interval_days. Retry days are calendar days counted from the day after the failed draft date. An ACH draft
+      returned for insufficient or uncollected funds is presented again up to max_represents_per_entry times where ach_represent_on_nsf is
+      true; any other return is never presented again. A decline or return listed in immediate_suspend_return_codes suspends the
+      authorization at once. Otherwise the authorization is suspended when autopay_msr_consecutive_failed_due_dates reaches
+      consecutive_failures_to_suspend. A failed or returned draft leaves the rent unpaid, so late fees and the lien or tow schedule run
+      under the agreement's own rules. Suspension is recorded only for an authorization in active status.
+    eligibility:
+      - id: retry_spacing
+        applies_to: [autopay_draft]
+        kind: time
+        condition: "A retry may be submitted only when the handling date is not earlier than the failed attempt's draft date plus retry_interval_days."
+        evidence_fields: [autopay_drafts.draft_date, autopay_drafts.autopay_draft_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[autopay_drafts.autopay_draft_id]]
+          action_bindings: {autopay_drafts.autopay_draft_id: reference_draft_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the failed attempt's draft date"
+          anchor_source: autopay_drafts.draft_date
+          relation: not_before
+          duration_source: variants.retry_interval_days
+          unit: calendar_days
+          counting_rule: "Retry days are calendar days counted from the day after the failed draft date."
+          boundary: inclusive
+      - id: suspend_active_only
+        applies_to: [autopay_suspension]
+        kind: authorization
+        condition: "Suspension is recorded only for an authorization in active status."
+        evidence_fields: [autopay_enrollments.status, autopay_enrollments.autopay_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[autopay_enrollments.autopay_id]]
+          action_bindings: {autopay_enrollments.autopay_id: autopay_id}
+    params:
+      per_tier:
+        Bluegate AutoPay (Debit Card): {max_retries_per_draft: "=max_retries_per_draft", retry_interval_days: "=retry_interval_days", consecutive_failures_to_suspend: "=consecutive_failures_to_suspend"}
+        Bluegate AutoPay (Credit Card): {max_retries_per_draft: "=max_retries_per_draft", retry_interval_days: "=retry_interval_days", consecutive_failures_to_suspend: "=consecutive_failures_to_suspend"}
+        Bluegate AutoPay (Personal Checking ACH): {max_retries_per_draft: "=max_retries_per_draft", retry_interval_days: "=retry_interval_days", consecutive_failures_to_suspend: "=consecutive_failures_to_suspend"}
+        Bluegate AutoPay (Personal Savings ACH): {max_retries_per_draft: "=max_retries_per_draft", retry_interval_days: "=retry_interval_days", consecutive_failures_to_suspend: "=consecutive_failures_to_suspend"}
+        Bluegate AutoPay (Business Checking ACH): {max_retries_per_draft: "=max_retries_per_draft", retry_interval_days: "=retry_interval_days", consecutive_failures_to_suspend: "=consecutive_failures_to_suspend"}
+        Bluegate AutoPay (Business Card): {max_retries_per_draft: "=max_retries_per_draft", retry_interval_days: "=retry_interval_days", consecutive_failures_to_suspend: "=consecutive_failures_to_suspend"}
+    formula:
+      suspend: "autopay_msr_consecutive_failed_due_dates >= consecutive_failures_to_suspend"
+    measures: [autopay_msr_consecutive_failed_due_dates]
+
+  - id: autopay_evt_returns
+    subject: [autopay_draft_returned]
+    rule: >-
+      A settled ACH draft may be returned within return_window_banking_days banking days of settlement on the business_days_calendar, or
+      within unauthorized_return_window_days calendar days for a return code in unauthorized_return_codes; a card draft may be charged back
+      within chargeback_window_days. A return reverses the autopay payment it paid in full on the agreement ledger, and the agreement's
+      returned-payment fee rule applies to insufficient-funds and closed-account returns. A return whose code is in
+      unauthorized_return_codes means the tenant disputes the authorization: the authorization is suspended, the draft is never presented
+      again, and the dispute itself is handled by the payments team. Each draft is returned at most once.
+    eligibility:
+      - id: return_once
+        applies_to: [autopay_draft_returned]
+        kind: dedup
+        condition: "Each draft is returned at most once."
+        evidence_fields: [autopay_drafts.reference_draft_id, autopay_drafts.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[autopay_drafts.reference_draft_id]]
+          action_bindings: {autopay_drafts.reference_draft_id: reference_draft_id}
+        dedup_contract:
+          table: autopay_drafts
+          mode: separate_record
+          object_bindings: {reference_draft_id: reference_draft_id}
+          duplicate_filters: {event_type: [autopay_draft_returned]}
+          distinct_fields: []
+    params:
+      per_tier:
+        Bluegate AutoPay (Debit Card): {return_window_banking_days: "=return_window_banking_days", unauthorized_return_window_days: "=unauthorized_return_window_days", chargeback_window_days: "=chargeback_window_days"}
+        Bluegate AutoPay (Credit Card): {return_window_banking_days: "=return_window_banking_days", unauthorized_return_window_days: "=unauthorized_return_window_days", chargeback_window_days: "=chargeback_window_days"}
+        Bluegate AutoPay (Personal Checking ACH): {return_window_banking_days: "=return_window_banking_days", unauthorized_return_window_days: "=unauthorized_return_window_days", chargeback_window_days: "=chargeback_window_days"}
+        Bluegate AutoPay (Personal Savings ACH): {return_window_banking_days: "=return_window_banking_days", unauthorized_return_window_days: "=unauthorized_return_window_days", chargeback_window_days: "=chargeback_window_days"}
+        Bluegate AutoPay (Business Checking ACH): {return_window_banking_days: "=return_window_banking_days", unauthorized_return_window_days: "=unauthorized_return_window_days", chargeback_window_days: "=chargeback_window_days"}
+        Bluegate AutoPay (Business Card): {return_window_banking_days: "=return_window_banking_days", unauthorized_return_window_days: "=unauthorized_return_window_days", chargeback_window_days: "=chargeback_window_days"}
+
+  - id: autopay_evt_changes_and_cancellation
+    subject: [autopay_cancellation, autopay_method_update, autopay_replacement, autopay_reinstatement]
+    rule: >-
+      Only the tenant can revoke or reinstate an authorization. A revocation stops the next draft only when it is received not later
+      than that due date minus cancel_cutoff_days_before_due. Cutoff days are calendar days counted back from the due date, and a
+      revocation on the cutoff day itself is in time. A later revocation takes effect after that due date's draft. A replacement card of
+      the same method, or a new expiry date, is recorded on the existing authorization where same_method_update_allowed is true, using the
+      last four digits and expiry exactly as the tenant reads them. Card updates are made only on authorizations in active or suspended
+      status. Moving to a different method, such as from a card to a checking account, needs a new authorization
+      (method_change_requires_new_enrollment), and the old one is retired when the new one is verified. A suspended authorization may be
+      reinstated by the tenant re-authorizing the same method once the cause is fixed, provided reinstatement comes within
+      reinstatement_window_days of the suspension date; a suspension for a closed, lost or stolen card or a closed bank account cannot be
+      reinstated and needs a new method. Reinstatement days are calendar days counted from the day after the suspension date, and the last
+      counted day is included. When the covered agreement ends, the authorization is cancelled the same day.
+      Reinstatement needs reinstatement_requires.
+    eligibility:
+      - id: revocation_cutoff
+        applies_to: [autopay_cancellation]
+        kind: time
+        condition: "A revocation stops the next draft only when it is received not later than that due date minus cancel_cutoff_days_before_due."
+        evidence_fields: [autopay_enrollments.next_draft_due_date, autopay_enrollments.autopay_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[autopay_enrollments.autopay_id]]
+          action_bindings: {autopay_enrollments.autopay_id: autopay_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "that due date"
+          anchor_source: autopay_enrollments.next_draft_due_date
+          relation: not_after
+          duration_source: variants.cancel_cutoff_days_before_due
+          unit: calendar_days
+          counting_rule: "Cutoff days are calendar days counted back from the due date, and a revocation on the cutoff day itself is in time."
+          boundary: inclusive
+      - id: update_status
+        applies_to: [autopay_method_update]
+        kind: state
+        condition: "Card updates are made only on authorizations in active or suspended status."
+        evidence_fields: [autopay_enrollments.status, autopay_enrollments.autopay_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[autopay_enrollments.autopay_id]]
+          action_bindings: {autopay_enrollments.autopay_id: autopay_id}
+        state_contract:
+          field: autopay_enrollments.status
+          allowed: [active, suspended]
+      - id: reinstatement_window
+        applies_to: [autopay_reinstatement]
+        kind: time
+        condition: "A suspended authorization may be reinstated by the tenant re-authorizing the same method once the cause is fixed, provided reinstatement comes within reinstatement_window_days of the suspension date; a suspension for a closed, lost or stolen card or a closed bank account cannot be reinstated and needs a new method."
+        evidence_fields: [autopay_enrollments.suspension_date, autopay_enrollments.suspension_reason, autopay_enrollments.autopay_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[autopay_enrollments.autopay_id]]
+          action_bindings: {autopay_enrollments.autopay_id: autopay_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the suspension date"
+          anchor_source: autopay_enrollments.suspension_date
+          relation: not_after
+          duration_source: variants.reinstatement_window_days
+          unit: calendar_days
+          counting_rule: "Reinstatement days are calendar days counted from the day after the suspension date, and the last counted day is included."
+          boundary: inclusive
+    params:
+      per_tier:
+        Bluegate AutoPay (Debit Card): {cancel_cutoff_days_before_due: "=cancel_cutoff_days_before_due", reinstatement_window_days: "=reinstatement_window_days"}
+        Bluegate AutoPay (Credit Card): {cancel_cutoff_days_before_due: "=cancel_cutoff_days_before_due", reinstatement_window_days: "=reinstatement_window_days"}
+        Bluegate AutoPay (Personal Checking ACH): {cancel_cutoff_days_before_due: "=cancel_cutoff_days_before_due", reinstatement_window_days: "=reinstatement_window_days"}
+        Bluegate AutoPay (Personal Savings ACH): {cancel_cutoff_days_before_due: "=cancel_cutoff_days_before_due", reinstatement_window_days: "=reinstatement_window_days"}
+        Bluegate AutoPay (Business Checking ACH): {cancel_cutoff_days_before_due: "=cancel_cutoff_days_before_due", reinstatement_window_days: "=reinstatement_window_days"}
+        Bluegate AutoPay (Business Card): {cancel_cutoff_days_before_due: "=cancel_cutoff_days_before_due", reinstatement_window_days: "=reinstatement_window_days"}
+
+  - id: autopay_evt_expiry_reminders
+    subject: [autopay_notice, autopay_method_update]
+    rule: >-
+      For card methods, a card_expiry_reminder is sent expiry_reminder_days_before the end of the expiry month printed on the card on file.
+      Where account_updater_enabled is true and the issuer reports a new number or expiry, the authorization is updated without a new
+      enrollment. A draft on an expired card is declined as declined_expired_card and counts as a failed due date. Bank account methods
+      receive no expiry reminders. Failed-draft and suspension notices go by failure_notice_channels, and enrollment, change and cancellation
+      confirmations by confirmation_channels.
+    eligibility: []
+    params:
+      per_tier:
+        Bluegate AutoPay (Debit Card): {expiry_reminder_days_before: "=expiry_reminder_days_before", account_updater_enabled: "=account_updater_enabled"}
+        Bluegate AutoPay (Credit Card): {expiry_reminder_days_before: "=expiry_reminder_days_before", account_updater_enabled: "=account_updater_enabled"}
+        Bluegate AutoPay (Personal Checking ACH): {expiry_reminder_days_before: "=expiry_reminder_days_before", account_updater_enabled: "=account_updater_enabled"}
+        Bluegate AutoPay (Personal Savings ACH): {expiry_reminder_days_before: "=expiry_reminder_days_before", account_updater_enabled: "=account_updater_enabled"}
+        Bluegate AutoPay (Business Checking ACH): {expiry_reminder_days_before: "=expiry_reminder_days_before", account_updater_enabled: "=account_updater_enabled"}
+        Bluegate AutoPay (Business Card): {expiry_reminder_days_before: "=expiry_reminder_days_before", account_updater_enabled: "=account_updater_enabled"}

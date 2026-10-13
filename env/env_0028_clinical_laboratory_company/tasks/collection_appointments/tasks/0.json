@@ -1,0 +1,2983 @@
+{
+    "frozen_time": "2026-10-04 10:30:00 CDT",
+    "design_rationale": "[0. Draw and scope snapshot] `draw_counts.py <diff> --task 0` printed {\"task\": 0, \"key\": \"env_0028_clinical_laboratory_company/collection_appointments/0\", \"prerequisite_problems\": 3, \"problems\": 4, \"factor_counts\": [5, 5, 6, 6]}; `--tasks 2` showed task 1 = 2 prerequisites, factor_counts [4, 4, 6]. Occupied before this task: nothing (task 0 is first). Claimed here: the four service-charge problems of a collected home visit — visits_ext_trip_charge (6 factors), visits_ext_household_charge (5), visits_ext_weekend_charge (6), visits_ext_home_visit_settlement (5, root, owner=user) — and the tools assess_trip_fee_73c5b19a, assess_household_fee_59046739, assess_weekend_surcharge_242d901c, pay_home_visit_fees_e8e0d8a4. Headroom left for task 1: the penalty side of a home visit that never collected — the no-show fee (visits_no_show_recorded / visits_fee_assessed), the settlement of a missed-visit charge (visits_fee_paid), and a live reschedule with its late-change fee (visits_appointment_rescheduled) — none of which this task touches. Base fee quantities were counted before claiming: the service charges a collected visit can owe are trip, household and weekend charges (a collected visit may also carry a late-change charge from a move made before it took place, as this task's visit does, already paid), a missed visit only penalties; a past reschedule leaves no timestamp in the records, so the late-change fee can only be computed for a reschedule made live, which is why it is reserved for task 1.\n\n[1. Why this is a good test] Surface goal: 'pay for that home visit today, on your card'. The core scored value is the settlement charge the patient pays (194.45), but it cannot be worked out on the opening world: the settlement rule states, by three prerequisite sentences, that it waits on the assessed trip fee, the assessed additional-patient fee and (for a Saturday/Sunday visit) the assessed weekend surcharge, and find_visit_events shows the 2026-09-20 visit carries no trip, additional-patient or weekend line (only the late-change charge of 2026-09-18, already paid). The agent must discover those three charges, compute each with its own multi-factor rule in the only order the edges allow (trip -> household -> weekend; the household charge reads the assessed trip fee, the weekend charge reads both), then compute the settlement and hand the payment over. Depth: a chain of three value-carrying hops. Breadth: the computations read the visit row (zone, weekday, start time, booking lead, members), this visit's own fee ledger, the orders difficulty (standing flag, 9 test charges in six months, service class, two specimen rejections of which only one is inside three months, billing method), the coverage difficulty (only coverage terminated 2026-03-31) and the invoices difficulty (no invoice in collections; three payments inside 12 months and one outside). Difficulty comes from reading rules and reconciling records, not tool choice: each charge has its own tool and the customer never names any of them.\n\n[2. Problem-tree card] Root: visits_ext_home_visit_settlement (pay_home_visit_fees_e8e0d8a4, owner=user). Edges (all kind value_input, form state):\n(a) settlement -> trip, gate st_open_trip, sentence 'The home-visit settlement charge is taken only after the trip fee assessed on the visit stands on its fee record.' (affirmative);\n(b) settlement -> household, gate st_open_household, 'No home-visit settlement charge is taken until the visit carries the assessed additional-patient fee owed for the household members drawn at it.' (negated);\n(c) settlement -> weekend, gate st_open_weekend, 'For a visit dated on a Saturday or Sunday, the home-visit settlement charge is worked out only after its assessed weekend surcharge is on the fee record.' (affirmative);\n(d) weekend -> trip, gate wk_trip_entry, 'The weekend charge on a Saturday or Sunday home visit is not worked out until the visit's fee record shows its assessed trip fee.' (negated);\n(e) weekend -> household, gate wk_household_entry, 'Before the weekend charge is worked out for a visit that drew additional household members, the visit must carry its assessed additional-patient fee.' (affirmative, 'before ... must');\n(f) household -> trip, gate hh_trip_entry, 'The household charge on a home visit is fixed only after the visit carries an assessed trip fee.' (affirmative).\nFour-point test, every sentence: explicit ordering connective (only after / until / before); the waited-on side is a record-visible state (an assessed fee line of a named type on the visit's fee record), no action or performer named; no tool, policy id or snake_case token; strength 'only after / not until / must' = hard requirement, scope exactly the visit's own fee record and the named fee type, matching `condition`. Directions chosen as the fee desk would say them: a charge 'is fixed only after' what it rests on, a payment 'is not taken until' its charges stand. State-form uniqueness: an assessed trip fee is written only by the trip-charge policy's tool, an additional-patient fee only by the household policy's tool, a weekend surcharge only by the weekend policy's tool (no other extended policy of this difficulty posts those fee types). Derivation for (a): sentence + find_visit_events (empty) + the trip-charge rule ('posted as one assessed trip fee') -> the one write is the trip-charge assessment; same pattern for (b)-(f). Not true at the opening: the visit's fee record (initial_state.visit_events) holds only the late-change charge 8184aef5-fe5c-4360-b77b-a1832ac66032 of 2026-09-18 and its payment c15dc55c-0219-4b70-b133-27f221b6193d; no trip, additional-patient or weekend line exists. Topological order forced by the edges: trip, household, weekend, settlement (no free pair). Deletion sensitivity (Step 5 run, skip the depended-on write and replay): (a) settlement 105.98 vs 194.45; (b) 137.81; (c) 154.95; (d) weekend 73.12 vs 54.84; (e) weekend 36.56; (f) household 84.00 vs 76.00. user_scenario never mentions a charge type, posting, or anything missing; tools validate nothing (see tools_do_not_block).\n\n[3. Base-invariant card] Subject visits_fee_assessed (steps 7, 9, 11): base policy visits_evt_fee_assessment. Gate fee_states 'A collection-service fee may be assessed only on a visit whose status is collected, cancelled or no_show.' - evidence visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.status = collected (system record, pre-action, keyed by visit_id = the call's visit_id). Gate homebound_no_trip_fee - evidence homebound_status = not_homebound, so a trip fee may be assessed; the gate restricts only the trip fee and is satisfied for all three writes. Inherited prose: 'A fee type is assessed at most once per visit' - the visit's only fee line is the late-change charge (late_cancellation_fee), so each of the trip, additional-patient and weekend types is assessed once. No time gate applies to visits_fee_assessed. Subject visits_fee_paid (step 16): base policy visits_evt_fee_payment_and_refund; its only structured gate refund_once applies to refunds, so policy_scope; credit_card is in the Mobile In-Home fee_payment_methods. Declared overwrites (sentence level): the three clauses of the base fee-assessment sentence ('the trip fee for the visit's service zone from trip_fee_by_zone', 'plus additional_patient_fee for each additional household member collected', 'plus weekend_surcharge when the appointment date is a Saturday or Sunday') are each replaced by the corresponding extended rule's first sentence; 'A fee is paid in full in one payment with a method listed in fee_payment_methods' is replaced by the settlement rule's first sentence. Base values (zone fees 75/95/125, additional_patient_fee 35, weekend_surcharge 35) remain the baselines.\n\n[4. Business-object card] Target object: the Mobile In-Home Collection Visit e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a (collected 2026-09-20) for order 8a3a1c6e-cec1-46a2-b0cb-bc431de37f66; correlation key visit_id. Rows entering the computations: this visit row; order 8a3a1c6e-cec1-46a2-b0cb-bc431de37f66 and its order_events (9 test-charge lines 2026-06-01..2026-09-21, rejections 2026-06-15 hemolyzed and 2026-08-24 leaked_in_transit with their recollection requests); invoices of the patient (open Self-Pay Patient Invoice 20471836 for the standing order, paid Insured Patient Responsibility Invoice 20338519 from 2025) and their transactions; the terminated coverage. Excluded by key: the ten PSC visits of the same order (Patient Service Center Scheduled Appointment, no patient fees) are not the target; the 2025 routine order is a different order and is not read by any order-scoped aggregate. The only settled item on the visit is the late-change charge of 68.00 (assessed 2026-09-18 for the patient's late move from Saturday 2026-09-19 to Sunday 2026-09-20, paid by card that day); it stands open at 0.00 in the settlement's open total. No service charge exists yet. The payment writes back assessed_event_id = the trip-fee line it is recorded against.\n\n[5. Factor card] TRIP (result 115.30; whole baseline 95.00): weekend_dispatch_band (parameter: band offset; Sunday -> +2 -> band 3; baseline offset 0 -> 92.30); series_route_band (method: pricing basis nearer-band fee / two-band average / dispatch-band fee; orders, multi-source; standing AND 9 charges -> nearer band fee 95.00; baseline fee of band 3 -> 149.80); handling_kit (parameter, orders; Specialty -> 12.00; baseline 0 -> 101.50); early_route_premium (parameter; both conditions on the visit row; 07:00 AND Sunday -> 15.00; baseline 0 -> 98.05); dispatch_notice_rate (parameter; 3 days -> 1.15; baseline 1.00 -> 97.00); redraw_credit (parameter, orders; leaked_in_transit 2026-08-24 within 3 months -> 25.00; baseline 0 -> 140.30). Near-miss: the 2026-06-15 hemolyzed rejection is 3 whole months back and falls outside 'the last three months'. HOUSEHOLD (76.00; baseline 70.00): series_member_rate (parameter; 25.00; base 93.50), short_notice_member_addition (parameter; +5; 67.25), member_specimen_kit (parameter; +2; 72.50), shared_extended_dispatch (parameter: member share; 115.30 vs 95.00..118.75 -> share 0.75 -> 1.75 members; 84.00), early_household_addition (method: per member drawn on an early weekend start versus once per visit on an early weekday start; Sunday 07:00 -> 10.00 x 2 = 20.00; baseline none -> 56.00). Near-miss: the 68.00 late-change line on the same visit is not 'the assessed trip fee' and is excluded from the dispatch comparison. WEEKEND (54.84; baseline 35.00): weekend_day_rate (parameter; Sunday 50; 43.88), weekend_courier (parameter, orders; +15; 43.88), weekend_staffing_notice (parameter; +10; 47.53), weekend_dispatch_overlap (parameter: overlap factor 0.75; 73.12), weekend_per_person_staffing (method: per person drawn versus once per visit; x1.50; 36.56), series_weekend_rotation (parameter: rotation factor 0.65, orders, multi-source; 84.38). SETTLEMENT (194.45; baseline 246.14): settlement_day_count (method: anchor of the day count; posted 14 days after collection -> count from posting date = 0 days; baseline from collection = 14 days -> 201.83), prompt_settlement_allowance (parameter, invoices, multi-source; 0 days AND no invoice in collections -> 5%; 206.76), multi_charge_allowance (parameter; 3 charges -> 3%; 201.83), self_pay_allowance (parameter, orders/coverage, multi-source; self_pay AND no live coverage -> 10%; 219.06 — near-miss: a coverage row exists but is terminated, and a coverage counts as live only until it is terminated), paying_history_allowance (parameter, invoices; 3 payments in 12 months -> 3%; 201.83 — near-miss: the 2025-09-08 payment is outside the window). Every factor sits off its fall-through; no stamp field names any tier. Honest method count: trip 1 (series_route_band), household 1 (early_household_addition), weekend 1 (weekend_per_person_staffing), settlement 1 (settlement_day_count).\n\n[6. Tool capability cards] assess_trip_fee_73c5b19a / assess_household_fee_59046739 / assess_weekend_surcharge_242d901c: owner agent, rw write; object: one collected visit; atomic action: create one visit_events line event_type visits_fee_assessed with the tool's fee type, today's date and the given amount, and raise visits.fee_balance by it; observable: the fee line in the visit's fee history; receipt dict visit_event_id, visit_id, fee_type, fee_amount, event_date, fee_balance. No trigger of visits_fee_assessed reaches another category. pay_home_visit_fees_e8e0d8a4: owner user, rw write; object: the visit and its assessed trip-fee line; atomic action: create one visits_fee_paid line (fee type copied from the referenced line, payment method as given) and set fee_balance 0.00; receipt visit_event_id, visit_id, assessed_event_id, fee_amount, payment_method, event_date, fee_balance. Parameters the patient holds before acting: the visit and line references and the amount the agent states, and her own card choice. No tool checks status, order or other lines.\n\n[7. Persona design] Lorraine Hadley, 58, transplant patient on a biweekly standing draw, recovering from hip surgery; calm, slightly apologetic, plain-spoken. Opening facts (all in initial_state): the home visit on Sunday the 20th, husband and daughter drawn at the same visit (additional_household_patients 2). Only-when-asked: phone 3125550188 and DOB 1968-02-11 (verification), ZIP/address as a third detail, booked on the website the Thursday before (booked_date 2026-09-17, online_scheduler), visit around seven (07:00), Blue Cross plan ended in March and she self-pays (coverage terminated 2026-03-31, order billed self_pay). Passive reactions: agrees if told charges must be put through first; pays the stated amount with her Visa credit card when the payment is handed over; declines anything else; closes after the payment is confirmed. She knows no amount and never names a charge type.\n\n[8. Verification run] Gold values were produced by evaluating each policy's compute with the gate's own evaluator (check_compute.build_env/eval_compute) on the world after the earlier gold writes, replaying the real tools: trip 115.3 (step 7), household 76.0 (step 9), weekend 54.84 (step 11), settlement 194.45 (step 16); trip receipt visit_event_id vfa_49566aafdd15 is the payment's assessed_event_id. Gates run for this task: check_task_tools -> TASK TOOL CONTRACT OK; check_extended --task 0 -> EXTENDED OK; replay_tasks --task 0 -> REPLAY OK (17 actions, deterministic, non-vacuous, closure 50 = initial 50 after revision 11); check_solvability --task 0 -> SOLVABILITY OK; check_compute --task 0 -> COMPUTE OK; check_grounding --task 0 -> GROUNDING OK; check_cross_fire --task 0 -> SCOPE OK; check_cache_diff -> info only (no cache trap chosen: fee_balance 0.00 equals the ledger, 68.00 assessed less 68.00 paid).\n\n[9. Revisions] (i) replay flagged empty-string foreign keys as dangling -> root cause: '' instead of null in *_id fields -> set every empty *_id to null in the seed and in the tools' writes -> REPLAY OK. (ii) replay closure missed one row -> the 2025 order's charge line was never read by any gold read -> dropped as noise -> closure 48 = 48. (iii) check_extended counted module-level helpers as tools -> inlined them into each tool -> EXTENDED OK. (iv) check_solvability: intent_source kind must be initial_state/user_scenario and a pre-existing stage fact may not cite prior steps -> corrected kinds and provenance evidence -> SOLVABILITY OK.\n\n[10. Standard solution and draft recomputation from visible context] Locate by phone, verify with phone + DOB, list visits (pick the collected Sunday home visit), read its fee history (only the paid late-change charge), read the order and its ledger. From the published settlement rule the agent learns it waits on assessed trip, additional-patient and weekend fees; from the household and weekend rules it learns those wait on the trip fee (and the weekend on the household fee). Compute and post trip 115.30, household 76.00, weekend 54.84; read coverages, invoices and invoice transactions; compute settlement 194.45; unlock and hand over the payment tool with visit_id, the trip-fee line id and 194.45; the patient pays by credit_card. A draft from the rule prose, the tool docstrings, the finder returns and the persona alone reproduces the same objects, order and numbers; the only judgement calls (which rejection is inside three months, whether a terminated plan is live (a coverage is live until terminated), which payments are inside 12 months, whether the posting delay exceeds 7 days) are each settled by an explicit sentence. Negative space: no waiver applies (no waiver reason holds and the patient asks for none), no refund exists, and the already-paid late-change charge is not charged again (it stands open at 0.00).\n\n[11. Revision after the suite gate] check_compute (difficulty run) reported suite history_rows_max=6 < 8: a collected visit's own gold writes can be touched at most 0+1+2+3 times. Root cause: the target visit carried no prior ledger. Change: the 2026-09-20 visit now carries its real earlier history - the patient moved it the evening of 2026-09-18 from Saturday 2026-09-19 07:00 to Sunday 07:00 (reschedule_count 1), and its late-change charge 68.00 (recomputed with the published late-change rule as of that move; under the round-2 rule: 45.00 change-day rate + 8.00 kit + 0.00 route (a zone 2 visit moved the day before) + 15.00 household (a day-before change charged per person booked, 5.00 x 3), first move, no hold = 68.00; the round-1 rule reached the same 68.00 as 45.00 + 8.00 + 5.00 + 10.00) was assessed and paid by credit card that day; the settlement rule now totals every charge standing open on the visit, including any late-change charge (open 0.00 here), so the scored values were unchanged by that revision (115.30 / 66.00 / 54.84 / 186.55 at the time; see [12] for the round-2 figures) while the settlement reconciles five ledger lines. Propagated to: rule, baseline.rule, compute_basis and compute (st_open_late_change) of the settlement policy; seed (two visit_events rows, reschedule_count); find_visit_events objective; factor_trace; argument tracing; unresolved evidence; seed_consistency; persona (the move is told only if asked). Re-ran all gates for task 0 after the change.\n\n[12. Round-2 audit rework (audits/policy_task/collection_appointments)] F-1: weekend_dispatch_band (trip), shared_extended_dispatch (household), weekend_dispatch_overlap and series_weekend_rotation (weekend) are now labelled parameter, their ladders stating the value each tier selects (band offset, member share, overlap factor, rotation factor). F-2 / task-0 finding 1: the household charge's honest method is now early_household_addition — an early weekend start is charged per member drawn, an early weekday start once per visit, a later start not at all (the same per-person versus per-visit family as the weekend per-person staffing); rule, compute (hh_early_add = 10.00 x members on the weekend tier), compute_basis and ladder changed together. Task-0 finding 2: the trip and weekend relabels above; their honest methods remain series_route_band and weekend_per_person_staffing. O-1: trip compute now returns 0.00 for a Medicare-homebound-certified visit (tr_billed_to_medicare), matching the rule. O-2: household compute returns 0.00 when no member was drawn, and the rule's order sentence says so. O-3: weekend compute returns 0.00 on a weekday (wk_is_weekend). O-5: a coverage counts as live until it is terminated (rule sentence and compute: active, pending_verification or inactive). O-6: the payment docstring now points to the fee history only. O-9: the base sentence 'Fees are charged to the card on file when fee_due_timing is at_completion' is now declared overridden by the settlement policy (visits_evt_fee_assessment added to its base_policy_refs) with a rule sentence stating that service charges not charged at completion stay open and are settled on request. Task-0 O-a: section [0] corrected. Task-0 O-b: early_route_premium is no longer called multi-source in the factor_trace. Recomputed with the gate evaluator on the handling-time worlds: trip 115.30 (unchanged), household 76.00 (receipt vfa_a57d1de2ec82), weekend 54.84 (unchanged; the per-person tier reads only that an additional-patient fee stands), settlement 194.45; factor sensitivities, baseline results, edge-skip figures, tracing, objectives, business effects and closure fields re-written from that run; all difficulty gates re-run green.\n\n[13. Round-3 audit rework] Task-0 finding 1 (revision 2, SOURCE-TASK RED): section [1] now states the scored settlement value of the current gold (194.45) and no longer says the visit carries no fee line at all; every figure in sections [1]-[10] and [12] was re-checked against computations[].expected and the recomputation. Section [11] keeps its explicitly dated round-1 figures. Charter changes of round 3 (late-change notice in calendar days, held-order patient-side tier, same-day household rescheduling amount) touch only task-1 policies; this task's four computations and the 68.00 historical late-change line were re-evaluated and are unchanged (the move of 2026-09-18 for 2026-09-19 was recorded the calendar day before, so it is charged under the calendar-day notice too; its household amount is the day-before per-person tier).",
+    "user_scenario": "You are Lorraine Hadley, 58, calling Halverson Clinical Laboratories on a Sunday morning from your kitchen table in Chicago. You had a kidney transplant some years ago and get a blood level drawn every two weeks on a standing order; since your hip surgery in September you can't easily get to the service center, so this time you booked the mobile phlebotomist to come to the house. You open simply and a little apologetically: you had the home visit on Sunday the 20th, early in the morning, and your husband Martin and your daughter Claire were drawn at the same visit while the phlebotomist was there, and you'd like to pay for that home visit today, on your card, so it isn't hanging over you before your next draw. You want it settled now, not a quote for later, and you are happy for the representative to do whatever needs doing on their side to get it ready for you to pay. You don't volunteer your details all at once; you give them when you're asked. When asked to confirm who you are, you give your phone number as 3125550188 and your date of birth as 1968-02-11 (February 11, 1968); if a third detail is wanted, your ZIP code is 60625 and your address is 4718 N Kedzie Ave Apt 2, Chicago, IL. If asked how you booked the visit, you booked it yourself on the website on the Thursday before; it was first set for the Saturday, and the evening before you called and moved it to the Sunday, paying the change charge on your card then; if asked about the time, the phlebotomist came around seven in the morning. If asked about insurance, you explain that your Blue Cross plan ended in March when you left your job, and you've been paying for your tests yourself since then. You don't know any of the amounts and you don't guess at them. If the representative explains that the charges for the visit have to be put through on their end first, or tells you what each part comes to, you say that's fine and to go ahead. When the representative tells you the amount to pay and hands the payment over to you, you pay it yourself, for exactly the amount they gave you, against the visit and the charge reference they read out, using your Visa credit card. If they ask whether you want anything else on the call, you say no, that was all. Once the payment has gone through and they confirm it, you thank them warmly and say goodbye.",
+    "initial_state": {
+        "customers": {
+            "ea153a47-f708-4342-a2cb-9fa08dc13822": {
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "customer_type": "patient",
+                "name": "Lorraine Hadley",
+                "date_of_birth": "1968-02-11",
+                "phone_number": "3125550188",
+                "email": "lorraine.hadley@outlook.com",
+                "zip_code": "60625",
+                "mailing_address": "4718 N Kedzie Ave Apt 2, Chicago, IL",
+                "npi": "",
+                "profile_opened_date": "2019-03-12",
+                "portal_enrolled": true
+            }
+        },
+        "coverages": {
+            "be0289b1-e332-4311-b90a-8fc616f467f5": {
+                "coverage_id": "be0289b1-e332-4311-b90a-8fc616f467f5",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "variant_name": "Commercial In-Network Plan",
+                "status": "terminated",
+                "payer_name": "Blue Cross Blue Shield of Illinois PPO",
+                "member_id": "XOF2847155",
+                "group_number": "B41907",
+                "subscriber_relationship": "self",
+                "coordination_order": "primary",
+                "employer_group_size_band": "100_plus_employees",
+                "active_employment_coverage": false,
+                "effective_date": "2021-01-01",
+                "termination_date": "2026-03-31",
+                "verified_date": "2026-03-02",
+                "added_date": "2020-12-18"
+            }
+        },
+        "orders": {
+            "30d13747-34de-476a-a746-e7f2db43fa26": {
+                "order_id": "30d13747-34de-476a-a746-e7f2db43fa26",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "variant_name": "Routine Clinical Testing",
+                "status": "resulted",
+                "requisition_number": "1203385190",
+                "order_channel": "electronic_physician_order",
+                "billing_method": "insurance",
+                "coverage_id": "be0289b1-e332-4311-b90a-8fc616f467f5",
+                "client_account_id": null,
+                "ordering_npi": "1287340915",
+                "diagnosis_status": "provided",
+                "prior_auth_status": "not_required",
+                "prior_auth_number": "",
+                "abn_status": "not_applicable",
+                "informed_consent_status": "not_required",
+                "consent_signed_date": "",
+                "hold_reason": "none",
+                "hold_placed_date": "",
+                "standing_order": false,
+                "list_price_total": 212.0,
+                "good_faith_estimate_amount": "",
+                "estimate_date": "",
+                "order_date": "2025-08-11",
+                "collection_date": "2025-08-13",
+                "received_date": "2025-08-14",
+                "result_released_date": "2025-08-15",
+                "cancellation_reason": "",
+                "cancelled_date": ""
+            },
+            "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66": {
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "variant_name": "Specialty Clinical Testing",
+                "status": "resulted",
+                "requisition_number": "1204718362",
+                "order_channel": "electronic_physician_order",
+                "billing_method": "self_pay",
+                "coverage_id": null,
+                "client_account_id": null,
+                "ordering_npi": "1287340915",
+                "diagnosis_status": "not_required",
+                "prior_auth_status": "not_required",
+                "prior_auth_number": "",
+                "abn_status": "not_applicable",
+                "informed_consent_status": "not_required",
+                "consent_signed_date": "",
+                "hold_reason": "none",
+                "hold_placed_date": "",
+                "standing_order": true,
+                "list_price_total": 1512.0,
+                "good_faith_estimate_amount": 4368.0,
+                "estimate_date": "2026-05-26",
+                "order_date": "2026-05-26",
+                "collection_date": "2026-09-20",
+                "received_date": "2026-09-21",
+                "result_released_date": "2026-09-22",
+                "cancellation_reason": "",
+                "cancelled_date": ""
+            }
+        },
+        "order_events": {
+            "3c16bc99-940f-4b06-a33b-39e8923ef05e": {
+                "order_event_id": "3c16bc99-940f-4b06-a33b-39e8923ef05e",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "orders_test_charge_posted",
+                "event_date": "2026-06-01",
+                "test_code": "3538",
+                "charge_amount": 168.0,
+                "charge_reason": "ordered",
+                "credit_reason": "",
+                "credited_event_id": null,
+                "specimen_type": "",
+                "rejection_reason": "",
+                "rejected_event_id": null,
+                "recollect_by_date": "",
+                "report_correction_reason": "",
+                "copy_format": ""
+            },
+            "9b0c2ca8-0102-4278-9e7a-d134f4f605f1": {
+                "order_event_id": "9b0c2ca8-0102-4278-9e7a-d134f4f605f1",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "orders_test_charge_posted",
+                "event_date": "2026-06-15",
+                "test_code": "3538",
+                "charge_amount": 168.0,
+                "charge_reason": "ordered",
+                "credit_reason": "",
+                "credited_event_id": null,
+                "specimen_type": "",
+                "rejection_reason": "",
+                "rejected_event_id": null,
+                "recollect_by_date": "",
+                "report_correction_reason": "",
+                "copy_format": ""
+            },
+            "1ceb0f38-4169-4cb3-ab93-33521304c321": {
+                "order_event_id": "1ceb0f38-4169-4cb3-ab93-33521304c321",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "orders_test_charge_posted",
+                "event_date": "2026-06-29",
+                "test_code": "3538",
+                "charge_amount": 168.0,
+                "charge_reason": "ordered",
+                "credit_reason": "",
+                "credited_event_id": null,
+                "specimen_type": "",
+                "rejection_reason": "",
+                "rejected_event_id": null,
+                "recollect_by_date": "",
+                "report_correction_reason": "",
+                "copy_format": ""
+            },
+            "fa96a893-d5d2-4d9a-b909-f6b216e28491": {
+                "order_event_id": "fa96a893-d5d2-4d9a-b909-f6b216e28491",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "orders_test_charge_posted",
+                "event_date": "2026-07-13",
+                "test_code": "3538",
+                "charge_amount": 168.0,
+                "charge_reason": "ordered",
+                "credit_reason": "",
+                "credited_event_id": null,
+                "specimen_type": "",
+                "rejection_reason": "",
+                "rejected_event_id": null,
+                "recollect_by_date": "",
+                "report_correction_reason": "",
+                "copy_format": ""
+            },
+            "d9715599-b183-4c21-bc63-e71b0911dace": {
+                "order_event_id": "d9715599-b183-4c21-bc63-e71b0911dace",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "orders_test_charge_posted",
+                "event_date": "2026-07-27",
+                "test_code": "3538",
+                "charge_amount": 168.0,
+                "charge_reason": "ordered",
+                "credit_reason": "",
+                "credited_event_id": null,
+                "specimen_type": "",
+                "rejection_reason": "",
+                "rejected_event_id": null,
+                "recollect_by_date": "",
+                "report_correction_reason": "",
+                "copy_format": ""
+            },
+            "a20ca7e4-bd16-4428-af4b-e23621c9cb55": {
+                "order_event_id": "a20ca7e4-bd16-4428-af4b-e23621c9cb55",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "orders_test_charge_posted",
+                "event_date": "2026-08-10",
+                "test_code": "3538",
+                "charge_amount": 168.0,
+                "charge_reason": "ordered",
+                "credit_reason": "",
+                "credited_event_id": null,
+                "specimen_type": "",
+                "rejection_reason": "",
+                "rejected_event_id": null,
+                "recollect_by_date": "",
+                "report_correction_reason": "",
+                "copy_format": ""
+            },
+            "f65d57b5-7602-464b-9a5e-0f781223e2b6": {
+                "order_event_id": "f65d57b5-7602-464b-9a5e-0f781223e2b6",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "orders_test_charge_posted",
+                "event_date": "2026-08-24",
+                "test_code": "3538",
+                "charge_amount": 168.0,
+                "charge_reason": "ordered",
+                "credit_reason": "",
+                "credited_event_id": null,
+                "specimen_type": "",
+                "rejection_reason": "",
+                "rejected_event_id": null,
+                "recollect_by_date": "",
+                "report_correction_reason": "",
+                "copy_format": ""
+            },
+            "bb038ced-4d80-4b44-acd1-ab4b7d26aa64": {
+                "order_event_id": "bb038ced-4d80-4b44-acd1-ab4b7d26aa64",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "orders_test_charge_posted",
+                "event_date": "2026-09-07",
+                "test_code": "3538",
+                "charge_amount": 168.0,
+                "charge_reason": "ordered",
+                "credit_reason": "",
+                "credited_event_id": null,
+                "specimen_type": "",
+                "rejection_reason": "",
+                "rejected_event_id": null,
+                "recollect_by_date": "",
+                "report_correction_reason": "",
+                "copy_format": ""
+            },
+            "27f905d5-ab98-43fe-ab01-2338c57bfdb2": {
+                "order_event_id": "27f905d5-ab98-43fe-ab01-2338c57bfdb2",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "orders_test_charge_posted",
+                "event_date": "2026-09-21",
+                "test_code": "3538",
+                "charge_amount": 168.0,
+                "charge_reason": "ordered",
+                "credit_reason": "",
+                "credited_event_id": null,
+                "specimen_type": "",
+                "rejection_reason": "",
+                "rejected_event_id": null,
+                "recollect_by_date": "",
+                "report_correction_reason": "",
+                "copy_format": ""
+            },
+            "92da308d-39f2-497d-b9f0-2e3e93ccf180": {
+                "order_event_id": "92da308d-39f2-497d-b9f0-2e3e93ccf180",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "orders_specimen_rejected",
+                "event_date": "2026-06-15",
+                "test_code": "",
+                "charge_amount": "",
+                "charge_reason": "",
+                "credit_reason": "",
+                "credited_event_id": null,
+                "specimen_type": "whole_blood_edta",
+                "rejection_reason": "hemolyzed",
+                "rejected_event_id": null,
+                "recollect_by_date": "",
+                "report_correction_reason": "",
+                "copy_format": ""
+            },
+            "7232a8c3-f82d-4cf4-85bf-db511925251c": {
+                "order_event_id": "7232a8c3-f82d-4cf4-85bf-db511925251c",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "orders_recollection_requested",
+                "event_date": "2026-06-15",
+                "test_code": "",
+                "charge_amount": "",
+                "charge_reason": "",
+                "credit_reason": "",
+                "credited_event_id": null,
+                "specimen_type": "",
+                "rejection_reason": "",
+                "rejected_event_id": "92da308d-39f2-497d-b9f0-2e3e93ccf180",
+                "recollect_by_date": "2026-06-22",
+                "report_correction_reason": "",
+                "copy_format": ""
+            },
+            "d9e74d42-8566-43e6-bbb3-89c1eda0800f": {
+                "order_event_id": "d9e74d42-8566-43e6-bbb3-89c1eda0800f",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "orders_specimen_rejected",
+                "event_date": "2026-08-24",
+                "test_code": "",
+                "charge_amount": "",
+                "charge_reason": "",
+                "credit_reason": "",
+                "credited_event_id": null,
+                "specimen_type": "whole_blood_edta",
+                "rejection_reason": "leaked_in_transit",
+                "rejected_event_id": null,
+                "recollect_by_date": "",
+                "report_correction_reason": "",
+                "copy_format": ""
+            },
+            "c0b947e1-9901-4750-b1d9-8e37d3f019b3": {
+                "order_event_id": "c0b947e1-9901-4750-b1d9-8e37d3f019b3",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "orders_recollection_requested",
+                "event_date": "2026-08-24",
+                "test_code": "",
+                "charge_amount": "",
+                "charge_reason": "",
+                "credit_reason": "",
+                "credited_event_id": null,
+                "specimen_type": "",
+                "rejection_reason": "",
+                "rejected_event_id": "d9e74d42-8566-43e6-bbb3-89c1eda0800f",
+                "recollect_by_date": "2026-08-31",
+                "report_correction_reason": "",
+                "copy_format": ""
+            }
+        },
+        "visits": {
+            "312fa155-7811-45cb-b6ea-135e0e384cb2": {
+                "visit_id": "312fa155-7811-45cb-b6ea-135e0e384cb2",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "variant_name": "Patient Service Center Scheduled Appointment",
+                "status": "collected",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "collection_purpose": "standing_order_draw",
+                "location_code": "CHI214",
+                "service_zone": "psc_onsite",
+                "booking_channel": "online_scheduler",
+                "booked_date": "2026-05-25",
+                "appointment_date": "2026-05-31",
+                "appointment_time": "08:00",
+                "reschedule_count": 0,
+                "homebound_status": "not_homebound",
+                "additional_household_patients": 0,
+                "fasting_confirmed": "not_required",
+                "checked_in_time": "08:03",
+                "collected_date": "2026-05-31",
+                "incomplete_reason": "",
+                "cancelled_at": "",
+                "cancel_initiator": "",
+                "fee_balance": 0.0
+            },
+            "8d414367-2026-4362-a399-1cd9d33692dd": {
+                "visit_id": "8d414367-2026-4362-a399-1cd9d33692dd",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "variant_name": "Patient Service Center Scheduled Appointment",
+                "status": "collected",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "collection_purpose": "standing_order_draw",
+                "location_code": "CHI214",
+                "service_zone": "psc_onsite",
+                "booking_channel": "online_scheduler",
+                "booked_date": "2026-06-08",
+                "appointment_date": "2026-06-14",
+                "appointment_time": "08:00",
+                "reschedule_count": 0,
+                "homebound_status": "not_homebound",
+                "additional_household_patients": 0,
+                "fasting_confirmed": "not_required",
+                "checked_in_time": "08:03",
+                "collected_date": "2026-06-14",
+                "incomplete_reason": "",
+                "cancelled_at": "",
+                "cancel_initiator": "",
+                "fee_balance": 0.0
+            },
+            "9259d0c8-0e54-4925-86b7-aaf3d043b141": {
+                "visit_id": "9259d0c8-0e54-4925-86b7-aaf3d043b141",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "variant_name": "Patient Service Center Scheduled Appointment",
+                "status": "collected",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "collection_purpose": "standing_order_draw",
+                "location_code": "CHI214",
+                "service_zone": "psc_onsite",
+                "booking_channel": "online_scheduler",
+                "booked_date": "2026-06-22",
+                "appointment_date": "2026-06-28",
+                "appointment_time": "08:00",
+                "reschedule_count": 0,
+                "homebound_status": "not_homebound",
+                "additional_household_patients": 0,
+                "fasting_confirmed": "not_required",
+                "checked_in_time": "08:03",
+                "collected_date": "2026-06-28",
+                "incomplete_reason": "",
+                "cancelled_at": "",
+                "cancel_initiator": "",
+                "fee_balance": 0.0
+            },
+            "4b883167-e309-41ff-9af2-ebadc6b764bb": {
+                "visit_id": "4b883167-e309-41ff-9af2-ebadc6b764bb",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "variant_name": "Patient Service Center Scheduled Appointment",
+                "status": "collected",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "collection_purpose": "standing_order_draw",
+                "location_code": "CHI214",
+                "service_zone": "psc_onsite",
+                "booking_channel": "online_scheduler",
+                "booked_date": "2026-07-06",
+                "appointment_date": "2026-07-12",
+                "appointment_time": "08:00",
+                "reschedule_count": 0,
+                "homebound_status": "not_homebound",
+                "additional_household_patients": 0,
+                "fasting_confirmed": "not_required",
+                "checked_in_time": "08:03",
+                "collected_date": "2026-07-12",
+                "incomplete_reason": "",
+                "cancelled_at": "",
+                "cancel_initiator": "",
+                "fee_balance": 0.0
+            },
+            "acffb822-89bc-4615-8443-90d8aa22259b": {
+                "visit_id": "acffb822-89bc-4615-8443-90d8aa22259b",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "variant_name": "Patient Service Center Scheduled Appointment",
+                "status": "collected",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "collection_purpose": "standing_order_draw",
+                "location_code": "CHI214",
+                "service_zone": "psc_onsite",
+                "booking_channel": "online_scheduler",
+                "booked_date": "2026-07-20",
+                "appointment_date": "2026-07-26",
+                "appointment_time": "08:00",
+                "reschedule_count": 0,
+                "homebound_status": "not_homebound",
+                "additional_household_patients": 0,
+                "fasting_confirmed": "not_required",
+                "checked_in_time": "08:03",
+                "collected_date": "2026-07-26",
+                "incomplete_reason": "",
+                "cancelled_at": "",
+                "cancel_initiator": "",
+                "fee_balance": 0.0
+            },
+            "75cbd487-8442-46a6-9b07-a0a34c48b571": {
+                "visit_id": "75cbd487-8442-46a6-9b07-a0a34c48b571",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "variant_name": "Patient Service Center Scheduled Appointment",
+                "status": "collected",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "collection_purpose": "standing_order_draw",
+                "location_code": "CHI214",
+                "service_zone": "psc_onsite",
+                "booking_channel": "online_scheduler",
+                "booked_date": "2026-08-03",
+                "appointment_date": "2026-08-09",
+                "appointment_time": "08:00",
+                "reschedule_count": 0,
+                "homebound_status": "not_homebound",
+                "additional_household_patients": 0,
+                "fasting_confirmed": "not_required",
+                "checked_in_time": "08:03",
+                "collected_date": "2026-08-09",
+                "incomplete_reason": "",
+                "cancelled_at": "",
+                "cancel_initiator": "",
+                "fee_balance": 0.0
+            },
+            "9d862776-bdb4-4c51-b862-8c3d739d53b7": {
+                "visit_id": "9d862776-bdb4-4c51-b862-8c3d739d53b7",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "variant_name": "Patient Service Center Scheduled Appointment",
+                "status": "collected",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "collection_purpose": "standing_order_draw",
+                "location_code": "CHI214",
+                "service_zone": "psc_onsite",
+                "booking_channel": "online_scheduler",
+                "booked_date": "2026-08-17",
+                "appointment_date": "2026-08-23",
+                "appointment_time": "08:00",
+                "reschedule_count": 0,
+                "homebound_status": "not_homebound",
+                "additional_household_patients": 0,
+                "fasting_confirmed": "not_required",
+                "checked_in_time": "08:03",
+                "collected_date": "2026-08-23",
+                "incomplete_reason": "",
+                "cancelled_at": "",
+                "cancel_initiator": "",
+                "fee_balance": 0.0
+            },
+            "721f198a-f236-4e0b-9a31-ade1ef3a6c3d": {
+                "visit_id": "721f198a-f236-4e0b-9a31-ade1ef3a6c3d",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "variant_name": "Patient Service Center Scheduled Appointment",
+                "status": "collected",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "collection_purpose": "standing_order_draw",
+                "location_code": "CHI214",
+                "service_zone": "psc_onsite",
+                "booking_channel": "online_scheduler",
+                "booked_date": "2026-08-31",
+                "appointment_date": "2026-09-06",
+                "appointment_time": "08:00",
+                "reschedule_count": 0,
+                "homebound_status": "not_homebound",
+                "additional_household_patients": 0,
+                "fasting_confirmed": "not_required",
+                "checked_in_time": "08:03",
+                "collected_date": "2026-09-06",
+                "incomplete_reason": "",
+                "cancelled_at": "",
+                "cancel_initiator": "",
+                "fee_balance": 0.0
+            },
+            "ffe967e2-a48e-40a8-8e90-bf661de56790": {
+                "visit_id": "ffe967e2-a48e-40a8-8e90-bf661de56790",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "variant_name": "Patient Service Center Scheduled Appointment",
+                "status": "collected",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "collection_purpose": "recollection",
+                "location_code": "CHI214",
+                "service_zone": "psc_onsite",
+                "booking_channel": "phone_agent",
+                "booked_date": "2026-06-15",
+                "appointment_date": "2026-06-17",
+                "appointment_time": "07:30",
+                "reschedule_count": 0,
+                "homebound_status": "not_homebound",
+                "additional_household_patients": 0,
+                "fasting_confirmed": "not_required",
+                "checked_in_time": "07:31",
+                "collected_date": "2026-06-17",
+                "incomplete_reason": "",
+                "cancelled_at": "",
+                "cancel_initiator": "",
+                "fee_balance": 0.0
+            },
+            "c93d66a8-e1bd-4c95-8167-3412773cb6ec": {
+                "visit_id": "c93d66a8-e1bd-4c95-8167-3412773cb6ec",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "variant_name": "Patient Service Center Scheduled Appointment",
+                "status": "collected",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "collection_purpose": "recollection",
+                "location_code": "CHI214",
+                "service_zone": "psc_onsite",
+                "booking_channel": "phone_agent",
+                "booked_date": "2026-08-24",
+                "appointment_date": "2026-08-26",
+                "appointment_time": "07:30",
+                "reschedule_count": 0,
+                "homebound_status": "not_homebound",
+                "additional_household_patients": 0,
+                "fasting_confirmed": "not_required",
+                "checked_in_time": "07:34",
+                "collected_date": "2026-08-26",
+                "incomplete_reason": "",
+                "cancelled_at": "",
+                "cancel_initiator": "",
+                "fee_balance": 0.0
+            },
+            "e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a": {
+                "visit_id": "e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "variant_name": "Mobile In-Home Collection Visit",
+                "status": "collected",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "collection_purpose": "standing_order_draw",
+                "location_code": "MOBILE",
+                "service_zone": "zone_2",
+                "booking_channel": "online_scheduler",
+                "booked_date": "2026-09-17",
+                "appointment_date": "2026-09-20",
+                "appointment_time": "07:00",
+                "reschedule_count": 1,
+                "homebound_status": "not_homebound",
+                "additional_household_patients": 2,
+                "fasting_confirmed": "not_required",
+                "checked_in_time": "07:04",
+                "collected_date": "2026-09-20",
+                "incomplete_reason": "",
+                "cancelled_at": "",
+                "cancel_initiator": "",
+                "fee_balance": 0.0
+            }
+        },
+        "invoices": {
+            "82435e28-8849-46e4-b8c6-8b86ed49ebbe": {
+                "invoice_id": "82435e28-8849-46e4-b8c6-8b86ed49ebbe",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "variant_name": "Insured Patient Responsibility Invoice",
+                "status": "paid",
+                "invoice_number": "20338519",
+                "order_id": "30d13747-34de-476a-a746-e7f2db43fa26",
+                "coverage_id": "be0289b1-e332-4311-b90a-8fc616f467f5",
+                "date_of_service": "2025-08-13",
+                "first_statement_date": "2025-08-29",
+                "balance_due": 0.0,
+                "hold_reason": "",
+                "hold_placed_date": "",
+                "plan_id": null,
+                "collections_placed_date": "",
+                "opened_date": "2025-08-27",
+                "closed_date": "2025-09-08"
+            },
+            "dee45a22-96ad-4f22-af7a-a4fdc92a2bf4": {
+                "invoice_id": "dee45a22-96ad-4f22-af7a-a4fdc92a2bf4",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "variant_name": "Self-Pay Patient Invoice",
+                "status": "open",
+                "invoice_number": "20471836",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "coverage_id": null,
+                "date_of_service": "2026-05-31",
+                "first_statement_date": "2026-06-20",
+                "balance_due": 612.0,
+                "hold_reason": "",
+                "hold_placed_date": "",
+                "plan_id": null,
+                "collections_placed_date": "",
+                "opened_date": "2026-06-01",
+                "closed_date": ""
+            }
+        },
+        "invoice_transactions": {
+            "98ed4167-977b-4d21-afd4-cc24b89932ee": {
+                "invoice_transaction_id": "98ed4167-977b-4d21-afd4-cc24b89932ee",
+                "invoice_id": "82435e28-8849-46e4-b8c6-8b86ed49ebbe",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_responsibility_posted",
+                "event_date": "2025-08-27",
+                "amount": 42.6,
+                "statement_sequence": "",
+                "payment_method": "",
+                "payment_channel": "",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            },
+            "95265d3c-4e4a-4995-bb40-a91ff77f1b5c": {
+                "invoice_transaction_id": "95265d3c-4e4a-4995-bb40-a91ff77f1b5c",
+                "invoice_id": "82435e28-8849-46e4-b8c6-8b86ed49ebbe",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_statement_issued",
+                "event_date": "2025-08-29",
+                "amount": 42.6,
+                "statement_sequence": "first_statement",
+                "payment_method": "",
+                "payment_channel": "",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            },
+            "ff950797-017b-4884-846c-33b2b3dc7892": {
+                "invoice_transaction_id": "ff950797-017b-4884-846c-33b2b3dc7892",
+                "invoice_id": "82435e28-8849-46e4-b8c6-8b86ed49ebbe",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_payment_received",
+                "event_date": "2025-09-08",
+                "amount": 42.6,
+                "statement_sequence": "",
+                "payment_method": "credit_card",
+                "payment_channel": "online_portal",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            },
+            "47bbb2d6-92c2-4213-a3d2-9ad7a15a3628": {
+                "invoice_transaction_id": "47bbb2d6-92c2-4213-a3d2-9ad7a15a3628",
+                "invoice_id": "dee45a22-96ad-4f22-af7a-a4fdc92a2bf4",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_responsibility_posted",
+                "event_date": "2026-06-01",
+                "amount": 168.0,
+                "statement_sequence": "",
+                "payment_method": "",
+                "payment_channel": "",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            },
+            "c7ad92ac-f4c6-40ae-8dd5-517542c06e1d": {
+                "invoice_transaction_id": "c7ad92ac-f4c6-40ae-8dd5-517542c06e1d",
+                "invoice_id": "dee45a22-96ad-4f22-af7a-a4fdc92a2bf4",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_responsibility_posted",
+                "event_date": "2026-06-15",
+                "amount": 168.0,
+                "statement_sequence": "",
+                "payment_method": "",
+                "payment_channel": "",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            },
+            "f5cdfb17-7420-4a04-8629-b82c6724d5d3": {
+                "invoice_transaction_id": "f5cdfb17-7420-4a04-8629-b82c6724d5d3",
+                "invoice_id": "dee45a22-96ad-4f22-af7a-a4fdc92a2bf4",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_responsibility_posted",
+                "event_date": "2026-06-29",
+                "amount": 168.0,
+                "statement_sequence": "",
+                "payment_method": "",
+                "payment_channel": "",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            },
+            "98a20c14-3de0-4e54-9f80-17361ae8b537": {
+                "invoice_transaction_id": "98a20c14-3de0-4e54-9f80-17361ae8b537",
+                "invoice_id": "dee45a22-96ad-4f22-af7a-a4fdc92a2bf4",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_responsibility_posted",
+                "event_date": "2026-07-13",
+                "amount": 168.0,
+                "statement_sequence": "",
+                "payment_method": "",
+                "payment_channel": "",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            },
+            "6fb2096a-681f-4822-a08a-9f828ae8061d": {
+                "invoice_transaction_id": "6fb2096a-681f-4822-a08a-9f828ae8061d",
+                "invoice_id": "dee45a22-96ad-4f22-af7a-a4fdc92a2bf4",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_responsibility_posted",
+                "event_date": "2026-07-27",
+                "amount": 168.0,
+                "statement_sequence": "",
+                "payment_method": "",
+                "payment_channel": "",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            },
+            "8b2ec952-462d-4637-bc16-1a129f1619dc": {
+                "invoice_transaction_id": "8b2ec952-462d-4637-bc16-1a129f1619dc",
+                "invoice_id": "dee45a22-96ad-4f22-af7a-a4fdc92a2bf4",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_responsibility_posted",
+                "event_date": "2026-08-10",
+                "amount": 168.0,
+                "statement_sequence": "",
+                "payment_method": "",
+                "payment_channel": "",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            },
+            "4e277c93-4583-40ad-a4ac-997aa6aa6f05": {
+                "invoice_transaction_id": "4e277c93-4583-40ad-a4ac-997aa6aa6f05",
+                "invoice_id": "dee45a22-96ad-4f22-af7a-a4fdc92a2bf4",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_responsibility_posted",
+                "event_date": "2026-08-24",
+                "amount": 168.0,
+                "statement_sequence": "",
+                "payment_method": "",
+                "payment_channel": "",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            },
+            "ee88213b-978d-4812-bdbb-29056a0c583d": {
+                "invoice_transaction_id": "ee88213b-978d-4812-bdbb-29056a0c583d",
+                "invoice_id": "dee45a22-96ad-4f22-af7a-a4fdc92a2bf4",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_responsibility_posted",
+                "event_date": "2026-09-07",
+                "amount": 168.0,
+                "statement_sequence": "",
+                "payment_method": "",
+                "payment_channel": "",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            },
+            "6f8cecdd-30a5-4ed6-a18b-af908b3e9e69": {
+                "invoice_transaction_id": "6f8cecdd-30a5-4ed6-a18b-af908b3e9e69",
+                "invoice_id": "dee45a22-96ad-4f22-af7a-a4fdc92a2bf4",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_responsibility_posted",
+                "event_date": "2026-09-21",
+                "amount": 168.0,
+                "statement_sequence": "",
+                "payment_method": "",
+                "payment_channel": "",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            },
+            "63c474c3-06b2-42ce-ad4e-8a2c63bf283b": {
+                "invoice_transaction_id": "63c474c3-06b2-42ce-ad4e-8a2c63bf283b",
+                "invoice_id": "dee45a22-96ad-4f22-af7a-a4fdc92a2bf4",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_statement_issued",
+                "event_date": "2026-06-20",
+                "amount": 336.0,
+                "statement_sequence": "first_statement",
+                "payment_method": "",
+                "payment_channel": "",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            },
+            "adb0833d-381e-4265-a2f2-cccd1f98fe42": {
+                "invoice_transaction_id": "adb0833d-381e-4265-a2f2-cccd1f98fe42",
+                "invoice_id": "dee45a22-96ad-4f22-af7a-a4fdc92a2bf4",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_statement_issued",
+                "event_date": "2026-07-20",
+                "amount": 372.0,
+                "statement_sequence": "second_statement",
+                "payment_method": "",
+                "payment_channel": "",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            },
+            "ffa6c312-ecc2-450e-96c6-a2337f2ca1bc": {
+                "invoice_transaction_id": "ffa6c312-ecc2-450e-96c6-a2337f2ca1bc",
+                "invoice_id": "dee45a22-96ad-4f22-af7a-a4fdc92a2bf4",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_statement_issued",
+                "event_date": "2026-08-20",
+                "amount": 408.0,
+                "statement_sequence": "third_statement",
+                "payment_method": "",
+                "payment_channel": "",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            },
+            "722e529f-089e-41b9-bfdd-60f87c4ebed3": {
+                "invoice_transaction_id": "722e529f-089e-41b9-bfdd-60f87c4ebed3",
+                "invoice_id": "dee45a22-96ad-4f22-af7a-a4fdc92a2bf4",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_payment_received",
+                "event_date": "2026-07-10",
+                "amount": 300.0,
+                "statement_sequence": "",
+                "payment_method": "credit_card",
+                "payment_channel": "online_portal",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            },
+            "83617564-1a5e-4282-b622-c9df983852e7": {
+                "invoice_transaction_id": "83617564-1a5e-4282-b622-c9df983852e7",
+                "invoice_id": "dee45a22-96ad-4f22-af7a-a4fdc92a2bf4",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_payment_received",
+                "event_date": "2026-08-10",
+                "amount": 300.0,
+                "statement_sequence": "",
+                "payment_method": "credit_card",
+                "payment_channel": "online_portal",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            },
+            "d9273f3a-ad86-4e98-b2ae-e40fd983ae95": {
+                "invoice_transaction_id": "d9273f3a-ad86-4e98-b2ae-e40fd983ae95",
+                "invoice_id": "dee45a22-96ad-4f22-af7a-a4fdc92a2bf4",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_payment_received",
+                "event_date": "2026-09-10",
+                "amount": 300.0,
+                "statement_sequence": "",
+                "payment_method": "credit_card",
+                "payment_channel": "online_portal",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            }
+        },
+        "visit_events": {
+            "8184aef5-fe5c-4360-b77b-a1832ac66032": {
+                "visit_event_id": "8184aef5-fe5c-4360-b77b-a1832ac66032",
+                "visit_id": "e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "visits_fee_assessed",
+                "event_date": "2026-09-18",
+                "fee_type": "late_cancellation_fee",
+                "fee_amount": 68.0,
+                "waiver_reason": null,
+                "payment_method": null,
+                "assessed_event_id": null,
+                "paid_event_id": null
+            },
+            "c15dc55c-0219-4b70-b133-27f221b6193d": {
+                "visit_event_id": "c15dc55c-0219-4b70-b133-27f221b6193d",
+                "visit_id": "e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "visits_fee_paid",
+                "event_date": "2026-09-18",
+                "fee_type": "late_cancellation_fee",
+                "fee_amount": 68.0,
+                "waiver_reason": null,
+                "payment_method": "credit_card",
+                "assessed_event_id": "8184aef5-fe5c-4360-b77b-a1832ac66032",
+                "paid_event_id": null
+            }
+        }
+    },
+    "db_closure": {
+        "invoice_transactions": {
+            "83617564-1a5e-4282-b622-c9df983852e7": {
+                "invoice_transaction_id": "83617564-1a5e-4282-b622-c9df983852e7",
+                "invoice_id": "dee45a22-96ad-4f22-af7a-a4fdc92a2bf4",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_payment_received",
+                "event_date": "2026-08-10",
+                "amount": 300.0,
+                "statement_sequence": "",
+                "payment_method": "credit_card",
+                "payment_channel": "online_portal",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            },
+            "f5cdfb17-7420-4a04-8629-b82c6724d5d3": {
+                "invoice_transaction_id": "f5cdfb17-7420-4a04-8629-b82c6724d5d3",
+                "invoice_id": "dee45a22-96ad-4f22-af7a-a4fdc92a2bf4",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_responsibility_posted",
+                "event_date": "2026-06-29",
+                "amount": 168.0,
+                "statement_sequence": "",
+                "payment_method": "",
+                "payment_channel": "",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            },
+            "ee88213b-978d-4812-bdbb-29056a0c583d": {
+                "invoice_transaction_id": "ee88213b-978d-4812-bdbb-29056a0c583d",
+                "invoice_id": "dee45a22-96ad-4f22-af7a-a4fdc92a2bf4",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_responsibility_posted",
+                "event_date": "2026-09-07",
+                "amount": 168.0,
+                "statement_sequence": "",
+                "payment_method": "",
+                "payment_channel": "",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            },
+            "6f8cecdd-30a5-4ed6-a18b-af908b3e9e69": {
+                "invoice_transaction_id": "6f8cecdd-30a5-4ed6-a18b-af908b3e9e69",
+                "invoice_id": "dee45a22-96ad-4f22-af7a-a4fdc92a2bf4",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_responsibility_posted",
+                "event_date": "2026-09-21",
+                "amount": 168.0,
+                "statement_sequence": "",
+                "payment_method": "",
+                "payment_channel": "",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            },
+            "95265d3c-4e4a-4995-bb40-a91ff77f1b5c": {
+                "invoice_transaction_id": "95265d3c-4e4a-4995-bb40-a91ff77f1b5c",
+                "invoice_id": "82435e28-8849-46e4-b8c6-8b86ed49ebbe",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_statement_issued",
+                "event_date": "2025-08-29",
+                "amount": 42.6,
+                "statement_sequence": "first_statement",
+                "payment_method": "",
+                "payment_channel": "",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            },
+            "63c474c3-06b2-42ce-ad4e-8a2c63bf283b": {
+                "invoice_transaction_id": "63c474c3-06b2-42ce-ad4e-8a2c63bf283b",
+                "invoice_id": "dee45a22-96ad-4f22-af7a-a4fdc92a2bf4",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_statement_issued",
+                "event_date": "2026-06-20",
+                "amount": 336.0,
+                "statement_sequence": "first_statement",
+                "payment_method": "",
+                "payment_channel": "",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            },
+            "ff950797-017b-4884-846c-33b2b3dc7892": {
+                "invoice_transaction_id": "ff950797-017b-4884-846c-33b2b3dc7892",
+                "invoice_id": "82435e28-8849-46e4-b8c6-8b86ed49ebbe",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_payment_received",
+                "event_date": "2025-09-08",
+                "amount": 42.6,
+                "statement_sequence": "",
+                "payment_method": "credit_card",
+                "payment_channel": "online_portal",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            },
+            "6fb2096a-681f-4822-a08a-9f828ae8061d": {
+                "invoice_transaction_id": "6fb2096a-681f-4822-a08a-9f828ae8061d",
+                "invoice_id": "dee45a22-96ad-4f22-af7a-a4fdc92a2bf4",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_responsibility_posted",
+                "event_date": "2026-07-27",
+                "amount": 168.0,
+                "statement_sequence": "",
+                "payment_method": "",
+                "payment_channel": "",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            },
+            "8b2ec952-462d-4637-bc16-1a129f1619dc": {
+                "invoice_transaction_id": "8b2ec952-462d-4637-bc16-1a129f1619dc",
+                "invoice_id": "dee45a22-96ad-4f22-af7a-a4fdc92a2bf4",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_responsibility_posted",
+                "event_date": "2026-08-10",
+                "amount": 168.0,
+                "statement_sequence": "",
+                "payment_method": "",
+                "payment_channel": "",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            },
+            "98a20c14-3de0-4e54-9f80-17361ae8b537": {
+                "invoice_transaction_id": "98a20c14-3de0-4e54-9f80-17361ae8b537",
+                "invoice_id": "dee45a22-96ad-4f22-af7a-a4fdc92a2bf4",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_responsibility_posted",
+                "event_date": "2026-07-13",
+                "amount": 168.0,
+                "statement_sequence": "",
+                "payment_method": "",
+                "payment_channel": "",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            },
+            "c7ad92ac-f4c6-40ae-8dd5-517542c06e1d": {
+                "invoice_transaction_id": "c7ad92ac-f4c6-40ae-8dd5-517542c06e1d",
+                "invoice_id": "dee45a22-96ad-4f22-af7a-a4fdc92a2bf4",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_responsibility_posted",
+                "event_date": "2026-06-15",
+                "amount": 168.0,
+                "statement_sequence": "",
+                "payment_method": "",
+                "payment_channel": "",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            },
+            "98ed4167-977b-4d21-afd4-cc24b89932ee": {
+                "invoice_transaction_id": "98ed4167-977b-4d21-afd4-cc24b89932ee",
+                "invoice_id": "82435e28-8849-46e4-b8c6-8b86ed49ebbe",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_responsibility_posted",
+                "event_date": "2025-08-27",
+                "amount": 42.6,
+                "statement_sequence": "",
+                "payment_method": "",
+                "payment_channel": "",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            },
+            "47bbb2d6-92c2-4213-a3d2-9ad7a15a3628": {
+                "invoice_transaction_id": "47bbb2d6-92c2-4213-a3d2-9ad7a15a3628",
+                "invoice_id": "dee45a22-96ad-4f22-af7a-a4fdc92a2bf4",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_responsibility_posted",
+                "event_date": "2026-06-01",
+                "amount": 168.0,
+                "statement_sequence": "",
+                "payment_method": "",
+                "payment_channel": "",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            },
+            "d9273f3a-ad86-4e98-b2ae-e40fd983ae95": {
+                "invoice_transaction_id": "d9273f3a-ad86-4e98-b2ae-e40fd983ae95",
+                "invoice_id": "dee45a22-96ad-4f22-af7a-a4fdc92a2bf4",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_payment_received",
+                "event_date": "2026-09-10",
+                "amount": 300.0,
+                "statement_sequence": "",
+                "payment_method": "credit_card",
+                "payment_channel": "online_portal",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            },
+            "4e277c93-4583-40ad-a4ac-997aa6aa6f05": {
+                "invoice_transaction_id": "4e277c93-4583-40ad-a4ac-997aa6aa6f05",
+                "invoice_id": "dee45a22-96ad-4f22-af7a-a4fdc92a2bf4",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_responsibility_posted",
+                "event_date": "2026-08-24",
+                "amount": 168.0,
+                "statement_sequence": "",
+                "payment_method": "",
+                "payment_channel": "",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            },
+            "adb0833d-381e-4265-a2f2-cccd1f98fe42": {
+                "invoice_transaction_id": "adb0833d-381e-4265-a2f2-cccd1f98fe42",
+                "invoice_id": "dee45a22-96ad-4f22-af7a-a4fdc92a2bf4",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_statement_issued",
+                "event_date": "2026-07-20",
+                "amount": 372.0,
+                "statement_sequence": "second_statement",
+                "payment_method": "",
+                "payment_channel": "",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            },
+            "722e529f-089e-41b9-bfdd-60f87c4ebed3": {
+                "invoice_transaction_id": "722e529f-089e-41b9-bfdd-60f87c4ebed3",
+                "invoice_id": "dee45a22-96ad-4f22-af7a-a4fdc92a2bf4",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_payment_received",
+                "event_date": "2026-07-10",
+                "amount": 300.0,
+                "statement_sequence": "",
+                "payment_method": "credit_card",
+                "payment_channel": "online_portal",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            },
+            "ffa6c312-ecc2-450e-96c6-a2337f2ca1bc": {
+                "invoice_transaction_id": "ffa6c312-ecc2-450e-96c6-a2337f2ca1bc",
+                "invoice_id": "dee45a22-96ad-4f22-af7a-a4fdc92a2bf4",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "invoices_statement_issued",
+                "event_date": "2026-08-20",
+                "amount": 408.0,
+                "statement_sequence": "third_statement",
+                "payment_method": "",
+                "payment_channel": "",
+                "adjustment_type": "",
+                "claim_event_id": null,
+                "assistance_case_id": null,
+                "dispute_id": null,
+                "related_transaction_id": null,
+                "reversal_reason": "",
+                "refund_destination": "",
+                "target_invoice_id": null
+            }
+        },
+        "visits": {
+            "721f198a-f236-4e0b-9a31-ade1ef3a6c3d": {
+                "visit_id": "721f198a-f236-4e0b-9a31-ade1ef3a6c3d",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "variant_name": "Patient Service Center Scheduled Appointment",
+                "status": "collected",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "collection_purpose": "standing_order_draw",
+                "location_code": "CHI214",
+                "service_zone": "psc_onsite",
+                "booking_channel": "online_scheduler",
+                "booked_date": "2026-08-31",
+                "appointment_date": "2026-09-06",
+                "appointment_time": "08:00",
+                "reschedule_count": 0,
+                "homebound_status": "not_homebound",
+                "additional_household_patients": 0,
+                "fasting_confirmed": "not_required",
+                "checked_in_time": "08:03",
+                "collected_date": "2026-09-06",
+                "incomplete_reason": "",
+                "cancelled_at": "",
+                "cancel_initiator": "",
+                "fee_balance": 0.0
+            },
+            "75cbd487-8442-46a6-9b07-a0a34c48b571": {
+                "visit_id": "75cbd487-8442-46a6-9b07-a0a34c48b571",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "variant_name": "Patient Service Center Scheduled Appointment",
+                "status": "collected",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "collection_purpose": "standing_order_draw",
+                "location_code": "CHI214",
+                "service_zone": "psc_onsite",
+                "booking_channel": "online_scheduler",
+                "booked_date": "2026-08-03",
+                "appointment_date": "2026-08-09",
+                "appointment_time": "08:00",
+                "reschedule_count": 0,
+                "homebound_status": "not_homebound",
+                "additional_household_patients": 0,
+                "fasting_confirmed": "not_required",
+                "checked_in_time": "08:03",
+                "collected_date": "2026-08-09",
+                "incomplete_reason": "",
+                "cancelled_at": "",
+                "cancel_initiator": "",
+                "fee_balance": 0.0
+            },
+            "8d414367-2026-4362-a399-1cd9d33692dd": {
+                "visit_id": "8d414367-2026-4362-a399-1cd9d33692dd",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "variant_name": "Patient Service Center Scheduled Appointment",
+                "status": "collected",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "collection_purpose": "standing_order_draw",
+                "location_code": "CHI214",
+                "service_zone": "psc_onsite",
+                "booking_channel": "online_scheduler",
+                "booked_date": "2026-06-08",
+                "appointment_date": "2026-06-14",
+                "appointment_time": "08:00",
+                "reschedule_count": 0,
+                "homebound_status": "not_homebound",
+                "additional_household_patients": 0,
+                "fasting_confirmed": "not_required",
+                "checked_in_time": "08:03",
+                "collected_date": "2026-06-14",
+                "incomplete_reason": "",
+                "cancelled_at": "",
+                "cancel_initiator": "",
+                "fee_balance": 0.0
+            },
+            "9d862776-bdb4-4c51-b862-8c3d739d53b7": {
+                "visit_id": "9d862776-bdb4-4c51-b862-8c3d739d53b7",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "variant_name": "Patient Service Center Scheduled Appointment",
+                "status": "collected",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "collection_purpose": "standing_order_draw",
+                "location_code": "CHI214",
+                "service_zone": "psc_onsite",
+                "booking_channel": "online_scheduler",
+                "booked_date": "2026-08-17",
+                "appointment_date": "2026-08-23",
+                "appointment_time": "08:00",
+                "reschedule_count": 0,
+                "homebound_status": "not_homebound",
+                "additional_household_patients": 0,
+                "fasting_confirmed": "not_required",
+                "checked_in_time": "08:03",
+                "collected_date": "2026-08-23",
+                "incomplete_reason": "",
+                "cancelled_at": "",
+                "cancel_initiator": "",
+                "fee_balance": 0.0
+            },
+            "e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a": {
+                "visit_id": "e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "variant_name": "Mobile In-Home Collection Visit",
+                "status": "collected",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "collection_purpose": "standing_order_draw",
+                "location_code": "MOBILE",
+                "service_zone": "zone_2",
+                "booking_channel": "online_scheduler",
+                "booked_date": "2026-09-17",
+                "appointment_date": "2026-09-20",
+                "appointment_time": "07:00",
+                "reschedule_count": 1,
+                "homebound_status": "not_homebound",
+                "additional_household_patients": 2,
+                "fasting_confirmed": "not_required",
+                "checked_in_time": "07:04",
+                "collected_date": "2026-09-20",
+                "incomplete_reason": "",
+                "cancelled_at": "",
+                "cancel_initiator": "",
+                "fee_balance": 0.0
+            },
+            "9259d0c8-0e54-4925-86b7-aaf3d043b141": {
+                "visit_id": "9259d0c8-0e54-4925-86b7-aaf3d043b141",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "variant_name": "Patient Service Center Scheduled Appointment",
+                "status": "collected",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "collection_purpose": "standing_order_draw",
+                "location_code": "CHI214",
+                "service_zone": "psc_onsite",
+                "booking_channel": "online_scheduler",
+                "booked_date": "2026-06-22",
+                "appointment_date": "2026-06-28",
+                "appointment_time": "08:00",
+                "reschedule_count": 0,
+                "homebound_status": "not_homebound",
+                "additional_household_patients": 0,
+                "fasting_confirmed": "not_required",
+                "checked_in_time": "08:03",
+                "collected_date": "2026-06-28",
+                "incomplete_reason": "",
+                "cancelled_at": "",
+                "cancel_initiator": "",
+                "fee_balance": 0.0
+            },
+            "4b883167-e309-41ff-9af2-ebadc6b764bb": {
+                "visit_id": "4b883167-e309-41ff-9af2-ebadc6b764bb",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "variant_name": "Patient Service Center Scheduled Appointment",
+                "status": "collected",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "collection_purpose": "standing_order_draw",
+                "location_code": "CHI214",
+                "service_zone": "psc_onsite",
+                "booking_channel": "online_scheduler",
+                "booked_date": "2026-07-06",
+                "appointment_date": "2026-07-12",
+                "appointment_time": "08:00",
+                "reschedule_count": 0,
+                "homebound_status": "not_homebound",
+                "additional_household_patients": 0,
+                "fasting_confirmed": "not_required",
+                "checked_in_time": "08:03",
+                "collected_date": "2026-07-12",
+                "incomplete_reason": "",
+                "cancelled_at": "",
+                "cancel_initiator": "",
+                "fee_balance": 0.0
+            },
+            "ffe967e2-a48e-40a8-8e90-bf661de56790": {
+                "visit_id": "ffe967e2-a48e-40a8-8e90-bf661de56790",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "variant_name": "Patient Service Center Scheduled Appointment",
+                "status": "collected",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "collection_purpose": "recollection",
+                "location_code": "CHI214",
+                "service_zone": "psc_onsite",
+                "booking_channel": "phone_agent",
+                "booked_date": "2026-06-15",
+                "appointment_date": "2026-06-17",
+                "appointment_time": "07:30",
+                "reschedule_count": 0,
+                "homebound_status": "not_homebound",
+                "additional_household_patients": 0,
+                "fasting_confirmed": "not_required",
+                "checked_in_time": "07:31",
+                "collected_date": "2026-06-17",
+                "incomplete_reason": "",
+                "cancelled_at": "",
+                "cancel_initiator": "",
+                "fee_balance": 0.0
+            },
+            "acffb822-89bc-4615-8443-90d8aa22259b": {
+                "visit_id": "acffb822-89bc-4615-8443-90d8aa22259b",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "variant_name": "Patient Service Center Scheduled Appointment",
+                "status": "collected",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "collection_purpose": "standing_order_draw",
+                "location_code": "CHI214",
+                "service_zone": "psc_onsite",
+                "booking_channel": "online_scheduler",
+                "booked_date": "2026-07-20",
+                "appointment_date": "2026-07-26",
+                "appointment_time": "08:00",
+                "reschedule_count": 0,
+                "homebound_status": "not_homebound",
+                "additional_household_patients": 0,
+                "fasting_confirmed": "not_required",
+                "checked_in_time": "08:03",
+                "collected_date": "2026-07-26",
+                "incomplete_reason": "",
+                "cancelled_at": "",
+                "cancel_initiator": "",
+                "fee_balance": 0.0
+            },
+            "312fa155-7811-45cb-b6ea-135e0e384cb2": {
+                "visit_id": "312fa155-7811-45cb-b6ea-135e0e384cb2",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "variant_name": "Patient Service Center Scheduled Appointment",
+                "status": "collected",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "collection_purpose": "standing_order_draw",
+                "location_code": "CHI214",
+                "service_zone": "psc_onsite",
+                "booking_channel": "online_scheduler",
+                "booked_date": "2026-05-25",
+                "appointment_date": "2026-05-31",
+                "appointment_time": "08:00",
+                "reschedule_count": 0,
+                "homebound_status": "not_homebound",
+                "additional_household_patients": 0,
+                "fasting_confirmed": "not_required",
+                "checked_in_time": "08:03",
+                "collected_date": "2026-05-31",
+                "incomplete_reason": "",
+                "cancelled_at": "",
+                "cancel_initiator": "",
+                "fee_balance": 0.0
+            },
+            "c93d66a8-e1bd-4c95-8167-3412773cb6ec": {
+                "visit_id": "c93d66a8-e1bd-4c95-8167-3412773cb6ec",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "variant_name": "Patient Service Center Scheduled Appointment",
+                "status": "collected",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "collection_purpose": "recollection",
+                "location_code": "CHI214",
+                "service_zone": "psc_onsite",
+                "booking_channel": "phone_agent",
+                "booked_date": "2026-08-24",
+                "appointment_date": "2026-08-26",
+                "appointment_time": "07:30",
+                "reschedule_count": 0,
+                "homebound_status": "not_homebound",
+                "additional_household_patients": 0,
+                "fasting_confirmed": "not_required",
+                "checked_in_time": "07:34",
+                "collected_date": "2026-08-26",
+                "incomplete_reason": "",
+                "cancelled_at": "",
+                "cancel_initiator": "",
+                "fee_balance": 0.0
+            }
+        },
+        "order_events": {
+            "c0b947e1-9901-4750-b1d9-8e37d3f019b3": {
+                "order_event_id": "c0b947e1-9901-4750-b1d9-8e37d3f019b3",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "orders_recollection_requested",
+                "event_date": "2026-08-24",
+                "test_code": "",
+                "charge_amount": "",
+                "charge_reason": "",
+                "credit_reason": "",
+                "credited_event_id": null,
+                "specimen_type": "",
+                "rejection_reason": "",
+                "rejected_event_id": "d9e74d42-8566-43e6-bbb3-89c1eda0800f",
+                "recollect_by_date": "2026-08-31",
+                "report_correction_reason": "",
+                "copy_format": ""
+            },
+            "d9e74d42-8566-43e6-bbb3-89c1eda0800f": {
+                "order_event_id": "d9e74d42-8566-43e6-bbb3-89c1eda0800f",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "orders_specimen_rejected",
+                "event_date": "2026-08-24",
+                "test_code": "",
+                "charge_amount": "",
+                "charge_reason": "",
+                "credit_reason": "",
+                "credited_event_id": null,
+                "specimen_type": "whole_blood_edta",
+                "rejection_reason": "leaked_in_transit",
+                "rejected_event_id": null,
+                "recollect_by_date": "",
+                "report_correction_reason": "",
+                "copy_format": ""
+            },
+            "a20ca7e4-bd16-4428-af4b-e23621c9cb55": {
+                "order_event_id": "a20ca7e4-bd16-4428-af4b-e23621c9cb55",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "orders_test_charge_posted",
+                "event_date": "2026-08-10",
+                "test_code": "3538",
+                "charge_amount": 168.0,
+                "charge_reason": "ordered",
+                "credit_reason": "",
+                "credited_event_id": null,
+                "specimen_type": "",
+                "rejection_reason": "",
+                "rejected_event_id": null,
+                "recollect_by_date": "",
+                "report_correction_reason": "",
+                "copy_format": ""
+            },
+            "27f905d5-ab98-43fe-ab01-2338c57bfdb2": {
+                "order_event_id": "27f905d5-ab98-43fe-ab01-2338c57bfdb2",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "orders_test_charge_posted",
+                "event_date": "2026-09-21",
+                "test_code": "3538",
+                "charge_amount": 168.0,
+                "charge_reason": "ordered",
+                "credit_reason": "",
+                "credited_event_id": null,
+                "specimen_type": "",
+                "rejection_reason": "",
+                "rejected_event_id": null,
+                "recollect_by_date": "",
+                "report_correction_reason": "",
+                "copy_format": ""
+            },
+            "92da308d-39f2-497d-b9f0-2e3e93ccf180": {
+                "order_event_id": "92da308d-39f2-497d-b9f0-2e3e93ccf180",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "orders_specimen_rejected",
+                "event_date": "2026-06-15",
+                "test_code": "",
+                "charge_amount": "",
+                "charge_reason": "",
+                "credit_reason": "",
+                "credited_event_id": null,
+                "specimen_type": "whole_blood_edta",
+                "rejection_reason": "hemolyzed",
+                "rejected_event_id": null,
+                "recollect_by_date": "",
+                "report_correction_reason": "",
+                "copy_format": ""
+            },
+            "bb038ced-4d80-4b44-acd1-ab4b7d26aa64": {
+                "order_event_id": "bb038ced-4d80-4b44-acd1-ab4b7d26aa64",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "orders_test_charge_posted",
+                "event_date": "2026-09-07",
+                "test_code": "3538",
+                "charge_amount": 168.0,
+                "charge_reason": "ordered",
+                "credit_reason": "",
+                "credited_event_id": null,
+                "specimen_type": "",
+                "rejection_reason": "",
+                "rejected_event_id": null,
+                "recollect_by_date": "",
+                "report_correction_reason": "",
+                "copy_format": ""
+            },
+            "3c16bc99-940f-4b06-a33b-39e8923ef05e": {
+                "order_event_id": "3c16bc99-940f-4b06-a33b-39e8923ef05e",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "orders_test_charge_posted",
+                "event_date": "2026-06-01",
+                "test_code": "3538",
+                "charge_amount": 168.0,
+                "charge_reason": "ordered",
+                "credit_reason": "",
+                "credited_event_id": null,
+                "specimen_type": "",
+                "rejection_reason": "",
+                "rejected_event_id": null,
+                "recollect_by_date": "",
+                "report_correction_reason": "",
+                "copy_format": ""
+            },
+            "9b0c2ca8-0102-4278-9e7a-d134f4f605f1": {
+                "order_event_id": "9b0c2ca8-0102-4278-9e7a-d134f4f605f1",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "orders_test_charge_posted",
+                "event_date": "2026-06-15",
+                "test_code": "3538",
+                "charge_amount": 168.0,
+                "charge_reason": "ordered",
+                "credit_reason": "",
+                "credited_event_id": null,
+                "specimen_type": "",
+                "rejection_reason": "",
+                "rejected_event_id": null,
+                "recollect_by_date": "",
+                "report_correction_reason": "",
+                "copy_format": ""
+            },
+            "d9715599-b183-4c21-bc63-e71b0911dace": {
+                "order_event_id": "d9715599-b183-4c21-bc63-e71b0911dace",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "orders_test_charge_posted",
+                "event_date": "2026-07-27",
+                "test_code": "3538",
+                "charge_amount": 168.0,
+                "charge_reason": "ordered",
+                "credit_reason": "",
+                "credited_event_id": null,
+                "specimen_type": "",
+                "rejection_reason": "",
+                "rejected_event_id": null,
+                "recollect_by_date": "",
+                "report_correction_reason": "",
+                "copy_format": ""
+            },
+            "1ceb0f38-4169-4cb3-ab93-33521304c321": {
+                "order_event_id": "1ceb0f38-4169-4cb3-ab93-33521304c321",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "orders_test_charge_posted",
+                "event_date": "2026-06-29",
+                "test_code": "3538",
+                "charge_amount": 168.0,
+                "charge_reason": "ordered",
+                "credit_reason": "",
+                "credited_event_id": null,
+                "specimen_type": "",
+                "rejection_reason": "",
+                "rejected_event_id": null,
+                "recollect_by_date": "",
+                "report_correction_reason": "",
+                "copy_format": ""
+            },
+            "f65d57b5-7602-464b-9a5e-0f781223e2b6": {
+                "order_event_id": "f65d57b5-7602-464b-9a5e-0f781223e2b6",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "orders_test_charge_posted",
+                "event_date": "2026-08-24",
+                "test_code": "3538",
+                "charge_amount": 168.0,
+                "charge_reason": "ordered",
+                "credit_reason": "",
+                "credited_event_id": null,
+                "specimen_type": "",
+                "rejection_reason": "",
+                "rejected_event_id": null,
+                "recollect_by_date": "",
+                "report_correction_reason": "",
+                "copy_format": ""
+            },
+            "fa96a893-d5d2-4d9a-b909-f6b216e28491": {
+                "order_event_id": "fa96a893-d5d2-4d9a-b909-f6b216e28491",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "orders_test_charge_posted",
+                "event_date": "2026-07-13",
+                "test_code": "3538",
+                "charge_amount": 168.0,
+                "charge_reason": "ordered",
+                "credit_reason": "",
+                "credited_event_id": null,
+                "specimen_type": "",
+                "rejection_reason": "",
+                "rejected_event_id": null,
+                "recollect_by_date": "",
+                "report_correction_reason": "",
+                "copy_format": ""
+            },
+            "7232a8c3-f82d-4cf4-85bf-db511925251c": {
+                "order_event_id": "7232a8c3-f82d-4cf4-85bf-db511925251c",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "orders_recollection_requested",
+                "event_date": "2026-06-15",
+                "test_code": "",
+                "charge_amount": "",
+                "charge_reason": "",
+                "credit_reason": "",
+                "credited_event_id": null,
+                "specimen_type": "",
+                "rejection_reason": "",
+                "rejected_event_id": "92da308d-39f2-497d-b9f0-2e3e93ccf180",
+                "recollect_by_date": "2026-06-22",
+                "report_correction_reason": "",
+                "copy_format": ""
+            }
+        },
+        "customers": {
+            "ea153a47-f708-4342-a2cb-9fa08dc13822": {
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "customer_type": "patient",
+                "name": "Lorraine Hadley",
+                "date_of_birth": "1968-02-11",
+                "phone_number": "3125550188",
+                "email": "lorraine.hadley@outlook.com",
+                "zip_code": "60625",
+                "mailing_address": "4718 N Kedzie Ave Apt 2, Chicago, IL",
+                "npi": "",
+                "profile_opened_date": "2019-03-12",
+                "portal_enrolled": true
+            }
+        },
+        "invoices": {
+            "82435e28-8849-46e4-b8c6-8b86ed49ebbe": {
+                "invoice_id": "82435e28-8849-46e4-b8c6-8b86ed49ebbe",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "variant_name": "Insured Patient Responsibility Invoice",
+                "status": "paid",
+                "invoice_number": "20338519",
+                "order_id": "30d13747-34de-476a-a746-e7f2db43fa26",
+                "coverage_id": "be0289b1-e332-4311-b90a-8fc616f467f5",
+                "date_of_service": "2025-08-13",
+                "first_statement_date": "2025-08-29",
+                "balance_due": 0.0,
+                "hold_reason": "",
+                "hold_placed_date": "",
+                "plan_id": null,
+                "collections_placed_date": "",
+                "opened_date": "2025-08-27",
+                "closed_date": "2025-09-08"
+            },
+            "dee45a22-96ad-4f22-af7a-a4fdc92a2bf4": {
+                "invoice_id": "dee45a22-96ad-4f22-af7a-a4fdc92a2bf4",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "variant_name": "Self-Pay Patient Invoice",
+                "status": "open",
+                "invoice_number": "20471836",
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "coverage_id": null,
+                "date_of_service": "2026-05-31",
+                "first_statement_date": "2026-06-20",
+                "balance_due": 612.0,
+                "hold_reason": "",
+                "hold_placed_date": "",
+                "plan_id": null,
+                "collections_placed_date": "",
+                "opened_date": "2026-06-01",
+                "closed_date": ""
+            }
+        },
+        "coverages": {
+            "be0289b1-e332-4311-b90a-8fc616f467f5": {
+                "coverage_id": "be0289b1-e332-4311-b90a-8fc616f467f5",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "variant_name": "Commercial In-Network Plan",
+                "status": "terminated",
+                "payer_name": "Blue Cross Blue Shield of Illinois PPO",
+                "member_id": "XOF2847155",
+                "group_number": "B41907",
+                "subscriber_relationship": "self",
+                "coordination_order": "primary",
+                "employer_group_size_band": "100_plus_employees",
+                "active_employment_coverage": false,
+                "effective_date": "2021-01-01",
+                "termination_date": "2026-03-31",
+                "verified_date": "2026-03-02",
+                "added_date": "2020-12-18"
+            }
+        },
+        "orders": {
+            "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66": {
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "variant_name": "Specialty Clinical Testing",
+                "status": "resulted",
+                "requisition_number": "1204718362",
+                "order_channel": "electronic_physician_order",
+                "billing_method": "self_pay",
+                "coverage_id": null,
+                "client_account_id": null,
+                "ordering_npi": "1287340915",
+                "diagnosis_status": "not_required",
+                "prior_auth_status": "not_required",
+                "prior_auth_number": "",
+                "abn_status": "not_applicable",
+                "informed_consent_status": "not_required",
+                "consent_signed_date": "",
+                "hold_reason": "none",
+                "hold_placed_date": "",
+                "standing_order": true,
+                "list_price_total": 1512.0,
+                "good_faith_estimate_amount": 4368.0,
+                "estimate_date": "2026-05-26",
+                "order_date": "2026-05-26",
+                "collection_date": "2026-09-20",
+                "received_date": "2026-09-21",
+                "result_released_date": "2026-09-22",
+                "cancellation_reason": "",
+                "cancelled_date": ""
+            },
+            "30d13747-34de-476a-a746-e7f2db43fa26": {
+                "order_id": "30d13747-34de-476a-a746-e7f2db43fa26",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "variant_name": "Routine Clinical Testing",
+                "status": "resulted",
+                "requisition_number": "1203385190",
+                "order_channel": "electronic_physician_order",
+                "billing_method": "insurance",
+                "coverage_id": "be0289b1-e332-4311-b90a-8fc616f467f5",
+                "client_account_id": null,
+                "ordering_npi": "1287340915",
+                "diagnosis_status": "provided",
+                "prior_auth_status": "not_required",
+                "prior_auth_number": "",
+                "abn_status": "not_applicable",
+                "informed_consent_status": "not_required",
+                "consent_signed_date": "",
+                "hold_reason": "none",
+                "hold_placed_date": "",
+                "standing_order": false,
+                "list_price_total": 212.0,
+                "good_faith_estimate_amount": "",
+                "estimate_date": "",
+                "order_date": "2025-08-11",
+                "collection_date": "2025-08-13",
+                "received_date": "2025-08-14",
+                "result_released_date": "2025-08-15",
+                "cancellation_reason": "",
+                "cancelled_date": ""
+            }
+        },
+        "visit_events": {
+            "8184aef5-fe5c-4360-b77b-a1832ac66032": {
+                "visit_event_id": "8184aef5-fe5c-4360-b77b-a1832ac66032",
+                "visit_id": "e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "visits_fee_assessed",
+                "event_date": "2026-09-18",
+                "fee_type": "late_cancellation_fee",
+                "fee_amount": 68.0,
+                "waiver_reason": null,
+                "payment_method": null,
+                "assessed_event_id": null,
+                "paid_event_id": null
+            },
+            "c15dc55c-0219-4b70-b133-27f221b6193d": {
+                "visit_event_id": "c15dc55c-0219-4b70-b133-27f221b6193d",
+                "visit_id": "e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a",
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "event_type": "visits_fee_paid",
+                "event_date": "2026-09-18",
+                "fee_type": "late_cancellation_fee",
+                "fee_amount": 68.0,
+                "waiver_reason": null,
+                "payment_method": "credit_card",
+                "assessed_event_id": "8184aef5-fe5c-4360-b77b-a1832ac66032",
+                "paid_event_id": null
+            }
+        }
+    },
+    "db_closure_matches_initial_state": true,
+    "evaluation_criteria": [
+        {
+            "owner": "agent",
+            "tool": "find_customers",
+            "arguments": {
+                "phone_number": "3125550188"
+            },
+            "objective": "Locate the caller's patient profile from the phone number she gives; returns the customer reference number used on every other record.",
+            "necessity": "Every later read and write is keyed by the customer reference number; nothing can be looked up without it."
+        },
+        {
+            "owner": "agent",
+            "tool": "verify_customer_identity",
+            "arguments": {
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822",
+                "phone_number": "3125550188",
+                "date_of_birth": "1968-02-11"
+            },
+            "objective": "Verify the caller with the two profile details she states (phone number and date of birth).",
+            "necessity": "Identity must be verified before any record of the patient is discussed or changed; two matching details are required."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_visits",
+            "arguments": {
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822"
+            },
+            "objective": "List the patient's collection visits; selects the collected Mobile In-Home Collection Visit of 2026-09-20 (zone 2, Sunday 07:00, booked 2026-09-17, moved once, two additional household members, not Medicare homebound) and shows the earlier PSC draws of the same standing order.",
+            "necessity": "Gives every visit field the four computations read: service zone, appointment date and start time, booking date, additional household members, homebound status, collected date, order reference; and identifies the target visit."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_visit_events",
+            "arguments": {
+                "visit_id": "e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a"
+            },
+            "objective": "Read the fee record of the 2026-09-20 home visit: it carries only the late-change charge of 68.00 posted 2026-09-18 for the patient's move from Saturday to Sunday, already paid by card the same day; no trip, additional-patient or weekend fee has been assessed.",
+            "necessity": "Establishes that the three service charges owed on a collected home visit are not on the record, so the settlement charge the patient asks for cannot yet be worked out (the settlement rule waits on the assessed trip fee, additional-patient fee and weekend surcharge); the paid late-change lines enter the settlement's open total at 0.00."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_orders",
+            "arguments": {
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822"
+            },
+            "objective": "Read the patient's orders; the visit collects the Specialty Clinical Testing standing order billed self-pay.",
+            "necessity": "Supplies the standing-order flag (series route band, series member rate, series weekend rotation), the service class (handling kit, member kit, weekend courier) and the billing method (self-pay allowance)."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_order_events",
+            "arguments": {
+                "order_id": "8a3a1c6e-cec1-46a2-b0cb-bc431de37f66"
+            },
+            "objective": "Read the order's ledger: nine test charges posted 2026-06-01..2026-09-21, a hemolyzed rejection on 2026-06-15 and a leaked-in-transit rejection on 2026-08-24.",
+            "necessity": "The count of test charges in the last six months decides the series tiers; the rejection inside the last three months (leaked in transit) decides the redraw credit, while the 2026-06-15 rejection falls outside that window."
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "assess_trip_fee_73c5b19a"
+            },
+            "objective": "Unlock assess_trip_fee_73c5b19a so it can be called.",
+            "necessity": "First half of the unlock/call pair; no DB effect; each tool is unlocked once in this task."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "assess_trip_fee_73c5b19a",
+                "arguments": {
+                    "visit_id": "e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a",
+                    "fee_amount": 115.3
+                }
+            },
+            "objective": "Post the trip charge of 115.30 on the collected home visit.",
+            "necessity": "visits_ext_trip_charge computes fee_amount; the household, weekend and settlement charges all wait on an assessed trip fee standing on the visit.",
+            "argument_uniqueness_tracing": {
+                "visit_id": "(1) value e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a. (2) basis: the tool docstring says 'Id class — the reference number of the collection visit ... read from the visit lookup for the patient'; find_visits(customer_id) at step 2 returns exactly one visit of type Mobile In-Home Collection Visit, status collected, appointment_date 2026-09-20, additional_household_patients 2 — the visit the caller describes ('the home draw on Sunday the 20th, my husband and my daughter got drawn too'). (3) uniqueness: every other visit returned is a Patient Service Center Scheduled Appointment, and the rule's subject is a collected home visit, so no other visit qualifies.",
+                "fee_amount": "115.30. Standard method: published fee of booked zone 2 = 95.00. Weekend dispatch band (offset): 2026-09-20 is a Sunday -> offset +2 -> band 3 (capped). Standing-series route band: order standing_order=true and 9 test charges posted 2026-06-01..2026-09-21 (all inside six months) -> fee of the band one nearer than band 3 = 95.00. Handling kit: Specialty Clinical Testing -> +12.00. Early-route premium: 07:00 start, Sunday -> +15.00. Dispatch notice: booked 2026-09-17 for 2026-09-20 = 3 days -> x1.15. Redraw credit: order_events rejection 2026-08-24 leaked_in_transit within three months -> -25.00 (the 2026-06-15 hemolyzed rejection is outside the window). (95.00 + 12.00 + 15.00) x 1.15 = 140.30; 140.30 - 25.00 = 115.30, not below 0, rounded once."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "assess_household_fee_59046739"
+            },
+            "objective": "Unlock assess_household_fee_59046739 so it can be called.",
+            "necessity": "First half of the unlock/call pair; no DB effect; each tool is unlocked once in this task."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "assess_household_fee_59046739",
+                "arguments": {
+                    "visit_id": "e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a",
+                    "fee_amount": 76.0
+                }
+            },
+            "objective": "Post the household charge of 76.00 for the two additional household members drawn.",
+            "necessity": "visits_ext_household_charge computes fee_amount on the world where the trip fee is already assessed; the weekend and settlement charges wait on this assessed additional-patient fee.",
+            "argument_uniqueness_tracing": {
+                "visit_id": "(1) value e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a. (2) basis: the tool docstring says 'Id class — the reference number of the collection visit ... read from the visit lookup for the patient'; find_visits(customer_id) at step 2 returns exactly one visit of type Mobile In-Home Collection Visit, status collected, appointment_date 2026-09-20, additional_household_patients 2 — the visit the caller describes ('the home draw on Sunday the 20th, my husband and my daughter got drawn too'). (3) uniqueness: every other visit returned is a Patient Service Center Scheduled Appointment, and the rule's subject is a collected home visit, so no other visit qualifies.",
+                "fee_amount": "76.00. Series member rate: standing order with 9 test charges in six months -> 25.00 per member. Short-notice addition: 3 days -> +5.00 per member. Member specimen kit: Specialty -> +2.00 per member. Per-member rate 32.00. Shared extended dispatch: the assessed trip fee now standing on the visit (115.30, written at step 7) is above the published zone-2 fee 95.00 but below 1.25 x 95.00 = 118.75, and 2 members were drawn -> 1 + 1 x 0.75 = 1.75 members. Early-household addition: a 07:00 start on a Sunday is charged per member drawn -> 10.00 x 2 = 20.00. 32.00 x 1.75 + 20.00 = 76.00."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "assess_weekend_surcharge_242d901c"
+            },
+            "objective": "Unlock assess_weekend_surcharge_242d901c so it can be called.",
+            "necessity": "First half of the unlock/call pair; no DB effect; each tool is unlocked once in this task."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "assess_weekend_surcharge_242d901c",
+                "arguments": {
+                    "visit_id": "e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a",
+                    "fee_amount": 54.84
+                }
+            },
+            "objective": "Post the weekend charge of 54.84 on the Sunday home visit.",
+            "necessity": "visits_ext_weekend_charge computes fee_amount once the trip and additional-patient fees stand on the visit; the settlement charge waits on this assessed weekend surcharge.",
+            "argument_uniqueness_tracing": {
+                "visit_id": "(1) value e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a. (2) basis: the tool docstring says 'Id class — the reference number of the collection visit ... read from the visit lookup for the patient'; find_visits(customer_id) at step 2 returns exactly one visit of type Mobile In-Home Collection Visit, status collected, appointment_date 2026-09-20, additional_household_patients 2 — the visit the caller describes ('the home draw on Sunday the 20th, my husband and my daughter got drawn too'). (3) uniqueness: every other visit returned is a Patient Service Center Scheduled Appointment, and the rule's subject is a collected home visit, so no other visit qualifies.",
+                "fee_amount": "54.84. Weekend day rate: Sunday -> 50.00. Weekend courier: Specialty -> +15.00. Weekend staffing notice: 3 days -> +10.00. Weekend amount 75.00. Dispatch overlap: assessed trip fee 115.30 above listed zone-2 fee 95.00 but below 118.75 -> x0.75. Per-person staffing: an assessed additional-patient fee (76.00, step 9) stands and 2 members -> charged per person at half a share, x(1+2) x 0.50 = x1.50. Series rotation: standing order with 9 charges in six months -> x0.65. 75.00 x 0.75 x 1.50 x 0.65 = 54.84375 -> 54.84."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "find_coverages",
+            "arguments": {
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822"
+            },
+            "objective": "Read the patient's coverages: the only coverage on file (BCBS of Illinois PPO) is terminated since 2026-03-31.",
+            "necessity": "Decides the self-pay allowance tier: no live coverage on file (the terminated plan is not live)."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_invoices",
+            "arguments": {
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822"
+            },
+            "objective": "Read the patient's test invoices: an open Self-Pay Patient Invoice for the standing order and a paid 2025 invoice; none is in collections.",
+            "necessity": "The prompt-settlement allowance requires that no test invoice of the patient is placed with the collection agency."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_invoice_transactions",
+            "arguments": {
+                "customer_id": "ea153a47-f708-4342-a2cb-9fa08dc13822"
+            },
+            "objective": "Read the payments on the patient's invoices: three payments (2026-07-10, 2026-08-10, 2026-09-10) inside the last 12 months and one (2025-09-08) outside it.",
+            "necessity": "Decides the paying-history allowance tier (three or more payments in the last 12 months)."
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "pay_home_visit_fees_e8e0d8a4"
+            },
+            "objective": "Unlock pay_home_visit_fees_e8e0d8a4 so it can be called.",
+            "necessity": "First half of the unlock/call pair; no DB effect; each tool is unlocked once in this task."
+        },
+        {
+            "owner": "user",
+            "tool": "call_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "pay_home_visit_fees_e8e0d8a4",
+                "arguments": {
+                    "visit_id": "e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a",
+                    "assessed_event_id": "vfa_49566aafdd15",
+                    "fee_amount": 194.45,
+                    "payment_method": "credit_card"
+                }
+            },
+            "objective": "The patient pays the home-visit settlement charge of 194.45 with her credit card, recorded against the visit's assessed trip fee; the visit's collection-fee balance is settled.",
+            "necessity": "visits_ext_home_visit_settlement computes fee_amount on the world where all three service charges are assessed; paying is the patient's own act, handed over by the agent.",
+            "argument_uniqueness_tracing": {
+                "visit_id": "(1) value e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a. (2) basis: the tool docstring says 'Id class — the reference number of the collection visit ... read from the visit lookup for the patient'; find_visits(customer_id) at step 2 (the agent gives it to the patient with the hand-over) returns exactly one visit of type Mobile In-Home Collection Visit, status collected, appointment_date 2026-09-20, additional_household_patients 2 — the visit the caller describes ('the home draw on Sunday the 20th, my husband and my daughter got drawn too'). (3) uniqueness: every other visit returned is a Patient Service Center Scheduled Appointment, and the rule's subject is a collected home visit, so no other visit qualifies.",
+                "assessed_event_id": "(1) value vfa_49566aafdd15. (2) basis: the settlement rule says the payment is 'recorded against the visit's assessed trip fee'; the visit's fee history lists the assessed trip-fee line vfa_49566aafdd15 (the receipt returned at step 7 carries the same id), and the tool docstring asks for 'the reference number of the visit's assessed trip-fee line the payment is recorded against'. (3) uniqueness: the visit carries exactly one assessed trip-fee line; the additional-patient line vfa_a57d1de2ec82 and the weekend line vfa_4967b1f5c825 are not the trip-fee line.",
+                "fee_amount": "194.45. Open total: trip 115.30 + additional-patient 76.00 + weekend 54.84 + late-change 68.00 - 68.00 paid = 246.14. Settlement day count: charges posted 2026-10-04, 14 days after collection 2026-09-20 (> 7) -> counted from the posting date -> 0 days. Prompt allowance: 0 days and no invoice in collections -> 5 percent. Multi-charge allowance: three service charges -> 3 percent. Self-pay allowance: order billed self_pay and the only coverage is terminated (not live) -> 10 percent. Paying-history allowance: three invoice payments inside 12 months (2026-07-10, 08-10, 09-10) -> 3 percent. Total allowance 21 percent applied once: 246.14 x 0.79 = 194.4506 -> 194.45.",
+                "payment_method": "(1) value credit_card. (2) basis: the docstring enum says 'credit_card when the patient pays with a credit card'; the patient says she will pay 'with my Visa credit card'. (3) uniqueness: debit_card would be a bank debit card and hsa_fsa_card a health savings or flexible spending card, neither of which she uses."
+            }
+        }
+    ],
+    "computations": [
+        {
+            "policy_id": "visits_ext_trip_charge",
+            "target_holding_id": "e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a",
+            "step": 7,
+            "arg": "fee_amount",
+            "expected": 115.3,
+            "factor_trace": [
+                "weekend_dispatch_band (parameter: a band offset): appointment_date 2026-09-20 is a Sunday (visit row); tier 'Sunday' -> offset +2 from booked zone 2, capped at zone 3 -> pricing band 3. Baseline (offset 0, band 2) would give 92.30.",
+                "series_route_band (method: the pricing basis changes from the dispatch band's fee to the nearer band's fee or to an average of two band fees; cross-difficulty orders, multi-source): order standing_order=true AND 9 orders_test_charge_posted lines on the order dated 2026-06-01..2026-09-21, all inside the last six months -> tier 'standing AND six or more' -> fee of the band one nearer than band 3 = zone 2 fee 95.00. Baseline (fee of band 3 = 125.00) would give 149.80.",
+                "handling_kit (parameter, cross-difficulty orders): order class Specialty Clinical Testing -> 12.00. Baseline 0.00 would give 101.50.",
+                "early_route_premium (parameter; both conditions read the visit row): start 07:00 is before 07:30 AND Sunday -> 15.00. Baseline 0.00 would give 98.05.",
+                "dispatch_notice_rate (parameter): booked 2026-09-17, appointment 2026-09-20 -> 3 calendar days -> short-notice rate 1.15. Baseline 1.00 would give 97.00.",
+                "redraw_credit (parameter, cross-difficulty orders): rejection 2026-08-24 for leaked_in_transit lies inside the last three months (the 2026-06-15 hemolyzed rejection does not) -> 25.00. Baseline 0.00 would give 140.30.",
+                "tr_booked_band = 2 (service_zone zone_2); tr_fee_pricing = 125.00; tr_fee_nearer = 95.00 (plain lookups).",
+                "result = RND(MX(0, (95.00 + 12.00 + 15.00) x 1.15 - 25.00), 2) = RND(140.30 - 25.00) = 115.30."
+            ],
+            "baseline_result": 95.0,
+            "factor_sensitivity": [
+                {
+                    "factor": "weekend_dispatch_band",
+                    "tier_taken": "the appointment date is a Sunday",
+                    "baseline_result": 92.3
+                },
+                {
+                    "factor": "series_route_band",
+                    "tier_taken": "the order is a standing order AND six or more test charges were posted on it in the last six months",
+                    "baseline_result": 149.8
+                },
+                {
+                    "factor": "handling_kit",
+                    "tier_taken": "the order is of the Specialty Clinical Testing, Molecular Infectious Disease Testing or Clinical Toxicology Testing class",
+                    "baseline_result": 101.5
+                },
+                {
+                    "factor": "early_route_premium",
+                    "tier_taken": "the visit starts before 07:30 AND the appointment date is a Saturday or Sunday",
+                    "baseline_result": 98.05
+                },
+                {
+                    "factor": "dispatch_notice_rate",
+                    "tier_taken": "booked three calendar days or fewer before the appointment date",
+                    "baseline_result": 97.0
+                },
+                {
+                    "factor": "redraw_credit",
+                    "tier_taken": "the order's specimen was rejected in the last three months for leaking in transit or exceeding its stability",
+                    "baseline_result": 140.3
+                }
+            ]
+        },
+        {
+            "policy_id": "visits_ext_household_charge",
+            "target_holding_id": "e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a",
+            "step": 9,
+            "arg": "fee_amount",
+            "expected": 76.0,
+            "factor_trace": [
+                "series_member_rate (parameter, cross-difficulty orders, multi-source): standing order AND 9 test charges in the last six months -> 25.00 per member. Baseline 35.00 per member would give 93.50.",
+                "short_notice_member_addition (parameter): 3 calendar days from booking to appointment -> +5.00 per member. Baseline 0.00 would give 67.25.",
+                "member_specimen_kit (parameter, cross-difficulty orders): Specialty Clinical Testing -> +2.00 per member. Baseline 0.00 would give 72.50.",
+                "shared_extended_dispatch (parameter: a member share, history): 2 members AND the assessed trip fee on the visit (115.30, posted at step 7) is above the published zone-2 fee 95.00 but below 1.25 x 95.00 = 118.75 -> share 0.75 for the second member -> 1.75 members. Baseline (share 1, every member in full: 2) would give 84.00.",
+                "early_household_addition (method: per member drawn versus once per visit): start 07:00 before 07:30 on a Sunday -> charged per member drawn, 10.00 x 2 members = 20.00. Baseline (no early-household addition) would give 56.00; the weekday tier would charge 6.00 once whatever the member count.",
+                "hh_members = 2 (additional_household_patients); hh_published_zone_fee = 95.00; members > 0, so a household charge exists.",
+                "result = RND((25.00 + 5.00 + 2.00) x 1.75 + 20.00, 2) = 56.00 + 20.00 = 76.00."
+            ],
+            "baseline_result": 70.0,
+            "factor_sensitivity": [
+                {
+                    "factor": "series_member_rate",
+                    "tier_taken": "the order is a standing order AND six or more test charges were posted on it in the last six months",
+                    "baseline_result": 93.5
+                },
+                {
+                    "factor": "short_notice_member_addition",
+                    "tier_taken": "booked three calendar days or fewer before the appointment date",
+                    "baseline_result": 67.25
+                },
+                {
+                    "factor": "member_specimen_kit",
+                    "tier_taken": "the patient's order is of the Specialty Clinical Testing, Molecular Infectious Disease Testing or Clinical Toxicology Testing class",
+                    "baseline_result": 72.5
+                },
+                {
+                    "factor": "shared_extended_dispatch",
+                    "tier_taken": "two or more members drawn AND the assessed trip fee is above the published fee of the booked zone but below 1.25 times it",
+                    "baseline_result": 84.0
+                },
+                {
+                    "factor": "early_household_addition",
+                    "tier_taken": "the visit starts before 07:30 AND the appointment date is a Saturday or Sunday",
+                    "baseline_result": 56.0
+                }
+            ]
+        },
+        {
+            "policy_id": "visits_ext_weekend_charge",
+            "target_holding_id": "e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a",
+            "step": 11,
+            "arg": "fee_amount",
+            "expected": 54.84,
+            "factor_trace": [
+                "weekend_day_rate (parameter): 2026-09-20 is a Sunday -> 50.00. Baseline (published weekend surcharge 35.00) would give 43.88.",
+                "weekend_courier (parameter, cross-difficulty orders): Specialty Clinical Testing -> +15.00. Baseline 0.00 would give 43.88.",
+                "weekend_staffing_notice (parameter): 3 calendar days from booking to appointment -> +10.00. Baseline 0.00 would give 47.53.",
+                "weekend_dispatch_overlap (parameter: an overlap factor, history): assessed trip fee 115.30 is above the listed zone-2 fee 95.00 but below 118.75 -> 0.75. Baseline (1.00, taken in full) would give 73.12.",
+                "weekend_per_person_staffing (method: per person drawn versus once per visit, history): an assessed additional-patient fee (76.00, step 9) stands on the visit AND 2 members -> charged per person at half a share: x (1 + 2) x 0.50 = x1.50. Baseline (once per visit) would give 36.56.",
+                "series_weekend_rotation (parameter: a rotation factor, cross-difficulty orders, multi-source): standing order AND 9 test charges in six months -> 0.65. Baseline (1.00) would give 84.38.",
+                "result = RND((50.00 + 15.00 + 10.00) x 0.75 x 1.50 x 0.65, 2) = RND(54.84375) = 54.84.",
+                "wk_is_weekend = True (2026-09-20 is a Sunday), so the weekend charge exists."
+            ],
+            "baseline_result": 35.0,
+            "factor_sensitivity": [
+                {
+                    "factor": "weekend_day_rate",
+                    "tier_taken": "the appointment date is a Sunday",
+                    "baseline_result": 43.88
+                },
+                {
+                    "factor": "weekend_courier",
+                    "tier_taken": "the order is of the Specialty Clinical Testing, Molecular Infectious Disease Testing or Clinical Toxicology Testing class",
+                    "baseline_result": 43.88
+                },
+                {
+                    "factor": "weekend_staffing_notice",
+                    "tier_taken": "booked three calendar days or fewer before the appointment date",
+                    "baseline_result": 47.53
+                },
+                {
+                    "factor": "weekend_dispatch_overlap",
+                    "tier_taken": "the assessed trip fee is above the listed fee of the booked zone but below 1.25 times it",
+                    "baseline_result": 73.12
+                },
+                {
+                    "factor": "weekend_per_person_staffing",
+                    "tier_taken": "an assessed additional-patient fee stands on the visit AND two or more members were drawn",
+                    "baseline_result": 36.56
+                },
+                {
+                    "factor": "series_weekend_rotation",
+                    "tier_taken": "the order is a standing order AND six or more test charges were posted on it in the last six months",
+                    "baseline_result": 84.38
+                }
+            ]
+        },
+        {
+            "policy_id": "visits_ext_home_visit_settlement",
+            "target_holding_id": "e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a",
+            "step": 16,
+            "arg": "fee_amount",
+            "expected": 194.45,
+            "factor_trace": [
+                "settlement_day_count (method: the anchor of the day count changes): collected 2026-09-20; the latest assessment date on the visit is 2026-10-04 (steps 7, 9, 11; the late-change charge was assessed earlier, on 2026-09-18) -> posted 14 days after collection (> 7) -> days counted from the posting date to today = 0. Baseline (from the collection date) = 14 days, which would put the prompt allowance at 2 percent and give 201.83.",
+                "prompt_settlement_allowance (parameter, cross-difficulty invoices, multi-source: day count AND collections status): 0 days AND no invoice of the patient has status collections (open self-pay invoice, paid 2025 invoice) -> 5 percent. Baseline 0 would give 206.76.",
+                "multi_charge_allowance (parameter, history): trip, additional-patient and weekend assessments all stand on the visit -> three charges -> 3 percent. Baseline 0 would give 201.83.",
+                "self_pay_allowance (parameter, cross-difficulty orders and coverage, multi-source): order billing_method self_pay AND no live coverage (the only coverage, BCBS, is terminated since 2026-03-31; a coverage counts as live until terminated) -> 10 percent. Baseline 0 would give 219.06.",
+                "paying_history_allowance (parameter, cross-difficulty invoices): payments received 2026-07-10, 2026-08-10, 2026-09-10 inside the last 12 months (2025-09-08 is outside) -> three -> 3 percent. Baseline 0 would give 201.83.",
+                "st_open_trip 115.30 + st_open_household 76.00 + st_open_weekend 54.84 + st_open_late_change 0.00 (late-change charge 68.00 assessed 2026-09-18 and paid 68.00 the same day) = st_open_total 246.14.",
+                "result = RND(246.14 x (1 - (0.05 + 0.03 + 0.10 + 0.03)), 2) = RND(246.14 x 0.79) = RND(194.4506) = 194.45."
+            ],
+            "baseline_result": 246.14,
+            "factor_sensitivity": [
+                {
+                    "factor": "settlement_day_count",
+                    "tier_taken": "the charges were posted more than 7 days after the collection date",
+                    "baseline_result": 201.83
+                },
+                {
+                    "factor": "prompt_settlement_allowance",
+                    "tier_taken": "days to settlement 10 or fewer AND no test invoice of the patient is in collections",
+                    "baseline_result": 206.76
+                },
+                {
+                    "factor": "multi_charge_allowance",
+                    "tier_taken": "three assessed service charges stand on the visit",
+                    "baseline_result": 201.83
+                },
+                {
+                    "factor": "self_pay_allowance",
+                    "tier_taken": "the order is billed as self-pay AND the patient has no live coverage on file",
+                    "baseline_result": 219.06
+                },
+                {
+                    "factor": "paying_history_allowance",
+                    "tier_taken": "three or more payments received on the patient's test invoices in the last 12 months",
+                    "baseline_result": 201.83
+                }
+            ]
+        }
+    ],
+    "prerequisite_closure": {
+        "root_problem": "visits_ext_home_visit_settlement",
+        "edges": [
+            {
+                "from": "visits_ext_home_visit_settlement",
+                "to": "visits_ext_trip_charge",
+                "kind": "value_input",
+                "gate": "st_open_trip",
+                "form": "state",
+                "condition": "The visit's fee record carries an assessed trip fee line (fee type trip_fee) when the settlement charge is worked out.",
+                "policy_source": "The home-visit settlement charge is taken only after the trip fee assessed on the visit stands on its fee record.",
+                "resolved_by": "assess_trip_fee_73c5b19a",
+                "unresolved_at_frozen_time": {
+                    "why_false": "At frozen_time the 2026-09-20 home visit carries no trip, additional-patient or weekend fee line: its fee record holds only the late-change charge of 2026-09-18 and the payment of it, so the state the sentence waits on does not hold.",
+                    "evidence": [
+                        "initial_state.visit_events.8184aef5-fe5c-4360-b77b-a1832ac66032.fee_type = late_cancellation_fee",
+                        "initial_state.visit_events.c15dc55c-0219-4b70-b133-27f221b6193d.event_type = visits_fee_paid",
+                        "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.fee_balance = 0.0"
+                    ],
+                    "flips_to_true_by": "an assessed trip fee line (vfa_49566aafdd15, 115.30) stands on the visit after step 7"
+                }
+            },
+            {
+                "from": "visits_ext_home_visit_settlement",
+                "to": "visits_ext_household_charge",
+                "kind": "value_input",
+                "gate": "st_open_household",
+                "form": "state",
+                "condition": "For a visit that drew additional household members, the visit's fee record carries an assessed additional-patient fee line when the settlement charge is worked out.",
+                "policy_source": "No home-visit settlement charge is taken until the visit carries the assessed additional-patient fee owed for the household members drawn at it.",
+                "resolved_by": "assess_household_fee_59046739",
+                "unresolved_at_frozen_time": {
+                    "why_false": "At frozen_time the 2026-09-20 home visit carries no trip, additional-patient or weekend fee line: its fee record holds only the late-change charge of 2026-09-18 and the payment of it, so the state the sentence waits on does not hold.",
+                    "evidence": [
+                        "initial_state.visit_events.8184aef5-fe5c-4360-b77b-a1832ac66032.fee_type = late_cancellation_fee",
+                        "initial_state.visit_events.c15dc55c-0219-4b70-b133-27f221b6193d.event_type = visits_fee_paid",
+                        "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.fee_balance = 0.0"
+                    ],
+                    "flips_to_true_by": "an assessed additional-patient fee line (vfa_a57d1de2ec82, 76.00) stands on the visit after step 9"
+                }
+            },
+            {
+                "from": "visits_ext_home_visit_settlement",
+                "to": "visits_ext_weekend_charge",
+                "kind": "value_input",
+                "gate": "st_open_weekend",
+                "form": "state",
+                "condition": "For a visit dated on a Saturday or Sunday, the visit's fee record carries an assessed weekend surcharge line when the settlement charge is worked out.",
+                "policy_source": "For a visit dated on a Saturday or Sunday, the home-visit settlement charge is worked out only after its assessed weekend surcharge is on the fee record.",
+                "resolved_by": "assess_weekend_surcharge_242d901c",
+                "unresolved_at_frozen_time": {
+                    "why_false": "At frozen_time the 2026-09-20 home visit carries no trip, additional-patient or weekend fee line: its fee record holds only the late-change charge of 2026-09-18 and the payment of it, so the state the sentence waits on does not hold.",
+                    "evidence": [
+                        "initial_state.visit_events.8184aef5-fe5c-4360-b77b-a1832ac66032.fee_type = late_cancellation_fee",
+                        "initial_state.visit_events.c15dc55c-0219-4b70-b133-27f221b6193d.event_type = visits_fee_paid",
+                        "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.fee_balance = 0.0"
+                    ],
+                    "flips_to_true_by": "an assessed weekend surcharge line (vfa_4967b1f5c825, 54.84) stands on the visit after step 11"
+                }
+            },
+            {
+                "from": "visits_ext_weekend_charge",
+                "to": "visits_ext_trip_charge",
+                "kind": "value_input",
+                "gate": "wk_trip_entry",
+                "form": "state",
+                "condition": "The visit's fee record carries an assessed trip fee line (fee type trip_fee) when the weekend charge is worked out.",
+                "policy_source": "The weekend charge on a Saturday or Sunday home visit is not worked out until the visit's fee record shows its assessed trip fee.",
+                "resolved_by": "assess_trip_fee_73c5b19a",
+                "unresolved_at_frozen_time": {
+                    "why_false": "At frozen_time the 2026-09-20 home visit carries no trip, additional-patient or weekend fee line: its fee record holds only the late-change charge of 2026-09-18 and the payment of it, so the state the sentence waits on does not hold.",
+                    "evidence": [
+                        "initial_state.visit_events.8184aef5-fe5c-4360-b77b-a1832ac66032.fee_type = late_cancellation_fee",
+                        "initial_state.visit_events.c15dc55c-0219-4b70-b133-27f221b6193d.event_type = visits_fee_paid",
+                        "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.fee_balance = 0.0"
+                    ],
+                    "flips_to_true_by": "an assessed trip fee line (vfa_49566aafdd15, 115.30) stands on the visit after step 7"
+                }
+            },
+            {
+                "from": "visits_ext_weekend_charge",
+                "to": "visits_ext_household_charge",
+                "kind": "value_input",
+                "gate": "wk_household_entry",
+                "form": "state",
+                "condition": "For a visit with additional household members drawn, the visit's fee record carries an assessed additional-patient fee line (fee type additional_patient_fee) when the weekend charge is worked out.",
+                "policy_source": "Before the weekend charge is worked out for a visit that drew additional household members, the visit must carry its assessed additional-patient fee.",
+                "resolved_by": "assess_household_fee_59046739",
+                "unresolved_at_frozen_time": {
+                    "why_false": "At frozen_time the 2026-09-20 home visit carries no trip, additional-patient or weekend fee line: its fee record holds only the late-change charge of 2026-09-18 and the payment of it, so the state the sentence waits on does not hold.",
+                    "evidence": [
+                        "initial_state.visit_events.8184aef5-fe5c-4360-b77b-a1832ac66032.fee_type = late_cancellation_fee",
+                        "initial_state.visit_events.c15dc55c-0219-4b70-b133-27f221b6193d.event_type = visits_fee_paid",
+                        "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.fee_balance = 0.0"
+                    ],
+                    "flips_to_true_by": "an assessed additional-patient fee line (vfa_a57d1de2ec82, 76.00) stands on the visit after step 9"
+                }
+            },
+            {
+                "from": "visits_ext_household_charge",
+                "to": "visits_ext_trip_charge",
+                "kind": "value_input",
+                "gate": "hh_trip_entry",
+                "form": "state",
+                "condition": "The visit's fee record carries an assessed trip fee line (a visits_fee_assessed line with fee type trip_fee) at the moment the household charge is worked out.",
+                "policy_source": "The household charge on a home visit is fixed only after the visit carries an assessed trip fee.",
+                "resolved_by": "assess_trip_fee_73c5b19a",
+                "unresolved_at_frozen_time": {
+                    "why_false": "At frozen_time the 2026-09-20 home visit carries no trip, additional-patient or weekend fee line: its fee record holds only the late-change charge of 2026-09-18 and the payment of it, so the state the sentence waits on does not hold.",
+                    "evidence": [
+                        "initial_state.visit_events.8184aef5-fe5c-4360-b77b-a1832ac66032.fee_type = late_cancellation_fee",
+                        "initial_state.visit_events.c15dc55c-0219-4b70-b133-27f221b6193d.event_type = visits_fee_paid",
+                        "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.fee_balance = 0.0"
+                    ],
+                    "flips_to_true_by": "an assessed trip fee line (vfa_49566aafdd15, 115.30) stands on the visit after step 7"
+                }
+            }
+        ],
+        "resolution_order": [
+            "visits_ext_trip_charge",
+            "visits_ext_household_charge",
+            "visits_ext_weekend_charge",
+            "visits_ext_home_visit_settlement"
+        ],
+        "order_uniqueness": "No two prerequisites of this tree are free to be reordered: the edges themselves fix a total order. The household charge waits on the assessed trip fee (its shared-extended-dispatch step reads it), the weekend charge waits on both the assessed trip fee and the assessed additional-patient fee, and the settlement waits on all three; hence trip -> household -> weekend -> settlement is the only topological order. Out-of-order runs give different numbers (Step 5 run): household before trip -> 84.00 instead of 76.00; weekend before trip -> 73.12 instead of 54.84; weekend before household -> 36.56 instead of 54.84.",
+        "edge_load_bearing": [
+            {
+                "edge": "visits_ext_home_visit_settlement -> visits_ext_trip_charge",
+                "skipped_effect": "Skipping the trip-fee write (step 7) and replaying the rest: the settlement charge becomes 105.98 instead of 194.45 (open total loses 115.30) and no trip-fee line exists to record the payment against."
+            },
+            {
+                "edge": "visits_ext_home_visit_settlement -> visits_ext_household_charge",
+                "skipped_effect": "Skipping step 9: settlement charge 137.81 instead of 194.45 (open total loses 76.00 and the multi-charge allowance drops to 1 percent)."
+            },
+            {
+                "edge": "visits_ext_home_visit_settlement -> visits_ext_weekend_charge",
+                "skipped_effect": "Skipping step 11: settlement charge 154.95 instead of 194.45 (open total loses 54.84 and the multi-charge allowance drops to 1 percent)."
+            },
+            {
+                "edge": "visits_ext_weekend_charge -> visits_ext_trip_charge",
+                "skipped_effect": "Skipping step 7: the weekend charge computes 73.12 instead of 54.84 (no assessed trip fee, so the dispatch overlap factor stays at 1.0)."
+            },
+            {
+                "edge": "visits_ext_weekend_charge -> visits_ext_household_charge",
+                "skipped_effect": "Skipping step 9: the weekend charge computes 36.56 instead of 54.84 (no assessed additional-patient fee, so the weekend amount is charged once per visit)."
+            },
+            {
+                "edge": "visits_ext_household_charge -> visits_ext_trip_charge",
+                "skipped_effect": "Skipping step 7: the household charge computes 84.00 instead of 76.00 (no assessed trip fee, so every member counts in full)."
+            }
+        ],
+        "no_user_hint": "user_scenario asks only to pay for the 2026-09-20 home visit today by card. It never mentions a trip charge, a household or additional-patient charge, a weekend charge, posting, assessing or anything being missing on the account; it states no amount. The only conditional lines are passive: if the representative explains that charges must be put through first she agrees, and she pays only when the payment is handed to her.",
+        "tools_do_not_block": "Every task tool body in task_tools.py performs its write unconditionally: assess_trip_fee_73c5b19a, assess_household_fee_59046739 and assess_weekend_surcharge_242d901c each call ctx.create('visit_events', ...) and ctx.update('visits', ..., fee_balance=...) with no check of other fee lines, and pay_home_visit_fees_e8e0d8a4 creates the payment line and sets fee_balance 0.0 whether or not the three charges are assessed. No branch returns an error or a hint; skipping a prerequisite simply yields a different terminal state."
+    },
+    "charter_scope": {
+        "extended_policies": [
+            "visits_ext_trip_charge",
+            "visits_ext_household_charge",
+            "visits_ext_weekend_charge",
+            "visits_ext_home_visit_settlement"
+        ],
+        "task_tools": [
+            "assess_trip_fee_73c5b19a",
+            "assess_household_fee_59046739",
+            "assess_weekend_surcharge_242d901c",
+            "pay_home_visit_fees_e8e0d8a4"
+        ]
+    },
+    "required_documents": [
+        "visits_ext_trip_charge",
+        "visits_ext_household_charge",
+        "visits_ext_weekend_charge",
+        "visits_ext_home_visit_settlement"
+    ],
+    "solvability_contract": {
+        "request_binding_version": 1,
+        "request_alignment": [
+            {
+                "claim": "The patient wants to pay, today and by her own card, what she owes for the collected home visit of 2026-09-20 at which two household members were also drawn.",
+                "evidence": [
+                    "user_scenario:you'd like to pay for that home visit today, on your card",
+                    "user_scenario:your husband Martin and your daughter Claire were drawn at the same visit"
+                ]
+            }
+        ],
+        "gold_actions": [
+            {
+                "step": 7,
+                "business_effect": "Posts the assessed trip fee (115.30) on the collected home visit and raises its collection-fee balance.",
+                "request_binding": {
+                    "action_semantics": "A collected mobile visit owes its trip charge whether or not anyone calls (state_due); the settlement the patient asks for waits on this assessed trip fee, so the trip-fee assessment is selected rather than a waiver, refund or payment.",
+                    "intent_source": {
+                        "kind": "initial_state",
+                        "evidence": [
+                            "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.status",
+                            "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.collected_date"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "trip charge on a collected home visit",
+                        "evidence": [
+                            "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.variant_name",
+                            "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.service_zone",
+                            "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.status"
+                        ],
+                        "action_arg": "visit_id",
+                        "value": "e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "preexisting_before_conversation",
+                    "fact": "The visit was collected on 2026-09-20 before the conversation; the assessment itself is completed by this tool on the spot.",
+                    "evidence": [
+                        "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.status",
+                        "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.collected_date"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "visits_evt_fee_assessment",
+                        "eligibility_id": "fee_states",
+                        "condition": "A collection-service fee may be assessed only on a visit whose status is collected, cancelled or no_show.",
+                        "evidence": [
+                            "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.status",
+                            "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.visit_id"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "visits.visit_id",
+                                "source": "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.visit_id",
+                                "action_arg": "visit_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "visits_evt_fee_assessment",
+                        "eligibility_id": "homebound_no_trip_fee",
+                        "condition": "No trip fee is assessed when the patient's homebound_status is medicare_homebound_certified and medicare_homebound_trip_fee_waived is true, because the collection and travel are billed to Medicare.",
+                        "evidence": [
+                            "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.homebound_status",
+                            "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.visit_id"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "visits.visit_id",
+                                "source": "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.visit_id",
+                                "action_arg": "visit_id"
+                            }
+                        ],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 9,
+                "business_effect": "Posts the assessed additional-patient fee (76.00) for the two household members drawn and raises the visit's balance.",
+                "request_binding": {
+                    "action_semantics": "A collected home visit that drew additional household members owes its household charge (state_due); the weekend and settlement charges wait on it.",
+                    "intent_source": {
+                        "kind": "initial_state",
+                        "evidence": [
+                            "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.status",
+                            "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.collected_date"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "household charge for additional household members drawn",
+                        "evidence": [
+                            "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.additional_household_patients",
+                            "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.status"
+                        ],
+                        "action_arg": "visit_id",
+                        "value": "e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "preexisting_before_conversation",
+                    "fact": "The visit was collected with additional_household_patients 2 before the conversation.",
+                    "evidence": [
+                        "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.additional_household_patients"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "visits_evt_fee_assessment",
+                        "eligibility_id": "fee_states",
+                        "condition": "A collection-service fee may be assessed only on a visit whose status is collected, cancelled or no_show.",
+                        "evidence": [
+                            "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.status",
+                            "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.visit_id"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "visits.visit_id",
+                                "source": "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.visit_id",
+                                "action_arg": "visit_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "visits_evt_fee_assessment",
+                        "eligibility_id": "homebound_no_trip_fee",
+                        "condition": "No trip fee is assessed when the patient's homebound_status is medicare_homebound_certified and medicare_homebound_trip_fee_waived is true, because the collection and travel are billed to Medicare.",
+                        "evidence": [
+                            "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.homebound_status",
+                            "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.visit_id"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "visits.visit_id",
+                                "source": "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.visit_id",
+                                "action_arg": "visit_id"
+                            }
+                        ],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 11,
+                "business_effect": "Posts the assessed weekend surcharge (54.84) on the Sunday home visit and raises the visit's balance.",
+                "request_binding": {
+                    "action_semantics": "A collected home visit dated on a Sunday owes its weekend charge (state_due); the settlement charge waits on it.",
+                    "intent_source": {
+                        "kind": "initial_state",
+                        "evidence": [
+                            "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.status",
+                            "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.collected_date"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "weekend charge on a Saturday or Sunday home visit",
+                        "evidence": [
+                            "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.appointment_date",
+                            "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.status"
+                        ],
+                        "action_arg": "visit_id",
+                        "value": "e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "preexisting_before_conversation",
+                    "fact": "The visit took place on Sunday 2026-09-20 before the conversation.",
+                    "evidence": [
+                        "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.appointment_date"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "visits_evt_fee_assessment",
+                        "eligibility_id": "fee_states",
+                        "condition": "A collection-service fee may be assessed only on a visit whose status is collected, cancelled or no_show.",
+                        "evidence": [
+                            "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.status",
+                            "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.visit_id"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "visits.visit_id",
+                                "source": "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.visit_id",
+                                "action_arg": "visit_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "visits_evt_fee_assessment",
+                        "eligibility_id": "homebound_no_trip_fee",
+                        "condition": "No trip fee is assessed when the patient's homebound_status is medicare_homebound_certified and medicare_homebound_trip_fee_waived is true, because the collection and travel are billed to Medicare.",
+                        "evidence": [
+                            "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.homebound_status",
+                            "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.visit_id"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "visits.visit_id",
+                                "source": "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.visit_id",
+                                "action_arg": "visit_id"
+                            }
+                        ],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 16,
+                "business_effect": "The patient pays the home-visit settlement charge (194.45) by credit card against the assessed trip fee; the visit's collection-fee balance is settled.",
+                "request_binding": {
+                    "action_semantics": "The patient asks to pay for the home visit now with her own card; paying a collection fee with one's own card is the patient's own act, so the settlement payment is selected and handed to her.",
+                    "intent_source": {
+                        "kind": "user_scenario",
+                        "evidence": [
+                            "user_scenario:you'd like to pay for that home visit today, on your card"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "pay for that home visit",
+                        "evidence": [
+                            "user_scenario:you'd like to pay for that home visit today, on your card"
+                        ],
+                        "action_arg": "visit_id",
+                        "value": "e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "performed_by_this_tool",
+                    "fact": "The three service charges were assessed at steps 7, 9 and 11 in this conversation; the payment is completed by the patient on the spot.",
+                    "evidence": [
+                        "prior_step:7",
+                        "prior_step:9",
+                        "prior_step:11",
+                        "user_scenario:you'd like to pay for that home visit today, on your card"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "visits_evt_fee_payment_and_refund",
+                        "eligibility_id": "policy_scope",
+                        "condition": "Collection-service fees on a visit are paid by card with a method the visit type lists (credit_card, debit_card, hsa_fsa_card for a Mobile In-Home Collection Visit); the only structured gate of this policy (refund_once) applies to refunds, not payments.",
+                        "evidence": [
+                            "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.variant_name",
+                            "prior_step:7"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    }
+                ]
+            }
+        ],
+        "temporal_feasibility": [],
+        "required_user_inputs": [
+            {
+                "information": "Locating detail and first verification credential: phone number",
+                "source": "user_scenario:your phone number as 3125550188"
+            },
+            {
+                "information": "Second verification credential: date of birth",
+                "source": "user_scenario:your date of birth as 1968-02-11"
+            },
+            {
+                "information": "Which visit the request is about (the Sunday home visit with household members)",
+                "source": "user_scenario:you had the home visit on Sunday the 20th"
+            },
+            {
+                "information": "Card type used for the payment (never enters a computed value)",
+                "source": "user_scenario:using your Visa credit card"
+            },
+            {
+                "information": "Insurance status if the agent asks (system record is authoritative)",
+                "source": "user_scenario:your Blue Cross plan ended in March when you left your job"
+            }
+        ],
+        "seed_consistency": [
+            {
+                "row": "initial_state.visits.312fa155-7811-45cb-b6ea-135e0e384cb2",
+                "policy_id": "visits_evt_fee_assessment",
+                "check": "Patient Service Center Scheduled Appointment (standing_order_draw) on 2026-05-31, collected, psc_onsite; PSC visit types carry no patient fees, so fee_balance 0.00 and no fee lines are consistent.",
+                "evidence": [
+                    "initial_state.visits.312fa155-7811-45cb-b6ea-135e0e384cb2.status",
+                    "initial_state.visits.312fa155-7811-45cb-b6ea-135e0e384cb2.variant_name"
+                ]
+            },
+            {
+                "row": "initial_state.visits.8d414367-2026-4362-a399-1cd9d33692dd",
+                "policy_id": "visits_evt_fee_assessment",
+                "check": "Patient Service Center Scheduled Appointment (standing_order_draw) on 2026-06-14, collected, psc_onsite; PSC visit types carry no patient fees, so fee_balance 0.00 and no fee lines are consistent.",
+                "evidence": [
+                    "initial_state.visits.8d414367-2026-4362-a399-1cd9d33692dd.status",
+                    "initial_state.visits.8d414367-2026-4362-a399-1cd9d33692dd.variant_name"
+                ]
+            },
+            {
+                "row": "initial_state.visits.9259d0c8-0e54-4925-86b7-aaf3d043b141",
+                "policy_id": "visits_evt_fee_assessment",
+                "check": "Patient Service Center Scheduled Appointment (standing_order_draw) on 2026-06-28, collected, psc_onsite; PSC visit types carry no patient fees, so fee_balance 0.00 and no fee lines are consistent.",
+                "evidence": [
+                    "initial_state.visits.9259d0c8-0e54-4925-86b7-aaf3d043b141.status",
+                    "initial_state.visits.9259d0c8-0e54-4925-86b7-aaf3d043b141.variant_name"
+                ]
+            },
+            {
+                "row": "initial_state.visits.4b883167-e309-41ff-9af2-ebadc6b764bb",
+                "policy_id": "visits_evt_fee_assessment",
+                "check": "Patient Service Center Scheduled Appointment (standing_order_draw) on 2026-07-12, collected, psc_onsite; PSC visit types carry no patient fees, so fee_balance 0.00 and no fee lines are consistent.",
+                "evidence": [
+                    "initial_state.visits.4b883167-e309-41ff-9af2-ebadc6b764bb.status",
+                    "initial_state.visits.4b883167-e309-41ff-9af2-ebadc6b764bb.variant_name"
+                ]
+            },
+            {
+                "row": "initial_state.visits.acffb822-89bc-4615-8443-90d8aa22259b",
+                "policy_id": "visits_evt_fee_assessment",
+                "check": "Patient Service Center Scheduled Appointment (standing_order_draw) on 2026-07-26, collected, psc_onsite; PSC visit types carry no patient fees, so fee_balance 0.00 and no fee lines are consistent.",
+                "evidence": [
+                    "initial_state.visits.acffb822-89bc-4615-8443-90d8aa22259b.status",
+                    "initial_state.visits.acffb822-89bc-4615-8443-90d8aa22259b.variant_name"
+                ]
+            },
+            {
+                "row": "initial_state.visits.75cbd487-8442-46a6-9b07-a0a34c48b571",
+                "policy_id": "visits_evt_fee_assessment",
+                "check": "Patient Service Center Scheduled Appointment (standing_order_draw) on 2026-08-09, collected, psc_onsite; PSC visit types carry no patient fees, so fee_balance 0.00 and no fee lines are consistent.",
+                "evidence": [
+                    "initial_state.visits.75cbd487-8442-46a6-9b07-a0a34c48b571.status",
+                    "initial_state.visits.75cbd487-8442-46a6-9b07-a0a34c48b571.variant_name"
+                ]
+            },
+            {
+                "row": "initial_state.visits.9d862776-bdb4-4c51-b862-8c3d739d53b7",
+                "policy_id": "visits_evt_fee_assessment",
+                "check": "Patient Service Center Scheduled Appointment (standing_order_draw) on 2026-08-23, collected, psc_onsite; PSC visit types carry no patient fees, so fee_balance 0.00 and no fee lines are consistent.",
+                "evidence": [
+                    "initial_state.visits.9d862776-bdb4-4c51-b862-8c3d739d53b7.status",
+                    "initial_state.visits.9d862776-bdb4-4c51-b862-8c3d739d53b7.variant_name"
+                ]
+            },
+            {
+                "row": "initial_state.visits.721f198a-f236-4e0b-9a31-ade1ef3a6c3d",
+                "policy_id": "visits_evt_fee_assessment",
+                "check": "Patient Service Center Scheduled Appointment (standing_order_draw) on 2026-09-06, collected, psc_onsite; PSC visit types carry no patient fees, so fee_balance 0.00 and no fee lines are consistent.",
+                "evidence": [
+                    "initial_state.visits.721f198a-f236-4e0b-9a31-ade1ef3a6c3d.status",
+                    "initial_state.visits.721f198a-f236-4e0b-9a31-ade1ef3a6c3d.variant_name"
+                ]
+            },
+            {
+                "row": "initial_state.visits.ffe967e2-a48e-40a8-8e90-bf661de56790",
+                "policy_id": "visits_evt_fee_assessment",
+                "check": "Patient Service Center Scheduled Appointment (recollection) on 2026-06-17, collected, psc_onsite; PSC visit types carry no patient fees, so fee_balance 0.00 and no fee lines are consistent.",
+                "evidence": [
+                    "initial_state.visits.ffe967e2-a48e-40a8-8e90-bf661de56790.status",
+                    "initial_state.visits.ffe967e2-a48e-40a8-8e90-bf661de56790.variant_name"
+                ]
+            },
+            {
+                "row": "initial_state.visits.c93d66a8-e1bd-4c95-8167-3412773cb6ec",
+                "policy_id": "visits_evt_fee_assessment",
+                "check": "Patient Service Center Scheduled Appointment (recollection) on 2026-08-26, collected, psc_onsite; PSC visit types carry no patient fees, so fee_balance 0.00 and no fee lines are consistent.",
+                "evidence": [
+                    "initial_state.visits.c93d66a8-e1bd-4c95-8167-3412773cb6ec.status",
+                    "initial_state.visits.c93d66a8-e1bd-4c95-8167-3412773cb6ec.variant_name"
+                ]
+            },
+            {
+                "row": "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a",
+                "policy_id": "visits_evt_fee_assessment",
+                "check": "Mobile In-Home Collection Visit, collected 2026-09-20 (Sunday) at 07:00 (on the 60-minute slot grid, inside 07:00-15:00), zone_2 in service_zones_offered, booked 2026-09-17 (lead 3 days, within 2..45), 2 additional members (<= 3), not homebound, moved once (reschedule_count 1) on 2026-09-18 from Saturday 2026-09-19 07:00 with under 24 hours' notice; its late-change charge 68.00 (what the late-change rule gives for that move) was assessed and paid that day, so fee_balance 0.00; no service charge line yet — the service charges owed on a collected mobile visit are the open obligation this task resolves.",
+                "evidence": [
+                    "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.status",
+                    "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.variant_name"
+                ]
+            },
+            {
+                "row": "initial_state.visit_events.8184aef5-fe5c-4360-b77b-a1832ac66032",
+                "policy_id": "visits_evt_reschedule",
+                "check": "Late-change charge for the move made the evening of 2026-09-18 (visit then set for Saturday 2026-09-19 07:00, booked 2026-09-17, never moved, zone 2, two household members, Specialty order not on hold): change-day rate 45.00 (day before, start before 09:00) + kit 8.00 + route 0.00 (a zone 2 visit moved the day before) + household 15.00 (a day-before change charged per person booked: 5.00 x patient and 2 members) = 68.00, x1 (first move), no hold deduction = 68.00; one late-cancellation-fee line on the visit.",
+                "evidence": [
+                    "initial_state.visit_events.8184aef5-fe5c-4360-b77b-a1832ac66032.fee_amount",
+                    "initial_state.visits.e59cf1b2-fcfd-4ecb-ba5c-9bfbcda5333a.reschedule_count"
+                ]
+            },
+            {
+                "row": "initial_state.visit_events.c15dc55c-0219-4b70-b133-27f221b6193d",
+                "policy_id": "visits_evt_fee_payment_and_refund",
+                "check": "Card payment of the full 68.00 late-change charge on 2026-09-18 by credit_card (a method the mobile visit type lists), recorded against that assessment; the charge is settled and stands open at 0.00.",
+                "evidence": [
+                    "initial_state.visit_events.c15dc55c-0219-4b70-b133-27f221b6193d.assessed_event_id",
+                    "initial_state.visit_events.c15dc55c-0219-4b70-b133-27f221b6193d.fee_amount"
+                ]
+            }
+        ]
+    }
+}

@@ -1,0 +1,1327 @@
+# Wayfare rider trips: the ride options a rider books, and everything charged, waived, adjusted or
+# refunded on each trip. One holding = one trip (a short-lived contract between the rider and
+# Wayfare for one ride option); a rider accumulates many trips over time.
+category: trip
+display_name: Wayfare Rides (rider trips and fares)
+
+binding:
+  holding_table: trips
+  event_tables: [trip_charges]
+  intake_tables: [trip_fare_reviews]
+  status_field: status
+  variant_field: variant_name
+  quantity_fields: {net_charged: rider_charges, outstanding_amount: outstanding_balance}
+
+lifecycle:
+  states: [requested, scheduled, accepted, driver_arrived, in_progress, completed, rider_cancelled, driver_cancelled, rider_no_show, unfulfilled]
+  transitions:
+    - {from: requested, to: accepted, by: system, means: "A driver accepts an on-demand request in the driver app."}
+    - {from: scheduled, to: accepted, by: system, means: "A driver confirms a reserved trip ahead of the reserved pickup time."}
+    - {from: accepted, to: driver_arrived, by: system, means: "The driver marks arrival at the pickup point."}
+    - {from: driver_arrived, to: in_progress, by: system, means: "The rider is picked up and the driver starts the trip."}
+    - {from: in_progress, to: completed, by: system, means: "The driver ends the trip at drop-off; the fare is charged."}
+    - {from: requested, to: rider_cancelled, by: user, means: "The rider cancels an on-demand request before any driver accepts."}
+    - {from: scheduled, to: rider_cancelled, by: user, means: "The rider cancels a reserved trip before a driver confirms it."}
+    - {from: accepted, to: rider_cancelled, by: user, means: "The rider cancels after a driver accepted and before the driver arrived."}
+    - {from: driver_arrived, to: rider_cancelled, by: user, means: "The rider cancels after the driver arrived and before pickup."}
+    - {from: accepted, to: driver_cancelled, by: system, means: "The driver cancels the accepted trip before arriving."}
+    - {from: driver_arrived, to: driver_cancelled, by: system, means: "The driver cancels after arriving, before the no-show wait has run out."}
+    - {from: driver_arrived, to: rider_no_show, by: system, means: "The driver marks the rider as a no-show once the no-show wait has run out; the app does not offer the button earlier."}
+    - {from: requested, to: unfulfilled, by: system, means: "No driver accepted the on-demand request within the dispatch timeout."}
+    - {from: scheduled, to: unfulfilled, by: system, means: "No driver was confirmed for a reserved trip by the reserved dispatch cutoff."}
+
+accounts:
+  - key: rider_charges
+    unit: USD
+    meaning: "Everything charged to the rider on one trip (fare, reservation fee, wait time, tolls, airport fee, Priority Pickup, cancellation or no-show fee, tip) less fare adjustments and refunds."
+  - key: outstanding_balance
+    unit: USD
+    meaning: "Amounts on one trip that failed to collect from the rider's payment method and remain unpaid."
+
+parameter_schema:
+  base_fare: "Fixed amount added to every time-and-distance fare before the busy-time multiplier, USD"
+  per_mile_rate: "Charge per mile driven from pickup to drop-off, USD per mile"
+  per_minute_rate: "Charge per minute from pickup to drop-off, USD per minute"
+  booking_fee: "Flat booking fee added to every completed fare, never multiplied by the busy-time multiplier, USD"
+  minimum_fare: "Lowest fare charged for a completed trip, compared against the time-and-distance fare after the multiplier and option surcharge and before the booking fee, USD"
+  option_surcharge: "Flat per-trip surcharge of the ride option (Green: zero-emission vehicle surcharge), added after the multiplier, USD"
+  second_seat_surcharge: "Surcharge when a Shared request is for 2 seats instead of 1, added after the multiplier, USD; 0.00 where not applicable"
+  surge_applies_to: "Fare components the busy-time multiplier multiplies (list)"
+  upfront_recalc_threshold_pct: "The upfront fare stands unless the rider changed the route or the actual miles or the actual minutes exceed the estimate by more than this percentage, percent"
+  max_seats_requestable: "Most seats one request may be for, seats"
+  free_wait_minutes: "Minutes after the driver's arrival before wait time is billed on an on-demand trip, minutes"
+  wait_rate_per_minute: "Charge per billable wait minute, USD per minute"
+  wait_time_rounding: "How billable wait time is counted (whole elapsed minutes only, partial minutes dropped)"
+  max_wait_before_no_show_minutes: "Minutes the driver must wait after arrival on an on-demand trip before a no-show may be marked, minutes"
+  cancellation_grace_minutes: "Minutes after a driver accepts an on-demand trip during which the rider may cancel without a fee, minutes"
+  cancellation_fee: "Fee for a rider cancellation of an on-demand trip after the grace period, USD"
+  no_show_fee: "Fee when the driver marks an on-demand rider as a no-show, USD"
+  eta_delay_waiver_minutes: "No cancellation fee if the rider cancels while the driver has not arrived and more than this many minutes have passed beyond the original pickup estimate, minutes"
+  reservation_available: "Whether the ride option can be booked ahead through Wayfare Reserve (true/false)"
+  reservation_fee: "Reservation fee charged when a reserved trip is booked, USD; 0.00 where reservations are not offered"
+  reservation_min_lead_minutes: "Shortest time between booking and the reserved pickup time, minutes; 0 where not offered"
+  reservation_max_days_ahead: "Furthest ahead a pickup may be reserved, calendar days; 0 where not offered"
+  reserved_free_cancel_minutes: "A reserved trip may be cancelled free at least this many minutes before the reserved pickup time, minutes; 0 where not offered"
+  reserved_late_cancellation_fee: "Fee for cancelling a reserved trip inside the free-cancel cutoff, USD; 0.00 where not offered"
+  reserved_no_show_fee: "Fee when a reserved rider is marked a no-show, USD; 0.00 where not offered"
+  reserved_free_wait_minutes: "Free wait on a reserved non-airport pickup, counted from the later of the reserved pickup time and the driver's arrival, minutes"
+  reserved_airport_free_wait_minutes: "Free wait on a reserved airport pickup, counted the same way, minutes"
+  reserved_driver_late_minutes: "If the driver of a reserved trip has not arrived this many minutes after the reserved pickup time, the rider may cancel free and the reservation fee is refunded, minutes"
+  reservation_fee_refund_if_unfulfilled: "Whether the reservation fee is refunded when no driver is found for a reserved trip (true/false)"
+  dispatch_timeout_minutes: "An on-demand request no driver accepts within this many minutes is closed as unfulfilled, minutes"
+  reserved_dispatch_cutoff_minutes: "A reserved trip with no driver confirmed this many minutes after the reserved pickup time is closed as unfulfilled, minutes; 0 where not offered"
+  priority_pickup_available: "Whether Priority Pickup can be added to the request (true/false)"
+  priority_pickup_fee: "Charge for Priority Pickup, USD; 0.00 where not offered"
+  airport_surcharge_schedule: "Airport access fee passed through to the rider per qualifying airport trip, by airport code, USD (mapping)"
+  airport_surcharge_legs: "Which trip ends each airport charges its access fee on, by airport code (mapping of lists)"
+  toll_schedule: "Toll passed through to the rider per crossing of each toll facility, by facility, USD (mapping)"
+  toll_basis: "Tolls are charged only for facilities actually crossed between pickup and drop-off (one charge per facility per trip)"
+  tip_window_days: "Calendar days after drop-off during which the rider may add a tip"
+  tip_max_amount: "Largest single tip accepted on one trip, USD"
+  fare_review_window_days: "Calendar days after the charge date of a charge during which the rider may ask for it to be adjusted or refunded"
+  agent_adjustment_limit: "Largest total amount support may adjust or refund on one trip without the fare review team, USD"
+  adjustment_excludes_booking_fee: "Whether the booking fee stays charged when a fare is reduced for route inefficiency or a wrong drop-off (true/false)"
+  courtesy_refunds_per_window: "Most courtesy refunds of a cancellation or no-show fee per rider in the courtesy lookback window, count"
+  courtesy_lookback_days: "Length of the rolling courtesy lookback window, calendar days including the current day"
+  payment_retry_attempts: "Automatic retries of a failed trip payment before the amount is left outstanding, count"
+  payment_retry_interval_hours: "Hours between automatic payment retries, hours"
+  outstanding_balance_blocks_requests: "Whether a rider with any unpaid trip amount may not request or reserve a new trip until it is settled (true/false)"
+  max_concurrent_on_demand: "Most on-demand trips one rider may have open (requested, accepted, driver arrived or in progress) at once, count"
+  max_open_reservations: "Most reserved trips one rider may hold in scheduled or accepted status at once, count"
+  rounding_rule: "Every computed rider amount is rounded half up to the cent once, at the end of its computation"
+
+variants:
+  - name: "Wayfare Shared"
+    rank: 1
+    entry_gate: {min_rider_age: 18, payment_method_on_file: true, max_seats: 2, markets: [DEN, SLC, PHX, LAS]}
+    parameters:
+      base_fare: 1.05
+      per_mile_rate: 0.82
+      per_minute_rate: 0.18
+      booking_fee: 2.40
+      minimum_fare: 6.25
+      option_surcharge: 0.00
+      second_seat_surcharge: 1.75
+      surge_applies_to: [base_fare, distance, time]
+      upfront_recalc_threshold_pct: 25
+      max_seats_requestable: 2
+      free_wait_minutes: 1
+      wait_rate_per_minute: 0.28
+      wait_time_rounding: whole_minutes_rounded_down
+      max_wait_before_no_show_minutes: 2
+      cancellation_grace_minutes: 2
+      cancellation_fee: 4.00
+      no_show_fee: 4.00
+      eta_delay_waiver_minutes: 5
+      reservation_available: false
+      reservation_fee: 0.00
+      reservation_min_lead_minutes: 0
+      reservation_max_days_ahead: 0
+      reserved_free_cancel_minutes: 0
+      reserved_late_cancellation_fee: 0.00
+      reserved_no_show_fee: 0.00
+      reserved_free_wait_minutes: 0
+      reserved_airport_free_wait_minutes: 0
+      reserved_driver_late_minutes: 0
+      reservation_fee_refund_if_unfulfilled: true
+      dispatch_timeout_minutes: 6
+      reserved_dispatch_cutoff_minutes: 0
+      priority_pickup_available: false
+      priority_pickup_fee: 0.00
+      airport_surcharge_schedule: {DEN: 5.00, COS: 3.25, SLC: 4.25, PHX: 4.66, TUS: 3.00, LAS: 3.95, ABQ: 3.00}
+      airport_surcharge_legs: {DEN: [pickup, dropoff], COS: [pickup], SLC: [pickup, dropoff], PHX: [pickup, dropoff], TUS: [pickup], LAS: [pickup], ABQ: [pickup]}
+      toll_schedule: {e_470: 6.85, northwest_parkway: 4.30, i25_express_lanes: 2.95, us36_express_lanes: 2.60, c470_express_lanes: 2.10, utah_i15_express_lanes: 1.00}
+      toll_basis: crossed_between_pickup_and_dropoff
+      tip_window_days: 30
+      tip_max_amount: 100.00
+      fare_review_window_days: 30
+      agent_adjustment_limit: 10.00
+      adjustment_excludes_booking_fee: true
+      courtesy_refunds_per_window: 1
+      courtesy_lookback_days: 90
+      payment_retry_attempts: 3
+      payment_retry_interval_hours: 24
+      outstanding_balance_blocks_requests: true
+      max_concurrent_on_demand: 1
+      max_open_reservations: 0
+      rounding_rule: half_up_to_cent
+  - name: "Wayfare Standard"
+    rank: 2
+    entry_gate: {min_rider_age: 18, payment_method_on_file: true, max_seats: 4, markets: [DEN, COS, SLC, PHX, TUS, LAS, ABQ]}
+    parameters:
+      base_fare: 1.25
+      per_mile_rate: 0.98
+      per_minute_rate: 0.24
+      booking_fee: 2.70
+      minimum_fare: 7.50
+      option_surcharge: 0.00
+      second_seat_surcharge: 0.00
+      surge_applies_to: [base_fare, distance, time]
+      upfront_recalc_threshold_pct: 25
+      max_seats_requestable: 4
+      free_wait_minutes: 2
+      wait_rate_per_minute: 0.39
+      wait_time_rounding: whole_minutes_rounded_down
+      max_wait_before_no_show_minutes: 5
+      cancellation_grace_minutes: 2
+      cancellation_fee: 5.00
+      no_show_fee: 5.00
+      eta_delay_waiver_minutes: 5
+      reservation_available: true
+      reservation_fee: 3.00
+      reservation_min_lead_minutes: 30
+      reservation_max_days_ahead: 30
+      reserved_free_cancel_minutes: 60
+      reserved_late_cancellation_fee: 10.00
+      reserved_no_show_fee: 10.00
+      reserved_free_wait_minutes: 15
+      reserved_airport_free_wait_minutes: 30
+      reserved_driver_late_minutes: 10
+      reservation_fee_refund_if_unfulfilled: true
+      dispatch_timeout_minutes: 8
+      reserved_dispatch_cutoff_minutes: 15
+      priority_pickup_available: true
+      priority_pickup_fee: 2.99
+      airport_surcharge_schedule: {DEN: 5.00, COS: 3.25, SLC: 4.25, PHX: 4.66, TUS: 3.00, LAS: 3.95, ABQ: 3.00}
+      airport_surcharge_legs: {DEN: [pickup, dropoff], COS: [pickup], SLC: [pickup, dropoff], PHX: [pickup, dropoff], TUS: [pickup], LAS: [pickup], ABQ: [pickup]}
+      toll_schedule: {e_470: 6.85, northwest_parkway: 4.30, i25_express_lanes: 2.95, us36_express_lanes: 2.60, c470_express_lanes: 2.10, utah_i15_express_lanes: 1.00}
+      toll_basis: crossed_between_pickup_and_dropoff
+      tip_window_days: 30
+      tip_max_amount: 100.00
+      fare_review_window_days: 30
+      agent_adjustment_limit: 15.00
+      adjustment_excludes_booking_fee: true
+      courtesy_refunds_per_window: 1
+      courtesy_lookback_days: 90
+      payment_retry_attempts: 3
+      payment_retry_interval_hours: 24
+      outstanding_balance_blocks_requests: true
+      max_concurrent_on_demand: 1
+      max_open_reservations: 5
+      rounding_rule: half_up_to_cent
+  - name: "Wayfare Green"
+    rank: 3
+    entry_gate: {min_rider_age: 18, payment_method_on_file: true, max_seats: 4, markets: [DEN, SLC, PHX, LAS]}
+    parameters:
+      base_fare: 1.25
+      per_mile_rate: 0.98
+      per_minute_rate: 0.24
+      booking_fee: 2.70
+      minimum_fare: 7.50
+      option_surcharge: 1.00
+      second_seat_surcharge: 0.00
+      surge_applies_to: [base_fare, distance, time]
+      upfront_recalc_threshold_pct: 25
+      max_seats_requestable: 4
+      free_wait_minutes: 2
+      wait_rate_per_minute: 0.39
+      wait_time_rounding: whole_minutes_rounded_down
+      max_wait_before_no_show_minutes: 5
+      cancellation_grace_minutes: 2
+      cancellation_fee: 5.00
+      no_show_fee: 5.00
+      eta_delay_waiver_minutes: 5
+      reservation_available: true
+      reservation_fee: 3.00
+      reservation_min_lead_minutes: 30
+      reservation_max_days_ahead: 30
+      reserved_free_cancel_minutes: 60
+      reserved_late_cancellation_fee: 10.00
+      reserved_no_show_fee: 10.00
+      reserved_free_wait_minutes: 15
+      reserved_airport_free_wait_minutes: 30
+      reserved_driver_late_minutes: 10
+      reservation_fee_refund_if_unfulfilled: true
+      dispatch_timeout_minutes: 8
+      reserved_dispatch_cutoff_minutes: 15
+      priority_pickup_available: true
+      priority_pickup_fee: 2.99
+      airport_surcharge_schedule: {DEN: 5.00, COS: 3.25, SLC: 4.25, PHX: 4.66, TUS: 3.00, LAS: 3.95, ABQ: 3.00}
+      airport_surcharge_legs: {DEN: [pickup, dropoff], COS: [pickup], SLC: [pickup, dropoff], PHX: [pickup, dropoff], TUS: [pickup], LAS: [pickup], ABQ: [pickup]}
+      toll_schedule: {e_470: 6.85, northwest_parkway: 4.30, i25_express_lanes: 2.95, us36_express_lanes: 2.60, c470_express_lanes: 2.10, utah_i15_express_lanes: 1.00}
+      toll_basis: crossed_between_pickup_and_dropoff
+      tip_window_days: 30
+      tip_max_amount: 100.00
+      fare_review_window_days: 30
+      agent_adjustment_limit: 15.00
+      adjustment_excludes_booking_fee: true
+      courtesy_refunds_per_window: 1
+      courtesy_lookback_days: 90
+      payment_retry_attempts: 3
+      payment_retry_interval_hours: 24
+      outstanding_balance_blocks_requests: true
+      max_concurrent_on_demand: 1
+      max_open_reservations: 5
+      rounding_rule: half_up_to_cent
+  - name: "Wayfare Comfort"
+    rank: 4
+    entry_gate: {min_rider_age: 18, payment_method_on_file: true, max_seats: 4, markets: [DEN, COS, SLC, PHX, TUS, LAS, ABQ]}
+    parameters:
+      base_fare: 2.10
+      per_mile_rate: 1.38
+      per_minute_rate: 0.33
+      booking_fee: 2.95
+      minimum_fare: 10.50
+      option_surcharge: 0.00
+      second_seat_surcharge: 0.00
+      surge_applies_to: [base_fare, distance, time]
+      upfront_recalc_threshold_pct: 25
+      max_seats_requestable: 4
+      free_wait_minutes: 2
+      wait_rate_per_minute: 0.50
+      wait_time_rounding: whole_minutes_rounded_down
+      max_wait_before_no_show_minutes: 5
+      cancellation_grace_minutes: 2
+      cancellation_fee: 7.50
+      no_show_fee: 7.50
+      eta_delay_waiver_minutes: 5
+      reservation_available: true
+      reservation_fee: 4.00
+      reservation_min_lead_minutes: 30
+      reservation_max_days_ahead: 30
+      reserved_free_cancel_minutes: 60
+      reserved_late_cancellation_fee: 15.00
+      reserved_no_show_fee: 15.00
+      reserved_free_wait_minutes: 15
+      reserved_airport_free_wait_minutes: 30
+      reserved_driver_late_minutes: 10
+      reservation_fee_refund_if_unfulfilled: true
+      dispatch_timeout_minutes: 10
+      reserved_dispatch_cutoff_minutes: 15
+      priority_pickup_available: true
+      priority_pickup_fee: 3.99
+      airport_surcharge_schedule: {DEN: 5.00, COS: 3.25, SLC: 4.25, PHX: 4.66, TUS: 3.00, LAS: 3.95, ABQ: 3.00}
+      airport_surcharge_legs: {DEN: [pickup, dropoff], COS: [pickup], SLC: [pickup, dropoff], PHX: [pickup, dropoff], TUS: [pickup], LAS: [pickup], ABQ: [pickup]}
+      toll_schedule: {e_470: 6.85, northwest_parkway: 4.30, i25_express_lanes: 2.95, us36_express_lanes: 2.60, c470_express_lanes: 2.10, utah_i15_express_lanes: 1.00}
+      toll_basis: crossed_between_pickup_and_dropoff
+      tip_window_days: 30
+      tip_max_amount: 100.00
+      fare_review_window_days: 30
+      agent_adjustment_limit: 25.00
+      adjustment_excludes_booking_fee: true
+      courtesy_refunds_per_window: 1
+      courtesy_lookback_days: 90
+      payment_retry_attempts: 3
+      payment_retry_interval_hours: 24
+      outstanding_balance_blocks_requests: true
+      max_concurrent_on_demand: 1
+      max_open_reservations: 5
+      rounding_rule: half_up_to_cent
+  - name: "Wayfare XL"
+    rank: 5
+    entry_gate: {min_rider_age: 18, payment_method_on_file: true, max_seats: 6, markets: [DEN, COS, SLC, PHX, TUS, LAS, ABQ]}
+    parameters:
+      base_fare: 2.35
+      per_mile_rate: 1.62
+      per_minute_rate: 0.38
+      booking_fee: 3.10
+      minimum_fare: 11.25
+      option_surcharge: 0.00
+      second_seat_surcharge: 0.00
+      surge_applies_to: [base_fare, distance, time]
+      upfront_recalc_threshold_pct: 25
+      max_seats_requestable: 6
+      free_wait_minutes: 2
+      wait_rate_per_minute: 0.55
+      wait_time_rounding: whole_minutes_rounded_down
+      max_wait_before_no_show_minutes: 5
+      cancellation_grace_minutes: 2
+      cancellation_fee: 7.50
+      no_show_fee: 7.50
+      eta_delay_waiver_minutes: 5
+      reservation_available: true
+      reservation_fee: 4.00
+      reservation_min_lead_minutes: 30
+      reservation_max_days_ahead: 30
+      reserved_free_cancel_minutes: 60
+      reserved_late_cancellation_fee: 15.00
+      reserved_no_show_fee: 15.00
+      reserved_free_wait_minutes: 15
+      reserved_airport_free_wait_minutes: 30
+      reserved_driver_late_minutes: 10
+      reservation_fee_refund_if_unfulfilled: true
+      dispatch_timeout_minutes: 10
+      reserved_dispatch_cutoff_minutes: 15
+      priority_pickup_available: true
+      priority_pickup_fee: 3.99
+      airport_surcharge_schedule: {DEN: 5.00, COS: 3.25, SLC: 4.25, PHX: 4.66, TUS: 3.00, LAS: 3.95, ABQ: 3.00}
+      airport_surcharge_legs: {DEN: [pickup, dropoff], COS: [pickup], SLC: [pickup, dropoff], PHX: [pickup, dropoff], TUS: [pickup], LAS: [pickup], ABQ: [pickup]}
+      toll_schedule: {e_470: 6.85, northwest_parkway: 4.30, i25_express_lanes: 2.95, us36_express_lanes: 2.60, c470_express_lanes: 2.10, utah_i15_express_lanes: 1.00}
+      toll_basis: crossed_between_pickup_and_dropoff
+      tip_window_days: 30
+      tip_max_amount: 100.00
+      fare_review_window_days: 30
+      agent_adjustment_limit: 25.00
+      adjustment_excludes_booking_fee: true
+      courtesy_refunds_per_window: 1
+      courtesy_lookback_days: 90
+      payment_retry_attempts: 3
+      payment_retry_interval_hours: 24
+      outstanding_balance_blocks_requests: true
+      max_concurrent_on_demand: 1
+      max_open_reservations: 5
+      rounding_rule: half_up_to_cent
+  - name: "Wayfare Black"
+    rank: 6
+    entry_gate: {min_rider_age: 18, payment_method_on_file: true, max_seats: 4, markets: [DEN, SLC, PHX, LAS]}
+    parameters:
+      base_fare: 8.00
+      per_mile_rate: 3.55
+      per_minute_rate: 0.65
+      booking_fee: 0.00
+      minimum_fare: 15.00
+      option_surcharge: 0.00
+      second_seat_surcharge: 0.00
+      surge_applies_to: [base_fare, distance, time]
+      upfront_recalc_threshold_pct: 25
+      max_seats_requestable: 4
+      free_wait_minutes: 5
+      wait_rate_per_minute: 0.85
+      wait_time_rounding: whole_minutes_rounded_down
+      max_wait_before_no_show_minutes: 10
+      cancellation_grace_minutes: 5
+      cancellation_fee: 10.00
+      no_show_fee: 10.00
+      eta_delay_waiver_minutes: 5
+      reservation_available: true
+      reservation_fee: 5.00
+      reservation_min_lead_minutes: 60
+      reservation_max_days_ahead: 90
+      reserved_free_cancel_minutes: 120
+      reserved_late_cancellation_fee: 25.00
+      reserved_no_show_fee: 25.00
+      reserved_free_wait_minutes: 15
+      reserved_airport_free_wait_minutes: 60
+      reserved_driver_late_minutes: 10
+      reservation_fee_refund_if_unfulfilled: true
+      dispatch_timeout_minutes: 12
+      reserved_dispatch_cutoff_minutes: 15
+      priority_pickup_available: false
+      priority_pickup_fee: 0.00
+      airport_surcharge_schedule: {DEN: 5.00, COS: 3.25, SLC: 4.25, PHX: 4.66, TUS: 3.00, LAS: 3.95, ABQ: 3.00}
+      airport_surcharge_legs: {DEN: [pickup, dropoff], COS: [pickup], SLC: [pickup, dropoff], PHX: [pickup, dropoff], TUS: [pickup], LAS: [pickup], ABQ: [pickup]}
+      toll_schedule: {e_470: 6.85, northwest_parkway: 4.30, i25_express_lanes: 2.95, us36_express_lanes: 2.60, c470_express_lanes: 2.10, utah_i15_express_lanes: 1.00}
+      toll_basis: crossed_between_pickup_and_dropoff
+      tip_window_days: 30
+      tip_max_amount: 100.00
+      fare_review_window_days: 30
+      agent_adjustment_limit: 40.00
+      adjustment_excludes_booking_fee: true
+      courtesy_refunds_per_window: 1
+      courtesy_lookback_days: 90
+      payment_retry_attempts: 3
+      payment_retry_interval_hours: 24
+      outstanding_balance_blocks_requests: true
+      max_concurrent_on_demand: 1
+      max_open_reservations: 10
+      rounding_rule: half_up_to_cent
+  - name: "Wayfare Black SUV"
+    rank: 7
+    entry_gate: {min_rider_age: 18, payment_method_on_file: true, max_seats: 6, markets: [DEN, PHX, LAS]}
+    parameters:
+      base_fare: 15.00
+      per_mile_rate: 4.40
+      per_minute_rate: 0.80
+      booking_fee: 0.00
+      minimum_fare: 25.00
+      option_surcharge: 0.00
+      second_seat_surcharge: 0.00
+      surge_applies_to: [base_fare, distance, time]
+      upfront_recalc_threshold_pct: 25
+      max_seats_requestable: 6
+      free_wait_minutes: 5
+      wait_rate_per_minute: 1.00
+      wait_time_rounding: whole_minutes_rounded_down
+      max_wait_before_no_show_minutes: 10
+      cancellation_grace_minutes: 5
+      cancellation_fee: 15.00
+      no_show_fee: 15.00
+      eta_delay_waiver_minutes: 5
+      reservation_available: true
+      reservation_fee: 7.00
+      reservation_min_lead_minutes: 60
+      reservation_max_days_ahead: 90
+      reserved_free_cancel_minutes: 120
+      reserved_late_cancellation_fee: 35.00
+      reserved_no_show_fee: 35.00
+      reserved_free_wait_minutes: 15
+      reserved_airport_free_wait_minutes: 60
+      reserved_driver_late_minutes: 10
+      reservation_fee_refund_if_unfulfilled: true
+      dispatch_timeout_minutes: 12
+      reserved_dispatch_cutoff_minutes: 15
+      priority_pickup_available: false
+      priority_pickup_fee: 0.00
+      airport_surcharge_schedule: {DEN: 5.00, COS: 3.25, SLC: 4.25, PHX: 4.66, TUS: 3.00, LAS: 3.95, ABQ: 3.00}
+      airport_surcharge_legs: {DEN: [pickup, dropoff], COS: [pickup], SLC: [pickup, dropoff], PHX: [pickup, dropoff], TUS: [pickup], LAS: [pickup], ABQ: [pickup]}
+      toll_schedule: {e_470: 6.85, northwest_parkway: 4.30, i25_express_lanes: 2.95, us36_express_lanes: 2.60, c470_express_lanes: 2.10, utah_i15_express_lanes: 1.00}
+      toll_basis: crossed_between_pickup_and_dropoff
+      tip_window_days: 30
+      tip_max_amount: 100.00
+      fare_review_window_days: 30
+      agent_adjustment_limit: 50.00
+      adjustment_excludes_booking_fee: true
+      courtesy_refunds_per_window: 1
+      courtesy_lookback_days: 90
+      payment_retry_attempts: 3
+      payment_retry_interval_hours: 24
+      outstanding_balance_blocks_requests: true
+      max_concurrent_on_demand: 1
+      max_open_reservations: 10
+      rounding_rule: half_up_to_cent
+
+events:
+  # ---------------- holding writes (the trip itself) ----------------
+  - type: trip_request
+    target: trips
+    mutation: create
+    meaning: "A rider requests an on-demand trip or reserves one ahead through Wayfare Reserve."
+    grain: "One row per trip requested."
+    fields:
+      customer_id: "Rider making the request."
+      variant_name: "Ride option requested."
+      booking_mode: "on_demand or reserved."
+      market: "Market of the pickup."
+      requested_at: "Moment of the request or reservation."
+      scheduled_pickup_at: "Reserved pickup time; empty for on-demand."
+      pass_membership_id: "Rider's Wayfare Pass membership in force at the request, if any."
+      airport_code: "Airport at either end, or none."
+      airport_leg: "Which end is at the airport, or none."
+      estimated_miles: "Estimated route distance."
+      estimated_minutes: "Estimated route duration."
+      surge_multiplier: "Busy-time multiplier at the request."
+      upfront_fare: "Fare quoted before Pass discount and credits, booking fee included."
+      seats_requested: "Seats requested."
+    triggers: []
+  - type: trip_accept
+    target: trips
+    mutation: {transition: [{from: requested, to: accepted}, {from: scheduled, to: accepted}]}
+    meaning: "A driver accepts an on-demand request or confirms a reserved trip."
+    grain: "One write per trip accepted."
+    fields:
+      accepted_at: "Moment of acceptance."
+      original_eta_minutes: "Pickup estimate shown to the rider at acceptance."
+      driver_customer_id: "Driver who accepted."
+      driver_agreement_id: "Agreement the driver drives under."
+    triggers: []
+  - type: trip_driver_arrive
+    target: trips
+    mutation: {transition: {from: accepted, to: driver_arrived}}
+    meaning: "The driver marks arrival at the pickup point."
+    grain: "One write per trip."
+    fields:
+      driver_arrived_at: "Moment the driver arrived."
+    triggers: []
+  - type: trip_start
+    target: trips
+    mutation: {transition: {from: driver_arrived, to: in_progress}}
+    meaning: "The rider is picked up and the trip starts."
+    grain: "One write per trip."
+    fields:
+      pickup_at: "Moment of pickup."
+    triggers: []
+  - type: trip_complete
+    target: trips
+    mutation: {transition: {from: in_progress, to: completed}}
+    meaning: "The driver ends the trip at drop-off."
+    grain: "One write per trip."
+    fields:
+      dropoff_at: "Moment of drop-off."
+      actual_miles: "Distance driven."
+      actual_minutes: "Duration driven."
+      rider_changed_route: "Whether the rider added a stop or changed the destination."
+    triggers:
+      - event: "trip:trip_fare_charge"
+        map: {trip_id: trip_id}
+  - type: trip_rider_cancel
+    target: trips
+    mutation: {transition: [{from: requested, to: rider_cancelled}, {from: scheduled, to: rider_cancelled}, {from: accepted, to: rider_cancelled}, {from: driver_arrived, to: rider_cancelled}]}
+    meaning: "The rider cancels the trip before pickup."
+    grain: "One write per trip."
+    fields:
+      cancelled_at: "Moment of the cancellation."
+    triggers: []
+  - type: trip_driver_cancel
+    target: trips
+    mutation: {transition: [{from: accepted, to: driver_cancelled}, {from: driver_arrived, to: driver_cancelled}]}
+    meaning: "The driver cancels the trip before pickup."
+    grain: "One write per trip."
+    fields:
+      cancelled_at: "Moment of the cancellation."
+    triggers: []
+  - type: trip_no_show
+    target: trips
+    mutation: {transition: {from: driver_arrived, to: rider_no_show}}
+    meaning: "The driver marks the rider as a no-show after the no-show wait has run out."
+    grain: "One write per trip."
+    fields:
+      cancelled_at: "Moment the no-show was marked."
+    triggers:
+      - event: "trip:trip_no_show_fee"
+        map: {trip_id: trip_id}
+  - type: trip_unfulfilled
+    target: trips
+    mutation: {transition: [{from: requested, to: unfulfilled}, {from: scheduled, to: unfulfilled}]}
+    meaning: "No driver was found for the trip within the dispatch limits."
+    grain: "One write per trip."
+    fields:
+      cancelled_at: "Moment the request was closed."
+    triggers: []
+
+  # ---------------- ledger writes (trip_charges) ----------------
+  - type: trip_fare_charge
+    target: trip_charges
+    meaning: "The fare for a completed trip is charged to the rider."
+    grain: "One row per completed trip."
+    distinguish_by: [trip_id]
+    fields:
+      trip_id: "Trip charged."
+      charge_date: "Date charged."
+      charged_at: "Moment charged."
+      amount: "Fare after any Pass member discount (positive)."
+      pass_membership_id: "Membership whose benefits applied to this fare; empty when none applied."
+      member_discount_amount: "Pass member discount taken off the fare."
+      member_credit_applied: "Pass ride credits used to pay the fare."
+      payment_source: "card, or card_and_pass_credit when credits paid part or all of it."
+      fare_basis: "upfront, recalculated or minimum_fare."
+    account: rider_charges
+    direction: in
+    triggers:
+      - event: "earnings:earnings_trip_credit"
+        map: {trip_id: trip_id}
+      - event: "pass:pass_credit_earn"
+        when: {pass_membership_id: {not: ""}}
+        map: {pass_membership_id: pass_membership_id, trip_id: trip_id}
+      - event: "pass:pass_credit_redeem"
+        when: {payment_source: card_and_pass_credit}
+        map: {pass_membership_id: pass_membership_id, trip_id: trip_id}
+  - type: trip_reservation_fee
+    target: trip_charges
+    meaning: "The Wayfare Reserve reservation fee is charged when a reserved trip is booked."
+    grain: "One row per reserved trip."
+    distinguish_by: [trip_id]
+    fields:
+      trip_id: "Reserved trip."
+      charge_date: "Date charged."
+      charged_at: "Moment charged."
+      amount: "Reservation fee (positive)."
+    account: rider_charges
+    direction: in
+    triggers: []
+  - type: trip_wait_time_charge
+    target: trip_charges
+    meaning: "Billable time the driver waited at pickup is charged with the fare."
+    grain: "One row per completed trip with billable wait."
+    distinguish_by: [trip_id]
+    fields:
+      trip_id: "Trip charged."
+      charge_date: "Date charged."
+      charged_at: "Moment charged."
+      amount: "Wait time charge (positive)."
+      wait_minutes_billed: "Billable wait minutes."
+    account: rider_charges
+    direction: in
+    triggers: []
+  - type: trip_toll_charge
+    target: trip_charges
+    meaning: "A toll for a facility crossed during the trip is passed through to the rider."
+    grain: "One row per toll facility crossed on a completed trip."
+    distinguish_by: [trip_id, toll_facility]
+    fields:
+      trip_id: "Trip charged."
+      charge_date: "Date charged."
+      charged_at: "Moment charged."
+      amount: "Toll (positive)."
+      toll_facility: "Facility crossed."
+    account: rider_charges
+    direction: in
+    triggers: []
+  - type: trip_airport_surcharge
+    target: trip_charges
+    meaning: "The airport access fee for a qualifying airport pickup or drop-off is passed through to the rider."
+    grain: "One row per completed airport trip on a charging leg."
+    distinguish_by: [trip_id, airport_code]
+    fields:
+      trip_id: "Trip charged."
+      charge_date: "Date charged."
+      charged_at: "Moment charged."
+      amount: "Airport fee (positive)."
+      airport_code: "Airport charging the fee."
+    account: rider_charges
+    direction: in
+    triggers: []
+  - type: trip_priority_pickup_charge
+    target: trip_charges
+    meaning: "The Priority Pickup charge on a completed trip."
+    grain: "One row per completed trip requested with Priority Pickup and not covered by a Pass allowance."
+    distinguish_by: [trip_id]
+    fields:
+      trip_id: "Trip charged."
+      charge_date: "Date charged."
+      charged_at: "Moment charged."
+      amount: "Priority Pickup charge (positive)."
+    account: rider_charges
+    direction: in
+    triggers: []
+  - type: trip_cancellation_fee
+    target: trip_charges
+    meaning: "A cancellation fee is charged for a rider cancellation that is not free."
+    grain: "One row per chargeable rider cancellation."
+    distinguish_by: [trip_id]
+    fields:
+      trip_id: "Cancelled trip."
+      charge_date: "Date charged."
+      charged_at: "Moment charged."
+      amount: "Cancellation fee (positive): the on-demand fee or the reserved late cancellation fee."
+    account: rider_charges
+    direction: in
+    triggers:
+      - event: "earnings:earnings_cancellation_credit"
+        map: {trip_id: trip_id}
+  - type: trip_no_show_fee
+    target: trip_charges
+    meaning: "A no-show fee is charged when the driver marks the rider as a no-show."
+    grain: "One row per no-show trip."
+    distinguish_by: [trip_id]
+    fields:
+      trip_id: "No-show trip."
+      charge_date: "Date charged."
+      charged_at: "Moment charged."
+      amount: "No-show fee (positive): the on-demand or the reserved no-show fee."
+    account: rider_charges
+    direction: in
+    triggers:
+      - event: "earnings:earnings_cancellation_credit"
+        map: {trip_id: trip_id}
+  - type: trip_tip
+    target: trip_charges
+    meaning: "The rider adds a tip for the driver to a completed trip."
+    grain: "One row per completed trip tipped (a trip takes one tip)."
+    distinguish_by: [trip_id]
+    fields:
+      trip_id: "Trip tipped."
+      charge_date: "Date the tip was added."
+      charged_at: "Moment the tip was added."
+      amount: "Tip amount the rider chose (positive)."
+    account: rider_charges
+    direction: in
+    triggers:
+      - event: "earnings:earnings_tip_credit"
+        map: {trip_id: trip_id, amount: amount}
+  - type: trip_fee_waiver
+    target: trip_charges
+    meaning: "A fee that the event would otherwise carry is not charged, and the reason is recorded."
+    grain: "One row per fee type not charged on a trip."
+    distinguish_by: [trip_id, waived_fee_type]
+    fields:
+      trip_id: "Trip concerned."
+      charge_date: "Date recorded."
+      charged_at: "Moment recorded."
+      amount: "Always 0.00."
+      waived_fee_type: "Which fee was not charged."
+      waiver_basis: "Why it was not charged."
+      pass_membership_id: "Membership whose allowance was used, when the basis is a Pass benefit; empty otherwise."
+    triggers: []
+  - type: trip_fare_adjustment
+    target: trip_charges
+    meaning: "Part of a fare or wait time charge is taken back because the charge was higher than the rules allow."
+    grain: "One row per adjusted charge and reason."
+    distinguish_by: [original_charge_id, adjustment_reason]
+    fields:
+      trip_id: "Trip concerned."
+      charge_date: "Date booked."
+      charged_at: "Moment booked."
+      amount: "Amount taken back (negative)."
+      original_charge_id: "The fare or wait time charge being reduced."
+      adjustment_reason: "route_inefficiency, fare_above_upfront or wait_time_not_incurred."
+    account: rider_charges
+    direction: out
+    triggers:
+      - event: "earnings:earnings_adjustment_debit"
+        when: {adjustment_reason: route_inefficiency}
+        map: {trip_id: trip_id, adjustment_reason: route_inefficiency_clawback}
+      - event: "earnings:earnings_adjustment_debit"
+        when: {adjustment_reason: wait_time_not_incurred}
+        map: {trip_id: trip_id, adjustment_reason: fare_correction}
+  - type: trip_refund
+    target: trip_charges
+    meaning: "A whole charge is returned to the rider's original payment method."
+    grain: "One row per refunded charge."
+    distinguish_by: [original_charge_id]
+    fields:
+      trip_id: "Trip concerned."
+      charge_date: "Date booked."
+      charged_at: "Moment booked."
+      amount: "Amount returned (negative, equal to the refunded charge less any earlier adjustment of it)."
+      original_charge_id: "The charge being refunded."
+      adjustment_reason: "Reason code for the refund."
+      pass_membership_id: "Membership that earned Pass credit on the refunded fare; empty otherwise."
+    account: rider_charges
+    direction: out
+    triggers:
+      - event: "earnings:earnings_adjustment_debit"
+        when: {adjustment_reason: [cancelled_within_grace, driver_eta_exceeded, premature_no_show, reserved_driver_late]}
+        map: {trip_id: trip_id, adjustment_reason: cancellation_fee_reversal}
+      - event: "earnings:earnings_adjustment_debit"
+        when: {adjustment_reason: toll_not_incurred}
+        map: {trip_id: trip_id, adjustment_reason: fare_correction}
+      - event: "pass:pass_credit_forfeit"
+        when: {pass_membership_id: {not: ""}}
+        map: {pass_membership_id: pass_membership_id, trip_id: trip_id, forfeit_reason: trip_refunded}
+  - type: trip_payment_failure
+    target: trip_charges
+    meaning: "A trip charge could not be collected after the automatic retries and is left outstanding."
+    grain: "One row per uncollected charge."
+    distinguish_by: [original_charge_id]
+    fields:
+      trip_id: "Trip concerned."
+      charge_date: "Date the last retry failed."
+      charged_at: "Moment the last retry failed."
+      amount: "Uncollected amount (positive)."
+      original_charge_id: "The charge that failed to collect."
+    account: outstanding_balance
+    direction: in
+    triggers: []
+  - type: trip_balance_settlement
+    target: trip_charges
+    meaning: "An outstanding trip charge is paid or cleared."
+    grain: "One row per outstanding charge settled."
+    distinguish_by: [original_charge_id]
+    fields:
+      trip_id: "Trip concerned."
+      charge_date: "Date settled."
+      charged_at: "Moment settled."
+      amount: "Amount cleared from the outstanding balance (negative)."
+      original_charge_id: "The outstanding charge settled."
+      settlement_method: "card_retry, new_payment_method or refund_offset."
+    account: outstanding_balance
+    direction: out
+    triggers: []
+
+measures:
+  - id: trip_msr_pass_free_cancellations_month
+    window: "The calendar month (market local time) containing the cancellation being decided, first day to last day inclusive."
+    measure: "Count of trip_fee_waiver rows with waiver_basis pass_free_cancellation and the same pass_membership_id, whose charge_date falls in the window."
+  - id: trip_msr_pass_priority_pickups_month
+    window: "The calendar month (market local time) containing the completed trip being charged."
+    measure: "Count of trip_fee_waiver rows with waiver_basis pass_priority_pickup and the same pass_membership_id, whose charge_date falls in the window."
+  - id: trip_msr_courtesy_refunds_window
+    window: "Rolling courtesy_lookback_days calendar days ending on the current day, both ends inclusive."
+    measure: "Count of trip_refund rows with adjustment_reason courtesy_cancellation_refund on any trip of the same rider (customer_id), whose charge_date falls in the window."
+  - id: trip_msr_rider_outstanding
+    window: "Current value, all of the rider's trips."
+    measure: "Sum of outstanding_amount over every trip of the rider (equivalently, trip_payment_failure amounts plus trip_balance_settlement amounts across those trips)."
+  - id: trip_msr_charge_returned
+    window: "Life of one original charge."
+    measure: "Absolute sum of trip_fare_adjustment and trip_refund amounts whose original_charge_id is that charge."
+  - id: trip_msr_trip_support_returned
+    window: "Life of one trip."
+    measure: "Absolute sum of trip_fare_adjustment and trip_refund amounts on that trip_id."
+
+policies:
+  - id: trip_agg_multi_holding
+    subject: [trip_request]
+    rule: >-
+      A rider may hold any number of trips over time; every trip is its own record and is charged on its own.
+      A new on-demand request is accepted only when the rider has no other on-demand trip in requested, accepted, driver_arrived or in_progress status.
+      A reservation is accepted only while the rider holds fewer reserved trips in scheduled or accepted status than the max_open_reservations of the ride option being reserved; reservations and one open on-demand trip may coexist.
+      Trips of different riders are never combined, and one trip never carries charges for another trip.
+    eligibility:
+      - id: one_open_on_demand_trip
+        applies_to: [trip_request]
+        kind: dedup
+        condition: "A new on-demand request is accepted only when the rider has no other on-demand trip in requested, accepted, driver_arrived or in_progress status."
+        evidence_fields: [trips.customer_id, trips.status, trips.booking_mode]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[trips.customer_id]]
+          action_bindings: {trips.customer_id: customer_id}
+        dedup_contract:
+          table: trips
+          mode: separate_record
+          object_bindings: {customer_id: customer_id}
+          duplicate_filters: {status: [requested, accepted, driver_arrived, in_progress], booking_mode: [on_demand]}
+          distinct_fields: [requested_at]
+    params:
+      max_per_customer: null
+      max_concurrent_on_demand: "=max_concurrent_on_demand"
+      per_tier:
+        "Wayfare Shared": {max_open_reservations: "=max_open_reservations"}
+        "Wayfare Standard": {max_open_reservations: "=max_open_reservations"}
+        "Wayfare Green": {max_open_reservations: "=max_open_reservations"}
+        "Wayfare Comfort": {max_open_reservations: "=max_open_reservations"}
+        "Wayfare XL": {max_open_reservations: "=max_open_reservations"}
+        "Wayfare Black": {max_open_reservations: "=max_open_reservations"}
+        "Wayfare Black SUV": {max_open_reservations: "=max_open_reservations"}
+
+  - id: trip_agg_outstanding_balance_hold
+    subject: [trip_request, trip_payment_failure, trip_balance_settlement]
+    rule: >-
+      When a trip charge fails to collect, the payment is retried automatically payment_retry_attempts times, payment_retry_interval_hours apart; if the last retry fails, a trip_payment_failure row for the uncollected amount is booked against that charge and the amount becomes outstanding on its trip.
+      The rider's outstanding balance is the sum of outstanding_amount over all of the rider's trips (trip_msr_rider_outstanding), not only the trip being discussed.
+      A rider whose outstanding balance is above 0.00 may not request or reserve a new trip until it is settled; this hold is lifted by settlement, never by waiver, and support cannot override it.
+      An outstanding charge is settled in full by one trip_balance_settlement row for that charge: card_retry when a manual retry on the card on file succeeds, new_payment_method when the rider pays it with a newly added payment method, or refund_offset when a refund or fare adjustment is booked against a charge that is still outstanding, in which case the settlement equals the outstanding amount of that charge and the rider's card is not refunded for the part that was never collected.
+      A charge that was collected (no trip_payment_failure row) never gets a settlement row.
+    eligibility:
+      - id: no_outstanding_balance
+        applies_to: [trip_request]
+        kind: authorization
+        condition: "A rider whose outstanding balance is above 0.00 may not request or reserve a new trip until it is settled; this hold is lifted by settlement, never by waiver, and support cannot override it."
+        evidence_fields: [trips.customer_id, trips.outstanding_amount]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[trips.customer_id]]
+          action_bindings: {trips.customer_id: customer_id}
+      - id: settlement_needs_outstanding_charge
+        applies_to: [trip_balance_settlement]
+        kind: dedup
+        condition: "A charge that was collected (no trip_payment_failure row) never gets a settlement row."
+        evidence_fields: [trip_charges.original_charge_id, trip_charges.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[trip_charges.original_charge_id]]
+          action_bindings: {trip_charges.original_charge_id: original_charge_id}
+        dedup_contract:
+          table: trip_charges
+          mode: separate_record
+          object_bindings: {original_charge_id: original_charge_id}
+          duplicate_filters: {event_type: [trip_balance_settlement]}
+          distinct_fields: [charge_date]
+    params:
+      payment_retry_attempts: "=payment_retry_attempts"
+      payment_retry_interval_hours: "=payment_retry_interval_hours"
+      outstanding_balance_blocks_requests: "=outstanding_balance_blocks_requests"
+    measures: [trip_msr_rider_outstanding]
+
+  - id: trip_evt_fare
+    subject: [trip_fare_charge]
+    rule: >-
+      The fare is charged once, when the trip completes, at the rates of the ride option the trip was requested under.
+      The upfront fare (which already includes the booking fee) stands, even when the trip turns out shorter, unless the rider changed the route or the actual miles or the actual minutes exceed the estimate by more than upfront_recalc_threshold_pct percent; in those cases the fare is recalculated from the actual miles and minutes.
+      A recalculated fare is the larger of the minimum fare and the time-and-distance fare, plus the booking fee; the time-and-distance fare is base fare plus per-mile and per-minute charges, multiplied by the busy-time multiplier recorded at the request, plus the option surcharge and, for a 2-seat Shared request, the second seat surcharge.
+      fare_basis records upfront when the upfront fare stood, recalculated when it was recalculated above the minimum, and minimum_fare when the minimum fare applied.
+      When the rider's Wayfare Pass membership in force at the request is in trial, active or pending_cancellation status and the ride option is in the plan's member_discount_options, the member discount (the Wayfare Pass charter parameter member_discount_pct, applied to the fare excluding the booking fee and rounded half up to the cent) is taken off and recorded in member_discount_amount; otherwise member_discount_amount is 0.00.
+      Pass ride credits pay part or all of the charge only when the rider has switched credits on for the trip; the charge amount is the same either way and the credits used are recorded in member_credit_applied.
+      pass_membership_id is filled on the fare charge only when a Pass benefit (discount or ride credit earning) applied to it; wait time, tolls, airport fees, Priority Pickup and tips are separate rows and never part of the fare.
+      Driver cancellations and unfulfilled requests never produce a fare.
+    eligibility:
+      - id: trip_completed
+        applies_to: [trip_fare_charge]
+        kind: state
+        condition: "The fare is charged once, when the trip completes, at the rates of the ride option the trip was requested under."
+        evidence_fields: [trips.status, trips.trip_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[trips.trip_id]]
+          action_bindings: {trips.trip_id: trip_id}
+        state_contract:
+          field: trips.status
+          allowed: [completed]
+    params:
+      per_tier:
+        "Wayfare Shared": {base_fare: "=base_fare", per_mile_rate: "=per_mile_rate", per_minute_rate: "=per_minute_rate", booking_fee: "=booking_fee", minimum_fare: "=minimum_fare"}
+        "Wayfare Standard": {base_fare: "=base_fare", per_mile_rate: "=per_mile_rate", per_minute_rate: "=per_minute_rate", booking_fee: "=booking_fee", minimum_fare: "=minimum_fare"}
+        "Wayfare Green": {base_fare: "=base_fare", per_mile_rate: "=per_mile_rate", per_minute_rate: "=per_minute_rate", booking_fee: "=booking_fee", minimum_fare: "=minimum_fare"}
+        "Wayfare Comfort": {base_fare: "=base_fare", per_mile_rate: "=per_mile_rate", per_minute_rate: "=per_minute_rate", booking_fee: "=booking_fee", minimum_fare: "=minimum_fare"}
+        "Wayfare XL": {base_fare: "=base_fare", per_mile_rate: "=per_mile_rate", per_minute_rate: "=per_minute_rate", booking_fee: "=booking_fee", minimum_fare: "=minimum_fare"}
+        "Wayfare Black": {base_fare: "=base_fare", per_mile_rate: "=per_mile_rate", per_minute_rate: "=per_minute_rate", booking_fee: "=booking_fee", minimum_fare: "=minimum_fare"}
+        "Wayfare Black SUV": {base_fare: "=base_fare", per_mile_rate: "=per_mile_rate", per_minute_rate: "=per_minute_rate", booking_fee: "=booking_fee", minimum_fare: "=minimum_fare"}
+    formula:
+      recalculate: "rider_changed_route or actual_miles > estimated_miles * (1 + upfront_recalc_threshold_pct / 100) or actual_minutes > estimated_minutes * (1 + upfront_recalc_threshold_pct / 100)"
+      time_distance_fare: "(base_fare + per_mile_rate * actual_miles + per_minute_rate * actual_minutes) * surge_multiplier + option_surcharge + second_seat_surcharge * (seats_requested - 1)"
+      recalculated_fare: "max(minimum_fare, time_distance_fare) + booking_fee"
+      amount: "round((recalculated_fare if recalculate else upfront_fare) - member_discount_amount, 2)"
+
+  - id: trip_evt_wait_time
+    subject: [trip_wait_time_charge]
+    rule: >-
+      Wait time is charged only on a completed trip, together with the fare.
+      On an on-demand trip the wait runs from driver_arrived_at to pickup_at, and the first free_wait_minutes are free.
+      On a reserved trip the wait runs from the later of the reserved pickup time and driver_arrived_at to pickup_at, and the first reserved_free_wait_minutes are free, or reserved_airport_free_wait_minutes when the pickup is at an airport.
+      Billable minutes are the elapsed wait minus the free minutes, counted in whole elapsed minutes with partial minutes dropped; when there are no billable minutes no row is written.
+      The charge is billable minutes times wait_rate_per_minute; the busy-time multiplier and Pass discounts never apply to wait time.
+    eligibility:
+      - id: trip_completed
+        applies_to: [trip_wait_time_charge]
+        kind: state
+        condition: "Wait time is charged only on a completed trip, together with the fare."
+        evidence_fields: [trips.status, trips.trip_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[trips.trip_id]]
+          action_bindings: {trips.trip_id: trip_id}
+        state_contract:
+          field: trips.status
+          allowed: [completed]
+    params:
+      wait_time_rounding: "=wait_time_rounding"
+      per_tier:
+        "Wayfare Shared": {free_wait_minutes: "=free_wait_minutes", wait_rate_per_minute: "=wait_rate_per_minute"}
+        "Wayfare Standard": {free_wait_minutes: "=free_wait_minutes", wait_rate_per_minute: "=wait_rate_per_minute"}
+        "Wayfare Green": {free_wait_minutes: "=free_wait_minutes", wait_rate_per_minute: "=wait_rate_per_minute"}
+        "Wayfare Comfort": {free_wait_minutes: "=free_wait_minutes", wait_rate_per_minute: "=wait_rate_per_minute"}
+        "Wayfare XL": {free_wait_minutes: "=free_wait_minutes", wait_rate_per_minute: "=wait_rate_per_minute"}
+        "Wayfare Black": {free_wait_minutes: "=free_wait_minutes", wait_rate_per_minute: "=wait_rate_per_minute"}
+        "Wayfare Black SUV": {free_wait_minutes: "=free_wait_minutes", wait_rate_per_minute: "=wait_rate_per_minute"}
+    formula:
+      amount: "round(wait_minutes_billed * wait_rate_per_minute, 2)"
+
+  - id: trip_evt_cancellation_fee
+    subject: [trip_cancellation_fee, trip_fee_waiver, trip_rider_cancel]
+    rule: >-
+      A cancellation fee is charged only on a trip the rider cancelled.
+      A rider cancellation before any driver accepted an on-demand request never carries a fee and no waiver row is written.
+      For an on-demand trip, a fee would apply when the rider cancels later than cancellation_grace_minutes after accepted_at; for a reserved trip, a fee would apply when the rider cancels less than reserved_free_cancel_minutes before the reserved pickup time.
+      When a fee would apply, it is nevertheless not charged, and one trip_fee_waiver row for cancellation_fee is written instead with the first basis that holds in this order: driver_eta_exceeded (on-demand: the driver had not arrived and cancelled_at is more than eta_delay_waiver_minutes after accepted_at plus original_eta_minutes), reserved_driver_late (reserved: the driver had not arrived reserved_driver_late_minutes after the reserved pickup time), pass_rebook_grace (the rider requested a new trip of any ride option within the Wayfare Pass charter's rebook_grace_minutes of the cancellation), pass_free_cancellation (the rider's Pass free-cancellation allowance for the calendar month, the Wayfare Pass charter parameter free_cancellations_per_month, is not yet used up as counted by trip_msr_pass_free_cancellations_month).
+      A cancellation inside the grace period is recorded by the system with a waiver row of basis within_cancellation_grace, and a reserved cancellation before the cutoff with a waiver row of basis reserved_window, so that every rider cancellation after acceptance or inside the reserved cutoff leaves exactly one fee row or one waiver row.
+      The Pass bases apply only while the rider's Wayfare Pass membership is in trial, active or pending_cancellation status; a paused or past_due membership gives no allowance, and pass_rebook_grace does not use up the monthly allowance.
+      When no basis holds, the fee is cancellation_fee for an on-demand trip or reserved_late_cancellation_fee for a reserved trip; driver cancellations never charge the rider.
+    eligibility:
+      - id: rider_cancelled_trip
+        applies_to: [trip_cancellation_fee]
+        kind: state
+        condition: "A cancellation fee is charged only on a trip the rider cancelled."
+        evidence_fields: [trips.status, trips.trip_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[trips.trip_id]]
+          action_bindings: {trips.trip_id: trip_id}
+        state_contract:
+          field: trips.status
+          allowed: [rider_cancelled]
+      - id: pass_allowance_status
+        applies_to: [trip_fee_waiver]
+        kind: state
+        condition: "The Pass bases apply only while the rider's Wayfare Pass membership is in trial, active or pending_cancellation status; a paused or past_due membership gives no allowance, and pass_rebook_grace does not use up the monthly allowance."
+        evidence_fields: [pass_memberships.status, pass_memberships.pass_membership_id, trips.pass_membership_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[trips.pass_membership_id]]
+          action_bindings: {trips.pass_membership_id: pass_membership_id}
+        state_contract:
+          field: pass_memberships.status
+          allowed: [trial, active, pending_cancellation]
+    params:
+      eta_delay_waiver_minutes: "=eta_delay_waiver_minutes"
+      per_tier:
+        "Wayfare Shared": {cancellation_fee: "=cancellation_fee", cancellation_grace_minutes: "=cancellation_grace_minutes", reserved_late_cancellation_fee: "=reserved_late_cancellation_fee", reserved_free_cancel_minutes: "=reserved_free_cancel_minutes", reserved_driver_late_minutes: "=reserved_driver_late_minutes"}
+        "Wayfare Standard": {cancellation_fee: "=cancellation_fee", cancellation_grace_minutes: "=cancellation_grace_minutes", reserved_late_cancellation_fee: "=reserved_late_cancellation_fee", reserved_free_cancel_minutes: "=reserved_free_cancel_minutes", reserved_driver_late_minutes: "=reserved_driver_late_minutes"}
+        "Wayfare Green": {cancellation_fee: "=cancellation_fee", cancellation_grace_minutes: "=cancellation_grace_minutes", reserved_late_cancellation_fee: "=reserved_late_cancellation_fee", reserved_free_cancel_minutes: "=reserved_free_cancel_minutes", reserved_driver_late_minutes: "=reserved_driver_late_minutes"}
+        "Wayfare Comfort": {cancellation_fee: "=cancellation_fee", cancellation_grace_minutes: "=cancellation_grace_minutes", reserved_late_cancellation_fee: "=reserved_late_cancellation_fee", reserved_free_cancel_minutes: "=reserved_free_cancel_minutes", reserved_driver_late_minutes: "=reserved_driver_late_minutes"}
+        "Wayfare XL": {cancellation_fee: "=cancellation_fee", cancellation_grace_minutes: "=cancellation_grace_minutes", reserved_late_cancellation_fee: "=reserved_late_cancellation_fee", reserved_free_cancel_minutes: "=reserved_free_cancel_minutes", reserved_driver_late_minutes: "=reserved_driver_late_minutes"}
+        "Wayfare Black": {cancellation_fee: "=cancellation_fee", cancellation_grace_minutes: "=cancellation_grace_minutes", reserved_late_cancellation_fee: "=reserved_late_cancellation_fee", reserved_free_cancel_minutes: "=reserved_free_cancel_minutes", reserved_driver_late_minutes: "=reserved_driver_late_minutes"}
+        "Wayfare Black SUV": {cancellation_fee: "=cancellation_fee", cancellation_grace_minutes: "=cancellation_grace_minutes", reserved_late_cancellation_fee: "=reserved_late_cancellation_fee", reserved_free_cancel_minutes: "=reserved_free_cancel_minutes", reserved_driver_late_minutes: "=reserved_driver_late_minutes"}
+    formula:
+      amount: "reserved_late_cancellation_fee if booking_mode == 'reserved' else cancellation_fee"
+    measures: [trip_msr_pass_free_cancellations_month]
+
+  - id: trip_evt_no_show
+    subject: [trip_no_show_fee, trip_no_show]
+    rule: >-
+      A no-show fee is charged only on a trip the driver marked as a rider no-show.
+      On an on-demand trip the driver may mark a no-show once max_wait_before_no_show_minutes have passed since driver_arrived_at; on a reserved trip once the reserved free wait (reserved_free_wait_minutes, or reserved_airport_free_wait_minutes at an airport) has passed since the later of the reserved pickup time and driver_arrived_at.
+      The fee is no_show_fee on an on-demand trip and reserved_no_show_fee on a reserved trip.
+      Wayfare Pass free cancellations and rebook grace never cover a no-show.
+      When the record shows the no-show was marked before the required wait had passed (cancelled_at earlier than the end of the required wait), the fee is refunded in full with reason premature_no_show; a rider's statement that they were at the pickup point does not by itself overturn a no-show the record shows was marked after the full wait.
+    eligibility:
+      - id: no_show_trip
+        applies_to: [trip_no_show_fee]
+        kind: state
+        condition: "A no-show fee is charged only on a trip the driver marked as a rider no-show."
+        evidence_fields: [trips.status, trips.trip_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[trips.trip_id]]
+          action_bindings: {trips.trip_id: trip_id}
+        state_contract:
+          field: trips.status
+          allowed: [rider_no_show]
+    params:
+      per_tier:
+        "Wayfare Shared": {no_show_fee: "=no_show_fee", max_wait_before_no_show_minutes: "=max_wait_before_no_show_minutes", reserved_no_show_fee: "=reserved_no_show_fee"}
+        "Wayfare Standard": {no_show_fee: "=no_show_fee", max_wait_before_no_show_minutes: "=max_wait_before_no_show_minutes", reserved_no_show_fee: "=reserved_no_show_fee"}
+        "Wayfare Green": {no_show_fee: "=no_show_fee", max_wait_before_no_show_minutes: "=max_wait_before_no_show_minutes", reserved_no_show_fee: "=reserved_no_show_fee"}
+        "Wayfare Comfort": {no_show_fee: "=no_show_fee", max_wait_before_no_show_minutes: "=max_wait_before_no_show_minutes", reserved_no_show_fee: "=reserved_no_show_fee"}
+        "Wayfare XL": {no_show_fee: "=no_show_fee", max_wait_before_no_show_minutes: "=max_wait_before_no_show_minutes", reserved_no_show_fee: "=reserved_no_show_fee"}
+        "Wayfare Black": {no_show_fee: "=no_show_fee", max_wait_before_no_show_minutes: "=max_wait_before_no_show_minutes", reserved_no_show_fee: "=reserved_no_show_fee"}
+        "Wayfare Black SUV": {no_show_fee: "=no_show_fee", max_wait_before_no_show_minutes: "=max_wait_before_no_show_minutes", reserved_no_show_fee: "=reserved_no_show_fee"}
+    formula:
+      amount: "reserved_no_show_fee if booking_mode == 'reserved' else no_show_fee"
+
+  - id: trip_evt_airport_and_tolls
+    subject: [trip_airport_surcharge, trip_toll_charge]
+    rule: >-
+      Airport fees and tolls are passed through only on a completed trip.
+      An airport fee is charged once per trip, at the amount airport_surcharge_schedule lists for the airport, only when the trip's airport_leg is one of the legs airport_surcharge_legs lists for that airport; a trip whose leg is not listed carries no airport fee.
+      A toll is charged once per toll facility crossed between pickup and drop-off, at the toll_schedule amount for that facility, whichever direction it was crossed; facilities the driver used on the way to the pickup are never charged to the rider.
+      Neither is multiplied by the busy-time multiplier or discounted by Wayfare Pass, and neither earns Pass ride credit.
+      A toll or airport fee charged when the conditions above do not hold is refunded in full (toll_not_incurred or airport_surcharge_not_applicable).
+    eligibility:
+      - id: trip_completed
+        applies_to: [trip_airport_surcharge, trip_toll_charge]
+        kind: state
+        condition: "Airport fees and tolls are passed through only on a completed trip."
+        evidence_fields: [trips.status, trips.trip_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[trips.trip_id]]
+          action_bindings: {trips.trip_id: trip_id}
+        state_contract:
+          field: trips.status
+          allowed: [completed]
+    params:
+      airport_surcharge_schedule: "=airport_surcharge_schedule"
+      airport_surcharge_legs: "=airport_surcharge_legs"
+      toll_schedule: "=toll_schedule"
+      toll_basis: "=toll_basis"
+
+  - id: trip_evt_priority_pickup
+    subject: [trip_priority_pickup_charge, trip_fee_waiver]
+    rule: >-
+      Priority Pickup is charged only on a completed trip; a cancelled or unfulfilled request with Priority Pickup is never charged for it.
+      It can be added only to ride options whose priority_pickup_available is true, at priority_pickup_fee.
+      When the rider's Wayfare Pass membership is in trial, active or pending_cancellation status and its Priority Pickup allowance for the calendar month (the Wayfare Pass charter parameter priority_pickups_per_month, counted by trip_msr_pass_priority_pickups_month) is not used up, no charge is made and one trip_fee_waiver row with waived_fee_type priority_pickup_charge and basis pass_priority_pickup is written instead.
+    eligibility:
+      - id: trip_completed
+        applies_to: [trip_priority_pickup_charge]
+        kind: state
+        condition: "Priority Pickup is charged only on a completed trip; a cancelled or unfulfilled request with Priority Pickup is never charged for it."
+        evidence_fields: [trips.status, trips.trip_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[trips.trip_id]]
+          action_bindings: {trips.trip_id: trip_id}
+        state_contract:
+          field: trips.status
+          allowed: [completed]
+    params:
+      per_tier:
+        "Wayfare Shared": {priority_pickup_available: "=priority_pickup_available", priority_pickup_fee: "=priority_pickup_fee"}
+        "Wayfare Standard": {priority_pickup_available: "=priority_pickup_available", priority_pickup_fee: "=priority_pickup_fee"}
+        "Wayfare Green": {priority_pickup_available: "=priority_pickup_available", priority_pickup_fee: "=priority_pickup_fee"}
+        "Wayfare Comfort": {priority_pickup_available: "=priority_pickup_available", priority_pickup_fee: "=priority_pickup_fee"}
+        "Wayfare XL": {priority_pickup_available: "=priority_pickup_available", priority_pickup_fee: "=priority_pickup_fee"}
+        "Wayfare Black": {priority_pickup_available: "=priority_pickup_available", priority_pickup_fee: "=priority_pickup_fee"}
+        "Wayfare Black SUV": {priority_pickup_available: "=priority_pickup_available", priority_pickup_fee: "=priority_pickup_fee"}
+    measures: [trip_msr_pass_priority_pickups_month]
+
+  - id: trip_evt_reservation
+    subject: [trip_reservation_fee, trip_fee_waiver, trip_request, trip_unfulfilled]
+    rule: >-
+      The reservation fee is charged only on a reserved trip, once, when it is booked.
+      A ride option can be reserved only when its reservation_available is true, and the reserved pickup time must be at least reservation_min_lead_minutes after the moment of booking and no more than reservation_max_days_ahead calendar days after it.
+      When the rider's Wayfare Pass plan has reservation_fee_waived true and the membership is in trial, active or pending_cancellation status at booking, no fee is charged and one trip_fee_waiver row with waived_fee_type reservation_fee and basis pass_reservation_fee is written instead.
+      The reservation fee is refunded in full when the trip ends unfulfilled (reservation_fee_refund_if_unfulfilled) or when the rider cancels because the driver had not arrived reserved_driver_late_minutes after the reserved pickup time (reason reserved_driver_late); a rider cancellation for any other reason keeps the reservation fee.
+    eligibility:
+      - id: reserved_trip_only
+        applies_to: [trip_reservation_fee]
+        kind: state
+        condition: "The reservation fee is charged only on a reserved trip, once, when it is booked."
+        evidence_fields: [trips.booking_mode, trips.trip_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[trips.trip_id]]
+          action_bindings: {trips.trip_id: trip_id}
+        state_contract:
+          field: trips.booking_mode
+          allowed: [reserved]
+      - id: reservation_window
+        applies_to: [trip_request]
+        kind: authorization
+        condition: "A ride option can be reserved only when its reservation_available is true, and the reserved pickup time must be at least reservation_min_lead_minutes after the moment of booking and no more than reservation_max_days_ahead calendar days after it."
+        evidence_fields: [trips.variant_name, trips.requested_at, trips.scheduled_pickup_at]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[trips.requested_at, trips.scheduled_pickup_at]]
+          action_bindings: {trips.requested_at: requested_at, trips.scheduled_pickup_at: scheduled_pickup_at}
+    params:
+      reservation_fee_refund_if_unfulfilled: "=reservation_fee_refund_if_unfulfilled"
+      per_tier:
+        "Wayfare Shared": {reservation_available: "=reservation_available", reservation_fee: "=reservation_fee", reservation_min_lead_minutes: "=reservation_min_lead_minutes", reservation_max_days_ahead: "=reservation_max_days_ahead"}
+        "Wayfare Standard": {reservation_available: "=reservation_available", reservation_fee: "=reservation_fee", reservation_min_lead_minutes: "=reservation_min_lead_minutes", reservation_max_days_ahead: "=reservation_max_days_ahead"}
+        "Wayfare Green": {reservation_available: "=reservation_available", reservation_fee: "=reservation_fee", reservation_min_lead_minutes: "=reservation_min_lead_minutes", reservation_max_days_ahead: "=reservation_max_days_ahead"}
+        "Wayfare Comfort": {reservation_available: "=reservation_available", reservation_fee: "=reservation_fee", reservation_min_lead_minutes: "=reservation_min_lead_minutes", reservation_max_days_ahead: "=reservation_max_days_ahead"}
+        "Wayfare XL": {reservation_available: "=reservation_available", reservation_fee: "=reservation_fee", reservation_min_lead_minutes: "=reservation_min_lead_minutes", reservation_max_days_ahead: "=reservation_max_days_ahead"}
+        "Wayfare Black": {reservation_available: "=reservation_available", reservation_fee: "=reservation_fee", reservation_min_lead_minutes: "=reservation_min_lead_minutes", reservation_max_days_ahead: "=reservation_max_days_ahead"}
+        "Wayfare Black SUV": {reservation_available: "=reservation_available", reservation_fee: "=reservation_fee", reservation_min_lead_minutes: "=reservation_min_lead_minutes", reservation_max_days_ahead: "=reservation_max_days_ahead"}
+
+  - id: trip_evt_tip
+    subject: [trip_tip]
+    rule: >-
+      A tip can be added only to a completed trip.
+      A tip may be added only within the tip window: The tip window is counted in calendar days in the market's local time: day 1 is the calendar day after the drop-off date, and the tip may be added through the end of the last day of the window.
+      After the tip window has passed a tip can no longer be added through any channel.
+      One tip per trip, of any amount the rider chooses up to tip_max_amount; tips are paid in full to the driver, are not discounted or credited by Wayfare Pass and are never refunded as a courtesy.
+      Adding a tip is the rider's own decision and is done by the rider.
+    eligibility:
+      - id: trip_completed
+        applies_to: [trip_tip]
+        kind: state
+        condition: "A tip can be added only to a completed trip."
+        evidence_fields: [trips.status, trips.trip_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[trips.trip_id]]
+          action_bindings: {trips.trip_id: trip_id}
+        state_contract:
+          field: trips.status
+          allowed: [completed]
+      - id: within_tip_window
+        applies_to: [trip_tip]
+        kind: time
+        condition: "A tip may be added only within the tip window: The tip window is counted in calendar days in the market's local time: day 1 is the calendar day after the drop-off date, and the tip may be added through the end of the last day of the window."
+        evidence_fields: [trips.dropoff_at, trips.trip_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[trips.trip_id]]
+          action_bindings: {trips.trip_id: trip_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "drop-off date"
+          anchor_source: trips.dropoff_at
+          relation: not_after
+          duration_source: variants.tip_window_days
+          unit: calendar_days
+          counting_rule: "The tip window is counted in calendar days in the market's local time: day 1 is the calendar day after the drop-off date, and the tip may be added through the end of the last day of the window."
+          boundary: inclusive
+    params:
+      tip_window_days: "=tip_window_days"
+      tip_max_amount: "=tip_max_amount"
+
+  - id: trip_evt_adjustments_and_refunds
+    subject: [trip_fare_adjustment, trip_refund]
+    rule: >-
+      An adjustment or refund always names the single charge it returns money from (original_charge_id); a request about a trip in general is resolved charge by charge.
+      An adjustment or refund may be made only within the review window: The review window is counted in calendar days from the charge date of the disputed charge: day 1 is the calendar day after the charge date, and the request must be made no later than the last day of the window.
+      Requests after the window are declined, whatever their merit.
+      The reasons and the amounts they return are: route_inefficiency, only when fare_basis is recalculated and rider_changed_route is false, takes back the fare charge amount minus the upfront fare less member_discount_amount (the rider pays what was quoted); fare_above_upfront, when fare_basis is upfront but the charge exceeds the upfront fare less member_discount_amount, takes back the excess; wait_time_not_incurred takes back the part of a wait time charge above what trip_evt_wait_time allows; these three are trip_fare_adjustment rows and leave the booking fee charged.
+      A whole charge is refunded (trip_refund) for duplicate_charge, toll_not_incurred, airport_surcharge_not_applicable, cancelled_within_grace, driver_eta_exceeded, premature_no_show, reserved_driver_late and courtesy_cancellation_refund; the refund equals the charge less anything already returned on it.
+      The total returned on one charge never exceeds that charge (trip_msr_charge_returned), and a charge already refunded in full is not refunded again.
+      Support may return up to agent_adjustment_limit in total per trip (trip_msr_trip_support_returned); a request that would take the trip above it, and any wrong drop-off location claim, is sent to the fare review team as a fare review for the disputed charge instead of being adjusted.
+      Refunds and adjustments go back to the original payment method; on a charge that is still outstanding they settle the outstanding amount first, as trip_agg_outstanding_balance_hold describes.
+      A rider who did not like the route, the driver or the vehicle but whose charges follow these rules gets no adjustment.
+    eligibility:
+      - id: within_review_window
+        applies_to: [trip_fare_adjustment, trip_refund]
+        kind: time
+        condition: "An adjustment or refund may be made only within the review window: The review window is counted in calendar days from the charge date of the disputed charge: day 1 is the calendar day after the charge date, and the request must be made no later than the last day of the window."
+        evidence_fields: [trip_charges.charge_date, trip_charges.trip_charge_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[trip_charges.trip_charge_id]]
+          action_bindings: {trip_charges.trip_charge_id: original_charge_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "charge date of the disputed charge"
+          anchor_source: trip_charges.charge_date
+          relation: not_after
+          duration_source: variants.fare_review_window_days
+          unit: calendar_days
+          counting_rule: "The review window is counted in calendar days from the charge date of the disputed charge: day 1 is the calendar day after the charge date, and the request must be made no later than the last day of the window."
+          boundary: inclusive
+      - id: not_already_refunded
+        applies_to: [trip_refund]
+        kind: dedup
+        condition: "The total returned on one charge never exceeds that charge (trip_msr_charge_returned), and a charge already refunded in full is not refunded again."
+        evidence_fields: [trip_charges.original_charge_id, trip_charges.event_type, trip_charges.amount]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[trip_charges.original_charge_id]]
+          action_bindings: {trip_charges.original_charge_id: original_charge_id}
+        dedup_contract:
+          table: trip_charges
+          mode: separate_record
+          object_bindings: {original_charge_id: original_charge_id}
+          duplicate_filters: {event_type: [trip_refund]}
+          distinct_fields: [charge_date]
+      - id: within_support_limit
+        applies_to: [trip_fare_adjustment, trip_refund]
+        kind: authorization
+        condition: "Support may return up to agent_adjustment_limit in total per trip (trip_msr_trip_support_returned); a request that would take the trip above it, and any wrong drop-off location claim, is sent to the fare review team as a fare review for the disputed charge instead of being adjusted."
+        evidence_fields: [trip_charges.trip_id, trip_charges.amount, trips.variant_name]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[trip_charges.trip_id]]
+          action_bindings: {trip_charges.trip_id: trip_id}
+    params:
+      fare_review_window_days: "=fare_review_window_days"
+      adjustment_excludes_booking_fee: "=adjustment_excludes_booking_fee"
+      rounding_rule: "=rounding_rule"
+      per_tier:
+        "Wayfare Shared": {agent_adjustment_limit: "=agent_adjustment_limit"}
+        "Wayfare Standard": {agent_adjustment_limit: "=agent_adjustment_limit"}
+        "Wayfare Green": {agent_adjustment_limit: "=agent_adjustment_limit"}
+        "Wayfare Comfort": {agent_adjustment_limit: "=agent_adjustment_limit"}
+        "Wayfare XL": {agent_adjustment_limit: "=agent_adjustment_limit"}
+        "Wayfare Black": {agent_adjustment_limit: "=agent_adjustment_limit"}
+        "Wayfare Black SUV": {agent_adjustment_limit: "=agent_adjustment_limit"}
+    measures: [trip_msr_charge_returned, trip_msr_trip_support_returned]
+
+  - id: trip_agg_courtesy_refund
+    subject: [trip_refund]
+    rule: >-
+      A courtesy refund returns an on-demand cancellation fee or on-demand no-show fee that was charged correctly under the rules; reserved late cancellation and reserved no-show fees, fares and all other charges are never refunded as a courtesy.
+      A rider may receive a courtesy refund only while fewer than courtesy_refunds_per_window courtesy refunds have been booked on any of the rider's trips in the courtesy window (trip_msr_courtesy_refunds_window), counted across all of the rider's trips rather than the trip in question.
+      A fee that the rules show was charged in error is refunded under its own reason code and never counts as a courtesy refund.
+      The driver keeps the share of a fee refunded as a courtesy; Wayfare absorbs it.
+    eligibility:
+      - id: courtesy_allowance_left
+        applies_to: [trip_refund]
+        kind: authorization
+        condition: "A rider may receive a courtesy refund only while fewer than courtesy_refunds_per_window courtesy refunds have been booked on any of the rider's trips in the courtesy window (trip_msr_courtesy_refunds_window), counted across all of the rider's trips rather than the trip in question."
+        evidence_fields: [trip_charges.customer_id, trip_charges.adjustment_reason, trip_charges.charge_date]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[trip_charges.customer_id]]
+          action_bindings: {trip_charges.customer_id: customer_id}
+    params:
+      courtesy_refunds_per_window: "=courtesy_refunds_per_window"
+      courtesy_lookback_days: "=courtesy_lookback_days"
+    measures: [trip_msr_courtesy_refunds_window]
+
+  - id: trip_lifecycle_rules
+    subject: [trip_request, trip_accept, trip_driver_arrive, trip_start, trip_complete, trip_rider_cancel, trip_driver_cancel, trip_no_show, trip_unfulfilled]
+    rule: >-
+      A request is accepted only for a ride option offered in the rider's market and for no more seats than the option's max_seats_requestable.
+      An on-demand request that no driver accepts within dispatch_timeout_minutes is closed as unfulfilled; a reserved trip with no confirmed driver reserved_dispatch_cutoff_minutes after the reserved pickup time is closed as unfulfilled; an unfulfilled trip is never charged anything except a reservation fee that is then refunded.
+      The rider may cancel at any time before pickup; once a trip is in progress it can only be completed.
+      A driver cancellation, whenever it happens, never charges the rider and leaves no fee or waiver row.
+      Status changes on a trip are made by the rider and driver apps and the dispatch system as they happen; support never moves a trip from one status to another.
+    eligibility:
+      - id: seats_within_option
+        applies_to: [trip_request]
+        kind: authorization
+        condition: "A request is accepted only for a ride option offered in the rider's market and for no more seats than the option's max_seats_requestable."
+        evidence_fields: [trips.variant_name, trips.market, trips.seats_requested]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[trips.variant_name, trips.market]]
+          action_bindings: {trips.variant_name: variant_name, trips.market: market}
+    params:
+      per_tier:
+        "Wayfare Shared": {max_seats_requestable: "=max_seats_requestable", dispatch_timeout_minutes: "=dispatch_timeout_minutes", reserved_dispatch_cutoff_minutes: "=reserved_dispatch_cutoff_minutes"}
+        "Wayfare Standard": {max_seats_requestable: "=max_seats_requestable", dispatch_timeout_minutes: "=dispatch_timeout_minutes", reserved_dispatch_cutoff_minutes: "=reserved_dispatch_cutoff_minutes"}
+        "Wayfare Green": {max_seats_requestable: "=max_seats_requestable", dispatch_timeout_minutes: "=dispatch_timeout_minutes", reserved_dispatch_cutoff_minutes: "=reserved_dispatch_cutoff_minutes"}
+        "Wayfare Comfort": {max_seats_requestable: "=max_seats_requestable", dispatch_timeout_minutes: "=dispatch_timeout_minutes", reserved_dispatch_cutoff_minutes: "=reserved_dispatch_cutoff_minutes"}
+        "Wayfare XL": {max_seats_requestable: "=max_seats_requestable", dispatch_timeout_minutes: "=dispatch_timeout_minutes", reserved_dispatch_cutoff_minutes: "=reserved_dispatch_cutoff_minutes"}
+        "Wayfare Black": {max_seats_requestable: "=max_seats_requestable", dispatch_timeout_minutes: "=dispatch_timeout_minutes", reserved_dispatch_cutoff_minutes: "=reserved_dispatch_cutoff_minutes"}
+        "Wayfare Black SUV": {max_seats_requestable: "=max_seats_requestable", dispatch_timeout_minutes: "=dispatch_timeout_minutes", reserved_dispatch_cutoff_minutes: "=reserved_dispatch_cutoff_minutes"}

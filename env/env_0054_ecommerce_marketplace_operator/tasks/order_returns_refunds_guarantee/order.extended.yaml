@@ -1,0 +1,2064 @@
+
+# Marketplace Orders — the buyer-side order contract of the Northloop marketplace.
+category: order
+display_name: Marketplace Orders
+
+binding:
+  holding_table: order_orders
+  event_tables: [order_events]
+  status_field: status
+  variant_field: variant_name
+  quantity_fields: {net_paid_amount: order_paid}
+
+lifecycle:
+  states: [placed, shipped, delivered, undeliverable, cancelled, closed]
+  transitions:
+    - {from: placed, to: shipped, by: system, means: "The seller (or a Northloop fulfillment center) confirms shipment and uploads carrier tracking."}
+    - {from: placed, to: cancelled, by: user, means: "The buyer cancels the order before it ships."}
+    - {from: placed, to: cancelled, by: system, means: "The seller or Northloop cancels an order that cannot be fulfilled (out of stock, pricing error, address cannot be served)."}
+    - {from: shipped, to: delivered, by: system, means: "The carrier posts a delivered scan (or the freight carrier closes the delivery appointment)."}
+    - {from: shipped, to: undeliverable, by: system, means: "The carrier reports the package lost, destroyed, refused, or returned to sender."}
+    - {from: delivered, to: closed, by: system, means: "Both the return window and the Northloop Guarantee claim window have elapsed and no return or claim is open."}
+    - {from: undeliverable, to: closed, by: system, means: "The undeliverable order has been refunded or replaced in full."}
+
+accounts:
+  - key: order_paid
+    unit: USD
+    meaning: "Net amount the buyer has paid on this order: captures booked in, refunds booked out; the holding's net_paid_amount is its running sum."
+
+parameter_schema:
+  fulfilled_by: 'Who picks, packs and ships the order and processes its returns: seller | northloop (enum string).'
+  max_handling_business_days: Business days after the order date by which the order must ship (integer; 0 = ships the same business day).
+  max_transit_business_days: Maximum carrier transit time in business days used to set the promised delivery date (integer; 0 = delivered the day it ships).
+  business_day_calendar: Business-day calendar for every business-day count of this category (enum string).
+  nonmember_shipping_charge: Shipping charge per order for a buyer without an active Loop+ membership, USD.
+  nonmember_free_shipping_threshold: Item subtotal (USD) at or above which a non-member pays no shipping; not_offered = no free-shipping threshold.
+  member_shipping_charge: Shipping charge per order for a buyer holding an active Loop+ membership, USD.
+  member_same_day_free_subtotal: Item subtotal (USD) at or above which a Loop+ member's Same-Day shipping charge is waived; not_applicable outside Same-Day.
+  same_day_order_cutoff_time: Local time (HH:MM) by which a Same-Day order must be placed to be promised for that day; not_applicable elsewhere.
+  freight_appointment_window_hours: Length of the scheduled freight delivery appointment window, hours; not_applicable for parcel options.
+  guaranteed_delivery: Whether the promised delivery date is guaranteed (a late delivery earns a shipping-charge refund) (boolean).
+  late_refund_request_window_days: Calendar days after the delivered date within which a late-delivery shipping refund may be requested; not_applicable when delivery is not guaranteed.
+  charge_capture_point: 'When the buyer''s payment is captured: at_shipment | at_order (enum string).'
+  tax_collected_by: Party that collects and remits sales tax on the order as marketplace facilitator (enum string).
+  standard_return_window_days: Calendar days after the delivered date within which a return may be requested for new and used items (integer).
+  renewed_return_window_days: Calendar days after the delivered date within which a return may be requested for items sold in renewed condition (integer).
+  holiday_extension_applies: Whether the holiday return calendar extends the return deadline for this delivery option (boolean).
+  holiday_return_calendar: 'Holiday extension calendar: orders delivered from delivered_from to delivered_to (MM-DD, inclusive) may be returned until return_by (MM-DD) of the following calendar year (mapping).'
+  non_returnable_item_categories: Item categories that cannot be returned for a refund (list of item_category values).
+  return_ship_by_days: Calendar days after the return request within which the returned item must receive its first carrier scan (integer).
+  late_return_grace_days: Calendar days after the ship-by deadline during which a late first scan is still accepted with a deduction; 0 = late returns are rejected.
+  late_return_deduction_rate: Share of the returned item price withheld when the return is scanned inside the late grace period (decimal fraction); not_applicable when there is no grace.
+  remorse_return_shipping_fee: Return shipping fee deducted from the refund of a return whose reason is not a seller-fault reason, USD per return.
+  allowed_return_methods: Return methods a return request may use besides returnless (list of return_method values).
+  restocking_rate_opened: Restocking fee as a share of the returned item price when the item arrives opened but resellable on a non-seller-fault return (decimal fraction).
+  restocking_rate_used_or_incomplete: Restocking fee as a share of the returned item price when the item arrives used, incomplete or damaged by the buyer on a non-seller-fault return (decimal fraction).
+  seller_fault_return_reasons: 'Return reasons treated as the seller''s fault: no return shipping fee, no restocking fee, original shipping refunded (list of return_reason values).'
+  returnless_refund_max_unit_price: Highest item unit price (USD) for which a seller-fault return is refunded without the item being sent back; not_offered = always returned.
+  refund_trigger: 'Earliest return milestone that releases the item refund: carrier_first_scan | seller_receipt (enum string).'
+  first_scan_refund_max_order_total: Highest order total (USD) for which the refund is released at first carrier scan; not_applicable where the trigger is receipt.
+  first_scan_min_buyer_account_age_days: Minimum age of the buyer's Northloop profile, in calendar days counted from account_opened_date, for a first-scan refund; not_applicable where the trigger is receipt.
+  refund_deadline_after_receipt_business_days: Business days after the received-at-destination scan by which the item refund must be issued (integer).
+  refund_rounding: Rounding applied to every computed refund component and deduction (enum string).
+  gift_return_refund_destination: Where the refund of an order marked as a gift is sent when the return is requested (refund_destination value).
+  undeliverable_refund_includes_shipping: Whether the original shipping charge is refunded when an order is returned to sender for a bad address or refused (boolean).
+  replacement_offered: Whether a free replacement may be shipped instead of a refund for a seller-fault return or a lost package (boolean).
+  replacement_request_window_days: Calendar days after the delivered date within which a replacement may be requested; not_applicable when replacements are not offered.
+  replacement_max_per_order: Maximum number of replacements shipped against one order; not_applicable when replacements are not offered.
+  unreturned_replacement_charge_days: Calendar days after a replacement ships by which the original item must receive its first carrier scan, failing which the buyer is charged for the replacement; not_applicable when replacements are not offered.
+  item_not_received_wait_days: Calendar days after the promised delivery date before an undelivered shipment may be reported lost or claimed under the Northloop Guarantee (integer).
+  liability_party: 'Party that funds refunds owed for loss, fulfillment error or a granted Northloop Guarantee claim: seller | northloop (enum string).'
+  guarantee_claim_window_days: Calendar days after the promised delivery date within which a Northloop Guarantee claim may be filed (integer).
+  guarantee_claim_cap: Maximum amount payable on one Northloop Guarantee claim, USD.
+  guarantee_claims_per_order: Maximum number of Northloop Guarantee claims that may be filed on one order (integer).
+  seller_claim_response_business_days: Business days the seller has to respond to a Northloop Guarantee claim before it is decided; not_applicable when Northloop is the liability party.
+  guarantee_appeal_window_days: Calendar days after a guarantee decision within which the buyer or the seller may appeal it once (integer).
+  invalid_tracking_auto_grant: Whether an item-not-received claim on an order shipped without valid tracking is granted against the seller without a seller response (boolean; not_applicable for Northloop-fulfilled orders).
+  signature_confirmation_threshold: Order total (USD) at or above which a delivered scan protects the seller against an item-not-received claim only when signature confirmation was obtained; not_applicable for Northloop-fulfilled orders.
+  transit_damage_report_days: Calendar days after the delivered date within which damage in transit must be reported to qualify as damaged_in_transit (integer).
+  seller_cancel_counts_as_defect: Whether a cancellation initiated by the seller is recorded against the seller's performance standing (boolean).
+
+variants:
+  - name: Seller Fulfilled Standard Shipping
+    rank: 1
+    entry_gate: {fulfilled_by: seller, max_item_weight_lb: 150}
+    parameters:
+      fulfilled_by: seller
+      max_handling_business_days: 2
+      max_transit_business_days: 5
+      business_day_calendar: mon_fri_excluding_us_federal_holidays
+      nonmember_shipping_charge: 5.99
+      nonmember_free_shipping_threshold: 35.0
+      member_shipping_charge: 5.99
+      member_same_day_free_subtotal: not_applicable
+      same_day_order_cutoff_time: not_applicable
+      freight_appointment_window_hours: not_applicable
+      guaranteed_delivery: false
+      late_refund_request_window_days: not_applicable
+      charge_capture_point: at_shipment
+      tax_collected_by: northloop
+      standard_return_window_days: 30
+      renewed_return_window_days: 90
+      holiday_extension_applies: true
+      holiday_return_calendar: {delivered_from: 11-01, delivered_to: 12-31, return_by: 01-31}
+      non_returnable_item_categories: [grocery]
+      return_ship_by_days: 14
+      late_return_grace_days: 15
+      late_return_deduction_rate: 0.2
+      remorse_return_shipping_fee: 7.99
+      allowed_return_methods: [ups_dropoff]
+      restocking_rate_opened: 0.15
+      restocking_rate_used_or_incomplete: 0.5
+      seller_fault_return_reasons: [defective, damaged_in_transit, wrong_item, not_as_described, missing_parts]
+      returnless_refund_max_unit_price: 10.0
+      refund_trigger: seller_receipt
+      first_scan_refund_max_order_total: not_applicable
+      first_scan_min_buyer_account_age_days: not_applicable
+      refund_deadline_after_receipt_business_days: 2
+      refund_rounding: half_up_to_cent
+      gift_return_refund_destination: gift_card_balance
+      undeliverable_refund_includes_shipping: false
+      replacement_offered: false
+      replacement_request_window_days: not_applicable
+      replacement_max_per_order: not_applicable
+      unreturned_replacement_charge_days: not_applicable
+      item_not_received_wait_days: 3
+      liability_party: seller
+      guarantee_claim_window_days: 90
+      guarantee_claim_cap: 2500.0
+      guarantee_claims_per_order: 1
+      seller_claim_response_business_days: 3
+      guarantee_appeal_window_days: 30
+      invalid_tracking_auto_grant: true
+      signature_confirmation_threshold: 750.0
+      transit_damage_report_days: 30
+      seller_cancel_counts_as_defect: true
+  - name: Seller Fulfilled Expedited Shipping
+    rank: 2
+    entry_gate: {fulfilled_by: seller, max_item_weight_lb: 150, seller_offers_expedited: true}
+    parameters:
+      fulfilled_by: seller
+      max_handling_business_days: 1
+      max_transit_business_days: 2
+      business_day_calendar: mon_fri_excluding_us_federal_holidays
+      nonmember_shipping_charge: 12.99
+      nonmember_free_shipping_threshold: not_offered
+      member_shipping_charge: 12.99
+      member_same_day_free_subtotal: not_applicable
+      same_day_order_cutoff_time: not_applicable
+      freight_appointment_window_hours: not_applicable
+      guaranteed_delivery: true
+      late_refund_request_window_days: 30
+      charge_capture_point: at_shipment
+      tax_collected_by: northloop
+      standard_return_window_days: 30
+      renewed_return_window_days: 90
+      holiday_extension_applies: true
+      holiday_return_calendar: {delivered_from: 11-01, delivered_to: 12-31, return_by: 01-31}
+      non_returnable_item_categories: [grocery]
+      return_ship_by_days: 14
+      late_return_grace_days: 15
+      late_return_deduction_rate: 0.2
+      remorse_return_shipping_fee: 7.99
+      allowed_return_methods: [ups_dropoff]
+      restocking_rate_opened: 0.15
+      restocking_rate_used_or_incomplete: 0.5
+      seller_fault_return_reasons: [defective, damaged_in_transit, wrong_item, not_as_described, missing_parts]
+      returnless_refund_max_unit_price: 10.0
+      refund_trigger: seller_receipt
+      first_scan_refund_max_order_total: not_applicable
+      first_scan_min_buyer_account_age_days: not_applicable
+      refund_deadline_after_receipt_business_days: 2
+      refund_rounding: half_up_to_cent
+      gift_return_refund_destination: gift_card_balance
+      undeliverable_refund_includes_shipping: false
+      replacement_offered: false
+      replacement_request_window_days: not_applicable
+      replacement_max_per_order: not_applicable
+      unreturned_replacement_charge_days: not_applicable
+      item_not_received_wait_days: 3
+      liability_party: seller
+      guarantee_claim_window_days: 90
+      guarantee_claim_cap: 2500.0
+      guarantee_claims_per_order: 1
+      seller_claim_response_business_days: 3
+      guarantee_appeal_window_days: 30
+      invalid_tracking_auto_grant: true
+      signature_confirmation_threshold: 750.0
+      transit_damage_report_days: 30
+      seller_cancel_counts_as_defect: true
+  - name: Fulfilled by Northloop Standard
+    rank: 3
+    entry_gate: {fulfilled_by: northloop, inventory_in_fbn_warehouse: true}
+    parameters:
+      fulfilled_by: northloop
+      max_handling_business_days: 1
+      max_transit_business_days: 4
+      business_day_calendar: mon_fri_excluding_us_federal_holidays
+      nonmember_shipping_charge: 5.99
+      nonmember_free_shipping_threshold: 35.0
+      member_shipping_charge: 0.0
+      member_same_day_free_subtotal: not_applicable
+      same_day_order_cutoff_time: not_applicable
+      freight_appointment_window_hours: not_applicable
+      guaranteed_delivery: false
+      late_refund_request_window_days: not_applicable
+      charge_capture_point: at_shipment
+      tax_collected_by: northloop
+      standard_return_window_days: 30
+      renewed_return_window_days: 90
+      holiday_extension_applies: true
+      holiday_return_calendar: {delivered_from: 11-01, delivered_to: 12-31, return_by: 01-31}
+      non_returnable_item_categories: [grocery]
+      return_ship_by_days: 30
+      late_return_grace_days: 15
+      late_return_deduction_rate: 0.2
+      remorse_return_shipping_fee: 0.0
+      allowed_return_methods: [ups_dropoff, carrier_pickup]
+      restocking_rate_opened: 0.0
+      restocking_rate_used_or_incomplete: 0.5
+      seller_fault_return_reasons: [defective, damaged_in_transit, wrong_item, not_as_described, missing_parts]
+      returnless_refund_max_unit_price: 15.0
+      refund_trigger: carrier_first_scan
+      first_scan_refund_max_order_total: 500.0
+      first_scan_min_buyer_account_age_days: 90
+      refund_deadline_after_receipt_business_days: 2
+      refund_rounding: half_up_to_cent
+      gift_return_refund_destination: gift_card_balance
+      undeliverable_refund_includes_shipping: true
+      replacement_offered: true
+      replacement_request_window_days: 30
+      replacement_max_per_order: 1
+      unreturned_replacement_charge_days: 30
+      item_not_received_wait_days: 2
+      liability_party: northloop
+      guarantee_claim_window_days: 90
+      guarantee_claim_cap: 2500.0
+      guarantee_claims_per_order: 1
+      seller_claim_response_business_days: not_applicable
+      guarantee_appeal_window_days: 30
+      invalid_tracking_auto_grant: not_applicable
+      signature_confirmation_threshold: not_applicable
+      transit_damage_report_days: 30
+      seller_cancel_counts_as_defect: false
+  - name: Fulfilled by Northloop Two-Day
+    rank: 4
+    entry_gate: {fulfilled_by: northloop, inventory_in_fbn_warehouse: true, two_day_zip_coverage: true}
+    parameters:
+      fulfilled_by: northloop
+      max_handling_business_days: 0
+      max_transit_business_days: 2
+      business_day_calendar: mon_fri_excluding_us_federal_holidays
+      nonmember_shipping_charge: 9.99
+      nonmember_free_shipping_threshold: not_offered
+      member_shipping_charge: 0.0
+      member_same_day_free_subtotal: not_applicable
+      same_day_order_cutoff_time: not_applicable
+      freight_appointment_window_hours: not_applicable
+      guaranteed_delivery: true
+      late_refund_request_window_days: 30
+      charge_capture_point: at_shipment
+      tax_collected_by: northloop
+      standard_return_window_days: 30
+      renewed_return_window_days: 90
+      holiday_extension_applies: true
+      holiday_return_calendar: {delivered_from: 11-01, delivered_to: 12-31, return_by: 01-31}
+      non_returnable_item_categories: [grocery]
+      return_ship_by_days: 30
+      late_return_grace_days: 15
+      late_return_deduction_rate: 0.2
+      remorse_return_shipping_fee: 0.0
+      allowed_return_methods: [ups_dropoff, carrier_pickup]
+      restocking_rate_opened: 0.0
+      restocking_rate_used_or_incomplete: 0.5
+      seller_fault_return_reasons: [defective, damaged_in_transit, wrong_item, not_as_described, missing_parts]
+      returnless_refund_max_unit_price: 15.0
+      refund_trigger: carrier_first_scan
+      first_scan_refund_max_order_total: 500.0
+      first_scan_min_buyer_account_age_days: 90
+      refund_deadline_after_receipt_business_days: 2
+      refund_rounding: half_up_to_cent
+      gift_return_refund_destination: gift_card_balance
+      undeliverable_refund_includes_shipping: true
+      replacement_offered: true
+      replacement_request_window_days: 30
+      replacement_max_per_order: 1
+      unreturned_replacement_charge_days: 30
+      item_not_received_wait_days: 2
+      liability_party: northloop
+      guarantee_claim_window_days: 90
+      guarantee_claim_cap: 2500.0
+      guarantee_claims_per_order: 1
+      seller_claim_response_business_days: not_applicable
+      guarantee_appeal_window_days: 30
+      invalid_tracking_auto_grant: not_applicable
+      signature_confirmation_threshold: not_applicable
+      transit_damage_report_days: 30
+      seller_cancel_counts_as_defect: false
+  - name: Fulfilled by Northloop Same-Day
+    rank: 5
+    entry_gate: {fulfilled_by: northloop, delivery_zip_in_same_day_area: true, placed_before_same_day_cutoff: true}
+    parameters:
+      fulfilled_by: northloop
+      max_handling_business_days: 0
+      max_transit_business_days: 0
+      business_day_calendar: mon_fri_excluding_us_federal_holidays
+      nonmember_shipping_charge: 12.99
+      nonmember_free_shipping_threshold: not_offered
+      member_shipping_charge: 2.99
+      member_same_day_free_subtotal: 25.0
+      same_day_order_cutoff_time: '12:00'
+      freight_appointment_window_hours: not_applicable
+      guaranteed_delivery: true
+      late_refund_request_window_days: 30
+      charge_capture_point: at_shipment
+      tax_collected_by: northloop
+      standard_return_window_days: 30
+      renewed_return_window_days: 90
+      holiday_extension_applies: true
+      holiday_return_calendar: {delivered_from: 11-01, delivered_to: 12-31, return_by: 01-31}
+      non_returnable_item_categories: [grocery]
+      return_ship_by_days: 30
+      late_return_grace_days: 15
+      late_return_deduction_rate: 0.2
+      remorse_return_shipping_fee: 0.0
+      allowed_return_methods: [ups_dropoff, carrier_pickup]
+      restocking_rate_opened: 0.0
+      restocking_rate_used_or_incomplete: 0.5
+      seller_fault_return_reasons: [defective, damaged_in_transit, wrong_item, not_as_described, missing_parts]
+      returnless_refund_max_unit_price: 15.0
+      refund_trigger: carrier_first_scan
+      first_scan_refund_max_order_total: 500.0
+      first_scan_min_buyer_account_age_days: 90
+      refund_deadline_after_receipt_business_days: 2
+      refund_rounding: half_up_to_cent
+      gift_return_refund_destination: gift_card_balance
+      undeliverable_refund_includes_shipping: true
+      replacement_offered: true
+      replacement_request_window_days: 30
+      replacement_max_per_order: 1
+      unreturned_replacement_charge_days: 30
+      item_not_received_wait_days: 1
+      liability_party: northloop
+      guarantee_claim_window_days: 90
+      guarantee_claim_cap: 2500.0
+      guarantee_claims_per_order: 1
+      seller_claim_response_business_days: not_applicable
+      guarantee_appeal_window_days: 30
+      invalid_tracking_auto_grant: not_applicable
+      signature_confirmation_threshold: not_applicable
+      transit_damage_report_days: 30
+      seller_cancel_counts_as_defect: false
+  - name: Large Item Freight Delivery
+    rank: 6
+    entry_gate: {min_item_weight_lb: 150, delivery_appointment_scheduled: true}
+    parameters:
+      fulfilled_by: seller
+      max_handling_business_days: 3
+      max_transit_business_days: 7
+      business_day_calendar: mon_fri_excluding_us_federal_holidays
+      nonmember_shipping_charge: 89.0
+      nonmember_free_shipping_threshold: not_offered
+      member_shipping_charge: 89.0
+      member_same_day_free_subtotal: not_applicable
+      same_day_order_cutoff_time: not_applicable
+      freight_appointment_window_hours: 4
+      guaranteed_delivery: true
+      late_refund_request_window_days: 30
+      charge_capture_point: at_order
+      tax_collected_by: northloop
+      standard_return_window_days: 30
+      renewed_return_window_days: 90
+      holiday_extension_applies: false
+      holiday_return_calendar: {delivered_from: 11-01, delivered_to: 12-31, return_by: 01-31}
+      non_returnable_item_categories: [grocery]
+      return_ship_by_days: 14
+      late_return_grace_days: 0
+      late_return_deduction_rate: not_applicable
+      remorse_return_shipping_fee: 149.0
+      allowed_return_methods: [freight_pickup]
+      restocking_rate_opened: 0.15
+      restocking_rate_used_or_incomplete: 0.5
+      seller_fault_return_reasons: [defective, damaged_in_transit, wrong_item, not_as_described, missing_parts]
+      returnless_refund_max_unit_price: not_offered
+      refund_trigger: seller_receipt
+      first_scan_refund_max_order_total: not_applicable
+      first_scan_min_buyer_account_age_days: not_applicable
+      refund_deadline_after_receipt_business_days: 3
+      refund_rounding: half_up_to_cent
+      gift_return_refund_destination: gift_card_balance
+      undeliverable_refund_includes_shipping: false
+      replacement_offered: false
+      replacement_request_window_days: not_applicable
+      replacement_max_per_order: not_applicable
+      unreturned_replacement_charge_days: not_applicable
+      item_not_received_wait_days: 7
+      liability_party: seller
+      guarantee_claim_window_days: 90
+      guarantee_claim_cap: 2500.0
+      guarantee_claims_per_order: 1
+      seller_claim_response_business_days: 3
+      guarantee_appeal_window_days: 30
+      invalid_tracking_auto_grant: true
+      signature_confirmation_threshold: 750.0
+      transit_damage_report_days: 2
+      seller_cancel_counts_as_defect: true
+
+events:
+  - type: order_place
+    target: order_orders
+    mutation: create
+    meaning: "A buyer places an order for one listing from one seller with a chosen delivery option."
+    grain: "one row per order"
+    fields:
+      order_id: "Order number."
+      customer_id: "The buyer."
+      seller_customer_id: "The seller's customer reference."
+      variant_name: "The delivery option chosen at checkout (official option name)."
+      order_placed_at: "Moment the order was placed."
+      order_date: "Date the order was placed."
+      item_title: "Listing title as shown at checkout."
+      sku: "Seller SKU of the item."
+      item_category: "Item category of the listing."
+      item_condition: "Condition the item was sold in."
+      quantity: "Units ordered."
+      unit_price: "Price per unit."
+      shipping_charge: "Shipping charged on the order."
+      tax_amount: "Sales tax collected."
+      order_total: "Units times price plus shipping plus tax."
+      is_gift: "Whether the buyer marked the order as a gift."
+      promised_delivery_date: "Latest delivery date promised at checkout."
+      payment_last4: "Last four digits of the card charged."
+    triggers:
+      - event: order:order_charge
+        when: {variant_name: "Large Item Freight Delivery"}
+        map: {order_id: order_id, customer_id: customer_id, charge_reason: order_capture}
+  - type: order_charge
+    target: order_events
+    meaning: "The buyer's payment for the order (or for an unreturned replacement) is captured."
+    grain: "one row per capture"
+    distinguish_by: [charge_reason, event_date]
+    fields:
+      order_id: "The order the capture belongs to."
+      customer_id: "The buyer."
+      event_date: "Date captured."
+      amount: "Amount captured, positive."
+      charge_reason: "order_capture for the order total; unreturned_replacement_item when a replaced item was never sent back."
+    account: order_paid
+    direction: in
+    triggers:
+      - event: payout:payout_sale_credit
+        when: {charge_reason: order_capture}
+        map: {order_id: order_id}
+      - event: selling:selling_final_value_fee
+        when: {charge_reason: order_capture}
+        map: {order_id: order_id}
+  - type: order_ship
+    target: order_orders
+    mutation: {transition: {from: placed, to: shipped}}
+    meaning: "The order leaves the seller or the Northloop fulfillment center with carrier tracking."
+    grain: "one row per transaction"
+    fields:
+      variant_name: "Delivery option of the order (read, unchanged)."
+      sku: "Seller SKU shipped (read, unchanged)."
+      shipped_date: "Date of the first carrier scan."
+      tracking_status: "Whether the uploaded tracking is valid."
+      signature_confirmed: "Whether signature confirmation was purchased for the shipment."
+    triggers:
+      - event: order:order_charge
+        when: {variant_name: {not: "Large Item Freight Delivery"}}
+        map: {charge_reason: order_capture}
+      - event: fulfill:fulfill_outbound_shipment
+        when: {variant_name: ["Fulfilled by Northloop Standard", "Fulfilled by Northloop Two-Day", "Fulfilled by Northloop Same-Day"]}
+        map: {order_id: order_id, sku: sku}
+  - type: order_cancel
+    target: order_orders
+    mutation: {transition: {from: placed, to: cancelled}}
+    meaning: "The order is cancelled before it ships, by the buyer, the seller or Northloop."
+    grain: "one row per transaction"
+    fields:
+      variant_name: "Delivery option of the order (read, unchanged)."
+      cancel_initiator: "Who cancelled."
+      closed_date: "Date of the cancellation."
+    triggers:
+      - event: order:order_refund
+        when: {variant_name: "Large Item Freight Delivery"}
+        map: {order_id: order_id}
+      - event: standing:standing_defect_record
+        when: {cancel_initiator: seller}
+        map: {order_id: order_id, defect_type: seller_cancellation}
+  - type: order_deliver
+    target: order_orders
+    mutation: {transition: {from: shipped, to: delivered}}
+    meaning: "The carrier confirms delivery."
+    grain: "one row per transaction"
+    fields:
+      delivered_date: "Date of the delivered scan."
+      delivery_promise_met: "Whether the delivered date is on or before the promised delivery date."
+    triggers: []
+  - type: order_mark_undeliverable
+    target: order_orders
+    mutation: {transition: {from: shipped, to: undeliverable}}
+    meaning: "The carrier reports the shipment lost, destroyed, refused or returned to sender."
+    grain: "one row per transaction"
+    fields:
+      delivery_exception: "The carrier's exception reason."
+    triggers: []
+  - type: order_close
+    target: order_orders
+    mutation: {transition: [{from: delivered, to: closed}, {from: undeliverable, to: closed}]}
+    meaning: "The order is closed once nothing further can be requested on it."
+    grain: "one row per transaction"
+    fields:
+      closed_date: "Date closed."
+    triggers: []
+  - type: order_return_request
+    target: order_events
+    meaning: "The buyer opens a return for some or all units of a delivered order and chooses a return method."
+    grain: "one row per return request (one return number)"
+    distinguish_by: [return_id]
+    fields:
+      order_id: "The order being returned."
+      customer_id: "The buyer."
+      return_id: "Return number issued for this request."
+      event_date: "Date the return was requested."
+      return_reason: "Reason selected by the buyer."
+      return_quantity: "Units being returned."
+      return_method: "How the item goes back (or returnless)."
+    triggers: []
+  - type: order_return_receipt
+    target: order_events
+    meaning: "A carrier milestone of a returned item: its first scan, or its receipt and inspection at the destination."
+    grain: "one row per return per scan milestone"
+    distinguish_by: [return_id, carrier_scan_type]
+    fields:
+      order_id: "The order the return belongs to."
+      customer_id: "The buyer."
+      return_id: "Return number the scan belongs to."
+      event_date: "Date of the scan."
+      carrier_scan_type: "first_scan or received_at_destination."
+      return_destination: "Where the return is addressed."
+      received_condition: "Inspection result at the destination (blank on a first scan)."
+    triggers:
+      - event: fulfill:fulfill_return_restock
+        when: {carrier_scan_type: received_at_destination, return_destination: northloop_returns_center, received_condition: [unopened, opened_resellable]}
+        map: {order_id: order_id}
+  - type: order_refund
+    target: order_events
+    meaning: "Money is returned to the buyer for one component of an order (item, original shipping, tax, or late-delivery shipping)."
+    grain: "one row per refunded component per return, claim or cancellation"
+    distinguish_by: [refund_component, return_id, claim_id, event_date]
+    fields:
+      order_id: "The order refunded."
+      customer_id: "The buyer."
+      event_date: "Date the refund was issued."
+      amount: "Amount refunded for this component after deductions, positive."
+      refund_component: "Which component is refunded."
+      return_id: "Return number the refund settles (blank for cancellations, claims, lost packages and late-delivery refunds)."
+      claim_id: "Northloop Guarantee claim the refund settles (blank otherwise)."
+      refund_quantity: "Units the item component covers."
+      funded_by: "Who bears the refund."
+      refund_destination: "Original payment method or gift card balance."
+      restocking_fee_amount: "Restocking fee withheld from this component."
+      return_shipping_fee_amount: "Return shipping fee withheld from this component."
+      late_return_deduction_amount: "Late-return deduction withheld from this component."
+    account: order_paid
+    direction: out
+    triggers:
+      - event: payout:payout_refund_debit
+        when: {funded_by: seller}
+        map: {order_id: order_id, order_refund_ref: order_event_id, amount: amount}
+      - event: selling:selling_fee_credit
+        when: {funded_by: seller, refund_component: item}
+        map: {order_id: order_id, credit_reason: order_refund}
+  - type: order_replacement
+    target: order_events
+    meaning: "A free replacement unit is shipped instead of a refund."
+    grain: "one row per replacement shipment"
+    distinguish_by: [replacement_order_id]
+    fields:
+      order_id: "The original order."
+      customer_id: "The buyer."
+      event_date: "Date the replacement was created."
+      return_id: "Return number of the original unit coming back (blank for a lost package)."
+      replacement_order_id: "Order number of the zero-priced replacement order."
+      replacement_reason: "Why the unit is replaced."
+    triggers:
+      - event: order:order_place
+        map: {order_id: replacement_order_id, customer_id: customer_id}
+  - type: order_claim_file
+    target: order_events
+    meaning: "The buyer files a Northloop Guarantee claim on an order."
+    grain: "one row per claim"
+    distinguish_by: [claim_id]
+    fields:
+      order_id: "The order claimed on."
+      customer_id: "The buyer."
+      claim_id: "Claim number."
+      event_date: "Date filed."
+      claim_reason: "Reason for the claim."
+      claim_amount: "Amount claimed."
+    triggers: []
+  - type: order_guarantee_decision
+    target: order_events
+    meaning: "Northloop decides a Northloop Guarantee claim, or decides the single appeal against that decision."
+    grain: "one row per claim per decision stage"
+    distinguish_by: [claim_id, claim_decision]
+    fields:
+      order_id: "The order claimed on."
+      customer_id: "The buyer."
+      claim_id: "Claim decided."
+      event_date: "Date decided."
+      claim_decision: "granted, denied, appeal_granted or appeal_denied."
+      amount: "Amount granted (0.00 when denied)."
+      funded_by: "Who bears a granted amount."
+    triggers:
+      - event: order:order_refund
+        when: {claim_decision: [granted, appeal_granted]}
+        map: {order_id: order_id, claim_id: claim_id, funded_by: funded_by, amount: amount}
+      - event: standing:standing_defect_record
+        when: {claim_decision: [granted, appeal_granted], funded_by: seller}
+        map: {order_id: order_id, defect_type: guarantee_claim}
+
+measures:
+  - id: order_msr_buyer_remorse_returns_365d
+    window: "Rolling 365 calendar days ending on the handling date (frozen time), inclusive of both ends, over every order of the buyer."
+    measure: "Count of order_return_request rows of the buyer whose event_date falls in the window and whose return_reason is not one of the seller-fault return reasons."
+  - id: order_msr_replacements_on_order
+    window: "Lifetime of the order."
+    measure: "Count of order_replacement rows carrying this order_id."
+  - id: order_msr_claims_on_order
+    window: "Lifetime of the order."
+    measure: "Count of order_claim_file rows carrying this order_id."
+
+policies:
+  - id: order_agg_multi_holding
+    subject: [order_place]
+    rule: >-
+      A buyer may hold any number of orders at the same time, in any delivery option and with any number of sellers.
+      Every order is its own record: its charges, returns, refunds, replacements and Northloop Guarantee claims are
+      computed on that order alone and are never pooled with another order. The only buyer-level figure that reads
+      across orders is the buyer's remorse-return history used by the return history policy.
+    eligibility: []
+    params: {max_per_customer: null}
+  - id: order_agg_return_history
+    subject: [order_refund, order_return_request]
+    rule: >-
+      The buyer's remorse-return history is the count of the buyer's return requests over the measure window whose
+      reason is not a seller-fault reason, across all of the buyer's orders. When the history count is at or above the
+      history threshold before the new request is counted, a first-scan refund is not available: the item refund
+      waits for the received-at-destination scan whatever the delivery option, and a returnless refund is not
+      available either. A history below the threshold changes nothing. Seller-fault returns never count toward the
+      history and are never delayed by it.
+    eligibility: []
+    params: {history_threshold_count: 12}
+    measures: [order_msr_buyer_remorse_returns_365d]
+    formula:
+      first_scan_blocked: "order_msr_buyer_remorse_returns_365d >= history_threshold_count"
+  - id: order_capture_and_shipping_charge
+    subject: [order_place, order_charge, order_ship]
+    rule: >-
+      The shipping charge on an order is fixed at checkout from the delivery option's parameter column. A buyer whose
+      Loop+ membership is in status trial, active, payment_hold or cancel_pending at the moment the order is placed
+      pays the member shipping charge; every other buyer pays the non-member charge, waived when the item subtotal (unit price times quantity)
+      is at or above the non-member free-shipping threshold. On Same-Day orders a member's shipping charge is waived
+      when the item subtotal is at or above the member Same-Day free subtotal. A membership that is pending,
+      lapsed or cancelled does not count. The buyer's payment is captured
+      once, for the order total, at the delivery option's capture point: at shipment for parcel options and at order
+      placement for freight. Sales tax is collected and remitted by Northloop and never forms part of the seller's
+      proceeds.
+    eligibility: []
+    formula:
+      order_total: "round(unit_price * quantity + shipping_charge + tax_amount, 2)"
+  - id: order_delivery_and_close
+    subject: [order_deliver, order_mark_undeliverable, order_close]
+    rule: >-
+      The promised delivery date is the order date plus the option's maximum handling business days plus its maximum
+      transit business days, counted on the option's business-day calendar. A delivered scan on or before the promised
+      delivery date sets delivery_promise_met to met, a later scan sets it to missed. A carrier exception moves a
+      shipped order to undeliverable with the carrier's exception reason. An order closes only when the later of the
+      return window end and the Northloop Guarantee claim window end has passed and the order has no return without a
+      settled refund and no claim without a final decision; an undeliverable order closes once it has been refunded or
+      replaced in full.
+    eligibility: []
+  - id: order_cancellation
+    subject: [order_cancel, order_refund]
+    rule: >-
+      An order can be cancelled only while it is still placed; once it has shipped the buyer's only route is a
+      return. A buyer cancellation is the buyer's own decision and is confirmed by the buyer. Because parcel options
+      capture payment at shipment, cancelling a placed parcel order books no refund; a freight order, captured at
+      placement, is refunded in full on cancellation (item, shipping and tax components), funded by the seller. A
+      cancellation initiated by the seller is recorded against the seller's performance standing when the option's
+      seller_cancel_counts_as_defect is true; cancellations by the buyer or by Northloop never are.
+    eligibility: []
+  - id: order_return_window
+    subject: [order_return_request]
+    rule: >-
+      A return may be requested only on a delivered order. Items in a non-returnable item category cannot be returned
+      for a refund. The return is requested no later than the return window after the order is delivered. The window
+      is the standard return window, or the renewed return window when the item was sold in renewed condition; the
+      count starts the calendar day after the delivered_date, each calendar day counts as one, and the request is in
+      time on the last day of the window. When the option's holiday extension applies and the delivered_date falls
+      inside the holiday calendar's delivered_from to delivered_to range, the deadline is the later of the normal
+      window end and the holiday return_by date of the following year. The returned quantity may not exceed the units
+      ordered less units already covered by earlier return requests on the order. The return method must be one of
+      the option's allowed return methods, or returnless when the returnless refund policy allows it.
+    eligibility:
+      - id: order_delivered
+        applies_to: [order_return_request]
+        kind: state
+        condition: "A return may be requested only on a delivered order."
+        evidence_fields: [order_orders.status, order_orders.order_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [order_orders.order_id]
+          action_bindings:
+            order_orders.order_id: order_id
+        state_contract:
+          field: order_orders.status
+          allowed: [delivered]
+      - id: category_returnable
+        applies_to: [order_return_request]
+        kind: state
+        condition: "Items in a non-returnable item category cannot be returned for a refund."
+        evidence_fields: [order_orders.item_category, order_orders.order_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [order_orders.order_id]
+          action_bindings:
+            order_orders.order_id: order_id
+        state_contract:
+          field: order_orders.item_category
+          allowed: [electronics, computers, apparel, shoes, home_kitchen, toys, beauty, large_appliances, furniture]
+      - id: within_return_window
+        applies_to: [order_return_request]
+        kind: time
+        condition: "The return is requested no later than the return window after the order is delivered."
+        evidence_fields: [order_orders.delivered_date, order_orders.item_condition, order_orders.order_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [order_orders.order_id]
+          action_bindings:
+            order_orders.order_id: order_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the order is delivered"
+          anchor_source: order_orders.delivered_date
+          relation: not_after
+          duration_source: variants.standard_return_window_days
+          unit: calendar_days
+          counting_rule: "the count starts the calendar day after the delivered_date, each calendar day counts as one, and the request is in time on the last day of the window"
+          boundary: inclusive
+  - id: order_return_deductions
+    subject: [order_refund]
+    rule: >-
+      Deductions apply only to the item component of a return refund and only when the return reason is not a
+      seller-fault reason. The return shipping fee is the option's remorse return shipping fee, withheld once per
+      return. The restocking fee is the restocking rate for the received condition times the item price of the
+      returned units: the opened rate for opened_resellable, the used-or-incomplete rate for used_or_incomplete and
+      damaged_by_buyer, and nothing for unopened. When the first carrier scan falls after the ship-by deadline (the
+      return request date plus the option's return ship-by days) but within the late grace days after it, the
+      late-return deduction rate times the item price of the returned units is also withheld; a first scan after the
+      grace period, or after the deadline where there is no grace, means the return is rejected and no item refund is
+      booked. A received condition of wrong_item_returned means no item refund is booked. Deductions never
+      exceed the item price of the returned units, and every amount is rounded with the option's refund rounding.
+    eligibility: []
+    formula:
+      when_not: "return_reason in seller_fault_return_reasons"
+      returned_item_price: "unit_price * refund_quantity"
+      restocking_fee_amount: "round(returned_item_price * (restocking_rate_opened if received_condition == 'opened_resellable' else (restocking_rate_used_or_incomplete if received_condition in ['used_or_incomplete', 'damaged_by_buyer'] else 0)), 2)"
+      return_shipping_fee_amount: "remorse_return_shipping_fee"
+  - id: order_refund_amount
+    subject: [order_refund]
+    rule: >-
+      A return refund is booked per component. The item component is the item price of the returned units less the
+      deductions of the return deductions policy. The original shipping component is refunded only when the return
+      reason is a seller-fault reason and all ordered units are being returned, or when an undeliverable order is
+      refunded for loss or destruction, or for a bad address or refusal when the option's
+      undeliverable_refund_includes_shipping is true. The tax component is the order's tax times the share that the
+      refunded item and shipping amounts (before deductions) bear to the order's item subtotal plus shipping. Total
+      refunds on an order never exceed its net_paid_amount. The refund goes back to the original payment method,
+      except that a return on an order marked as a gift is refunded to the option's gift return refund
+      destination (Northloop gift card balance). The funded_by party is the seller for every return refund and for cancellations; for loss,
+      fulfillment error and granted Northloop Guarantee claims it is the option's liability party.
+    eligibility:
+      - id: one_refund_per_component
+        applies_to: [order_refund]
+        kind: dedup
+        condition: "A return refund is booked per component."
+        evidence_fields: [order_events.return_id, order_events.refund_component, order_events.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [order_events.return_id, order_events.refund_component]
+          action_bindings:
+            order_events.return_id: return_id
+            order_events.refund_component: refund_component
+        dedup_contract:
+          table: order_events
+          mode: separate_record
+          object_bindings: {return_id: return_id, refund_component: refund_component}
+          duplicate_filters: {event_type: [order_refund]}
+          distinct_fields: []
+    formula:
+      item_refund: "round(unit_price * refund_quantity - restocking_fee_amount - return_shipping_fee_amount - late_return_deduction_amount, 2)"
+      tax_refund: "round(tax_amount * (unit_price * refund_quantity) / (unit_price * quantity + shipping_charge), 2)"
+  - id: order_refund_timing
+    subject: [order_refund, order_return_receipt]
+    rule: >-
+      The item refund of a return is released at the option's refund trigger. Where the trigger is the first carrier
+      scan, the refund is released at that scan only when the order total is at or below the first-scan maximum, the
+      buyer's profile is at least the first-scan minimum account age old on the scan date, and the return history
+      policy does not block it; otherwise it waits for the received-at-destination scan. Where the trigger is seller
+      receipt, the refund is released at the received-at-destination scan after inspection. In every case the refund
+      is due no later than the option's refund deadline in business days after the received-at-destination scan; when
+      a seller has not refunded by then, Northloop issues the refund on the seller's behalf, still funded by the
+      seller. A seller-fault return whose item unit price is at or below the option's returnless maximum may be
+      requested as returnless and is refunded on the request date without any scan. Original shipping and tax
+      components are released together with the item component.
+    eligibility: []
+  - id: order_replacement_terms
+    subject: [order_replacement, order_charge]
+    rule: >-
+      A replacement is available only on delivery options that offer replacements. A replacement may be shipped
+      instead of an item refund when the return reason is damaged_in_transit, defective or wrong_item and the request
+      is made within the replacement request window counted in calendar days from the delivered_date, or when the
+      shipment is undeliverable for loss or destruction. A replacement and an item refund are mutually exclusive for
+      the same units: once one is booked, the other is not. No more than the option's replacement maximum may be
+      shipped per order. Except for a lost package, the original unit must receive its first carrier scan within the
+      option's unreturned replacement days after the replacement ships; otherwise the buyer is charged the item price
+      of the replaced units as an unreturned_replacement_item capture.
+    eligibility:
+      - id: replacement_state
+        applies_to: [order_replacement]
+        kind: state
+        condition: "A replacement is available only on delivery options that offer replacements."
+        evidence_fields: [order_orders.status, order_orders.variant_name, order_orders.order_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [order_orders.order_id]
+          action_bindings:
+            order_orders.order_id: order_id
+        state_contract:
+          field: order_orders.variant_name
+          allowed: ["Fulfilled by Northloop Standard", "Fulfilled by Northloop Two-Day", "Fulfilled by Northloop Same-Day"]
+    params:
+      per_tier:
+        "Seller Fulfilled Standard Shipping": {replacement_cap: "=replacement_max_per_order"}
+        "Seller Fulfilled Expedited Shipping": {replacement_cap: "=replacement_max_per_order"}
+        "Fulfilled by Northloop Standard": {replacement_cap: "=replacement_max_per_order"}
+        "Fulfilled by Northloop Two-Day": {replacement_cap: "=replacement_max_per_order"}
+        "Fulfilled by Northloop Same-Day": {replacement_cap: "=replacement_max_per_order"}
+        "Large Item Freight Delivery": {replacement_cap: "=replacement_max_per_order"}
+    measures: [order_msr_replacements_on_order]
+  - id: order_lost_and_undeliverable
+    subject: [order_mark_undeliverable, order_refund]
+    rule: >-
+      A shipment still not delivered on the item-not-received wait days after the promised delivery date may be
+      reported lost and is moved to undeliverable with exception lost_in_transit. A lost or destroyed shipment is
+      refunded in full (item, original shipping and tax), or replaced where the replacement policy allows, funded by
+      the option's liability party. A shipment returned to sender for a bad address or refused by the buyer is
+      refunded for the item and tax once the seller or the returns center records it as received; the original
+      shipping is refunded only when the option's undeliverable_refund_includes_shipping is true, and a refusal of a
+      non-defective item is treated as a remorse return for deductions.
+    eligibility: []
+  - id: order_late_delivery
+    subject: [order_refund]
+    rule: >-
+      On a delivery option with guaranteed delivery, an order whose delivery_promise_met is missed earns a refund of
+      the shipping charge actually paid on the order, booked as the late_delivery_shipping component and funded by the
+      option's liability party. The request must be made within the late refund request window counted in calendar
+      days from the delivered_date. An order whose shipping charge was zero earns nothing under this policy, and
+      options without guaranteed delivery never earn it.
+    eligibility:
+      - id: late_request_window
+        applies_to: [order_refund]
+        kind: time
+        condition: "The request must be made within the late refund request window counted in calendar days from the delivered_date."
+        evidence_fields: [order_orders.delivered_date, order_orders.order_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [order_orders.order_id]
+          action_bindings:
+            order_orders.order_id: order_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the delivered_date"
+          anchor_source: order_orders.delivered_date
+          relation: not_after
+          duration_source: variants.late_refund_request_window_days
+          unit: calendar_days
+          counting_rule: "counted in calendar days from the delivered_date"
+          boundary: inclusive
+  - id: order_guarantee_claim
+    subject: [order_claim_file, order_guarantee_decision, order_refund]
+    rule: >-
+      A Northloop Guarantee claim is filed no later than the claim window counted in calendar days from the order's
+      promised delivery date, and no more than the option's claims-per-order limit may be filed on one order. An
+      item_not_received claim may be filed only once the item-not-received wait days after the promised delivery date
+      have passed without a delivered scan. A not_as_described, damaged_item or return_not_refunded claim requires a
+      return request on the order; return_not_refunded additionally requires that the refund deadline after the
+      received-at-destination scan has passed without an item refund. Where the seller is the liability party the
+      seller has the response business days to refund before the claim is decided. An item_not_received claim on a
+      seller-shipped order with invalid tracking is granted against the seller when invalid_tracking_auto_grant is
+      true; one with a valid delivered scan is denied unless the order total is at or above the signature threshold
+      and no signature was confirmed. The granted amount is the order's net_paid_amount at decision time, capped at
+      the claim cap, and is funded by the option's liability party. A granted claim and a return refund cannot both
+      pay the same units. Either party may appeal once within the appeal window after the decision.
+    eligibility:
+      - id: claim_window
+        applies_to: [order_claim_file]
+        kind: time
+        condition: "A Northloop Guarantee claim is filed no later than the claim window counted in calendar days from the order's promised delivery date"
+        evidence_fields: [order_orders.promised_delivery_date, order_orders.order_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [order_orders.order_id]
+          action_bindings:
+            order_orders.order_id: order_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the order's promised delivery date"
+          anchor_source: order_orders.promised_delivery_date
+          relation: not_after
+          duration_source: variants.guarantee_claim_window_days
+          unit: calendar_days
+          counting_rule: "counted in calendar days from the order's promised delivery date"
+          boundary: inclusive
+    measures: [order_msr_claims_on_order]
+    formula:
+      granted_amount: "min(net_paid_amount, guarantee_claim_cap)"
+
+# ============================================================================
+# extended_policies (order_returns_refunds_guarantee)
+# ============================================================================
+extended_policies:
+  - id: order_ext_late_delivery_compensation
+    base_policy_refs: [order_agg_return_history, order_cancellation, order_return_deductions, order_refund_amount, order_refund_timing, order_lost_and_undeliverable, order_late_delivery, order_guarantee_claim]
+    overwrite:
+      - base_policy: order_late_delivery
+        superseded_clause: >-
+          On a delivery option with guaranteed delivery, an order whose delivery_promise_met is missed earns a refund of
+          the shipping charge actually paid on the order, booked as the late_delivery_shipping component and funded by the
+          option's liability party.
+        replaced_by: >-
+          On a Northloop-fulfilled delivery option with guaranteed delivery, an order delivered after its promised
+          delivery date is owed late-delivery compensation, booked as one late-delivery shipping refund funded by Northloop
+          and sent to the original payment method.
+      - base_policy: order_late_delivery
+        superseded_clause: >-
+          The request must be made within the late refund request window counted in calendar days from the delivered_date.
+        replaced_by: >-
+          Northloop books the late-delivery compensation itself, without waiting for a request from the buyer, on any
+          handling date no later than the late refund request window counted in calendar days from the delivered date;
+          after that window it is not booked.
+    trigger: state_due
+    subject: [order_refund]
+    computes: amount
+    target_tool: book_late_delivery_compensation_7d003665
+    params:
+      severe_late_days: 5
+      moderate_late_days: 3
+      per_day_late_allowance: 1.0
+      flat_late_allowance: 3.0
+      long_overrun_days: 2
+      short_overrun_days: 1
+      long_overrun_allowance: 4.0
+      short_overrun_allowance: 2.0
+      former_member_window_days: 90
+      former_member_allowance: 2.5
+      repeat_window_months: 12
+      frequent_late_count: 3
+      occasional_late_count: 1
+      frequent_late_allowance: 4.0
+      occasional_late_allowance: 2.0
+      high_value_floor: 400.0
+      mid_value_floor: 200.0
+      high_value_allowance: 6.0
+      mid_value_allowance: 3.0
+      transit_damage_allowance: 4.0
+      seller_fault_allowance: 2.0
+    rule: >-
+      On a Northloop-fulfilled delivery option with guaranteed delivery, an order delivered after its promised
+      delivery date is owed late-delivery compensation, booked as one late-delivery shipping refund funded by Northloop
+      and sent to the original payment method.
+      Northloop books the late-delivery compensation itself, without waiting for a request from the buyer, on any
+      handling date no later than the late refund request window counted in calendar days from the delivered date;
+      after that window it is not booked.
+      On a seller-fulfilled delivery option with guaranteed delivery, an order delivered after its promised delivery
+      date earns a refund of the shipping charge actually paid on the order, funded by the seller, with none of the
+      allowances below; that seller-funded refund is not late-delivery compensation.
+      The late-delivery compensation is the shipping charge recorded on the order, booked in full as one late-delivery
+      shipping refund and rounded half up to the cent; an order delivered on or before its promised delivery date, or
+      whose shipping charge was zero, is owed nothing.
+      Six allowances of the late-delivery compensation are then added to that shipping charge, each decided on its own
+      and each added in full, and the sum is rounded half up to the cent once, at the end; none of them is owed on an
+      order that is owed nothing.
+      The lateness allowance of the late-delivery compensation counts the days late as the calendar days from the
+      promised delivery date to the delivered date: a delivery at least the severe-lateness threshold of days late
+      earns the per-day late allowance once for every day late; a delivery at least the moderate-lateness threshold of
+      days late but fewer than the severe-lateness threshold earns one flat late allowance; any other delivery earns no
+      lateness allowance.
+      The fulfillment-delay allowance of the late-delivery compensation measures the handling overrun as the calendar
+      days from the order date to the shipped date, less the option's maximum handling business days: an overrun of at
+      least the long-overrun days earns the long-overrun allowance; an overrun of at least the short-overrun days but
+      fewer than the long-overrun days earns the short-overrun allowance; any other shipment earns no fulfillment-delay
+      allowance.
+      The lapsed-membership allowance of the late-delivery compensation looks at the buyer's Loop+ membership: a
+      membership in lapsed status whose end date fell no more than that plan's reactivation window days before the
+      order date earns that plan's late-delivery credit amount, since the buyer paid non-member shipping only because
+      of the lapse; a membership in cancelled status whose end date fell no more than the former-member window days
+      before the order date earns the former-member allowance; any other buyer earns no lapsed-membership allowance.
+      The repeat-lateness allowance of the late-delivery compensation counts the late-delivery credits recorded as
+      earned on the buyer's Loop+ membership, each credit counting when the whole calendar months from its earning date
+      to the handling date are fewer than the repeat-lateness window of months: at least the frequent-lateness count of
+      such credits earns the frequent repeat-lateness allowance; at least the occasional-lateness count but fewer than
+      the frequent-lateness count earns the occasional repeat-lateness allowance; fewer earn no repeat-lateness
+      allowance.
+      The order-value allowance of the late-delivery compensation sums the order-total captures on the order
+      (replacement charges are not order-total captures): captures of at least the high-value floor earn the high-value
+      allowance; captures of at least the mid-value floor but below the high-value floor earn the mid-value allowance;
+      lower captures earn no order-value allowance.
+      The damaged-arrival allowance of the late-delivery compensation looks at the return requests on the order: an
+      order carrying a return request whose reason is damage in transit earns the transit-damage allowance; an order
+      carrying no such request but a return request for another seller-fault reason (defective, wrong item, not as
+      described, missing parts) earns the seller-fault allowance; any other order earns no damaged-arrival allowance.
+    prerequisite: []
+    cross_category:
+      - category: member
+        as: history
+        reads: [status, end_date, variant_name, member_events.event_type, member_events.credit_type, member_events.event_date]
+        note: >-
+          The lapsed-membership allowance reads the buyer's Loop+ membership status, end date and plan parameters, and
+          the repeat-lateness allowance counts late-delivery credits on the Loop+ membership ledger.
+    compute:
+      - shipping_paid: "F('shipping_charge')"
+      - days_late: "DAYS(F('promised_delivery_date'), F('delivered_date'))"
+      - lateness_allowance: "K('per_day_late_allowance') * days_late if days_late >= K('severe_late_days') else (K('flat_late_allowance') if days_late >= K('moderate_late_days') else 0.0)"
+      - handling_overrun: "DAYS(F('order_date'), F('shipped_date')) - P('max_handling_business_days')"
+      - fulfillment_delay_allowance: "K('long_overrun_allowance') if handling_overrun >= K('long_overrun_days') else (K('short_overrun_allowance') if handling_overrun >= K('short_overrun_days') else 0.0)"
+      - member_status: "CFIELD('member', 'status')"
+      - lapsed_membership_allowance: "CPARAM('member', 'late_delivery_credit_amount') if (member_status == 'lapsed' and 0 <= DAYS(CFIELD('member', 'end_date'), F('order_date')) <= CPARAM('member', 'reactivation_window_days')) else (K('former_member_allowance') if (member_status == 'cancelled' and 0 <= DAYS(CFIELD('member', 'end_date'), F('order_date')) <= K('former_member_window_days')) else 0.0)"
+      - late_credits_counted: "XCOUNT('member', 'member_events', within_months=K('repeat_window_months'), event_type='member_credit_earn', credit_type='late_delivery')"
+      - repeat_lateness_allowance: "K('frequent_late_allowance') if late_credits_counted >= K('frequent_late_count') else (K('occasional_late_allowance') if late_credits_counted >= K('occasional_late_count') else 0.0)"
+      - order_captures: "SUM('order_events', 'amount', event_type='order_charge', charge_reason='order_capture')"
+      - order_value_allowance: "K('high_value_allowance') if order_captures >= K('high_value_floor') else (K('mid_value_allowance') if order_captures >= K('mid_value_floor') else 0.0)"
+      - transit_damage_requests: "COUNT('order_events', event_type='order_return_request', return_reason='damaged_in_transit')"
+      - other_fault_requests: "COUNT('order_events', event_type='order_return_request', return_reason='defective') + COUNT('order_events', event_type='order_return_request', return_reason='wrong_item') + COUNT('order_events', event_type='order_return_request', return_reason='not_as_described') + COUNT('order_events', event_type='order_return_request', return_reason='missing_parts')"
+      - damaged_arrival_allowance: "K('transit_damage_allowance') if transit_damage_requests > 0 else (K('seller_fault_allowance') if other_fault_requests > 0 else 0.0)"
+      - result: "0.0 if (shipping_paid <= 0 or days_late <= 0) else RND(shipping_paid + lateness_allowance + fulfillment_delay_allowance + lapsed_membership_allowance + repeat_lateness_allowance + order_value_allowance + damaged_arrival_allowance, 2)"
+    compute_basis:
+      shipping_paid: "The late-delivery compensation is the shipping charge recorded on the order, booked in full as one late-delivery shipping refund and rounded half up to the cent"
+      days_late: "The lateness allowance of the late-delivery compensation counts the days late as the calendar days from the promised delivery date to the delivered date"
+      lateness_allowance: "a delivery at least the severe-lateness threshold of days late earns the per-day late allowance once for every day late; a delivery at least the moderate-lateness threshold of days late but fewer than the severe-lateness threshold earns one flat late allowance; any other delivery earns no lateness allowance."
+      handling_overrun: "The fulfillment-delay allowance of the late-delivery compensation measures the handling overrun as the calendar days from the order date to the shipped date, less the option's maximum handling business days"
+      fulfillment_delay_allowance: "an overrun of at least the long-overrun days earns the long-overrun allowance; an overrun of at least the short-overrun days but fewer than the long-overrun days earns the short-overrun allowance; any other shipment earns no fulfillment-delay allowance."
+      member_status: "The lapsed-membership allowance of the late-delivery compensation looks at the buyer's Loop+ membership"
+      lapsed_membership_allowance: "a membership in lapsed status whose end date fell no more than that plan's reactivation window days before the order date earns that plan's late-delivery credit amount, since the buyer paid non-member shipping only because of the lapse; a membership in cancelled status whose end date fell no more than the former-member window days before the order date earns the former-member allowance; any other buyer earns no lapsed-membership allowance."
+      late_credits_counted: "The repeat-lateness allowance of the late-delivery compensation counts the late-delivery credits recorded as earned on the buyer's Loop+ membership, each credit counting when the whole calendar months from its earning date to the handling date are fewer than the repeat-lateness window of months"
+      repeat_lateness_allowance: "at least the frequent-lateness count of such credits earns the frequent repeat-lateness allowance; at least the occasional-lateness count but fewer than the frequent-lateness count earns the occasional repeat-lateness allowance; fewer earn no repeat-lateness allowance."
+      order_captures: "The order-value allowance of the late-delivery compensation sums the order-total captures on the order (replacement charges are not order-total captures)"
+      order_value_allowance: "captures of at least the high-value floor earn the high-value allowance; captures of at least the mid-value floor but below the high-value floor earn the mid-value allowance; lower captures earn no order-value allowance."
+      transit_damage_requests: "an order carrying a return request whose reason is damage in transit earns the transit-damage allowance"
+      other_fault_requests: "an order carrying no such request but a return request for another seller-fault reason (defective, wrong item, not as described, missing parts) earns the seller-fault allowance"
+      damaged_arrival_allowance: "an order carrying a return request whose reason is damage in transit earns the transit-damage allowance; an order carrying no such request but a return request for another seller-fault reason (defective, wrong item, not as described, missing parts) earns the seller-fault allowance; any other order earns no damaged-arrival allowance."
+      result: "Six allowances of the late-delivery compensation are then added to that shipping charge, each decided on its own and each added in full, and the sum is rounded half up to the cent once, at the end; none of them is owed on an order that is owed nothing."
+    factors:
+      - id: lateness_allowance
+        effect: method
+        decides: lateness_allowance
+        bindings: [days_late, lateness_allowance]
+        ladder:
+          - when: "the delivered date is at least the severe-lateness threshold of calendar days after the promised delivery date"
+            method: "the per-day late allowance is paid once for every calendar day late"
+          - when: "the delivered date is at least the moderate-lateness threshold but fewer than the severe-lateness threshold of calendar days after the promised delivery date"
+            method: "one flat late allowance is paid, whatever the number of days late"
+          - when: "otherwise"
+            method: "no lateness allowance is computed"
+        baseline:
+          lateness_allowance: "0.0"
+        evidence: [date]
+        cross_difficulty: null
+      - id: fulfillment_delay_allowance
+        effect: parameter
+        decides: fulfillment_delay_allowance
+        bindings: [handling_overrun, fulfillment_delay_allowance]
+        ladder:
+          - when: "the calendar days from the order date to the shipped date, less the option's maximum handling business days, are at least the long-overrun days"
+            value: "K('long_overrun_allowance')"
+          - when: "that overrun is at least the short-overrun days but fewer than the long-overrun days"
+            value: "K('short_overrun_allowance')"
+          - when: "otherwise"
+            value: "0.00"
+        baseline:
+          fulfillment_delay_allowance: "0.0"
+        evidence: [date, tier_param]
+        cross_difficulty: null
+      - id: lapsed_membership_allowance
+        effect: parameter
+        decides: lapsed_membership_allowance
+        bindings: [member_status, lapsed_membership_allowance]
+        ladder:
+          - when: "the buyer's Loop+ membership is in lapsed status and its end date fell no more than that plan's reactivation window days before the order date"
+            value: "CPARAM('member', 'late_delivery_credit_amount')"
+          - when: "the buyer's Loop+ membership is in cancelled status and its end date fell no more than the former-member window days before the order date"
+            value: "K('former_member_allowance')"
+          - when: "otherwise"
+            value: "0.00"
+        baseline:
+          lapsed_membership_allowance: "0.0"
+        evidence: [cross_category, date]
+        cross_difficulty: member
+      - id: repeat_lateness_allowance
+        effect: parameter
+        decides: repeat_lateness_allowance
+        bindings: [late_credits_counted, repeat_lateness_allowance]
+        ladder:
+          - when: "the buyer's Loop+ membership records at least the frequent-lateness count of late-delivery credits earned inside the repeat-lateness window of months"
+            value: "K('frequent_late_allowance')"
+          - when: "it records at least the occasional-lateness count but fewer than the frequent-lateness count of such credits"
+            value: "K('occasional_late_allowance')"
+          - when: "otherwise"
+            value: "0.00"
+        baseline:
+          repeat_lateness_allowance: "0.0"
+        evidence: [cross_category, history]
+        cross_difficulty: member
+      - id: order_value_allowance
+        effect: parameter
+        decides: order_value_allowance
+        bindings: [order_captures, order_value_allowance]
+        ladder:
+          - when: "the order-total captures on the order sum to at least the high-value floor"
+            value: "K('high_value_allowance')"
+          - when: "they sum to at least the mid-value floor but below the high-value floor"
+            value: "K('mid_value_allowance')"
+          - when: "otherwise"
+            value: "0.00"
+        baseline:
+          order_value_allowance: "0.0"
+        evidence: [history]
+        cross_difficulty: null
+      - id: damaged_arrival_allowance
+        effect: parameter
+        decides: damaged_arrival_allowance
+        bindings: [transit_damage_requests, other_fault_requests, damaged_arrival_allowance]
+        ladder:
+          - when: "the order carries a return request whose reason is damage in transit"
+            value: "K('transit_damage_allowance')"
+          - when: "the order carries no such request but a return request for another seller-fault reason"
+            value: "K('seller_fault_allowance')"
+          - when: "otherwise"
+            value: "0.00"
+        baseline:
+          damaged_arrival_allowance: "0.0"
+        evidence: [history]
+        cross_difficulty: null
+    baseline:
+      rule: >-
+        The late-delivery compensation is the shipping charge recorded on the order, booked in full as one late-delivery
+        shipping refund and rounded half up to the cent; an order delivered on or before its promised delivery date, or
+        whose shipping charge was zero, is owed nothing.
+      params: []
+    inputs:
+      history:
+        - {table: order_events, aggregate: sum, field: amount, filters: {event_type: order_charge, charge_reason: order_capture}}
+        - {table: order_events, aggregate: count, field: order_event_id, filters: {event_type: order_return_request}}
+        - {category: member, table: member_events, aggregate: count, field: member_event_id, within_months: 12, filters: {event_type: member_credit_earn, credit_type: late_delivery}}
+      cross_category: [member]
+  - id: order_ext_guarantee_claim_amount
+    base_policy_refs: [order_guarantee_claim, order_refund_amount]
+    overwrite: []
+    trigger: on_request
+    subject: [order_claim_file]
+    computes: claim_amount
+    target_tool: file_guarantee_claim_a9e31314
+    params: {}
+    rule: >-
+      A buyer whose Northloop-fulfilled order arrived damaged, defective or not as described, or never arrived, files
+      the Northloop Guarantee claim on that order themselves, and the amount claimed is worked out for them before they
+      file it.
+      The amount claimed is fixed only after the order's records carry the late-delivery shipping refund owed for a
+      missed guaranteed delivery.
+      The amount claimed is what the buyer has paid for the units being returned and not had back: the item price of
+      the units on the order's return requests, plus the order's shipping charge, plus the order's full sales tax,
+      less every refund already issued on the order, rounded half up to the cent and never below zero.
+      Four rules of the amount claimed refine that figure, each applied exactly as stated.
+      The claimed units of the amount claimed are chosen from the order's return requests: where the order carries
+      both return requests for a seller-fault reason (damage in transit, defective, wrong item, not as described,
+      missing parts) and return requests for a buyer's-remorse reason (no longer needed, better price found, ordered
+      by mistake), the claim covers only the units on the seller-fault requests; where the order carries no return
+      request at all, as on an order that never arrived, the claim covers every unit ordered; otherwise the claim
+      covers the units on every return request of the order.
+      The item part of the amount claimed is the unit price times the claimed units.
+      The shipping share of the amount claimed follows the shipping refunds already issued on the order (the
+      late-delivery shipping and original shipping refunds together): where they reach the order's shipping charge,
+      the amount claimed carries no shipping; where they do not and the claimed units are fewer than the units
+      ordered, it carries the shipping charge times the claimed units over the units ordered; otherwise it carries
+      the whole shipping charge.
+      The shipping part of the amount claimed is the shipping charge times that share, rounded half up to the cent.
+      The tax basis of the amount claimed is chosen as follows: where the claimed units are fewer than the units
+      ordered, the tax part is the order's sales tax times the item part plus the shipping part, over the order's
+      item subtotal (unit price times units ordered) plus its shipping charge; where every unit ordered is claimed and
+      a tax refund already stands on the order, the tax part is the order's sales tax less the tax already refunded;
+      otherwise the tax part is the order's full sales tax; the tax part is rounded half up to the cent.
+      The refund offset of the amount claimed is chosen as follows: where every unit ordered is claimed and item
+      refunds already stand on the order, only those item refunds are deducted (tax refunds are netted in the tax
+      part); where fewer units are claimed than were ordered, or the only refunds on the order are late-delivery
+      shipping refunds, nothing is deducted, since those refunds concern other units or answer the late delivery and
+      not the units claimed; otherwise every refund issued on the order is deducted.
+      The amount claimed is the item part plus the shipping part plus the tax part, less the refund offset, rounded
+      half up to the cent and never below zero.
+    prerequisite:
+      - problem: order_ext_late_delivery_compensation
+        kind: value_input
+        gate: shipping_refunds_issued
+        form: state
+        policy_source: >-
+          The amount claimed is fixed only after the order's records carry the late-delivery shipping refund owed for a
+          missed guaranteed delivery.
+        condition: >-
+          An order delivered after its promised delivery date on a Northloop-fulfilled guaranteed option, with a shipping
+          charge above zero and inside the late refund request window, carries a refund entry of the late-delivery
+          shipping component.
+        resolved_by: book_late_delivery_compensation_7d003665
+        effect: >-
+          The late-delivery shipping refund booked on the order raises the shipping refunds issued to at least the
+          shipping charge, so the shipping share of the amount claimed falls to zero; the refund offset treats that
+          refund as compensation for the late delivery, never as a refund of the units claimed.
+    cross_category: []
+    compute:
+      - fault_units: "SUM('order_events', 'return_quantity', event_type='order_return_request', return_reason='damaged_in_transit') + SUM('order_events', 'return_quantity', event_type='order_return_request', return_reason='defective') + SUM('order_events', 'return_quantity', event_type='order_return_request', return_reason='wrong_item') + SUM('order_events', 'return_quantity', event_type='order_return_request', return_reason='not_as_described') + SUM('order_events', 'return_quantity', event_type='order_return_request', return_reason='missing_parts')"
+      - remorse_units: "SUM('order_events', 'return_quantity', event_type='order_return_request', return_reason='no_longer_needed') + SUM('order_events', 'return_quantity', event_type='order_return_request', return_reason='better_price_found') + SUM('order_events', 'return_quantity', event_type='order_return_request', return_reason='ordered_by_mistake')"
+      - claimed_units: "fault_units if (fault_units > 0 and remorse_units > 0) else (F('quantity') if (fault_units + remorse_units) == 0 else fault_units + remorse_units)"
+      - item_part: "RND(F('unit_price') * claimed_units, 2)"
+      - shipping_refunds_issued: "SUM('order_events', 'amount', event_type='order_refund', refund_component='late_delivery_shipping') + SUM('order_events', 'amount', event_type='order_refund', refund_component='original_shipping')"
+      - shipping_share: "0.0 if shipping_refunds_issued >= F('shipping_charge') else (claimed_units / F('quantity') if claimed_units < F('quantity') else 1.0)"
+      - shipping_part: "RND(F('shipping_charge') * shipping_share, 2)"
+      - tax_refunded: "SUM('order_events', 'amount', event_type='order_refund', refund_component='tax')"
+      - tax_part: "RND(F('tax_amount') * (item_part + shipping_part) / (F('unit_price') * F('quantity') + F('shipping_charge')), 2) if claimed_units < F('quantity') else (RND(F('tax_amount') - tax_refunded, 2) if tax_refunded > 0 else F('tax_amount'))"
+      - item_refunded: "SUM('order_events', 'amount', event_type='order_refund', refund_component='item')"
+      - late_refunded: "SUM('order_events', 'amount', event_type='order_refund', refund_component='late_delivery_shipping')"
+      - all_refunded: "SUM('order_events', 'amount', event_type='order_refund')"
+      - refund_offset: "item_refunded if (claimed_units >= F('quantity') and item_refunded > 0) else (0.0 if (claimed_units < F('quantity') or (late_refunded > 0 and late_refunded >= all_refunded)) else all_refunded)"
+      - result: "MX(0.0, RND(item_part + shipping_part + tax_part - refund_offset, 2))"
+    compute_basis:
+      fault_units: "where the order carries both return requests for a seller-fault reason (damage in transit, defective, wrong item, not as described, missing parts) and return requests for a buyer's-remorse reason (no longer needed, better price found, ordered by mistake), the claim covers only the units on the seller-fault requests"
+      remorse_units: "otherwise the claim covers the units on every return request of the order."
+      claimed_units: "where the order carries both return requests for a seller-fault reason (damage in transit, defective, wrong item, not as described, missing parts) and return requests for a buyer's-remorse reason (no longer needed, better price found, ordered by mistake), the claim covers only the units on the seller-fault requests; where the order carries no return request at all, as on an order that never arrived, the claim covers every unit ordered; otherwise the claim covers the units on every return request of the order."
+      item_part: "The item part of the amount claimed is the unit price times the claimed units."
+      shipping_refunds_issued: "The shipping share of the amount claimed follows the shipping refunds already issued on the order (the late-delivery shipping and original shipping refunds together)"
+      shipping_share: "where they reach the order's shipping charge, the amount claimed carries no shipping; where they do not and the claimed units are fewer than the units ordered, it carries the shipping charge times the claimed units over the units ordered; otherwise it carries the whole shipping charge."
+      shipping_part: "The shipping part of the amount claimed is the shipping charge times that share, rounded half up to the cent."
+      tax_refunded: "where every unit ordered is claimed and a tax refund already stands on the order, the tax part is the order's sales tax less the tax already refunded"
+      tax_part: "where the claimed units are fewer than the units ordered, the tax part is the order's sales tax times the item part plus the shipping part, over the order's item subtotal (unit price times units ordered) plus its shipping charge; where every unit ordered is claimed and a tax refund already stands on the order, the tax part is the order's sales tax less the tax already refunded; otherwise the tax part is the order's full sales tax; the tax part is rounded half up to the cent."
+      item_refunded: "where every unit ordered is claimed and item refunds already stand on the order, only those item refunds are deducted (tax refunds are netted in the tax part)"
+      late_refunded: "where fewer units are claimed than were ordered, or the only refunds on the order are late-delivery shipping refunds, nothing is deducted, since those refunds concern other units or answer the late delivery and not the units claimed"
+      all_refunded: "otherwise every refund issued on the order is deducted."
+      refund_offset: "where every unit ordered is claimed and item refunds already stand on the order, only those item refunds are deducted (tax refunds are netted in the tax part); where fewer units are claimed than were ordered, or the only refunds on the order are late-delivery shipping refunds, nothing is deducted, since those refunds concern other units or answer the late delivery and not the units claimed; otherwise every refund issued on the order is deducted."
+      result: "The amount claimed is the item part plus the shipping part plus the tax part, less the refund offset, rounded half up to the cent and never below zero."
+    factors:
+      - id: claimed_units
+        effect: method
+        decides: claimed_units
+        bindings: [fault_units, remorse_units, claimed_units]
+        ladder:
+          - when: "the order carries both seller-fault and buyer's-remorse return requests"
+            method: "the units are counted from the seller-fault return requests only, leaving out the units on the buyer's-remorse requests"
+          - when: "the order carries no return request at all"
+            method: "every unit ordered is counted"
+          - when: "otherwise"
+            method: "the units on every return request of the order are counted"
+        baseline:
+          claimed_units: "fault_units + remorse_units"
+        evidence: [history]
+        cross_difficulty: null
+      - id: shipping_share
+        effect: parameter
+        decides: shipping_share
+        bindings: [shipping_refunds_issued, shipping_share]
+        ladder:
+          - when: "the late-delivery shipping and original shipping refunds already issued on the order reach the order's shipping charge"
+            value: "0.0 (no shipping)"
+          - when: "those refunds fall short of the shipping charge and the claimed units are fewer than the units ordered"
+            value: "the claimed units over the units ordered"
+          - when: "otherwise"
+            value: "1.0 (the whole shipping charge)"
+        baseline:
+          shipping_share: "1.0"
+        evidence: [history]
+        cross_difficulty: null
+      - id: tax_basis
+        effect: method
+        decides: tax_part
+        bindings: [tax_refunded, tax_part]
+        ladder:
+          - when: "the claimed units are fewer than the units ordered"
+            method: "the order's sales tax is prorated by the item part plus the shipping part over the item subtotal plus the shipping charge"
+          - when: "every unit ordered is claimed and a tax refund already stands on the order"
+            method: "the order's sales tax less the tax already refunded"
+          - when: "otherwise"
+            method: "the order's full sales tax"
+        baseline:
+          tax_part: "F('tax_amount')"
+        evidence: [history]
+        cross_difficulty: null
+      - id: refund_offset
+        effect: parameter
+        decides: refund_offset
+        bindings: [item_refunded, late_refunded, all_refunded, refund_offset]
+        ladder:
+          - when: "every unit ordered is claimed and item refunds already stand on the order"
+            value: "the item refunds on the order"
+          - when: "fewer units are claimed than were ordered, or the only refunds on the order are late-delivery shipping refunds"
+            value: "0.00"
+          - when: "otherwise"
+            value: "every refund issued on the order"
+        baseline:
+          refund_offset: "all_refunded"
+        evidence: [history]
+        cross_difficulty: null
+    baseline:
+      rule: >-
+        The amount claimed is what the buyer has paid for the units being returned and not had back: the item price of
+        the units on the order's return requests, plus the order's shipping charge, plus the order's full sales tax,
+        less every refund already issued on the order, rounded half up to the cent and never below zero.
+      params: []
+    inputs:
+      history:
+        - {table: order_events, aggregate: sum, field: return_quantity, filters: {event_type: order_return_request}}
+        - {table: order_events, aggregate: sum, field: amount, filters: {event_type: order_refund}}
+      cross_category: []
+  - id: order_ext_guarantee_grant
+    base_policy_refs: [order_guarantee_claim]
+    overwrite:
+      - base_policy: order_guarantee_claim
+        superseded_clause: >-
+          The granted amount is the order's net_paid_amount at decision time, capped at the claim cap, and is funded by
+          the option's liability party.
+        replaced_by: >-
+          The guarantee grant is the amount claimed plus the goodwill credits paid, never more than the order's net paid
+          amount at decision time nor the option's claim cap, rounded half up to the cent and funded by Northloop.
+    trigger: on_request
+    subject: [order_guarantee_decision]
+    computes: amount
+    target_tool: decide_guarantee_claim_becc0a68
+    params:
+      multi_unit_damage_count: 2
+      single_unit_damage_count: 1
+      per_unit_damage_credit: 5.0
+      single_unit_damage_credit: 6.0
+      long_wait_days: 7
+      short_wait_days: 3
+      long_wait_credit: 5.0
+      short_wait_credit: 2.5
+      winback_window_days: 60
+      lapsed_winback_credit: 12.5
+      cancelled_winback_credit: 5.0
+      tenure_window_months: 36
+      long_tenure_count: 24
+      short_tenure_count: 12
+      long_tenure_credit: 6.0
+      short_tenure_credit: 3.0
+      usage_window_months: 12
+      heavy_usage_count: 20
+      regular_usage_count: 10
+      heavy_usage_credit: 5.0
+      regular_usage_credit: 2.5
+      large_claim_floor: 250.0
+      mid_claim_floor: 100.0
+      large_claim_cap_share: 0.15
+      mid_claim_cap_share: 0.25
+    rule: >-
+      On a Northloop-fulfilled order Northloop is the liability party and decides a Northloop Guarantee claim on the
+      spot, with no seller response period, and the guarantee grant is booked on the claim as Northloop's decision.
+      The guarantee grant is not fixed until a Northloop Guarantee claim with its claimed amount stands recorded on the
+      order.
+      The guarantee grant is the amount claimed plus the goodwill credits paid, never more than the order's net paid
+      amount at decision time nor the option's claim cap, rounded half up to the cent and funded by Northloop.
+      With no goodwill credit earned, the guarantee grant is the amount claimed, capped at the order's net paid amount
+      at decision time and at the option's claim cap, rounded half up to the cent.
+      The goodwill credits of the guarantee grant are the carrier-damage credit, the pickup-wait credit, the Loop+
+      win-back credit, the Loop+ tenure credit and the Loop+ usage credit, each decided on its own, added together, and
+      then limited by the goodwill cap.
+      The carrier-damage credit of the guarantee grant counts the units on the order's return requests whose reason is
+      damage in transit: at least the multi-unit damage count of such units earns the per-unit damage credit for every
+      such unit; at least the single-unit damage count but fewer than the multi-unit damage count earns one flat
+      single-unit damage credit; fewer earn no carrier-damage credit.
+      The pickup-wait credit of the guarantee grant applies while no carrier scan stands on any return of the order:
+      where the latest return request on the order was opened at least the long-wait days before the decision date,
+      it is the long-wait credit; where it was opened at least the short-wait days but fewer than the long-wait days
+      before the decision date, it is the short-wait credit; where a carrier scan stands, or no return request was
+      opened that long ago, there is no pickup-wait credit.
+      The Loop+ win-back credit of the guarantee grant looks at the buyer's Loop+ membership on the decision date: a
+      membership in lapsed status whose end date fell no more than the win-back window days before the decision date
+      earns the lapsed win-back credit; a membership in cancelled status whose end date fell within the same window
+      earns the cancelled win-back credit; any other buyer earns no win-back credit.
+      The Loop+ tenure credit of the guarantee grant counts the membership fee charges on the buyer's Loop+ ledger,
+      each charge counting when the whole calendar months from its charge date to the decision date are fewer than the
+      tenure window of months: at least the long-tenure count of charges earns the long-tenure credit; at least the
+      short-tenure count but fewer than the long-tenure count earns the short-tenure credit; fewer earn no tenure
+      credit.
+      The Loop+ usage credit of the guarantee grant counts the benefit uses on the buyer's Loop+ ledger, each use
+      counting when the whole calendar months from its date to the decision date are fewer than the usage window of
+      months: at least the heavy-usage count of uses earns the heavy-usage credit; at least the regular-usage count but
+      fewer than the heavy-usage count earns the regular-usage credit; fewer earn no usage credit.
+      The goodwill cap of the guarantee grant is a share of the amount claimed, worked out to the cent with half-up
+      rounding before it is compared: where the amount claimed is at least the large-claim floor, the goodwill credits
+      paid never exceed the large-claim cap share of it; where it is at least the mid-claim floor but below the
+      large-claim floor, they never exceed the mid-claim cap share of it; otherwise they never exceed the whole amount
+      claimed.
+      The goodwill credits paid are the lower of the credits added together and that cap; the cap applies to the credits
+      only, before they are added to the amount claimed, and the net paid and claim-cap limits apply afterwards to the
+      whole grant.
+    prerequisite:
+      - problem: order_ext_guarantee_claim_amount
+        kind: value_input
+        gate: amount_claimed
+        form: state
+        policy_source: >-
+          The guarantee grant is not fixed until a Northloop Guarantee claim with its claimed amount stands recorded on
+          the order.
+        condition: >-
+          The order carries a Northloop Guarantee claim filing entry with its claimed amount recorded.
+        resolved_by: file_guarantee_claim_a9e31314
+        effect: >-
+          The claim filing records the amount claimed, which is the base of the guarantee grant and the base of the
+          goodwill cap; with no claim recorded there is no amount claimed to grant.
+    cross_category:
+      - category: member
+        as: history
+        reads: [status, end_date, member_events.event_type, member_events.event_date]
+        note: >-
+          The Loop+ win-back credit reads the membership status and end date; the tenure and usage credits count fee
+          charges and benefit uses on the Loop+ membership ledger.
+    compute:
+      - amount_claimed: "LATEST('order_events', 'claim_amount', event_type='order_claim_file')"
+      - net_paid_now: "F('net_paid_amount')"
+      - transit_units: "SUM('order_events', 'return_quantity', event_type='order_return_request', return_reason='damaged_in_transit')"
+      - carrier_damage_credit: "K('per_unit_damage_credit') * transit_units if transit_units >= K('multi_unit_damage_count') else (K('single_unit_damage_credit') if transit_units >= K('single_unit_damage_count') else 0.0)"
+      - return_scans: "COUNT('order_events', event_type='order_return_receipt')"
+      - latest_return_request: "LATEST('order_events', 'event_date', event_type='order_return_request')"
+      - pickup_wait_credit: "K('long_wait_credit') if (return_scans == 0 and latest_return_request != None and DAYS(latest_return_request, NOW) >= K('long_wait_days')) else (K('short_wait_credit') if (return_scans == 0 and latest_return_request != None and DAYS(latest_return_request, NOW) >= K('short_wait_days')) else 0.0)"
+      - member_status_now: "CFIELD('member', 'status')"
+      - winback_credit: "K('lapsed_winback_credit') if (member_status_now == 'lapsed' and 0 <= DAYS(CFIELD('member', 'end_date'), NOW) <= K('winback_window_days')) else (K('cancelled_winback_credit') if (member_status_now == 'cancelled' and 0 <= DAYS(CFIELD('member', 'end_date'), NOW) <= K('winback_window_days')) else 0.0)"
+      - fee_charges_counted: "XCOUNT('member', 'member_events', within_months=K('tenure_window_months'), event_type='member_fee_charge')"
+      - tenure_credit: "K('long_tenure_credit') if fee_charges_counted >= K('long_tenure_count') else (K('short_tenure_credit') if fee_charges_counted >= K('short_tenure_count') else 0.0)"
+      - benefit_uses_counted: "XCOUNT('member', 'member_events', within_months=K('usage_window_months'), event_type='member_benefit_use')"
+      - usage_credit: "K('heavy_usage_credit') if benefit_uses_counted >= K('heavy_usage_count') else (K('regular_usage_credit') if benefit_uses_counted >= K('regular_usage_count') else 0.0)"
+      - credits_added: "carrier_damage_credit + pickup_wait_credit + winback_credit + tenure_credit + usage_credit"
+      - goodwill_cap_share: "K('large_claim_cap_share') if amount_claimed >= K('large_claim_floor') else (K('mid_claim_cap_share') if amount_claimed >= K('mid_claim_floor') else 1.0)"
+      - credits_paid: "MN(credits_added, RND(amount_claimed * goodwill_cap_share, 2))"
+      - result: "RND(MN(amount_claimed + credits_paid, net_paid_now, P('guarantee_claim_cap')), 2)"
+    compute_basis:
+      amount_claimed: "The guarantee grant is the amount claimed plus the goodwill credits paid"
+      net_paid_now: "never more than the order's net paid amount at decision time nor the option's claim cap"
+      transit_units: "The carrier-damage credit of the guarantee grant counts the units on the order's return requests whose reason is damage in transit"
+      carrier_damage_credit: "at least the multi-unit damage count of such units earns the per-unit damage credit for every such unit; at least the single-unit damage count but fewer than the multi-unit damage count earns one flat single-unit damage credit; fewer earn no carrier-damage credit."
+      return_scans: "The pickup-wait credit of the guarantee grant applies while no carrier scan stands on any return of the order"
+      latest_return_request: "where the latest return request on the order was opened at least the long-wait days before the decision date"
+      pickup_wait_credit: "where the latest return request on the order was opened at least the long-wait days before the decision date, it is the long-wait credit; where it was opened at least the short-wait days but fewer than the long-wait days before the decision date, it is the short-wait credit; where a carrier scan stands, or no return request was opened that long ago, there is no pickup-wait credit."
+      member_status_now: "The Loop+ win-back credit of the guarantee grant looks at the buyer's Loop+ membership on the decision date"
+      winback_credit: "a membership in lapsed status whose end date fell no more than the win-back window days before the decision date earns the lapsed win-back credit; a membership in cancelled status whose end date fell within the same window earns the cancelled win-back credit; any other buyer earns no win-back credit."
+      fee_charges_counted: "The Loop+ tenure credit of the guarantee grant counts the membership fee charges on the buyer's Loop+ ledger, each charge counting when the whole calendar months from its charge date to the decision date are fewer than the tenure window of months"
+      tenure_credit: "at least the long-tenure count of charges earns the long-tenure credit; at least the short-tenure count but fewer than the long-tenure count earns the short-tenure credit; fewer earn no tenure credit."
+      benefit_uses_counted: "The Loop+ usage credit of the guarantee grant counts the benefit uses on the buyer's Loop+ ledger, each use counting when the whole calendar months from its date to the decision date are fewer than the usage window of months"
+      usage_credit: "at least the heavy-usage count of uses earns the heavy-usage credit; at least the regular-usage count but fewer than the heavy-usage count earns the regular-usage credit; fewer earn no usage credit."
+      credits_added: "The goodwill credits of the guarantee grant are the carrier-damage credit, the pickup-wait credit, the Loop+ win-back credit, the Loop+ tenure credit and the Loop+ usage credit, each decided on its own, added together, and then limited by the goodwill cap."
+      goodwill_cap_share: "where the amount claimed is at least the large-claim floor, the goodwill credits paid never exceed the large-claim cap share of it; where it is at least the mid-claim floor but below the large-claim floor, they never exceed the mid-claim cap share of it; otherwise they never exceed the whole amount claimed."
+      credits_paid: "The goodwill credits paid are the lower of the credits added together and that cap; the cap applies to the credits only, before they are added to the amount claimed, and the net paid and claim-cap limits apply afterwards to the whole grant."
+      result: "The guarantee grant is the amount claimed plus the goodwill credits paid, never more than the order's net paid amount at decision time nor the option's claim cap, rounded half up to the cent and funded by Northloop."
+    factors:
+      - id: carrier_damage_credit
+        effect: method
+        decides: carrier_damage_credit
+        bindings: [transit_units, carrier_damage_credit]
+        ladder:
+          - when: "the order's return requests for damage in transit cover at least the multi-unit damage count of units"
+            method: "the per-unit damage credit is multiplied by the number of such units"
+          - when: "they cover at least the single-unit damage count but fewer than the multi-unit damage count of units"
+            method: "one flat single-unit damage credit is paid"
+          - when: "otherwise"
+            method: "no carrier-damage credit is computed"
+        baseline:
+          carrier_damage_credit: "0.0"
+        evidence: [history]
+        cross_difficulty: null
+      - id: pickup_wait_credit
+        effect: parameter
+        decides: pickup_wait_credit
+        bindings: [return_scans, latest_return_request, pickup_wait_credit]
+        ladder:
+          - when: "no carrier scan stands on any return of the order and the latest return request was opened at least the long-wait days before the decision date"
+            value: "K('long_wait_credit')"
+          - when: "no carrier scan stands and the latest return request was opened at least the short-wait days but fewer than the long-wait days before the decision date"
+            value: "K('short_wait_credit')"
+          - when: "otherwise"
+            value: "0.00"
+        baseline:
+          pickup_wait_credit: "0.0"
+        evidence: [history, date]
+        cross_difficulty: null
+      - id: winback_credit
+        effect: parameter
+        decides: winback_credit
+        bindings: [member_status_now, winback_credit]
+        ladder:
+          - when: "the buyer's Loop+ membership is in lapsed status and ended no more than the win-back window days before the decision date"
+            value: "K('lapsed_winback_credit')"
+          - when: "the buyer's Loop+ membership is in cancelled status and ended no more than the win-back window days before the decision date"
+            value: "K('cancelled_winback_credit')"
+          - when: "otherwise"
+            value: "0.00"
+        baseline:
+          winback_credit: "0.0"
+        evidence: [cross_category, date]
+        cross_difficulty: member
+      - id: tenure_credit
+        effect: parameter
+        decides: tenure_credit
+        bindings: [fee_charges_counted, tenure_credit]
+        ladder:
+          - when: "the buyer's Loop+ ledger holds at least the long-tenure count of membership fee charges inside the tenure window of months"
+            value: "K('long_tenure_credit')"
+          - when: "it holds at least the short-tenure count but fewer than the long-tenure count of such charges"
+            value: "K('short_tenure_credit')"
+          - when: "otherwise"
+            value: "0.00"
+        baseline:
+          tenure_credit: "0.0"
+        evidence: [cross_category, history]
+        cross_difficulty: member
+      - id: usage_credit
+        effect: parameter
+        decides: usage_credit
+        bindings: [benefit_uses_counted, usage_credit]
+        ladder:
+          - when: "the buyer's Loop+ ledger holds at least the heavy-usage count of benefit uses inside the usage window of months"
+            value: "K('heavy_usage_credit')"
+          - when: "it holds at least the regular-usage count but fewer than the heavy-usage count of such uses"
+            value: "K('regular_usage_credit')"
+          - when: "otherwise"
+            value: "0.00"
+        baseline:
+          usage_credit: "0.0"
+        evidence: [cross_category, history]
+        cross_difficulty: member
+      - id: goodwill_cap
+        effect: parameter
+        decides: goodwill_cap_share
+        bindings: [amount_claimed, goodwill_cap_share]
+        ladder:
+          - when: "the amount claimed is at least the large-claim floor"
+            value: "K('large_claim_cap_share')"
+          - when: "the amount claimed is at least the mid-claim floor but below the large-claim floor"
+            value: "K('mid_claim_cap_share')"
+          - when: "otherwise"
+            value: "1.0 (the whole amount claimed)"
+        baseline:
+          goodwill_cap_share: "1.0"
+        evidence: [history]
+        cross_difficulty: null
+    baseline:
+      rule: >-
+        With no goodwill credit earned, the guarantee grant is the amount claimed, capped at the order's net paid amount
+        at decision time and at the option's claim cap, rounded half up to the cent.
+      params: [guarantee_claim_cap]
+    inputs:
+      history:
+        - {table: order_events, aggregate: latest, field: claim_amount, filters: {event_type: order_claim_file}}
+        - {table: order_events, aggregate: sum, field: return_quantity, filters: {event_type: order_return_request, return_reason: damaged_in_transit}}
+        - {table: order_events, aggregate: count, field: order_event_id, filters: {event_type: order_return_receipt}}
+        - {category: member, table: member_events, aggregate: count, field: member_event_id, within_months: 36, filters: {event_type: member_fee_charge}}
+        - {category: member, table: member_events, aggregate: count, field: member_event_id, within_months: 12, filters: {event_type: member_benefit_use}}
+      cross_category: [member]
+  - id: order_ext_replacement_charge
+    base_policy_refs: [order_capture_and_shipping_charge, order_replacement_terms]
+    overwrite:
+      - base_policy: order_replacement_terms
+        superseded_clause: >-
+          Except for a lost package, the original unit must receive its first carrier scan within the option's
+          unreturned replacement days after the replacement ships; otherwise the buyer is charged the item price of the
+          replaced units as an unreturned_replacement_item capture.
+        replaced_by: >-
+          Except for a lost package, when the original unit has no first carrier scan by the unreturned-replacement
+          deadline, the replacement charge falls due and the buyer settles it as a payment on the order, captured as an
+          unreturned-replacement charge tied to the return the replacement was shipped against.
+    trigger: state_due
+    subject: [order_charge]
+    computes: amount
+    target_tool: pay_replacement_charge_b3f7fc80
+    params:
+      defective_share: 0.8
+      transit_damage_share: 0.7
+      annual_courtesy_rate: 0.1
+      monthly_courtesy_rate: 0.05
+      long_tenure_months: 48
+      mid_tenure_months: 24
+      long_tenure_rate: 0.05
+      mid_tenure_rate: 0.025
+      long_overdue_days: 14
+      short_overdue_days: 7
+      per_day_settlement_fee: 0.5
+      short_overdue_fee: 3.5
+    rule: >-
+      The unreturned-replacement deadline is the replacement date, the date recorded on the replacement entry, which is
+      the day the replacement ships, plus the option's unreturned replacement days counted in calendar days; a first
+      carrier scan of the original unit on the deadline itself is in time.
+      Except for a lost package, when the original unit has no first carrier scan by the unreturned-replacement
+      deadline, the replacement charge falls due and the buyer settles it as a payment on the order, captured as an
+      unreturned-replacement charge tied to the return the replacement was shipped against.
+      The replacement charge is the item price of the replaced units, that is the unit price times the units on the
+      order's return requests whose reason allows a replacement (defective, damaged in transit, wrong item), plus the
+      sales tax on that item price, which is the order's sales tax times that item price over the order's item
+      subtotal plus shipping charge, each part rounded half up to the cent; an order with no replacement shipped owes
+      no replacement charge.
+      Five rules of the replacement charge then apply (the condition share, the plan courtesy, the tenure courtesy, the
+      overdue-day count and the settlement fee), in this order of operations: the condition share sets the charged
+      item amount; the sales tax and the Loop+ courtesy are both worked out on that charged item amount; the courtesy
+      is deducted, the tax and the settlement fee are added, and the total is rounded half up to the cent and never
+      falls below zero.
+      The condition share of the replacement charge follows the reason the replacement was shipped for: a
+      replacement for a defective unit charges the defective-unit share of the item price, since the kept original
+      does not work; a replacement for a unit damaged in transit charges the transit-damage share; a replacement for
+      any other reason charges the whole item price.
+      The charged item amount of the replacement charge is the item price of the replaced units times that share,
+      rounded half up to the cent, and the sales tax of the replacement charge is worked out on the charged item amount
+      in place of the item price.
+      The plan courtesy of the replacement charge looks at the buyer's Loop+ membership: a membership in good
+      standing (trial, active, payment hold or cancel pending) on an annual plan (Loop+ Annual, Loop+ Household
+      Annual, Loop+ Student Annual) earns the annual courtesy rate; a membership in good standing on a monthly plan
+      (Loop+ Access Monthly, Loop+ Student Monthly, Loop+ Monthly) earns the monthly courtesy rate; any other buyer
+      earns no plan courtesy.
+      The tenure courtesy of the replacement charge counts the whole calendar months from the Loop+ membership's start
+      date to the settlement date, for a membership in good standing only: at least the long-tenure months earn the
+      long-tenure rate; at least the mid-tenure months but fewer than the long-tenure months earn the mid-tenure rate;
+      fewer months, or no membership in good standing, earn no tenure courtesy.
+      The Loop+ courtesy of the replacement charge is the plan courtesy rate plus the tenure courtesy rate, applied
+      once to the charged item amount and rounded half up to the cent.
+      The overdue-day count of the replacement charge runs from the unreturned-replacement deadline and ends as
+      follows: where a first carrier scan of the original unit stands after the deadline, the count ends on that scan
+      date, since the unit is then on its way back; where the return was set up as a carrier pickup and no carrier scan
+      stands, no overdue day is counted, since collecting the unit is Northloop's carrier's task; otherwise the count
+      ends on the settlement date.
+      The settlement fee of the replacement charge follows the overdue-day count: at least the long-overdue days pay
+      the per-day settlement fee once for every overdue day; at least the short-overdue days but fewer than the
+      long-overdue days pay one flat short-overdue fee; fewer overdue days pay no settlement fee.
+    prerequisite: []
+    cross_category:
+      - category: member
+        as: branch
+        reads: [status, variant_name, start_date]
+        note: >-
+          The plan courtesy reads the Loop+ membership status and plan; the tenure courtesy reads its start date.
+    compute:
+      - replacements_shipped: "COUNT('order_events', event_type='order_replacement')"
+      - replaced_units: "(SUM('order_events', 'return_quantity', event_type='order_return_request', return_reason='defective') + SUM('order_events', 'return_quantity', event_type='order_return_request', return_reason='damaged_in_transit') + SUM('order_events', 'return_quantity', event_type='order_return_request', return_reason='wrong_item')) if replacements_shipped > 0 else 0"
+      - replacement_reason_shipped: "LATEST('order_events', 'replacement_reason', event_type='order_replacement')"
+      - condition_share: "K('defective_share') if replacement_reason_shipped == 'defective' else (K('transit_damage_share') if replacement_reason_shipped == 'damaged_in_transit' else 1.0)"
+      - charged_items: "RND(F('unit_price') * replaced_units * condition_share, 2)"
+      - replacement_tax: "RND(F('tax_amount') * charged_items / (F('unit_price') * F('quantity') + F('shipping_charge')), 2)"
+      - member_status_held: "CFIELD('member', 'status')"
+      - member_plan_held: "CFIELD('member', 'variant_name')"
+      - good_standing_member: "(member_status_held == 'trial' or member_status_held == 'active' or member_status_held == 'payment_hold' or member_status_held == 'cancel_pending')"
+      - plan_courtesy_rate: "K('annual_courtesy_rate') if (good_standing_member and (member_plan_held == 'Loop+ Annual' or member_plan_held == 'Loop+ Household Annual' or member_plan_held == 'Loop+ Student Annual')) else (K('monthly_courtesy_rate') if (good_standing_member and (member_plan_held == 'Loop+ Access Monthly' or member_plan_held == 'Loop+ Student Monthly' or member_plan_held == 'Loop+ Monthly')) else 0.0)"
+      - membership_months: "MONTHS(CFIELD('member', 'start_date'), NOW) if good_standing_member else 0"
+      - tenure_courtesy_rate: "K('long_tenure_rate') if membership_months >= K('long_tenure_months') else (K('mid_tenure_rate') if membership_months >= K('mid_tenure_months') else 0.0)"
+      - loop_courtesy: "RND(charged_items * (plan_courtesy_rate + tenure_courtesy_rate), 2)"
+      - replacement_date_recorded: "LATEST('order_events', 'event_date', event_type='order_replacement')"
+      - original_first_scan: "LATEST('order_events', 'event_date', event_type='order_return_receipt', carrier_scan_type='first_scan')"
+      - original_return_method: "LATEST('order_events', 'return_method', event_type='order_return_request')"
+      - overdue_days: "0 if replacements_shipped == 0 else (DAYS(replacement_date_recorded, original_first_scan) - P('unreturned_replacement_charge_days') if original_first_scan != None else (0 if original_return_method == 'carrier_pickup' else DAYS(replacement_date_recorded, NOW) - P('unreturned_replacement_charge_days')))"
+      - settlement_fee: "K('per_day_settlement_fee') * overdue_days if overdue_days >= K('long_overdue_days') else (K('short_overdue_fee') if overdue_days >= K('short_overdue_days') else 0.0)"
+      - result: "MX(0.0, RND(charged_items - loop_courtesy + replacement_tax + settlement_fee, 2))"
+    compute_basis:
+      replacements_shipped: "an order with no replacement shipped owes no replacement charge."
+      replaced_units: "The replacement charge is the item price of the replaced units, that is the unit price times the units on the order's return requests whose reason allows a replacement (defective, damaged in transit, wrong item)"
+      replacement_reason_shipped: "The condition share of the replacement charge follows the reason the replacement was shipped for"
+      condition_share: "a replacement for a defective unit charges the defective-unit share of the item price, since the kept original does not work; a replacement for a unit damaged in transit charges the transit-damage share; a replacement for any other reason charges the whole item price."
+      charged_items: "The charged item amount of the replacement charge is the item price of the replaced units times that share, rounded half up to the cent"
+      replacement_tax: "plus the sales tax on that item price, which is the order's sales tax times that item price over the order's item subtotal plus shipping charge, each part rounded half up to the cent"
+      member_status_held: "a membership in good standing (trial, active, payment hold or cancel pending)"
+      member_plan_held: "on an annual plan (Loop+ Annual, Loop+ Household Annual, Loop+ Student Annual) earns the annual courtesy rate"
+      good_standing_member: "a membership in good standing (trial, active, payment hold or cancel pending)"
+      plan_courtesy_rate: "a membership in good standing (trial, active, payment hold or cancel pending) on an annual plan (Loop+ Annual, Loop+ Household Annual, Loop+ Student Annual) earns the annual courtesy rate; a membership in good standing on a monthly plan (Loop+ Access Monthly, Loop+ Student Monthly, Loop+ Monthly) earns the monthly courtesy rate; any other buyer earns no plan courtesy."
+      membership_months: "The tenure courtesy of the replacement charge counts the whole calendar months from the Loop+ membership's start date to the settlement date, for a membership in good standing only"
+      tenure_courtesy_rate: "at least the long-tenure months earn the long-tenure rate; at least the mid-tenure months but fewer than the long-tenure months earn the mid-tenure rate; fewer months, or no membership in good standing, earn no tenure courtesy."
+      loop_courtesy: "The Loop+ courtesy of the replacement charge is the plan courtesy rate plus the tenure courtesy rate, applied once to the charged item amount and rounded half up to the cent."
+      replacement_date_recorded: "The unreturned-replacement deadline is the replacement date, the date recorded on the replacement entry, which is the day the replacement ships, plus the option's unreturned replacement days counted in calendar days"
+      original_first_scan: "where a first carrier scan of the original unit stands after the deadline, the count ends on that scan date, since the unit is then on its way back"
+      original_return_method: "where the return was set up as a carrier pickup and no carrier scan stands, no overdue day is counted"
+      overdue_days: "The overdue-day count of the replacement charge runs from the unreturned-replacement deadline and ends as follows: where a first carrier scan of the original unit stands after the deadline, the count ends on that scan date, since the unit is then on its way back; where the return was set up as a carrier pickup and no carrier scan stands, no overdue day is counted, since collecting the unit is Northloop's carrier's task; otherwise the count ends on the settlement date."
+      settlement_fee: "The settlement fee of the replacement charge follows the overdue-day count: at least the long-overdue days pay the per-day settlement fee once for every overdue day; at least the short-overdue days but fewer than the long-overdue days pay one flat short-overdue fee; fewer overdue days pay no settlement fee."
+      result: "the courtesy is deducted, the tax and the settlement fee are added, and the total is rounded half up to the cent and never falls below zero."
+    factors:
+      - id: condition_share
+        effect: parameter
+        decides: condition_share
+        bindings: [replacement_reason_shipped, condition_share]
+        ladder:
+          - when: "the replacement was shipped for a defective unit"
+            value: "K('defective_share')"
+          - when: "the replacement was shipped for a unit damaged in transit"
+            value: "K('transit_damage_share')"
+          - when: "otherwise"
+            value: "1.0 (the whole item price)"
+        baseline:
+          condition_share: "1.0"
+        evidence: [history]
+        cross_difficulty: null
+      - id: overdue_day_count
+        effect: method
+        decides: overdue_days
+        bindings: [original_first_scan, original_return_method, overdue_days]
+        ladder:
+          - when: "a first carrier scan of the original unit stands after the unreturned-replacement deadline"
+            method: "the overdue days are counted from the deadline to the first scan date"
+          - when: "the return was set up as a carrier pickup and no carrier scan stands"
+            method: "no overdue day is counted"
+          - when: "otherwise"
+            method: "the overdue days are counted from the deadline to the settlement date"
+        baseline:
+          overdue_days: "DAYS(replacement_date_recorded, NOW) - P('unreturned_replacement_charge_days') if replacements_shipped > 0 else 0"
+        evidence: [history, date, tier_param]
+        cross_difficulty: null
+      - id: settlement_fee
+        effect: method
+        decides: settlement_fee
+        bindings: [replacement_date_recorded, settlement_fee]
+        ladder:
+          - when: "the overdue-day count is at least the long-overdue days"
+            method: "the per-day settlement fee is multiplied by the number of overdue days"
+          - when: "it is at least the short-overdue days but fewer than the long-overdue days"
+            method: "one flat short-overdue fee is charged, whatever the number of days"
+          - when: "otherwise"
+            method: "no settlement fee is computed"
+        baseline:
+          settlement_fee: "0.0"
+        evidence: [history, date, tier_param]
+        cross_difficulty: null
+      - id: plan_courtesy
+        effect: parameter
+        decides: plan_courtesy_rate
+        bindings: [member_plan_held, plan_courtesy_rate]
+        ladder:
+          - when: "the buyer's Loop+ membership is in good standing and on an annual plan"
+            value: "K('annual_courtesy_rate')"
+          - when: "the buyer's Loop+ membership is in good standing and on a monthly plan"
+            value: "K('monthly_courtesy_rate')"
+          - when: "otherwise"
+            value: "0.0"
+        baseline:
+          plan_courtesy_rate: "0.0"
+        evidence: [cross_category]
+        cross_difficulty: member
+      - id: tenure_courtesy
+        effect: parameter
+        decides: tenure_courtesy_rate
+        bindings: [membership_months, tenure_courtesy_rate]
+        ladder:
+          - when: "a Loop+ membership in good standing started at least the long-tenure months before the settlement date"
+            value: "K('long_tenure_rate')"
+          - when: "it started at least the mid-tenure months but fewer than the long-tenure months before"
+            value: "K('mid_tenure_rate')"
+          - when: "otherwise"
+            value: "0.0"
+        baseline:
+          tenure_courtesy_rate: "0.0"
+        evidence: [cross_category, date]
+        cross_difficulty: member
+    baseline:
+      rule: >-
+        The replacement charge is the item price of the replaced units, that is the unit price times the units on the
+        order's return requests whose reason allows a replacement (defective, damaged in transit, wrong item), plus the
+        sales tax on that item price, which is the order's sales tax times that item price over the order's item
+        subtotal plus shipping charge, each part rounded half up to the cent; an order with no replacement shipped owes
+        no replacement charge.
+      params: []
+    inputs:
+      history:
+        - {table: order_events, aggregate: count, field: order_event_id, filters: {event_type: order_replacement}}
+        - {table: order_events, aggregate: sum, field: return_quantity, filters: {event_type: order_return_request}}
+        - {table: order_events, aggregate: latest, field: event_date, filters: {event_type: order_replacement}}
+        - {table: order_events, aggregate: latest, field: event_date, filters: {event_type: order_return_receipt, carrier_scan_type: first_scan}}
+      cross_category: [member]
+  - id: order_ext_replacement_charge_refund
+    base_policy_refs: [order_agg_return_history, order_cancellation, order_return_deductions, order_refund_amount, order_refund_timing, order_lost_and_undeliverable, order_late_delivery, order_guarantee_claim, order_replacement_terms]
+    overwrite:
+      - base_policy: order_refund_amount
+        superseded_clause: >-
+          The funded_by party is the seller for every return refund and for cancellations; for loss, fulfillment error
+          and granted Northloop Guarantee claims it is the option's liability party.
+        replaced_by: >-
+          The replacement-charge refund is funded by Northloop, which collected the charge, and goes to the original
+          payment method as an item refund tied to the return of the original unit; return refunds of the item price,
+          cancellations, losses, fulfillment errors and granted claims keep their funding party unchanged.
+      - base_policy: order_replacement_terms
+        superseded_clause: >-
+          A replacement and an item refund are mutually exclusive for the same units: once one is booked, the other is
+          not.
+        replaced_by: >-
+          A replacement and an item refund of the units' purchase price stay mutually exclusive for the same units; the
+          replacement-charge refund pays back part of a charge collected for keeping those units and is the one item
+          refund that may follow a replacement on them.
+      - base_policy: order_return_deductions
+        superseded_clause: >-
+          Deductions apply only to the item component of a return refund and only when the return reason is not a
+          seller-fault reason.
+        replaced_by: >-
+          The replacement-charge refund withholds its own late-return, condition and late-label deductions whatever the
+          reason of the return the replacement was shipped against; return refunds of the item price keep deductions
+          only for reasons that are not seller-fault reasons.
+    trigger: on_request
+    subject: [order_refund]
+    computes: amount
+    target_tool: refund_replacement_charge_bf6a8eb8
+    params:
+      per_day_late_rate: 0.02
+      late_courtesy_days: 5
+      label_validity_days: 3
+      buyer_damage_rate: 0.5
+      incomplete_rate: 0.25
+      annual_relief_factor: 0.5
+      monthly_relief_factor: 0.75
+      long_overdue_days: 14
+      short_overdue_days: 7
+      per_day_settlement_fee: 0.5
+      short_overdue_fee: 3.5
+      late_dropoff_label_fee: 5.99
+      late_pickup_fee: 9.99
+      long_delay_days: 5
+      short_delay_days: 2
+      long_delay_courtesy: 5.0
+      short_delay_courtesy: 2.0
+    rule: >-
+      When the original unit of a replacement comes back after its unreturned-replacement deadline (the replacement
+      date recorded on the replacement entry plus the option's unreturned replacement days, in calendar days), the
+      replacement charge collected on the order is refunded in part, as one replacement-charge refund booked by
+      Northloop.
+      The replacement-charge refund is funded by Northloop, which collected the charge, and goes to the original
+      payment method as an item refund tied to the return of the original unit; return refunds of the item price,
+      cancellations, losses, fulfillment errors and granted claims keep their funding party unchanged.
+      A replacement and an item refund of the units' purchase price stay mutually exclusive for the same units; the
+      replacement-charge refund pays back part of a charge collected for keeping those units and is the one item
+      refund that may follow a replacement on them.
+      The replacement-charge refund withholds its own late-return, condition and late-label deductions whatever the
+      reason of the return the replacement was shipped against; return refunds of the item price keep deductions only
+      for reasons that are not seller-fault reasons.
+      The refund of a replacement charge is booked only after that charge stands captured on the order.
+      The replacement-charge refund is the whole replacement charge captured on the order, rounded half up to the
+      cent.
+      Six rules of the replacement-charge refund then apply, in this order of operations: the settlement fee kept is
+      taken off the captured charge, giving the refundable charge; the late-return rate times the Loop+ relief factor,
+      plus the condition rate, capped at the whole, is applied once to the refundable charge, giving the deductions,
+      rounded half up to the cent; the deductions and the late-label fee are subtracted from the refundable charge and
+      the refund-delay courtesy is added; the total is rounded half up to the cent and never falls below zero.
+      The late-return rate of the replacement-charge refund counts the calendar days from the unreturned-replacement
+      deadline to the original unit's first carrier scan: a first scan later than the option's late return grace days,
+      or no first scan, keeps the whole charge (rate one); a first scan later than the late courtesy days but no later
+      than the grace keeps the per-day late rate once for every day past the deadline; a first scan within the late
+      courtesy days keeps no late-return rate.
+      The Loop+ relief factor of the replacement-charge refund applies only to an original first-scanned inside the
+      grace: a Loop+ membership in good standing (trial, active, payment hold or cancel pending) on an annual plan
+      (Loop+ Annual, Loop+ Household Annual, Loop+ Student Annual) takes the annual relief factor; one in good standing
+      on a monthly plan (Loop+ Access Monthly, Loop+ Student Monthly, Loop+ Monthly) takes the monthly relief factor;
+      any other buyer, or any original scanned after the grace, takes a factor of one.
+      The condition rate of the replacement-charge refund follows the inspection recorded when the original unit was
+      received at its destination: an original received damaged by the buyer keeps the buyer-damage rate; one received
+      used or incomplete keeps the incomplete rate; any other inspection result keeps no condition rate.
+      The settlement fee kept by the replacement-charge refund is the settlement fee the captured charge carried, since
+      the settlement fee is never refunded: its overdue days run from the unreturned-replacement deadline to the
+      original unit's first carrier scan where that scan stands on or before the capture date, are none where the
+      return was set up as a carrier pickup with no scan by the capture date, and otherwise run to the capture date; at
+      least the long-overdue days keep the per-day settlement fee once for every overdue day; at least the
+      short-overdue days but fewer than the long-overdue days keep one flat short-overdue fee; fewer overdue days keep
+      no fee.
+      The late-label fee of the replacement-charge refund follows how the late original went back: one collected by a
+      carrier pickup pays the late pickup fee; one sent back by drop-off at a carrier store and first-scanned more than
+      the label validity days after the deadline pays the late drop-off label fee, since its prepaid label had expired;
+      one sent back by drop-off within the label validity days after the deadline pays no late-label fee.
+      The refund-delay courtesy of the replacement-charge refund counts the calendar days from the original unit's
+      receipt at its destination to the refund date: at least the long-delay days add the long-delay courtesy; at
+      least the short-delay days but fewer than the long-delay days add the short-delay courtesy; fewer days add none.
+    prerequisite:
+      - problem: order_ext_replacement_charge
+        kind: value_input
+        gate: charge_captured
+        form: state
+        policy_source: >-
+          The refund of a replacement charge is booked only after that charge stands captured on the order.
+        condition: >-
+          The order carries an unreturned-replacement charge capture for the replacement whose original unit came
+          back.
+        resolved_by: pay_replacement_charge_b3f7fc80
+        effect: >-
+          The captured unreturned-replacement charge is the base the refund is computed from; with no capture on the
+          order the refundable charge is zero.
+    cross_category:
+      - category: member
+        as: branch
+        reads: [status, variant_name]
+        note: >-
+          The Loop+ relief factor reads the membership status and plan.
+    compute:
+      - charge_captured: "SUM('order_events', 'amount', event_type='order_charge', charge_reason='unreturned_replacement_item')"
+      - charge_captured_on: "LATEST('order_events', 'event_date', event_type='order_charge', charge_reason='unreturned_replacement_item')"
+      - return_method_used: "LATEST('order_events', 'return_method', event_type='order_return_request')"
+      - replaced_on: "LATEST('order_events', 'event_date', event_type='order_replacement')"
+      - first_scan_on: "LATEST('order_events', 'event_date', event_type='order_return_receipt', carrier_scan_type='first_scan')"
+      - scan_days_past_deadline: "DAYS(replaced_on, first_scan_on) - P('unreturned_replacement_charge_days') if first_scan_on != None else 99999"
+      - late_return_rate: "1.0 if scan_days_past_deadline > P('late_return_grace_days') else (K('per_day_late_rate') * scan_days_past_deadline if scan_days_past_deadline > K('late_courtesy_days') else 0.0)"
+      - member_status_seen: "CFIELD('member', 'status')"
+      - member_plan_seen: "CFIELD('member', 'variant_name')"
+      - good_standing_seen: "(member_status_seen == 'trial' or member_status_seen == 'active' or member_status_seen == 'payment_hold' or member_status_seen == 'cancel_pending')"
+      - relief_factor: "K('annual_relief_factor') if (good_standing_seen and (member_plan_seen == 'Loop+ Annual' or member_plan_seen == 'Loop+ Household Annual' or member_plan_seen == 'Loop+ Student Annual') and late_return_rate < 1.0) else (K('monthly_relief_factor') if (good_standing_seen and (member_plan_seen == 'Loop+ Access Monthly' or member_plan_seen == 'Loop+ Student Monthly' or member_plan_seen == 'Loop+ Monthly') and late_return_rate < 1.0) else 1.0)"
+      - received_condition_seen: "LATEST('order_events', 'received_condition', event_type='order_return_receipt', carrier_scan_type='received_at_destination')"
+      - condition_rate: "K('buyer_damage_rate') if received_condition_seen == 'damaged_by_buyer' else (K('incomplete_rate') if received_condition_seen == 'used_or_incomplete' else 0.0)"
+      - charge_days_past_deadline: "0 if charge_captured_on == None else (DAYS(replaced_on, first_scan_on) - P('unreturned_replacement_charge_days') if (first_scan_on != None and first_scan_on <= charge_captured_on) else (0 if return_method_used == 'carrier_pickup' else DAYS(replaced_on, charge_captured_on) - P('unreturned_replacement_charge_days')))"
+      - fee_kept: "K('per_day_settlement_fee') * charge_days_past_deadline if charge_days_past_deadline >= K('long_overdue_days') else (K('short_overdue_fee') if charge_days_past_deadline >= K('short_overdue_days') else 0.0)"
+      - refundable_charge: "MX(0.0, charge_captured - fee_kept)"
+      - deductions: "RND(refundable_charge * MN(1.0, late_return_rate * relief_factor + condition_rate), 2)"
+      - late_label_fee: "K('late_pickup_fee') if return_method_used == 'carrier_pickup' else (K('late_dropoff_label_fee') if (return_method_used == 'ups_dropoff' and scan_days_past_deadline > K('label_validity_days')) else 0.0)"
+      - received_on: "LATEST('order_events', 'event_date', event_type='order_return_receipt', carrier_scan_type='received_at_destination')"
+      - days_since_receipt: "DAYS(received_on, NOW) if received_on != None else 0"
+      - delay_courtesy: "K('long_delay_courtesy') if days_since_receipt >= K('long_delay_days') else (K('short_delay_courtesy') if days_since_receipt >= K('short_delay_days') else 0.0)"
+      - result: "MX(0.0, RND(refundable_charge - deductions - late_label_fee + delay_courtesy, 2))"
+    compute_basis:
+      charge_captured: "The replacement-charge refund is the whole replacement charge captured on the order, rounded half up to the cent."
+      charge_captured_on: "are none where the return was set up as a carrier pickup with no scan by the capture date, and otherwise run to the capture date"
+      replaced_on: "its unreturned-replacement deadline (the replacement date recorded on the replacement entry plus the option's unreturned replacement days, in calendar days)"
+      first_scan_on: "to the original unit's first carrier scan"
+      scan_days_past_deadline: "The late-return rate of the replacement-charge refund counts the calendar days from the unreturned-replacement deadline to the original unit's first carrier scan"
+      late_return_rate: "a first scan later than the option's late return grace days, or no first scan, keeps the whole charge (rate one); a first scan later than the late courtesy days but no later than the grace keeps the per-day late rate once for every day past the deadline; a first scan within the late courtesy days keeps no late-return rate."
+      member_status_seen: "a Loop+ membership in good standing (trial, active, payment hold or cancel pending)"
+      member_plan_seen: "on an annual plan (Loop+ Annual, Loop+ Household Annual, Loop+ Student Annual) takes the annual relief factor"
+      good_standing_seen: "a Loop+ membership in good standing (trial, active, payment hold or cancel pending)"
+      relief_factor: "The Loop+ relief factor of the replacement-charge refund applies only to an original first-scanned inside the grace: a Loop+ membership in good standing (trial, active, payment hold or cancel pending) on an annual plan (Loop+ Annual, Loop+ Household Annual, Loop+ Student Annual) takes the annual relief factor; one in good standing on a monthly plan (Loop+ Access Monthly, Loop+ Student Monthly, Loop+ Monthly) takes the monthly relief factor; any other buyer, or any original scanned after the grace, takes a factor of one."
+      received_condition_seen: "The condition rate of the replacement-charge refund follows the inspection recorded when the original unit was received at its destination"
+      condition_rate: "an original received damaged by the buyer keeps the buyer-damage rate; one received used or incomplete keeps the incomplete rate; any other inspection result keeps no condition rate."
+      charge_days_past_deadline: "its overdue days run from the unreturned-replacement deadline to the original unit's first carrier scan where that scan stands on or before the capture date, are none where the return was set up as a carrier pickup with no scan by the capture date, and otherwise run to the capture date"
+      fee_kept: "at least the long-overdue days keep the per-day settlement fee once for every overdue day; at least the short-overdue days but fewer than the long-overdue days keep one flat short-overdue fee; fewer overdue days keep no fee."
+      refundable_charge: "the settlement fee kept is taken off the captured charge, giving the refundable charge"
+      deductions: "the late-return rate times the Loop+ relief factor, plus the condition rate, capped at the whole, is applied once to the refundable charge, giving the deductions, rounded half up to the cent"
+      return_method_used: "The late-label fee of the replacement-charge refund follows how the late original went back"
+      late_label_fee: "one collected by a carrier pickup pays the late pickup fee; one sent back by drop-off at a carrier store and first-scanned more than the label validity days after the deadline pays the late drop-off label fee, since its prepaid label had expired; one sent back by drop-off within the label validity days after the deadline pays no late-label fee."
+      received_on: "counts the calendar days from the original unit's receipt at its destination to the refund date"
+      days_since_receipt: "The refund-delay courtesy of the replacement-charge refund counts the calendar days from the original unit's receipt at its destination to the refund date"
+      delay_courtesy: "at least the long-delay days add the long-delay courtesy; at least the short-delay days but fewer than the long-delay days add the short-delay courtesy; fewer days add none."
+      result: "the deductions and the late-label fee are subtracted from the refundable charge and the refund-delay courtesy is added; the total is rounded half up to the cent and never falls below zero."
+    factors:
+      - id: late_return_rate
+        effect: method
+        decides: late_return_rate
+        bindings: [replaced_on, first_scan_on, scan_days_past_deadline, late_return_rate]
+        ladder:
+          - when: "the original unit's first carrier scan came later than the option's late return grace days after the unreturned-replacement deadline, or there is none"
+            method: "the whole charge is kept (rate one, whatever the number of days)"
+          - when: "the first carrier scan came later than the late courtesy days but no later than the grace"
+            method: "the per-day late rate is multiplied by the number of days past the deadline"
+          - when: "otherwise (a first scan within the late courtesy days)"
+            method: "no late-return rate is computed"
+        baseline:
+          late_return_rate: "0.0"
+        evidence: [history, date, tier_param]
+        cross_difficulty: null
+      - id: loop_relief
+        effect: parameter
+        decides: relief_factor
+        bindings: [member_plan_seen, relief_factor]
+        ladder:
+          - when: "the buyer's Loop+ membership is in good standing on an annual plan and the original was first-scanned inside the grace"
+            value: "K('annual_relief_factor')"
+          - when: "the buyer's Loop+ membership is in good standing on a monthly plan and the original was first-scanned inside the grace"
+            value: "K('monthly_relief_factor')"
+          - when: "otherwise"
+            value: "1.0"
+        baseline:
+          relief_factor: "1.0"
+        evidence: [cross_category]
+        cross_difficulty: member
+      - id: condition_rate
+        effect: parameter
+        decides: condition_rate
+        bindings: [received_condition_seen, condition_rate]
+        ladder:
+          - when: "the original unit was received at its destination damaged by the buyer"
+            value: "K('buyer_damage_rate')"
+          - when: "it was received used or incomplete"
+            value: "K('incomplete_rate')"
+          - when: "otherwise"
+            value: "0.0"
+        baseline:
+          condition_rate: "0.0"
+        evidence: [history]
+        cross_difficulty: null
+      - id: fee_kept
+        effect: method
+        decides: fee_kept
+        bindings: [charge_captured_on, charge_days_past_deadline, fee_kept]
+        ladder:
+          - when: "the overdue days the captured charge carried are at least the long-overdue days"
+            method: "the per-day settlement fee is multiplied by the number of overdue days and kept"
+          - when: "they are at least the short-overdue days but fewer than the long-overdue days"
+            method: "one flat short-overdue fee is kept, whatever the number of days"
+          - when: "otherwise"
+            method: "no fee is kept"
+        baseline:
+          fee_kept: "0.0"
+        evidence: [history, date]
+        cross_difficulty: null
+      - id: late_label_fee
+        effect: parameter
+        decides: late_label_fee
+        bindings: [return_method_used, late_label_fee]
+        ladder:
+          - when: "the late original was collected by a carrier pickup"
+            value: "K('late_pickup_fee')"
+          - when: "the late original was sent back by drop-off and first-scanned more than the label validity days after the deadline"
+            value: "K('late_dropoff_label_fee')"
+          - when: "otherwise (a drop-off first-scanned within the label validity days after the deadline)"
+            value: "0.00"
+        baseline:
+          late_label_fee: "0.0"
+        evidence: [history, date]
+        cross_difficulty: null
+      - id: delay_courtesy
+        effect: parameter
+        decides: delay_courtesy
+        bindings: [received_on, days_since_receipt, delay_courtesy]
+        ladder:
+          - when: "the refund date is at least the long-delay days after the original unit's receipt at its destination"
+            value: "K('long_delay_courtesy')"
+          - when: "it is at least the short-delay days but fewer than the long-delay days after that receipt"
+            value: "K('short_delay_courtesy')"
+          - when: "otherwise"
+            value: "0.00"
+        baseline:
+          delay_courtesy: "0.0"
+        evidence: [history, date]
+        cross_difficulty: null
+    baseline:
+      rule: >-
+        The replacement-charge refund is the whole replacement charge captured on the order, rounded half up to the
+        cent.
+      params: []
+    inputs:
+      history:
+        - {table: order_events, aggregate: sum, field: amount, filters: {event_type: order_charge, charge_reason: unreturned_replacement_item}}
+        - {table: order_events, aggregate: latest, field: event_date, filters: {event_type: order_return_receipt}}
+        - {table: order_events, aggregate: latest, field: received_condition, filters: {event_type: order_return_receipt, carrier_scan_type: received_at_destination}}
+        - {table: order_events, aggregate: latest, field: return_method, filters: {event_type: order_return_request}}
+      cross_category: [member]

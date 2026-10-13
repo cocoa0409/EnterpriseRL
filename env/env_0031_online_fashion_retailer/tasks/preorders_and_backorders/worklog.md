@@ -1,0 +1,44 @@
+# preorders_and_backorders — instantiation worklog (round 2)
+
+## Difficulty pre-check
+- Draws (`draw_counts.py --tasks 2`): task 0 → 1 prerequisite problem, factor counts [6, 5]; task 1 → 3 prerequisite problems, factor counts [4, 5, 5, 4]. Six extended policies, six task tools, two of them `owner=user` at least.
+- Base read: `products/preorders.yaml` closes (deposit formula, delay-notice FTC model, cutoffs, price protection, made-to-order confirmation, size change). Writable numbers in this product: deposits (capture/refund/forfeit), reserved unit price, ship-by dates (DSL cannot add days, so a date can only be selected, not computed).
+- Base gaps routed inside the extended layer (blueprint untouched):
+  1. Every base customer act (delay consent, specifications confirmation, cancellation-request confirmation) writes no number, yet every problem needs a computed parameter and every tree a customer write. Routed: the customer's confirmation of a cancellation that forfeits deposit is the act that books the settlement (work charge / cancellation charge kept and the rest refunded), with base gates `forfeiture_confirmed` and `booked_after_cancellation` retired by declared overwrite; and a made-to-order deposit whose card charge was declined is paid by the customer in person.
+  2. No price-history table exists for price protection ("lowest regular site price"). Routed: the protected price is evidenced by Marlowe & Finch order lines of the reserved style on the customer's profile (regular-price bookings, and clearance bookings for Icon and Atelier members), declared as an overwrite of the base price-protection sentence.
+  3. Single reservations carry at most ~5 history rows (one capture, few notices); the suite history threshold is met in task 0 by reading the pair's events and its two cancellation requests in both computations (8 rows).
+- Ownership deviation noted: base lists "books deposit refunds or forfeitures" as agent work; here the customer's own confirmation books them in the same act (blueprint: confirming a cancellation that forfeits a deposit is the customer's own act).
+
+## Task 0 — made-to-order remake (closed)
+- Scope: `preorders_ext_made_to_order_work_charge` (user tool `confirm_made_to_order_cancellation_940e1e7b`, 6 factors) → `preorders_ext_made_to_order_remake_deposit` (agent tool `take_made_to_order_remake_13bceb2b`, 5 factors); one value_input edge (state form).
+- Revisions: (1) replay failed on empty-string foreign keys and on order-payment rows outside the read closure → empty foreign keys seeded as null, payments dropped, `find_orders` read added; (2) remake tool rebuilt to copy style/colour/price/owner from the cancelled pair (no SKU argument the agent would have to invent).
+- Gates (per task, all green): EXTENDED OK, TASK TOOL CONTRACT OK, REPLAY OK, SOLVABILITY OK, COMPUTE OK (history rows 8), GROUNDING OK, SCOPE OK; traceability deferred (no docs yet).
+
+## Task 1 — designer coat size swap (closed)
+- Scope: `preorders_ext_price_protection` (agent `lower_reserved_price_a108b215`, 4 factors, state_due) → `preorders_ext_preorder_cancellation_charge` (user `confirm_preorder_cancellation_aa3f8734`, 5) ; `preorders_ext_made_to_order_deposit` (user `pay_reservation_deposit_93996964`, 4) ; root `preorders_ext_replacement_deposit` (agent `take_replacement_reservation_e3795f43`, 5). Edges: B←A, B←P, A←P value_input; B←C state_gate; prerequisite sentences in both directions ("only after", "not … until").
+- Consistency with task 0: the made-to-order deposit law claimed here fixed task 0's seeded 151.20 deposit (Icon 30 % − 2 footwear points), which task 0's remake carries.
+- Parallel order: the loafer payment commutes with price protection and the cancellation (identical terminal hash with the payment moved first, run during authoring).
+- Gates (per task): EXTENDED OK, TASK TOOL CONTRACT OK, REPLAY OK, SOLVABILITY OK, COMPUTE OK, GROUNDING OK, SCOPE OK.
+
+## Final difficulty run (no --task)
+- EXTENDED OK · TASK TOOL CONTRACT OK · REPLAY OK (0.json 15/29/29, 1.json 19/49/49) · SOLVABILITY OK · COMPUTE OK (suite means branches 54.00, steps 17.00; history_rows_max 8; branches_max 74) · GROUNDING OK · CACHE-DIFF INFO (no cache trap designed) · SCOPE OK.
+- check_traceability not run: it reads the published KB (docs/), which does not exist yet.
+- Temporary authoring scripts lived outside the write domain and were removed; no __pycache__ left in the write domain.
+
+## Rework round 2 — policy-task audit (`audits/policy_task/preorders_and_backorders/`)
+- CG-1 (mislabelled methods; P4/P6 without a method): P1 `personalisation_multiplier`, P2 `setoff_personalisation_multiplier`, P6 `waiting_factor` relabelled `parameter`. P4: `returns_look_back` removed (returns counted over a fixed 12 months, `ret_many` 1.20) and `points_count_method` added (which ledger entries count and by which date — a selection/anchor method). P6: the Unlimited factor removed and `apparel_window` added (24-month yearly average / since enrolment / 12 months — a window convention). Draw kept: task 0 [6, 5], task 1 [4, 5, 5, 4].
+- CG-2 (no genuine multi-source factor): set-off ladders of P2 and P6 no longer restate their prerequisite (days only). P2 Unlimited reduction and P3 Unlimited addition now require the pass record AND an active Gold-or-above Marlowe Rewards record (two distinct records); both worlds sit on that tier.
+- CG-3 (P6 baseline): "less any charge set-off" removed from the baseline sentence; the set-off lives only in its factor sentence.
+- CG-4 (P3 Icon/Atelier branch): compute now takes the most recent of the regular and the clearance bookings of the style (flash-sale bookings never count), matching the rule.
+- CG-5 (prerequisite-sentence scope): P3's rule names its result "the protected reserved price"; P4 and P6 wait on exactly that ("stands at the reservation's protected reserved price" / "carries its protected reserved price as its reserved unit price").
+- Observations closed: O-3 (paid percentage "rounded half up to two decimal places"), O-4 (set-off conjunct removed), O-5 (price-tool docstring no longer names a later computation), O-6 (state-gate effect worded generally), O-8 (deposit gate names made-to-order reservations only), O-10 (protection limit stated once), O-11 (other types keep the base full refund before the cutoff), O-14 (stage-clock tier 2 states its reason).
+- Observations recorded, not changed: O-9 (P3's `replaced_by` quotes the protected-reserved-price sentence; the other departures are in the rule), O-12 (a Deposit Pre-Order's kept charge is booked on `preorders_deposit_forfeited`, whose base meaning names made-to-order items — the base offers no other "deposit kept" event; routed, not scored), O-13 (made-to-order deposit captured after a declined charge, within the base's 48 decline-grace hours), O-15 (task 1's points balance sits in the same tier as the counted points), O-16 (some excluded rows do not move a tier; task 1 now carries a tier-moving near-miss in the pending points entry), O-18 (task 0's orders carry no payment rows: no factor there reads payments, and unread rows would break the read closure), O-19 (`find_orders` kept: order rows are parents of the counted lines and must be in the closure), O-20 (empty deposit due on the declined loafer, explained in seed consistency).
+- Task-file findings: task 0 findings 1–3 and task 1 findings 1–5 closed through the charter changes above plus rewritten `design_rationale` [2]/[5]/[6] (task 1 also [8]–[12]) with removal-checked claims, updated factor traces, tracing and prerequisite_closure. Task 0 gained a third (withdrawn, 2026-09-15) cancellation request, so the suite history threshold holds (history rows 9). Scored values: task 0 unchanged; task 1 price and loafer deposit unchanged, cancellation charge and replacement deposit recomputed on the corrected policies.
+
+## Rework round 3 — audit revision_2
+- Task 0 R2-1 (stale proof assertion): `design_rationale` [4] now lists the three cancellation requests on the pair and records the 2026-09-15 withdrawn request as a near-miss.
+- Task 1 R2-1 (false proof assertion): `design_rationale` [6] no longer places the 2025-09-23 ledger entry "outside every window"; it is outside the posting-date window and inside the available-date window (part of the standard count of 4080).
+- O-21 closed: price protection's rule states that a regular-price booking wins a same-day tie with a clearance booking (as computed).
+- O-22 closed: the unused `last_request_status` binding removed from the remake deposit.
+- O-23 kept: `pts_available_earned` stays under `points_relief` (each factor must own a record read; that read is the relief's standard count). O-5 residual, O-6 residual, O-7 residual, O-9, O-12, O-13, O-15, O-16 residual, O-18, O-19, O-20 unchanged as recorded in round 2.
+- No scored value changed.

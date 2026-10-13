@@ -1,0 +1,899 @@
+
+# Northloop Payments — the seller's payments account: sale proceeds, reserves, deductions and payouts to the bank.
+category: payout
+display_name: Northloop Payments
+
+binding:
+  holding_table: payout_accounts
+  event_tables: [payout_events]
+  intake_tables: [payout_chargeback_disputes]
+  status_field: status
+  variant_field: variant_name
+  quantity_fields: {balance: payments_balance, reserved_balance: reserved_funds}
+
+lifecycle:
+  states: [pending_verification, active, on_hold, closing, closed]
+  transitions:
+    - {from: pending_verification, to: active, by: system, means: "Identity and bank account verification completes."}
+    - {from: pending_verification, to: closed, by: system, means: "Verification is never completed and the application lapses."}
+    - {from: active, to: on_hold, by: system, means: "Payouts are held: selling suspended, bank details invalid, or re-verification overdue."}
+    - {from: on_hold, to: active, by: agent, means: "The hold cause is cleared and payouts resume."}
+    - {from: active, to: closing, by: user, means: "The seller asks to close the payments account; the balance is held for the final hold period."}
+    - {from: on_hold, to: closing, by: user, means: "A held seller asks to close the payments account."}
+    - {from: closing, to: closed, by: system, means: "The final hold has ended, reserves are released and the balance is paid out or collected to zero."}
+
+accounts:
+  - key: payments_balance
+    unit: USD
+    meaning: "Total seller balance on the payments account, reserved funds included; may go negative. The holding's balance is its running sum."
+  - key: reserved_funds
+    unit: USD
+    meaning: "Part of the balance held back and not yet payable; the holding's reserved_balance is its running sum."
+
+parameter_schema:
+  payout_schedule_rule: When scheduled payouts are initiated (enum string).
+  business_day_calendar: Business-day calendar for every business-day count of this category (enum string).
+  payout_cutoff_time_et: Eastern-time cutoff (HH:MM) on a payout day for funds released that day to be included.
+  min_payout_amount: Smallest available amount that is paid out; a smaller amount rolls to the next payout, USD.
+  max_payout_per_disbursement: Largest amount sent in one scheduled payout; the excess rolls to the next payout, USD.
+  bank_arrival_business_days: Business days for a scheduled payout to reach the bank after initiation (integer).
+  on_demand_payout_allowed: Whether the seller may request an extra standard payout outside the schedule (boolean).
+  on_demand_interval_hours: Minimum hours between two on-demand payouts; not_applicable without on-demand payouts.
+  sale_credit_basis: Amount credited to the balance for a sold order (enum string).
+  delivery_reserve_days: Calendar days after an order's delivered_date for which its sale credit stays reserved (integer).
+  no_scan_release_days_after_promised: Calendar days after the promised delivery date at which a sale credit with no delivered scan is released (integer).
+  reserve_release_basis: Anchor of the delivery reserve release date (enum string).
+  high_value_order_threshold: Sale credit (USD) at or above which an extra high-value hold is added to the delivery reserve.
+  high_value_extra_hold_days: Extra calendar days added to the delivery reserve of a high-value sale (integer).
+  rolling_reserve_rate: Share of each sale credit additionally held as a rolling reserve (decimal fraction).
+  rolling_reserve_hold_days: Calendar days a rolling reserve is held from the sale credit date; not_applicable when the rate is zero.
+  instant_payout_available: Whether instant payouts to an eligible debit card are offered (boolean).
+  instant_payout_fee_rate: Instant payout fee as a share of the amount paid out (decimal fraction); not_applicable without instant payouts.
+  instant_payout_min_fee: Minimum instant payout fee per payout, USD; not_applicable without instant payouts.
+  instant_payout_daily_limit: Maximum total instant payouts per calendar day, USD; not_applicable without instant payouts.
+  instant_payout_max_per_day: Maximum number of instant payouts per calendar day; not_applicable without instant payouts.
+  instant_payout_arrival: Arrival time of an instant payout (enum string); not_applicable without instant payouts.
+  refund_debit_source: Where buyer refunds funded by the seller are debited (enum string).
+  chargeback_liability_follows_order_liability: Whether a chargeback is debited to the seller only when the order's liability party is the seller (boolean).
+  chargeback_debit_timing: When a seller-liable chargeback is debited (enum string).
+  chargeback_fee: Fee per seller-liable chargeback, USD.
+  chargeback_fee_refunded_on_win: Whether the chargeback fee is returned when the seller wins the dispute (boolean).
+  chargeback_response_days: Calendar days after the chargeback debit within which the seller may submit dispute evidence (integer).
+  chargeback_disputes_per_case: Maximum dispute submissions per chargeback case (integer).
+  chargeback_win_reversal_timing: When the debit of a won chargeback is reversed (enum string).
+  negative_balance_card_charge_days: Calendar days a balance may stay negative before the card on file is charged for the deficit (integer).
+  negative_balance_card_retry_count: Card charge attempts made for one negative balance before it is referred for collection (integer).
+  negative_balance_collection_days: Calendar days of continuous negative balance after which the deficit is referred for collection (integer).
+  bank_change_payout_hold_days: Calendar days after a bank account change during which no payout is sent (integer).
+  bank_name_match_required: Whether the bank account holder name must match the profile or business name (boolean).
+  disbursement_return_resend_business_days: Business days after updated bank details are verified by which a returned payout is re-sent (integer).
+  reverification_interval_months: Months between mandatory identity and bank re-verifications (integer).
+  reverification_grace_days: Calendar days after a re-verification falls due before payouts are held (integer).
+  suspension_fund_hold_days: Calendar days the balance is held after the seller's selling privileges are suspended, unless reinstated earlier (integer).
+  suspension_hold_release_basis: How a suspension hold ends (enum string).
+  closure_final_hold_days: Calendar days the balance is held after a closure request before final payout (integer).
+  closure_release_basis: What is paid out at the end of the final hold (enum string).
+  min_account_age_days: Minimum age of the seller profile, counted from account_opened_date, to hold the plan (integer).
+  eligible_standing_levels: Seller performance standing levels allowed to hold the plan (list of official level names).
+  min_trailing_12m_sales: Minimum sale credits over the trailing 12 months to hold the plan, USD.
+  standing_fallback_plan: Plan the account is moved to at a plan review when it no longer qualifies (official plan name); not_applicable for plans open to every level.
+  plan_review_cycle: When payout plan qualification is reviewed (enum string).
+  plan_change_effective: When a payout plan change takes effect (enum string).
+
+variants:
+  - name: Payments Starter
+    rank: 1
+    entry_gate: {min_account_age_days: =min_account_age_days}
+    parameters:
+      payout_schedule_rule: every_wednesday
+      business_day_calendar: mon_fri_excluding_us_federal_holidays
+      payout_cutoff_time_et: '17:00'
+      min_payout_amount: 25.0
+      max_payout_per_disbursement: 10000.0
+      bank_arrival_business_days: 3
+      on_demand_payout_allowed: false
+      on_demand_interval_hours: not_applicable
+      sale_credit_basis: item_subtotal_plus_shipping_excluding_tax
+      delivery_reserve_days: 21
+      no_scan_release_days_after_promised: 30
+      reserve_release_basis: delivered_date_plus_reserve_days_or_promised_date_plus_no_scan_days
+      high_value_order_threshold: 1000.0
+      high_value_extra_hold_days: 7
+      rolling_reserve_rate: 0.1
+      rolling_reserve_hold_days: 90
+      instant_payout_available: false
+      instant_payout_fee_rate: not_applicable
+      instant_payout_min_fee: not_applicable
+      instant_payout_daily_limit: not_applicable
+      instant_payout_max_per_day: not_applicable
+      instant_payout_arrival: not_applicable
+      refund_debit_source: payments_balance
+      chargeback_liability_follows_order_liability: true
+      chargeback_debit_timing: on_chargeback_notice
+      chargeback_fee: 20.0
+      chargeback_fee_refunded_on_win: false
+      chargeback_response_days: 7
+      chargeback_disputes_per_case: 1
+      chargeback_win_reversal_timing: on_issuer_decision
+      negative_balance_card_charge_days: 14
+      negative_balance_card_retry_count: 3
+      negative_balance_collection_days: 90
+      bank_change_payout_hold_days: 7
+      bank_name_match_required: true
+      disbursement_return_resend_business_days: 5
+      reverification_interval_months: 12
+      reverification_grace_days: 30
+      suspension_fund_hold_days: 90
+      suspension_hold_release_basis: reinstatement_or_suspension_date_plus_hold_days
+      closure_final_hold_days: 90
+      closure_release_basis: entire_balance_including_reserves
+      min_account_age_days: 0
+      eligible_standing_levels: [Below Standard Level, Developing Seller Level, Standard Level, Above Standard Level, Top Rated Level, Preferred Partner Level]
+      min_trailing_12m_sales: 0.0
+      standing_fallback_plan: not_applicable
+      plan_review_cycle: monthly_after_standing_evaluation
+      plan_change_effective: next_payout_cycle
+  - name: Payments Biweekly
+    rank: 2
+    entry_gate: {min_account_age_days: =min_account_age_days, eligible_standing_levels: =eligible_standing_levels}
+    parameters:
+      payout_schedule_rule: every_other_wednesday_from_plan_start
+      business_day_calendar: mon_fri_excluding_us_federal_holidays
+      payout_cutoff_time_et: '17:00'
+      min_payout_amount: 1.0
+      max_payout_per_disbursement: 50000.0
+      bank_arrival_business_days: 3
+      on_demand_payout_allowed: true
+      on_demand_interval_hours: 24
+      sale_credit_basis: item_subtotal_plus_shipping_excluding_tax
+      delivery_reserve_days: 7
+      no_scan_release_days_after_promised: 7
+      reserve_release_basis: delivered_date_plus_reserve_days_or_promised_date_plus_no_scan_days
+      high_value_order_threshold: 2500.0
+      high_value_extra_hold_days: 7
+      rolling_reserve_rate: 0.0
+      rolling_reserve_hold_days: not_applicable
+      instant_payout_available: false
+      instant_payout_fee_rate: not_applicable
+      instant_payout_min_fee: not_applicable
+      instant_payout_daily_limit: not_applicable
+      instant_payout_max_per_day: not_applicable
+      instant_payout_arrival: not_applicable
+      refund_debit_source: payments_balance
+      chargeback_liability_follows_order_liability: true
+      chargeback_debit_timing: on_chargeback_notice
+      chargeback_fee: 20.0
+      chargeback_fee_refunded_on_win: false
+      chargeback_response_days: 7
+      chargeback_disputes_per_case: 1
+      chargeback_win_reversal_timing: on_issuer_decision
+      negative_balance_card_charge_days: 30
+      negative_balance_card_retry_count: 3
+      negative_balance_collection_days: 90
+      bank_change_payout_hold_days: 3
+      bank_name_match_required: true
+      disbursement_return_resend_business_days: 5
+      reverification_interval_months: 12
+      reverification_grace_days: 30
+      suspension_fund_hold_days: 90
+      suspension_hold_release_basis: reinstatement_or_suspension_date_plus_hold_days
+      closure_final_hold_days: 90
+      closure_release_basis: entire_balance_including_reserves
+      min_account_age_days: 90
+      eligible_standing_levels: [Standard Level, Above Standard Level, Top Rated Level, Preferred Partner Level]
+      min_trailing_12m_sales: 0.0
+      standing_fallback_plan: Payments Starter
+      plan_review_cycle: monthly_after_standing_evaluation
+      plan_change_effective: next_payout_cycle
+  - name: Payments Weekly
+    rank: 3
+    entry_gate: {min_account_age_days: =min_account_age_days, eligible_standing_levels: =eligible_standing_levels}
+    parameters:
+      payout_schedule_rule: every_wednesday
+      business_day_calendar: mon_fri_excluding_us_federal_holidays
+      payout_cutoff_time_et: '17:00'
+      min_payout_amount: 1.0
+      max_payout_per_disbursement: 50000.0
+      bank_arrival_business_days: 3
+      on_demand_payout_allowed: true
+      on_demand_interval_hours: 24
+      sale_credit_basis: item_subtotal_plus_shipping_excluding_tax
+      delivery_reserve_days: 7
+      no_scan_release_days_after_promised: 7
+      reserve_release_basis: delivered_date_plus_reserve_days_or_promised_date_plus_no_scan_days
+      high_value_order_threshold: 2500.0
+      high_value_extra_hold_days: 7
+      rolling_reserve_rate: 0.0
+      rolling_reserve_hold_days: not_applicable
+      instant_payout_available: false
+      instant_payout_fee_rate: not_applicable
+      instant_payout_min_fee: not_applicable
+      instant_payout_daily_limit: not_applicable
+      instant_payout_max_per_day: not_applicable
+      instant_payout_arrival: not_applicable
+      refund_debit_source: payments_balance
+      chargeback_liability_follows_order_liability: true
+      chargeback_debit_timing: on_chargeback_notice
+      chargeback_fee: 20.0
+      chargeback_fee_refunded_on_win: false
+      chargeback_response_days: 7
+      chargeback_disputes_per_case: 1
+      chargeback_win_reversal_timing: on_issuer_decision
+      negative_balance_card_charge_days: 30
+      negative_balance_card_retry_count: 3
+      negative_balance_collection_days: 90
+      bank_change_payout_hold_days: 3
+      bank_name_match_required: true
+      disbursement_return_resend_business_days: 5
+      reverification_interval_months: 12
+      reverification_grace_days: 30
+      suspension_fund_hold_days: 90
+      suspension_hold_release_basis: reinstatement_or_suspension_date_plus_hold_days
+      closure_final_hold_days: 90
+      closure_release_basis: entire_balance_including_reserves
+      min_account_age_days: 90
+      eligible_standing_levels: [Standard Level, Above Standard Level, Top Rated Level, Preferred Partner Level]
+      min_trailing_12m_sales: 0.0
+      standing_fallback_plan: Payments Biweekly
+      plan_review_cycle: monthly_after_standing_evaluation
+      plan_change_effective: next_payout_cycle
+  - name: Payments Daily
+    rank: 4
+    entry_gate: {min_account_age_days: =min_account_age_days, eligible_standing_levels: =eligible_standing_levels}
+    parameters:
+      payout_schedule_rule: every_business_day
+      business_day_calendar: mon_fri_excluding_us_federal_holidays
+      payout_cutoff_time_et: '17:00'
+      min_payout_amount: 1.0
+      max_payout_per_disbursement: 100000.0
+      bank_arrival_business_days: 2
+      on_demand_payout_allowed: true
+      on_demand_interval_hours: 24
+      sale_credit_basis: item_subtotal_plus_shipping_excluding_tax
+      delivery_reserve_days: 7
+      no_scan_release_days_after_promised: 7
+      reserve_release_basis: delivered_date_plus_reserve_days_or_promised_date_plus_no_scan_days
+      high_value_order_threshold: 5000.0
+      high_value_extra_hold_days: 5
+      rolling_reserve_rate: 0.0
+      rolling_reserve_hold_days: not_applicable
+      instant_payout_available: false
+      instant_payout_fee_rate: not_applicable
+      instant_payout_min_fee: not_applicable
+      instant_payout_daily_limit: not_applicable
+      instant_payout_max_per_day: not_applicable
+      instant_payout_arrival: not_applicable
+      refund_debit_source: payments_balance
+      chargeback_liability_follows_order_liability: true
+      chargeback_debit_timing: on_chargeback_notice
+      chargeback_fee: 15.0
+      chargeback_fee_refunded_on_win: false
+      chargeback_response_days: 7
+      chargeback_disputes_per_case: 1
+      chargeback_win_reversal_timing: on_issuer_decision
+      negative_balance_card_charge_days: 30
+      negative_balance_card_retry_count: 3
+      negative_balance_collection_days: 90
+      bank_change_payout_hold_days: 3
+      bank_name_match_required: true
+      disbursement_return_resend_business_days: 5
+      reverification_interval_months: 12
+      reverification_grace_days: 30
+      suspension_fund_hold_days: 90
+      suspension_hold_release_basis: reinstatement_or_suspension_date_plus_hold_days
+      closure_final_hold_days: 90
+      closure_release_basis: entire_balance_including_reserves
+      min_account_age_days: 180
+      eligible_standing_levels: [Above Standard Level, Top Rated Level, Preferred Partner Level]
+      min_trailing_12m_sales: 0.0
+      standing_fallback_plan: Payments Weekly
+      plan_review_cycle: monthly_after_standing_evaluation
+      plan_change_effective: next_payout_cycle
+  - name: Payments Daily Plus
+    rank: 5
+    entry_gate: {min_account_age_days: =min_account_age_days, eligible_standing_levels: =eligible_standing_levels, min_trailing_12m_sales: =min_trailing_12m_sales}
+    parameters:
+      payout_schedule_rule: every_business_day
+      business_day_calendar: mon_fri_excluding_us_federal_holidays
+      payout_cutoff_time_et: '17:00'
+      min_payout_amount: 1.0
+      max_payout_per_disbursement: 250000.0
+      bank_arrival_business_days: 1
+      on_demand_payout_allowed: true
+      on_demand_interval_hours: 24
+      sale_credit_basis: item_subtotal_plus_shipping_excluding_tax
+      delivery_reserve_days: 3
+      no_scan_release_days_after_promised: 7
+      reserve_release_basis: delivered_date_plus_reserve_days_or_promised_date_plus_no_scan_days
+      high_value_order_threshold: 10000.0
+      high_value_extra_hold_days: 3
+      rolling_reserve_rate: 0.0
+      rolling_reserve_hold_days: not_applicable
+      instant_payout_available: true
+      instant_payout_fee_rate: 0.015
+      instant_payout_min_fee: 0.5
+      instant_payout_daily_limit: 5000.0
+      instant_payout_max_per_day: 5
+      instant_payout_arrival: within_30_minutes
+      refund_debit_source: payments_balance
+      chargeback_liability_follows_order_liability: true
+      chargeback_debit_timing: on_chargeback_notice
+      chargeback_fee: 15.0
+      chargeback_fee_refunded_on_win: false
+      chargeback_response_days: 10
+      chargeback_disputes_per_case: 1
+      chargeback_win_reversal_timing: on_issuer_decision
+      negative_balance_card_charge_days: 30
+      negative_balance_card_retry_count: 3
+      negative_balance_collection_days: 90
+      bank_change_payout_hold_days: 3
+      bank_name_match_required: true
+      disbursement_return_resend_business_days: 5
+      reverification_interval_months: 12
+      reverification_grace_days: 30
+      suspension_fund_hold_days: 90
+      suspension_hold_release_basis: reinstatement_or_suspension_date_plus_hold_days
+      closure_final_hold_days: 90
+      closure_release_basis: entire_balance_including_reserves
+      min_account_age_days: 365
+      eligible_standing_levels: [Top Rated Level, Preferred Partner Level]
+      min_trailing_12m_sales: 25000.0
+      standing_fallback_plan: Payments Daily
+      plan_review_cycle: monthly_after_standing_evaluation
+      plan_change_effective: next_payout_cycle
+  - name: Payments Enterprise
+    rank: 6
+    entry_gate: {min_account_age_days: =min_account_age_days, eligible_standing_levels: =eligible_standing_levels, min_trailing_12m_sales: =min_trailing_12m_sales}
+    parameters:
+      payout_schedule_rule: every_business_day
+      business_day_calendar: mon_fri_excluding_us_federal_holidays
+      payout_cutoff_time_et: '17:00'
+      min_payout_amount: 1.0
+      max_payout_per_disbursement: 2000000.0
+      bank_arrival_business_days: 1
+      on_demand_payout_allowed: true
+      on_demand_interval_hours: 24
+      sale_credit_basis: item_subtotal_plus_shipping_excluding_tax
+      delivery_reserve_days: 3
+      no_scan_release_days_after_promised: 7
+      reserve_release_basis: delivered_date_plus_reserve_days_or_promised_date_plus_no_scan_days
+      high_value_order_threshold: 25000.0
+      high_value_extra_hold_days: 0
+      rolling_reserve_rate: 0.0
+      rolling_reserve_hold_days: not_applicable
+      instant_payout_available: true
+      instant_payout_fee_rate: 0.01
+      instant_payout_min_fee: 0.5
+      instant_payout_daily_limit: 50000.0
+      instant_payout_max_per_day: 10
+      instant_payout_arrival: within_30_minutes
+      refund_debit_source: payments_balance
+      chargeback_liability_follows_order_liability: true
+      chargeback_debit_timing: on_chargeback_notice
+      chargeback_fee: 10.0
+      chargeback_fee_refunded_on_win: true
+      chargeback_response_days: 14
+      chargeback_disputes_per_case: 1
+      chargeback_win_reversal_timing: on_issuer_decision
+      negative_balance_card_charge_days: 45
+      negative_balance_card_retry_count: 3
+      negative_balance_collection_days: 90
+      bank_change_payout_hold_days: 3
+      bank_name_match_required: true
+      disbursement_return_resend_business_days: 5
+      reverification_interval_months: 12
+      reverification_grace_days: 30
+      suspension_fund_hold_days: 90
+      suspension_hold_release_basis: reinstatement_or_suspension_date_plus_hold_days
+      closure_final_hold_days: 60
+      closure_release_basis: entire_balance_including_reserves
+      min_account_age_days: 365
+      eligible_standing_levels: [Top Rated Level, Preferred Partner Level]
+      min_trailing_12m_sales: 1000000.0
+      standing_fallback_plan: Payments Daily
+      plan_review_cycle: monthly_after_standing_evaluation
+      plan_change_effective: next_payout_cycle
+
+events:
+  - type: payout_account_open
+    target: payout_accounts
+    mutation: create
+    meaning: "A seller opens a Northloop Payments account."
+    grain: "one row per payments account"
+    fields:
+      payout_account_id: "Payments account reference."
+      customer_id: "The seller."
+      variant_name: "Payout plan."
+      opened_date: "Date opened."
+      bank_last4: "Last four digits of the bank account."
+    triggers: []
+  - type: payout_account_verify
+    target: payout_accounts
+    mutation: {transition: {from: pending_verification, to: active}}
+    meaning: "Identity and bank verification completes."
+    grain: "one row per transaction"
+    fields:
+      verified_date: "Date verified."
+    triggers: []
+  - type: payout_sale_credit
+    target: payout_events
+    meaning: "Proceeds of a captured order are credited to the seller's balance."
+    grain: "one row per order"
+    distinguish_by: [order_id]
+    fields:
+      payout_account_id: "Payments account."
+      customer_id: "The seller."
+      event_date: "Date credited (the capture date)."
+      order_id: "Order sold."
+      amount: "Item subtotal plus shipping, tax excluded, positive."
+    account: payments_balance
+    direction: in
+    triggers:
+      - event: payout:payout_reserve_hold
+        map: {order_id: order_id, amount: amount, reserve_type: delivery_date}
+  - type: payout_reserve_hold
+    target: payout_events
+    meaning: "Part of the balance is reserved and not yet payable."
+    grain: "one row per order per reserve type"
+    distinguish_by: [order_id, reserve_type]
+    fields:
+      payout_account_id: "Payments account."
+      customer_id: "The seller."
+      event_date: "Date reserved."
+      order_id: "Order whose proceeds are reserved."
+      reserve_type: "delivery_date or rolling_risk."
+      amount: "Amount reserved, positive."
+      release_due_date: "Date the reserve is due for release as computed when it was placed (empty for a delivery reserve until the order is delivered)."
+    account: reserved_funds
+    direction: in
+    triggers: []
+  - type: payout_reserve_release
+    target: payout_events
+    meaning: "A reserve is released and becomes payable."
+    grain: "one row per order per reserve type"
+    distinguish_by: [order_id, reserve_type]
+    fields:
+      payout_account_id: "Payments account."
+      customer_id: "The seller."
+      event_date: "Date released."
+      order_id: "Order whose reserve is released."
+      reserve_type: "delivery_date or rolling_risk."
+      amount: "Amount released, positive."
+    account: reserved_funds
+    direction: out
+    triggers: []
+  - type: payout_disbursement
+    target: payout_events
+    meaning: "Available funds are sent to the seller's bank account (scheduled or on-demand) or debit card (instant)."
+    grain: "one row per payout"
+    distinguish_by: [disbursement_ref]
+    fields:
+      payout_account_id: "Payments account."
+      customer_id: "The seller."
+      event_date: "Date initiated."
+      disbursement_ref: "Payout reference."
+      payout_method: "scheduled, on_demand or instant."
+      bank_last4: "Destination account or card (last four digits)."
+      amount: "Amount sent, positive."
+    account: payments_balance
+    direction: out
+    triggers:
+      - event: payout:payout_instant_fee
+        when: {payout_method: instant}
+        map: {disbursement_ref: disbursement_ref}
+  - type: payout_instant_fee
+    target: payout_events
+    meaning: "The fee of an instant payout."
+    grain: "one row per instant payout"
+    distinguish_by: [disbursement_ref]
+    fields:
+      payout_account_id: "Payments account."
+      customer_id: "The seller."
+      event_date: "Date charged."
+      disbursement_ref: "Instant payout charged for."
+      amount: "Fee, positive."
+    account: payments_balance
+    direction: out
+    triggers: []
+  - type: payout_disbursement_return
+    target: payout_events
+    meaning: "The bank rejects a payout and the funds come back to the balance."
+    grain: "one row per returned payout"
+    distinguish_by: [disbursement_ref]
+    fields:
+      payout_account_id: "Payments account."
+      customer_id: "The seller."
+      event_date: "Date returned."
+      disbursement_ref: "Payout returned."
+      return_reason: "Bank's return reason."
+      amount: "Amount returned, positive."
+    account: payments_balance
+    direction: in
+    triggers:
+      - event: payout:payout_hold_place
+        map: {hold_reason: bank_details_invalid}
+  - type: payout_fee_deduction
+    target: payout_events
+    meaning: "A billed selling or FBN fee is deducted from the balance."
+    grain: "one row per fee record"
+    distinguish_by: [fee_source, fee_event_ref]
+    fields:
+      payout_account_id: "Payments account."
+      customer_id: "The seller."
+      event_date: "Date deducted."
+      fee_source: "selling or fulfill."
+      fee_event_ref: "Fee record deducted."
+      amount: "Amount deducted, positive."
+    account: payments_balance
+    direction: out
+    triggers: []
+  - type: payout_fee_reversal
+    target: payout_events
+    meaning: "A fee credit is returned to the balance."
+    grain: "one row per credited fee record"
+    distinguish_by: [fee_source, fee_event_ref]
+    fields:
+      payout_account_id: "Payments account."
+      customer_id: "The seller."
+      event_date: "Date returned."
+      fee_source: "selling or fulfill."
+      fee_event_ref: "Fee record credited."
+      amount: "Amount returned, positive."
+    account: payments_balance
+    direction: in
+    triggers: []
+  - type: payout_refund_debit
+    target: payout_events
+    meaning: "A buyer refund funded by the seller is debited from the balance."
+    grain: "one row per buyer refund record"
+    distinguish_by: [order_refund_ref]
+    fields:
+      payout_account_id: "Payments account."
+      customer_id: "The seller."
+      event_date: "Date debited."
+      order_id: "Order refunded."
+      order_refund_ref: "The buyer refund record."
+      amount: "Amount debited, positive."
+    account: payments_balance
+    direction: out
+    triggers: []
+  - type: payout_chargeback_debit
+    target: payout_events
+    meaning: "A seller-liable card chargeback is debited from the balance."
+    grain: "one row per chargeback case"
+    distinguish_by: [chargeback_case_id]
+    fields:
+      payout_account_id: "Payments account."
+      customer_id: "The seller."
+      event_date: "Date of the chargeback notice."
+      chargeback_case_id: "Chargeback case."
+      order_id: "Order charged back."
+      amount: "Amount debited, positive."
+    account: payments_balance
+    direction: out
+    triggers:
+      - event: payout:payout_chargeback_fee
+        map: {chargeback_case_id: chargeback_case_id}
+      - event: standing:standing_defect_record
+        map: {order_id: order_id, defect_type: chargeback}
+  - type: payout_chargeback_fee
+    target: payout_events
+    meaning: "The chargeback fee of a seller-liable chargeback, or its return when refunded on a win."
+    grain: "one row per chargeback case per fee movement"
+    distinguish_by: [chargeback_case_id, fee_movement]
+    fields:
+      payout_account_id: "Payments account."
+      customer_id: "The seller."
+      event_date: "Date charged."
+      chargeback_case_id: "Chargeback case."
+      fee_movement: "charged."
+      amount: "Fee, positive."
+    account: payments_balance
+    direction: out
+    triggers: []
+  - type: payout_chargeback_reversal
+    target: payout_events
+    meaning: "The seller wins a chargeback dispute and the debit (and, where refundable, the fee) is returned."
+    grain: "one row per chargeback case per component returned"
+    distinguish_by: [chargeback_case_id, fee_movement]
+    fields:
+      payout_account_id: "Payments account."
+      customer_id: "The seller."
+      event_date: "Date of the issuer decision."
+      chargeback_case_id: "Chargeback case."
+      fee_movement: "debit_returned or fee_returned."
+      amount: "Amount returned, positive."
+    account: payments_balance
+    direction: in
+    triggers: []
+  - type: payout_reimbursement_credit
+    target: payout_events
+    meaning: "An FBN reimbursement is credited to the balance."
+    grain: "one row per reimbursement record"
+    distinguish_by: [reimbursement_ref]
+    fields:
+      payout_account_id: "Payments account."
+      customer_id: "The seller."
+      event_date: "Date credited."
+      reimbursement_ref: "FBN reimbursement record."
+      amount: "Amount credited, positive."
+    account: payments_balance
+    direction: in
+    triggers: []
+  - type: payout_reimbursement_reversal
+    target: payout_events
+    meaning: "An FBN reimbursement is taken back because the units were found."
+    grain: "one row per reversed reimbursement record"
+    distinguish_by: [reimbursement_ref]
+    fields:
+      payout_account_id: "Payments account."
+      customer_id: "The seller."
+      event_date: "Date reversed."
+      reimbursement_ref: "FBN reimbursement reversed."
+      amount: "Amount taken back, positive."
+    account: payments_balance
+    direction: out
+    triggers: []
+  - type: payout_negative_balance_charge
+    target: payout_events
+    meaning: "The card on file is charged to bring a negative balance back to zero."
+    grain: "one row per card charge attempt"
+    distinguish_by: [event_date, charge_attempt]
+    fields:
+      payout_account_id: "Payments account."
+      customer_id: "The seller."
+      event_date: "Date of the attempt."
+      charge_attempt: "Attempt number for this negative balance."
+      charge_outcome: "succeeded or declined."
+      amount: "Amount collected, positive (0.00 when declined)."
+    account: payments_balance
+    direction: in
+    triggers: []
+  - type: payout_hold_place
+    target: payout_accounts
+    mutation: {transition: {from: active, to: on_hold}}
+    meaning: "Payouts are held."
+    grain: "one row per transaction"
+    fields:
+      hold_reason: "Why payouts are held."
+      hold_start_date: "Date the hold began."
+    triggers: []
+  - type: payout_hold_release
+    target: payout_accounts
+    mutation: {transition: {from: on_hold, to: active}}
+    meaning: "The hold is lifted and payouts resume."
+    grain: "one row per transaction"
+    fields:
+      hold_reason: "Reset to none."
+      hold_start_date: "Cleared (empty)."
+    triggers: []
+  - type: payout_request_close
+    target: payout_accounts
+    mutation: {transition: [{from: active, to: closing}, {from: on_hold, to: closing}]}
+    meaning: "The seller asks to close the payments account."
+    grain: "one row per transaction"
+    fields:
+      close_requested_date: "Date of the request."
+    triggers: []
+  - type: payout_close
+    target: payout_accounts
+    mutation: {transition: [{from: closing, to: closed}, {from: pending_verification, to: closed}]}
+    meaning: "The payments account closes."
+    grain: "one row per transaction"
+    fields:
+      closed_date: "Date closed."
+    triggers: []
+  - type: payout_bank_change
+    target: payout_accounts
+    mutation: update
+    meaning: "The seller replaces the bank account payouts are sent to."
+    grain: "one row per transaction"
+    fields:
+      bank_last4: "Last four digits of the new bank account."
+      bank_changed_date: "Date the new account was verified."
+    triggers: []
+  - type: payout_plan_change
+    target: payout_accounts
+    mutation: update
+    meaning: "The account moves to another payout plan."
+    grain: "one row per transaction"
+    fields:
+      variant_name: "New payout plan."
+      plan_changed_date: "Date the change took effect."
+    triggers: []
+
+measures:
+  - id: payout_msr_instant_today
+    window: "The calendar day of the handling date (frozen time)."
+    measure: "Count of, and sum of amount over, payout_disbursement rows of the account with payout_method instant and event_date equal to the handling date."
+  - id: payout_msr_negative_days
+    window: "From negative_since_date to the handling date (frozen time)."
+    measure: "Calendar days elapsed since negative_since_date, counting the day after it as day one; 0 when negative_since_date is empty."
+  - id: payout_msr_trailing_12m_sales
+    window: "Rolling 365 calendar days ending on the handling date (frozen time), inclusive."
+    measure: "Sum of amount over payout_sale_credit rows of the account with event_date in the window."
+
+policies:
+  - id: payout_agg_multi_holding
+    subject: [payout_account_open]
+    rule: >-
+      A seller holds at most one Northloop Payments account; every selling plan, FBN enrollment and order of the seller
+      settles into it. A closed account does not count.
+    eligibility: []
+    params: {max_per_customer: 1}
+  - id: payout_verification
+    subject: [payout_account_open, payout_account_verify, payout_close]
+    rule: >-
+      A payments account pays out only after identity and bank verification; the bank account holder name must match
+      the profile name or business name when bank_name_match_required is true. Identity and bank details are
+      re-verified every reverification interval counted from verified_date; an account whose re-verification is more
+      than the reverification grace days overdue is placed on hold with reason reverification_overdue. A new account
+      starts on Payments Starter. An account still pending verification when its selling plan's verification deadline
+      passes is closed together with that plan.
+    eligibility: []
+  - id: payout_sale_and_reserve
+    subject: [payout_sale_credit, payout_reserve_hold, payout_reserve_release]
+    rule: >-
+      When an order's payment is captured, the seller's balance is credited the item subtotal plus shipping, tax
+      excluded, and the same amount is reserved as a delivery reserve. The delivery reserve is released on the
+      order's delivered_date plus the plan's delivery reserve days, plus the high-value extra hold days when the sale
+      credit is at or above the plan's high-value threshold; an order with no delivered scan is released on its
+      promised delivery date plus the no-scan release days. On a plan with a rolling reserve rate above zero, the rate
+      times the sale credit is additionally held as a rolling_risk reserve, released the rolling reserve hold days
+      after the sale credit date. Release dates are counted in calendar days; a reserve whose release date falls on
+      the handling date is released that day. The plan in force on the sale credit date governs the reserve.
+    eligibility: []
+    params:
+      per_tier:
+        "Payments Starter": {reserve_days: "=delivery_reserve_days", high_value_threshold: "=high_value_order_threshold", high_value_extra_days: "=high_value_extra_hold_days", rolling_rate: "=rolling_reserve_rate"}
+        "Payments Biweekly": {reserve_days: "=delivery_reserve_days", high_value_threshold: "=high_value_order_threshold", high_value_extra_days: "=high_value_extra_hold_days", rolling_rate: "=rolling_reserve_rate"}
+        "Payments Weekly": {reserve_days: "=delivery_reserve_days", high_value_threshold: "=high_value_order_threshold", high_value_extra_days: "=high_value_extra_hold_days", rolling_rate: "=rolling_reserve_rate"}
+        "Payments Daily": {reserve_days: "=delivery_reserve_days", high_value_threshold: "=high_value_order_threshold", high_value_extra_days: "=high_value_extra_hold_days", rolling_rate: "=rolling_reserve_rate"}
+        "Payments Daily Plus": {reserve_days: "=delivery_reserve_days", high_value_threshold: "=high_value_order_threshold", high_value_extra_days: "=high_value_extra_hold_days", rolling_rate: "=rolling_reserve_rate"}
+        "Payments Enterprise": {reserve_days: "=delivery_reserve_days", high_value_threshold: "=high_value_order_threshold", high_value_extra_days: "=high_value_extra_hold_days", rolling_rate: "=rolling_reserve_rate"}
+    formula:
+      rolling_reserve_amount: "round(amount * rolling_reserve_rate, 2)"
+  - id: payout_disbursement_schedule
+    subject: [payout_disbursement]
+    rule: >-
+      Payouts may be sent only while the account is active or closing. The payable amount is the balance less the
+      reserved balance; a payout is sent on each scheduled payout day when the payable amount is at least the plan's
+      minimum payout, for no more than the plan's maximum per payout. No payout is sent during the bank change payout
+      hold counted in calendar days from bank_changed_date. On a plan that allows on-demand payouts the seller may
+      request one standard payout of the payable amount when at least the on-demand interval has passed since the last
+      on-demand payout. A closing account sends one final payout of the entire balance once its final hold has ended.
+      A balance of zero or below is never paid out.
+    eligibility:
+      - id: account_can_pay
+        applies_to: [payout_disbursement]
+        kind: state
+        condition: "Payouts may be sent only while the account is active or closing."
+        evidence_fields: [payout_accounts.status, payout_accounts.payout_account_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [payout_accounts.payout_account_id]
+          action_bindings:
+            payout_accounts.payout_account_id: payout_account_id
+        state_contract:
+          field: payout_accounts.status
+          allowed: [active, closing]
+      - id: bank_change_hold
+        applies_to: [payout_disbursement]
+        kind: time
+        condition: "No payout is sent during the bank change payout hold counted in calendar days from bank_changed_date."
+        evidence_fields: [payout_accounts.bank_changed_date, payout_accounts.payout_account_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [payout_accounts.payout_account_id]
+          action_bindings:
+            payout_accounts.payout_account_id: payout_account_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "bank_changed_date"
+          anchor_source: payout_accounts.bank_changed_date
+          relation: not_before
+          duration_source: variants.bank_change_payout_hold_days
+          unit: calendar_days
+          counting_rule: "counted in calendar days from bank_changed_date"
+          boundary: inclusive
+    formula:
+      payable: "balance - reserved_balance"
+      payout_amount: "min(balance - reserved_balance, max_payout_per_disbursement)"
+  - id: payout_instant_terms
+    subject: [payout_disbursement, payout_instant_fee]
+    rule: >-
+      Instant payouts are available only on plans with instant_payout_available true and only from the payable amount.
+      Each instant payout bears a fee of the instant fee rate times the amount, but never less than the instant minimum
+      fee. The instant payouts of one calendar day may not exceed the plan's daily limit in total or its maximum count.
+    eligibility: []
+    measures: [payout_msr_instant_today]
+    formula:
+      instant_fee: "max(round(amount * instant_payout_fee_rate, 2), instant_payout_min_fee)"
+  - id: payout_debits
+    subject: [payout_fee_deduction, payout_fee_reversal, payout_refund_debit]
+    rule: >-
+      Every billed selling fee and FBN fee is deducted from the balance on its billing date, and every fee credit is
+      returned to it. Every buyer refund funded by the seller is debited from the balance on the refund date; refunds
+      funded by Northloop are never debited. Deductions and debits apply even when they take the balance below zero;
+      the date the balance first goes below zero is recorded as negative_since_date and cleared when it returns to zero
+      or more.
+    eligibility: []
+  - id: payout_chargebacks
+    subject: [payout_chargeback_debit, payout_chargeback_fee, payout_chargeback_reversal]
+    rule: >-
+      A card chargeback on an order is debited to the seller only when the order's liability party is the seller; a
+      chargeback on an order Northloop is liable for is never debited. A seller-liable chargeback is debited in full on
+      the chargeback notice together with the plan's chargeback fee. The seller may dispute a chargeback within the
+      chargeback response days counted in calendar days from the chargeback debit date, at most the per-case dispute
+      limit, by submitting evidence of delivery, signature, an earlier refund or item description. When the issuer
+      decides for the seller, the debit is returned; the fee is returned too only when chargeback_fee_refunded_on_win
+      is true. A chargeback on an order already refunded in full to the buyer is won on refund_already_issued
+      evidence, so the seller never bears both the refund and the chargeback for the same order amount. A
+      chargeback debit is returned only when the seller's dispute on that case is won. A dispute filed
+      after the response window, or lost, books nothing further.
+    eligibility:
+      - id: dispute_won
+        applies_to: [payout_chargeback_reversal]
+        kind: state
+        condition: "A chargeback debit is returned only when the seller's dispute on that case is won."
+        evidence_fields: [payout_chargeback_disputes.dispute_status, payout_chargeback_disputes.chargeback_case_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [payout_chargeback_disputes.chargeback_case_id]
+          action_bindings:
+            payout_chargeback_disputes.chargeback_case_id: chargeback_case_id
+        state_contract:
+          field: payout_chargeback_disputes.dispute_status
+          allowed: [won]
+  - id: payout_negative_balance
+    subject: [payout_negative_balance_charge]
+    rule: >-
+      When the balance has stayed below zero for more than the plan's negative balance card charge days, the card on
+      file is charged for the full deficit. A declined charge is retried up to the retry count, one attempt per
+      business day. A deficit still unpaid after the negative balance collection days is referred for collection; the
+      card is not charged again by this account.
+    eligibility: []
+    measures: [payout_msr_negative_days]
+  - id: payout_holds
+    subject: [payout_hold_place, payout_hold_release]
+    rule: >-
+      Payouts are held when the seller's performance standing is suspended (reason account_suspended), when the bank
+      returns a payout (reason bank_details_invalid), or when re-verification is overdue (reason
+      reverification_overdue). An account_suspended hold is released when the standing is reinstated, or after the
+      suspension fund hold days counted from the suspension date if the standing is deactivated, the balance then being
+      paid out in a final payout. A bank_details_invalid hold is released once new bank details are verified, and the
+      returned payout is re-sent within the resend business days. A reverification_overdue hold is released once
+      re-verification completes. Sale credits, reserves, fees and debits continue to be booked during a hold.
+    eligibility: []
+  - id: payout_reimbursement_postings
+    subject: [payout_reimbursement_credit, payout_reimbursement_reversal, payout_disbursement_return]
+    rule: >-
+      An FBN reimbursement is credited to the balance in full on its reimbursement date and is never reserved; when the
+      reimbursed units are later found, the same amount is taken back. A payout returned by the bank is credited back
+      to the balance on the return date and the account is placed on hold until new bank details are verified.
+    eligibility: []
+  - id: payout_plan_and_bank
+    subject: [payout_plan_change, payout_bank_change]
+    rule: >-
+      A seller may move to a payout plan only when the profile age, the seller's current performance standing level
+      and the trailing 12-month sale credits meet that plan's minimum account age, eligible standing levels and minimum
+      trailing sales. At each plan review an account that no longer qualifies for its plan is moved to the plan's
+      standing fallback plan. A plan change takes effect from the next payout cycle. A new bank account must be
+      verified before it is used, and the bank change payout hold then runs from its verification date.
+    eligibility: []
+    measures: [payout_msr_trailing_12m_sales]
+  - id: payout_closure
+    subject: [payout_request_close, payout_close]
+    rule: >-
+      Closing the payments account is the seller's own decision and is confirmed by the seller. After the request the
+      whole balance, reserves included, is held for the closure final hold days counted from the request date; refunds,
+      claims and chargebacks arriving in that period are still debited. At the end of the hold all reserves are
+      released and the entire balance is paid out, or, if negative, collected from the card on file; the account closes
+      once the balance is zero.
+    eligibility: []

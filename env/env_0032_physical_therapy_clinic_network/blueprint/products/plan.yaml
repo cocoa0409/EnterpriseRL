@@ -1,0 +1,866 @@
+# Insured Plan of Care — the insurance-funded episode of outpatient physical therapy.
+# One holding = one plan of care opened by an initial evaluation for one diagnosis, billed to one
+# payer program. The tier is the payer program the plan is billed under, because the payer program
+# is what decides authorization, certification, cost-sharing collection and billing rules at a
+# real outpatient physical therapy practice.
+
+category: plan
+display_name: Insured Plan of Care
+
+binding:
+  holding_table: care_plans
+  event_tables: [care_plan_events]
+  status_field: status
+  variant_field: variant_name
+  quantity_fields:
+    authorized_visits_remaining: authorized_visits
+    patient_due_balance: patient_due
+
+lifecycle:
+  states: [intake, active, on_hold, discharged, closed]
+  transitions:
+    - {from: intake, to: active, by: agent, means: "The plan of care is activated once the referral, physician certification and authorization requirements of its payer program are on file."}
+    - {from: active, to: on_hold, by: agent, means: "Treatment is paused because authorization is pending, exhausted or expired, certification has lapsed, surgery is pending, or the patient asked to pause."}
+    - {from: on_hold, to: active, by: agent, means: "Treatment resumes after the reason for the hold has been resolved."}
+    - {from: active, to: discharged, by: system, means: "The treating therapist discharges the patient from the plan of care."}
+    - {from: on_hold, to: discharged, by: system, means: "A plan left on hold past the hold limit is discharged for non-attendance."}
+    - {from: discharged, to: closed, by: system, means: "A discharged plan is closed once its patient balance is settled to zero."}
+    - {from: intake, to: closed, by: agent, means: "A plan that never started treatment is closed (authorization denied before treatment, or the patient declined to proceed)."}
+
+accounts:
+  - key: authorized_visits
+    unit: visits
+    meaning: Visits approved by the payer under the plan's authorizations that have not yet been used by billed visits.
+  - key: patient_due
+    unit: USD
+    meaning: The patient's open financial responsibility on this plan of care (copays, coinsurance, deductible and waived non-covered charges less payments and adjustments); a negative value is a credit owed back to the patient.
+
+parameter_schema:
+  prior_auth_required: "Whether the payer program requires an approved prior authorization before treatment visits beyond auth_exempt_visits (boolean)."
+  auth_exempt_visits: "Number of visits, counting the initial evaluation, that may be rendered before an approved authorization is required; 0 where prior_auth_required is false (integer, visits)."
+  auth_counts_evaluation: "Whether the initial evaluation visit draws one visit from the authorized-visit count once an authorization is approved (boolean)."
+  auth_request_lead_days: "Latest point, in calendar days before the current authorization end date, by which an extension request must be submitted; 0 where prior_auth_required is false (integer, calendar days)."
+  auth_renewal_trigger_visits: "Remaining authorized visits at or below which an extension request must be submitted; 0 where prior_auth_required is false (integer, visits)."
+  retro_auth_window_days: "Calendar days after the visit date within which the payer accepts a retroactive authorization request; 0 means retroactive requests are not accepted (integer, calendar days)."
+  auth_pending_followup_business_days: "Business days after submission after which a still-pending authorization request is followed up with the payer; 0 where prior_auth_required is false (integer, business days)."
+  peer_to_peer_window_days: "Calendar days after an authorization denial within which the treating therapist may request a peer-to-peer review; 0 where no authorization is required (integer, calendar days)."
+  appeal_window_days: "Calendar days after a denial within which a written appeal (redetermination or reconsideration for Medicare programs) may be filed (integer, calendar days)."
+  referral_required: "Whether the payer program requires a referral from the primary care provider on file before the initial evaluation (boolean)."
+  referral_valid_days: "Calendar days after the referral date during which the initial evaluation may take place; 0 where referral_required is false (integer, calendar days)."
+  physician_certification_required: "Whether the plan of care must be certified by a physician or non-physician practitioner signature before the plan is activated (boolean)."
+  cert_signature_days: "Calendar days after the initial evaluation within which the certifying signature must be dated for a timely certification; 0 where certification is not required (integer, calendar days)."
+  recert_interval_days: "Maximum length of one certification period, counted from the opened date or the previous certification end date; 0 where certification is not required (integer, calendar days)."
+  progress_report_every_visits: "Maximum number of treatment visits between progress reports; the visit that reaches this count is billed as a progress report visit (integer, visits)."
+  kx_threshold_applies: "Whether the Medicare therapy KX-modifier threshold applies to visits on this plan (boolean)."
+  kx_threshold_amount: "Calendar-year allowed amount for physical therapy and speech-language pathology combined above which visits carry the KX modifier; 0.00 where kx_threshold_applies is false (USD, 2 decimals)."
+  targeted_review_threshold_amount: "Calendar-year allowed amount above which visits are subject to Medicare targeted medical review; 0.00 where kx_threshold_applies is false (USD, 2 decimals)."
+  collect_copay_at_tos: "Whether the plan's per-visit copay is collected at the time of service (boolean)."
+  collect_deductible_estimate_at_tos: "Whether an estimate of the remaining deductible is collected at the time of service (boolean)."
+  tos_deductible_estimate_cap: "Maximum deductible estimate collected at the time of service for one visit; 0.00 where collect_deductible_estimate_at_tos is false (USD, 2 decimals)."
+  coinsurance_billed_after_eob: "Whether coinsurance and deductible responsibility is posted to the patient after the payer's explanation of benefits rather than at the time of service (boolean)."
+  eob_patient_charge_days: "Calendar days after the explanation of benefits is received within which the patient responsibility it shows is posted (integer, calendar days)."
+  cost_share_billable: "Whether any cost-sharing amount may be billed to the patient at all under the payer program (boolean)."
+  unpaid_balance_booking_hold_threshold: "Open patient balance on this plan, more than 60 days past its posting date, at or above which new appointment series may not be booked until the balance is paid or placed on a payment plan; 0.00 means the hold never applies (USD, 2 decimals)."
+  non_covered_waiver_form: "The advance financial-responsibility form used before a non-covered visit: abn (Medicare Advance Beneficiary Notice of Noncoverage), commercial_waiver (commercial non-covered services waiver) or none (enum)."
+  non_covered_billing_allowed: "Whether a visit the payer will not cover may be billed to the patient when the waiver form was signed before the visit (boolean)."
+  self_pay_visit_rate: "Amount billed to the patient for one non-covered visit under a signed waiver (USD, 2 decimals)."
+  benefit_limit_shared_with_ot_st: "Whether the payer's calendar-year visit limit is shared with occupational and speech therapy visits reported elsewhere (boolean)."
+  small_balance_writeoff_allowed: "Whether an open balance at or below small_balance_writeoff_max may be written off after the final statement (boolean)."
+  small_balance_writeoff_max: "Largest open balance that may be written off as a small balance; 0.00 where small_balance_writeoff_allowed is false (USD, 2 decimals)."
+  statement_cycle_days: "Calendar days between consecutive patient statements on an open balance (integer, calendar days)."
+  statements_before_collections: "Number of statements issued on an unpaid balance before the last one is the final notice (integer, statements)."
+  credit_refund_days: "Calendar days after a credit balance arises within which it must be refunded or applied (integer, calendar days)."
+  card_refund_window_days: "Calendar days after the original card payment within which a refund is returned to that card; later refunds are issued by check (integer, calendar days)."
+  credit_offset_other_balances: "Whether a credit balance is first applied to the patient's other open charges on the same plan before any refund (boolean)."
+  hold_max_days: "Calendar days a plan may remain on hold before it is discharged for non-attendance (integer, calendar days)."
+  inactivity_discharge_days: "Calendar days without any billed visit after which an active plan is placed on hold for inactivity (integer, calendar days)."
+  max_visits_per_week: "Maximum billed visits per Monday-to-Sunday week under the payer program's frequency guideline (integer, visits)."
+  timely_filing_days: "Calendar days after the visit date within which the claim must reach the payer; a late claim is written off and never billed to the patient (integer, calendar days)."
+  telehealth_covered: "Whether the payer program covers physical therapy delivered by telehealth (boolean)."
+  reverify_benefits_each_calendar_year: "Whether benefits are re-verified at the first visit of each new calendar year (boolean)."
+  benefit_reverify_interval_days: "Maximum calendar days between benefit verifications on an active plan (integer, calendar days)."
+  missed_visit_fee_billable: "Whether a late-cancellation or no-show fee may be billed to a patient whose visit is funded by this plan (boolean)."
+  copay_per_date_of_service_max: "Maximum copays collected for one date of service across all of the patient's plans with the same payer (integer)."
+  benefit_verification_lead_business_days: "Business days before the initial evaluation by which benefits must be verified (integer, business days)."
+  discharge_summary_days: "Calendar days after discharge within which the discharge summary is sent to the referring provider (integer, calendar days)."
+  max_timed_units_per_visit: "Maximum timed procedure units billed for one visit (integer, units)."
+  unit_counting_method: "How timed minutes convert to billed units: cms_8_minute_rule (total timed minutes across codes) or ama_substantial_portion (each code on its own minutes) (enum)."
+  hardship_discount_eligible: "Whether patient balances on this plan may receive a Patient Hardship Discount Program adjustment (boolean)."
+  payment_plan_eligible: "Whether patient balances on this plan may be moved into a Patient Payment Plan (boolean)."
+
+variants:
+  - name: Commercial PPO Plan of Care
+    rank: 1
+    entry_gate: {payer_class: commercial_ppo, coverage_active_on_evaluation_date: true}
+    parameters: {prior_auth_required: false, auth_exempt_visits: 0, auth_counts_evaluation: false, auth_request_lead_days: 0, auth_renewal_trigger_visits: 0,
+      retro_auth_window_days: 0, auth_pending_followup_business_days: 0, peer_to_peer_window_days: 0, appeal_window_days: 180, referral_required: false,
+      referral_valid_days: 0, physician_certification_required: false, cert_signature_days: 0, recert_interval_days: 0, progress_report_every_visits: 10,
+      kx_threshold_applies: false, kx_threshold_amount: 0.00, targeted_review_threshold_amount: 0.00, collect_copay_at_tos: true, collect_deductible_estimate_at_tos: false,
+      tos_deductible_estimate_cap: 0.00, coinsurance_billed_after_eob: true, eob_patient_charge_days: 5, cost_share_billable: true, unpaid_balance_booking_hold_threshold: 250.00,
+      non_covered_waiver_form: commercial_waiver, non_covered_billing_allowed: true, self_pay_visit_rate: 118.00, benefit_limit_shared_with_ot_st: true, small_balance_writeoff_allowed: true,
+      small_balance_writeoff_max: 9.99, statement_cycle_days: 30, statements_before_collections: 3, credit_refund_days: 30, card_refund_window_days: 120,
+      credit_offset_other_balances: true, hold_max_days: 30, inactivity_discharge_days: 30, max_visits_per_week: 3, timely_filing_days: 90,
+      telehealth_covered: true, reverify_benefits_each_calendar_year: true, benefit_reverify_interval_days: 90, missed_visit_fee_billable: true, copay_per_date_of_service_max: 1,
+      benefit_verification_lead_business_days: 2, discharge_summary_days: 7, max_timed_units_per_visit: 4, unit_counting_method: ama_substantial_portion, hardship_discount_eligible: true,
+      payment_plan_eligible: true}
+  - name: Commercial High-Deductible Plan of Care
+    rank: 2
+    entry_gate: {payer_class: commercial_hdhp, coverage_active_on_evaluation_date: true}
+    parameters: {prior_auth_required: false, auth_exempt_visits: 0, auth_counts_evaluation: false, auth_request_lead_days: 0, auth_renewal_trigger_visits: 0,
+      retro_auth_window_days: 0, auth_pending_followup_business_days: 0, peer_to_peer_window_days: 0, appeal_window_days: 180, referral_required: false,
+      referral_valid_days: 0, physician_certification_required: false, cert_signature_days: 0, recert_interval_days: 0, progress_report_every_visits: 10,
+      kx_threshold_applies: false, kx_threshold_amount: 0.00, targeted_review_threshold_amount: 0.00, collect_copay_at_tos: false, collect_deductible_estimate_at_tos: true,
+      tos_deductible_estimate_cap: 125.00, coinsurance_billed_after_eob: true, eob_patient_charge_days: 5, cost_share_billable: true, unpaid_balance_booking_hold_threshold: 250.00,
+      non_covered_waiver_form: commercial_waiver, non_covered_billing_allowed: true, self_pay_visit_rate: 118.00, benefit_limit_shared_with_ot_st: true, small_balance_writeoff_allowed: true,
+      small_balance_writeoff_max: 9.99, statement_cycle_days: 30, statements_before_collections: 3, credit_refund_days: 30, card_refund_window_days: 120,
+      credit_offset_other_balances: true, hold_max_days: 30, inactivity_discharge_days: 30, max_visits_per_week: 3, timely_filing_days: 90,
+      telehealth_covered: true, reverify_benefits_each_calendar_year: true, benefit_reverify_interval_days: 90, missed_visit_fee_billable: true, copay_per_date_of_service_max: 1,
+      benefit_verification_lead_business_days: 2, discharge_summary_days: 7, max_timed_units_per_visit: 4, unit_counting_method: ama_substantial_portion, hardship_discount_eligible: true,
+      payment_plan_eligible: true}
+  - name: Commercial POS Plan of Care
+    rank: 3
+    entry_gate: {payer_class: commercial_pos, coverage_active_on_evaluation_date: true, pcp_referral_on_file: true}
+    parameters: {prior_auth_required: true, auth_exempt_visits: 1, auth_counts_evaluation: false, auth_request_lead_days: 7, auth_renewal_trigger_visits: 2,
+      retro_auth_window_days: 14, auth_pending_followup_business_days: 5, peer_to_peer_window_days: 14, appeal_window_days: 180, referral_required: true,
+      referral_valid_days: 90, physician_certification_required: false, cert_signature_days: 0, recert_interval_days: 0, progress_report_every_visits: 10,
+      kx_threshold_applies: false, kx_threshold_amount: 0.00, targeted_review_threshold_amount: 0.00, collect_copay_at_tos: true, collect_deductible_estimate_at_tos: false,
+      tos_deductible_estimate_cap: 0.00, coinsurance_billed_after_eob: false, eob_patient_charge_days: 5, cost_share_billable: true, unpaid_balance_booking_hold_threshold: 250.00,
+      non_covered_waiver_form: commercial_waiver, non_covered_billing_allowed: true, self_pay_visit_rate: 118.00, benefit_limit_shared_with_ot_st: true, small_balance_writeoff_allowed: true,
+      small_balance_writeoff_max: 9.99, statement_cycle_days: 30, statements_before_collections: 3, credit_refund_days: 30, card_refund_window_days: 120,
+      credit_offset_other_balances: true, hold_max_days: 30, inactivity_discharge_days: 30, max_visits_per_week: 3, timely_filing_days: 90,
+      telehealth_covered: true, reverify_benefits_each_calendar_year: true, benefit_reverify_interval_days: 90, missed_visit_fee_billable: true, copay_per_date_of_service_max: 1,
+      benefit_verification_lead_business_days: 2, discharge_summary_days: 7, max_timed_units_per_visit: 4, unit_counting_method: ama_substantial_portion, hardship_discount_eligible: true,
+      payment_plan_eligible: true}
+  - name: Commercial HMO Plan of Care
+    rank: 4
+    entry_gate: {payer_class: commercial_hmo, coverage_active_on_evaluation_date: true, pcp_referral_on_file: true}
+    parameters: {prior_auth_required: true, auth_exempt_visits: 1, auth_counts_evaluation: false, auth_request_lead_days: 7, auth_renewal_trigger_visits: 2,
+      retro_auth_window_days: 0, auth_pending_followup_business_days: 5, peer_to_peer_window_days: 14, appeal_window_days: 180, referral_required: true,
+      referral_valid_days: 90, physician_certification_required: false, cert_signature_days: 0, recert_interval_days: 0, progress_report_every_visits: 10,
+      kx_threshold_applies: false, kx_threshold_amount: 0.00, targeted_review_threshold_amount: 0.00, collect_copay_at_tos: true, collect_deductible_estimate_at_tos: false,
+      tos_deductible_estimate_cap: 0.00, coinsurance_billed_after_eob: false, eob_patient_charge_days: 5, cost_share_billable: true, unpaid_balance_booking_hold_threshold: 250.00,
+      non_covered_waiver_form: commercial_waiver, non_covered_billing_allowed: true, self_pay_visit_rate: 118.00, benefit_limit_shared_with_ot_st: true, small_balance_writeoff_allowed: true,
+      small_balance_writeoff_max: 9.99, statement_cycle_days: 30, statements_before_collections: 3, credit_refund_days: 30, card_refund_window_days: 120,
+      credit_offset_other_balances: true, hold_max_days: 30, inactivity_discharge_days: 30, max_visits_per_week: 3, timely_filing_days: 90,
+      telehealth_covered: true, reverify_benefits_each_calendar_year: true, benefit_reverify_interval_days: 90, missed_visit_fee_billable: true, copay_per_date_of_service_max: 1,
+      benefit_verification_lead_business_days: 2, discharge_summary_days: 7, max_timed_units_per_visit: 4, unit_counting_method: ama_substantial_portion, hardship_discount_eligible: true,
+      payment_plan_eligible: true}
+  - name: Medicare Part B Plan of Care
+    rank: 5
+    entry_gate: {payer_class: medicare_part_b, coverage_active_on_evaluation_date: true, medicare_primary: true}
+    parameters: {prior_auth_required: false, auth_exempt_visits: 0, auth_counts_evaluation: false, auth_request_lead_days: 0, auth_renewal_trigger_visits: 0,
+      retro_auth_window_days: 0, auth_pending_followup_business_days: 0, peer_to_peer_window_days: 0, appeal_window_days: 120, referral_required: false,
+      referral_valid_days: 0, physician_certification_required: true, cert_signature_days: 30, recert_interval_days: 90, progress_report_every_visits: 10,
+      kx_threshold_applies: true, kx_threshold_amount: 2480.00, targeted_review_threshold_amount: 3000.00, collect_copay_at_tos: false, collect_deductible_estimate_at_tos: false,
+      tos_deductible_estimate_cap: 0.00, coinsurance_billed_after_eob: true, eob_patient_charge_days: 5, cost_share_billable: true, unpaid_balance_booking_hold_threshold: 250.00,
+      non_covered_waiver_form: abn, non_covered_billing_allowed: true, self_pay_visit_rate: 118.00, benefit_limit_shared_with_ot_st: false, small_balance_writeoff_allowed: false,
+      small_balance_writeoff_max: 0.00, statement_cycle_days: 30, statements_before_collections: 4, credit_refund_days: 60, card_refund_window_days: 120,
+      credit_offset_other_balances: false, hold_max_days: 30, inactivity_discharge_days: 30, max_visits_per_week: 3, timely_filing_days: 365,
+      telehealth_covered: false, reverify_benefits_each_calendar_year: true, benefit_reverify_interval_days: 90, missed_visit_fee_billable: true, copay_per_date_of_service_max: 1,
+      benefit_verification_lead_business_days: 1, discharge_summary_days: 7, max_timed_units_per_visit: 6, unit_counting_method: cms_8_minute_rule, hardship_discount_eligible: true,
+      payment_plan_eligible: true}
+  - name: Medicare Advantage Plan of Care
+    rank: 6
+    entry_gate: {payer_class: medicare_advantage, coverage_active_on_evaluation_date: true, in_network_plan: true}
+    parameters: {prior_auth_required: true, auth_exempt_visits: 1, auth_counts_evaluation: true, auth_request_lead_days: 5, auth_renewal_trigger_visits: 3,
+      retro_auth_window_days: 0, auth_pending_followup_business_days: 3, peer_to_peer_window_days: 14, appeal_window_days: 65, referral_required: false,
+      referral_valid_days: 0, physician_certification_required: true, cert_signature_days: 30, recert_interval_days: 90, progress_report_every_visits: 10,
+      kx_threshold_applies: false, kx_threshold_amount: 0.00, targeted_review_threshold_amount: 0.00, collect_copay_at_tos: true, collect_deductible_estimate_at_tos: false,
+      tos_deductible_estimate_cap: 0.00, coinsurance_billed_after_eob: false, eob_patient_charge_days: 5, cost_share_billable: true, unpaid_balance_booking_hold_threshold: 250.00,
+      non_covered_waiver_form: none, non_covered_billing_allowed: false, self_pay_visit_rate: 118.00, benefit_limit_shared_with_ot_st: true, small_balance_writeoff_allowed: false,
+      small_balance_writeoff_max: 0.00, statement_cycle_days: 30, statements_before_collections: 3, credit_refund_days: 60, card_refund_window_days: 120,
+      credit_offset_other_balances: false, hold_max_days: 30, inactivity_discharge_days: 30, max_visits_per_week: 3, timely_filing_days: 180,
+      telehealth_covered: true, reverify_benefits_each_calendar_year: true, benefit_reverify_interval_days: 30, missed_visit_fee_billable: true, copay_per_date_of_service_max: 1,
+      benefit_verification_lead_business_days: 2, discharge_summary_days: 7, max_timed_units_per_visit: 4, unit_counting_method: cms_8_minute_rule, hardship_discount_eligible: true,
+      payment_plan_eligible: true}
+  - name: Medicaid Managed Care Plan of Care
+    rank: 7
+    entry_gate: {payer_class: medicaid_managed_care, coverage_active_on_evaluation_date: true, physician_order_on_file: true}
+    parameters: {prior_auth_required: true, auth_exempt_visits: 1, auth_counts_evaluation: true, auth_request_lead_days: 10, auth_renewal_trigger_visits: 3,
+      retro_auth_window_days: 30, auth_pending_followup_business_days: 10, peer_to_peer_window_days: 10, appeal_window_days: 60, referral_required: false,
+      referral_valid_days: 0, physician_certification_required: true, cert_signature_days: 30, recert_interval_days: 180, progress_report_every_visits: 12,
+      kx_threshold_applies: false, kx_threshold_amount: 0.00, targeted_review_threshold_amount: 0.00, collect_copay_at_tos: false, collect_deductible_estimate_at_tos: false,
+      tos_deductible_estimate_cap: 0.00, coinsurance_billed_after_eob: false, eob_patient_charge_days: 5, cost_share_billable: false, unpaid_balance_booking_hold_threshold: 0.00,
+      non_covered_waiver_form: none, non_covered_billing_allowed: false, self_pay_visit_rate: 118.00, benefit_limit_shared_with_ot_st: true, small_balance_writeoff_allowed: false,
+      small_balance_writeoff_max: 0.00, statement_cycle_days: 30, statements_before_collections: 3, credit_refund_days: 60, card_refund_window_days: 120,
+      credit_offset_other_balances: false, hold_max_days: 30, inactivity_discharge_days: 30, max_visits_per_week: 2, timely_filing_days: 365,
+      telehealth_covered: true, reverify_benefits_each_calendar_year: true, benefit_reverify_interval_days: 30, missed_visit_fee_billable: false, copay_per_date_of_service_max: 1,
+      benefit_verification_lead_business_days: 1, discharge_summary_days: 7, max_timed_units_per_visit: 4, unit_counting_method: cms_8_minute_rule, hardship_discount_eligible: false,
+      payment_plan_eligible: false}
+
+events:
+  - type: plan_opened
+    target: care_plans
+    mutation: create
+    meaning: A plan of care is opened on the date of the patient's initial evaluation, with the payer program, referral and verified benefits recorded.
+    grain: one row per plan of care
+    fields:
+      care_plan_id: reference number of the new plan of care
+      customer_id: the patient
+      variant_name: payer program tier the plan is billed under
+      opened_date: date of the initial evaluation
+      clinic_name: clinic where the patient is treated
+      payer_name: insurance company or plan name as printed on the card
+      member_number: member number as printed on the insurance card
+      referring_provider: referring or certifying provider
+      referral_date: date of the referral on file; empty where no referral is required
+      diagnosis_code: treating ICD-10-CM diagnosis code
+      copay_amount: per-visit copay from benefit verification
+      coinsurance_percent: coinsurance percentage from benefit verification
+      deductible_remaining: deductible still to be met at verification
+      benefit_year_visit_limit: payer's calendar-year therapy visit limit
+      benefit_visits_used_elsewhere: visits the payer reports as already used this calendar year at other providers
+      prior_therapy_allowed_ytd: Medicare-reported allowed therapy amount already accrued this calendar year at other providers
+      benefits_verified_date: date benefits were verified
+    triggers:
+      - event: plan:plan_visit_billed
+        map: {visit_kind: evaluation}
+  - type: plan_activated
+    target: care_plans
+    mutation: {transition: {from: intake, to: active}}
+    meaning: The plan of care is activated for treatment once referral, certification and authorization requirements are on file.
+    grain: one row per transaction
+    fields:
+      status: becomes active
+      certification_end_date: last day of the first certification period where certification applies
+    triggers: []
+  - type: plan_benefits_reverified
+    target: care_plans
+    mutation: update
+    meaning: Insurance benefits on the plan are re-verified with the payer and the verified cost-sharing figures are replaced.
+    grain: one row per transaction
+    fields:
+      copay_amount: re-verified per-visit copay
+      coinsurance_percent: re-verified coinsurance percentage
+      deductible_remaining: re-verified remaining deductible
+      benefit_year_visit_limit: re-verified calendar-year visit limit
+      benefit_visits_used_elsewhere: re-verified visits used elsewhere this calendar year
+      prior_therapy_allowed_ytd: re-verified Medicare allowed amount accrued elsewhere this calendar year
+      benefits_verified_date: date of this verification
+    triggers: []
+  - type: plan_recertified
+    target: care_plans
+    mutation: update
+    meaning: A new certification period begins on the plan when the physician signs the updated plan of care.
+    grain: one row per transaction
+    fields:
+      certification_end_date: last day of the new certification period
+      physician_signed_date: date of the certifying signature
+    triggers: []
+  - type: plan_auth_recorded
+    target: care_plans
+    mutation: update
+    meaning: The plan's current authorization number and end date are updated to those of the newest approved authorization.
+    grain: one row per transaction
+    fields:
+      auth_number: authorization number now in force
+      auth_end_date: last date of service the authorization covers
+    triggers: []
+  - type: plan_held
+    target: care_plans
+    mutation: {transition: {from: active, to: on_hold}}
+    meaning: Treatment on the plan is paused for a recorded reason.
+    grain: one row per transaction
+    fields:
+      status: becomes on_hold
+      hold_reason: why the plan was paused
+      hold_start_date: date the hold began
+    triggers: []
+  - type: plan_resumed
+    target: care_plans
+    mutation: {transition: {from: on_hold, to: active}}
+    meaning: Treatment on a paused plan resumes.
+    grain: one row per transaction
+    fields:
+      status: becomes active
+      hold_reason: cleared to none
+    triggers: []
+  - type: plan_discharged
+    target: care_plans
+    mutation: {transition: [{from: active, to: discharged}, {from: on_hold, to: discharged}]}
+    meaning: The patient is discharged from the plan of care by the therapist or for non-attendance.
+    grain: one row per transaction
+    fields:
+      status: becomes discharged
+      discharge_reason: why the patient was discharged
+      discharge_date: date of discharge
+    triggers:
+      - event: series:series_visits_released
+        map: {release_reason: plan_discharged}
+  - type: plan_closed
+    target: care_plans
+    mutation: {transition: [{from: discharged, to: closed}, {from: intake, to: closed}]}
+    meaning: The plan of care is closed, either after discharge with a settled balance or before any treatment took place.
+    grain: one row per transaction
+    fields:
+      status: becomes closed
+      closed_date: date the plan was closed
+    triggers: []
+  - type: plan_auth_requested
+    target: care_plan_events
+    meaning: An authorization request (initial, extension, retroactive, peer-to-peer or appeal) is submitted to the payer for the plan.
+    grain: one row per request submitted to the payer
+    distinguish_by: [auth_kind, event_date]
+    fields:
+      event_date: date the request was submitted
+      auth_kind: kind of request
+      requested_visits: number of visits requested
+      visit_date: for a retroactive request, the visit date of the earliest visit it asks to cover; otherwise empty
+      source_event_id: for a peer-to-peer or appeal request, the reference of the denial it contests; otherwise empty
+    triggers: []
+  - type: plan_auth_approved
+    target: care_plan_events
+    meaning: The payer approves a number of visits for a date span under an authorization number.
+    grain: one row per payer approval
+    distinguish_by: [auth_number, auth_kind, auth_start_date]
+    fields:
+      event_date: date the approval was received
+      auth_number: payer authorization number
+      auth_kind: kind of request the approval answers
+      auth_start_date: first date of service covered
+      auth_end_date: last date of service covered
+      visits: number of visits approved
+      source_event_id: reference of the request this approval answers
+    account: authorized_visits
+    direction: in
+    triggers:
+      - event: plan:plan_auth_recorded
+        map: {auth_number: auth_number, auth_end_date: auth_end_date}
+  - type: plan_auth_denied
+    target: care_plan_events
+    meaning: The payer denies an authorization request in whole.
+    grain: one row per payer denial
+    distinguish_by: [auth_kind, event_date]
+    fields:
+      event_date: date the denial was received
+      auth_kind: kind of request denied
+      denial_reason: payer's stated reason
+      source_event_id: reference of the request that was denied
+    triggers: []
+  - type: plan_visit_billed
+    target: care_plan_events
+    meaning: One visit (evaluation, re-evaluation, progress report, treatment or telehealth treatment) is billed to the payer under the plan.
+    grain: one row per billed visit (one date of service on one plan)
+    distinguish_by: [visit_date, visit_kind]
+    fields:
+      event_date: date the claim line was created
+      visit_date: date of service
+      visit_kind: kind of visit
+      cpt_units: timed procedure units billed
+      billed_amount: charge submitted to the payer
+      allowed_amount: payer allowed amount expected for the visit
+      kx_modifier: whether the visit carries the KX modifier
+      auth_number: authorization the visit is billed against; empty where none applies
+      visits: authorized visits this visit draws (1, or 0 where it draws none)
+    account: authorized_visits
+    direction: out
+    triggers:
+      - event: plan:plan_patient_charge_posted
+        map: {visit_date: visit_date}
+  - type: plan_patient_charge_posted
+    target: care_plan_events
+    meaning: A patient-responsibility charge (copay, deductible estimate, coinsurance, deductible after EOB, a waived non-covered visit, or a balance returned from a Patient Payment Plan) is posted to the patient's balance on the plan.
+    grain: one row per patient charge per visit and charge kind (a returned charge is one row per original charge)
+    distinguish_by: [charge_kind, visit_date, source_event_id]
+    fields:
+      event_date: date posted
+      visit_date: date of service the charge belongs to
+      charge_kind: what the charge is
+      amount: amount charged to the patient (positive)
+      source_event_id: reference of the billed visit the charge belongs to, or of the original charge for a returned_from_payment_plan charge
+    account: patient_due
+    direction: in
+    triggers: []
+  - type: plan_patient_payment
+    target: care_plan_events
+    meaning: The patient pays toward their balance on the plan.
+    grain: one row per payment received
+    distinguish_by: [event_date, source_event_id, payment_method, amount]
+    fields:
+      event_date: date the payment was received
+      amount: amount paid (positive)
+      payment_method: how the patient paid
+      channel: where the payment was taken
+      source_event_id: reference of the patient charge the payment is applied to
+    account: patient_due
+    direction: out
+    triggers: []
+  - type: plan_patient_adjustment
+    target: care_plan_events
+    meaning: An amount is removed from the patient's balance on the plan without a patient payment.
+    grain: one row per adjustment of one patient charge
+    distinguish_by: [adjustment_kind, source_event_id]
+    fields:
+      event_date: date of the adjustment
+      adjustment_kind: why the balance is reduced
+      amount: amount removed from the balance (positive)
+      source_event_id: reference of the patient charge adjusted
+    account: patient_due
+    direction: out
+    triggers: []
+  - type: plan_patient_refund
+    target: care_plan_events
+    meaning: A credit balance on the plan is refunded to the patient.
+    grain: one row per refund of one payment
+    distinguish_by: [source_event_id, refund_method]
+    fields:
+      event_date: date the refund was issued
+      amount: amount refunded (positive)
+      refund_method: how the refund is returned
+      source_event_id: reference of the patient payment being refunded
+    account: patient_due
+    direction: in
+    triggers: []
+  - type: plan_waiver_signed
+    target: care_plan_events
+    meaning: The patient signs an advance financial-responsibility waiver for visits the payer is not expected to cover.
+    grain: one row per signed waiver
+    distinguish_by: [waiver_kind, visit_date]
+    fields:
+      event_date: date the patient signed
+      waiver_kind: which form was signed
+      visit_date: first date of service the waiver covers
+    triggers: []
+  - type: plan_statement_issued
+    target: care_plan_events
+    meaning: A patient statement is issued for the open balance on the plan.
+    grain: one row per statement
+    distinguish_by: [event_date, statement_sequence]
+    fields:
+      event_date: statement date
+      statement_sequence: ordinal of this statement on the current unpaid balance (1 for the first)
+      amount: balance shown on the statement
+    triggers: []
+
+measures:
+  - id: plan_msr_dos_visits_cy
+    window: the current calendar year (January 1 to December 31 of the year of frozen_time)
+    measure: count of distinct visit_date values of plan_visit_billed rows across all of the patient's care plans whose payer_name equals this plan's payer_name
+  - id: plan_msr_allowed_cy
+    window: the current calendar year (January 1 to December 31 of the year of frozen_time)
+    measure: sum of allowed_amount of plan_visit_billed rows across all of the patient's care plans of tier Medicare Part B Plan of Care
+  - id: plan_msr_visits_since_progress
+    window: since the latest plan_visit_billed row on this plan whose visit_kind is evaluation, re_evaluation or progress_report
+    measure: count of plan_visit_billed rows on this plan with visit_kind treatment or telehealth_treatment after that row
+
+policies:
+  - id: plan_agg_multi_holding
+    subject: [plan_opened]
+    rule: >-
+      A patient may hold at most max_per_customer plans of care that are not closed at the same time, one per
+      distinct diagnosis being treated. A new plan of care is not opened when the patient already holds a plan of care that is not closed with the same diagnosis code;
+      the new episode is treated under the existing plan, and a discharged plan for the same diagnosis is not reopened
+      but closed first once its balance is settled. When the cap is reached, the new diagnosis waits until one of the
+      open plans is closed.
+    eligibility:
+      - id: no_open_plan_same_diagnosis
+        applies_to: [plan_opened]
+        kind: dedup
+        condition: "A new plan of care is not opened when the patient already holds a plan of care that is not closed with the same diagnosis code;"
+        evidence_fields: [care_plans.customer_id, care_plans.diagnosis_code, care_plans.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [care_plans.customer_id, care_plans.diagnosis_code]
+          action_bindings:
+            care_plans.customer_id: customer_id
+            care_plans.diagnosis_code: diagnosis_code
+        dedup_contract:
+          table: care_plans
+          mode: separate_record
+          object_bindings: {customer_id: customer_id, diagnosis_code: diagnosis_code}
+          duplicate_filters: {status: [intake, active, on_hold, discharged]}
+          distinct_fields: [opened_date]
+    params:
+      max_per_customer: 2
+
+  - id: plan_agg_benefit_visit_limit
+    subject: [plan_visit_billed, plan_waiver_signed, plan_patient_charge_posted]
+    rule: >-
+      The payer's calendar-year visit limit on file (benefit_year_visit_limit) is consumed jointly by every plan of care
+      the patient holds with the same payer and by the visits the payer reports as used elsewhere
+      (benefit_visits_used_elsewhere); where benefit_limit_shared_with_ot_st is true those reported visits include
+      occupational and speech therapy. A date of service counts once even when two plans are treated that day, so the
+      visits used are benefit_visits_used_elsewhere plus plan_msr_dos_visits_cy. A visit whose date of service would
+      make the visits used exceed the limit is not covered. A visit beyond the visit limit is billed to the patient only when a waiver signed before that visit date is on file and the tier allows non-covered billing;
+      the waiver must be the tier's non_covered_waiver_form, the patient is then charged self_pay_visit_rate as a
+      non_covered_service charge, and the visit is not billed against an authorization. Without such a waiver, or where non_covered_billing_allowed is false, the visit is not
+      rendered as a covered visit and nothing is charged to the patient for it. A benefit_year_visit_limit of 0 on file
+      means the payer reported no visit limit.
+    eligibility:
+      - id: waiver_before_noncovered_visit
+        applies_to: [plan_patient_charge_posted]
+        kind: authorization
+        condition: "A visit beyond the visit limit is billed to the patient only when a waiver signed before that visit date is on file and the tier allows non-covered billing;"
+        evidence_fields: [care_plan_events.event_type, care_plan_events.event_date, care_plan_events.visit_date, care_plans.variant_name]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [care_plan_events.visit_date]
+          action_bindings:
+            care_plan_events.visit_date: visit_date
+    formula:
+      visits_used_after: benefit_visits_used_elsewhere + plan_msr_dos_visits_cy + 1
+      covered: benefit_year_visit_limit == 0 or visits_used_after <= benefit_year_visit_limit
+      non_covered_charge: self_pay_visit_rate
+    measures: [plan_msr_dos_visits_cy]
+
+  - id: plan_opening_requirements
+    subject: [plan_opened, plan_activated, plan_closed]
+    rule: >-
+      Benefits are verified with the payer no later than benefit_verification_lead_business_days business days before the
+      initial evaluation, and the verified copay, coinsurance, deductible, visit limit and visits used elsewhere are
+      recorded when the plan is opened. Where referral_required is true, the initial evaluation takes place no later than referral_valid_days calendar days after the referral date on file.
+      Days are counted as calendar days from the referral date, the referral date itself being day zero. An evaluation
+      outside that window needs a new referral before the plan is opened. The plan of care is activated only when the certifying signature is on file for tiers where physician_certification_required is true.
+      A signature dated within cert_signature_days calendar days after the evaluation is a timely certification; a later
+      signature is still accepted as a delayed certification, but no treatment visit is billed while it is missing.
+      On activation the first certification period ends recert_interval_days calendar days after the opened date (no
+      certification end date is set where recert_interval_days is 0). Where prior_auth_required is true, activation
+      also requires an approved authorization on file unless the next visit is still within auth_exempt_visits. A plan
+      still in intake whose initial authorization request is denied, or whose patient declines to proceed, is closed
+      without treatment.
+    eligibility:
+      - id: referral_window
+        applies_to: [plan_opened]
+        kind: time
+        condition: "Where referral_required is true, the initial evaluation takes place no later than referral_valid_days calendar days after the referral date on file."
+        evidence_fields: [care_plans.referral_date, care_plans.variant_name]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [care_plans.referral_date]
+          action_bindings:
+            care_plans.referral_date: referral_date
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the referral date on file
+          anchor_source: care_plans.referral_date
+          relation: not_after
+          duration_source: variants.referral_valid_days
+          unit: calendar_days
+          counting_rule: "Days are counted as calendar days from the referral date, the referral date itself being day zero."
+          boundary: inclusive
+      - id: certification_on_file
+        applies_to: [plan_activated]
+        kind: authorization
+        condition: "The plan of care is activated only when the certifying signature is on file for tiers where physician_certification_required is true."
+        evidence_fields: [care_plans.physician_signed_date, care_plans.variant_name, care_plans.care_plan_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [care_plans.care_plan_id]
+          action_bindings:
+            care_plans.care_plan_id: care_plan_id
+
+  - id: plan_visit_authorization
+    subject: [plan_visit_billed]
+    rule: >-
+      A visit is billed against the plan only while the plan is in intake or active status. The initial evaluation is
+      billed in intake; every other visit requires active status. Where prior_auth_required is true, a visit after the first auth_exempt_visits visits is billed only when an approved authorization covers the visit date and still has visits remaining;
+      the visit then records that authorization number and draws one authorized visit, and an evaluation draws one
+      authorized visit only where auth_counts_evaluation is true. Where prior_auth_required is false the visit records
+      no authorization number and draws no authorized visit. Where physician_certification_required is true, no visit
+      dated after the certification end date is billed until the plan is recertified. Visits on one plan may not exceed
+      max_visits_per_week in a Monday-to-Sunday week. Timed units are counted by unit_counting_method and capped at
+      max_timed_units_per_visit. A telehealth_treatment visit is billed only where telehealth_covered is true. A claim
+      not filed within timely_filing_days calendar days after the visit date is written off and is never billed to the
+      patient.
+    eligibility:
+      - id: plan_billable_status
+        applies_to: [plan_visit_billed]
+        kind: state
+        condition: "A visit is billed against the plan only while the plan is in intake or active status."
+        evidence_fields: [care_plans.status, care_plans.care_plan_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [care_plans.care_plan_id]
+          action_bindings:
+            care_plans.care_plan_id: care_plan_id
+        state_contract:
+          field: care_plans.status
+          allowed: [intake, active]
+      - id: authorization_covers_visit
+        applies_to: [plan_visit_billed]
+        kind: authorization
+        condition: "Where prior_auth_required is true, a visit after the first auth_exempt_visits visits is billed only when an approved authorization covers the visit date and still has visits remaining;"
+        evidence_fields: [care_plan_events.auth_number, care_plan_events.auth_start_date, care_plan_events.auth_end_date, care_plans.authorized_visits_remaining]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [care_plan_events.auth_number]
+          action_bindings:
+            care_plan_events.auth_number: auth_number
+
+  - id: plan_evt_time_of_service_collection
+    subject: [plan_patient_charge_posted]
+    rule: >-
+      Patient responsibility is posted only while the plan is not closed. Where cost_share_billable is false nothing
+      is ever posted to the patient for a covered visit. Where collect_copay_at_tos is true the copay on file is posted
+      as a copay charge on each billed visit, but no more than copay_per_date_of_service_max copays are posted for one
+      date of service across all of the patient's plans with the same payer, and a copay of 0.00 on file posts nothing.
+      Where collect_deductible_estimate_at_tos is true and deductible remains on file, a deductible_estimate charge of
+      the lower of the visit's allowed amount, the deductible remaining and tos_deductible_estimate_cap is posted. Where
+      coinsurance_billed_after_eob is true, the coinsurance and any deductible shown on the payer's explanation of
+      benefits are posted as coinsurance or deductible charges within eob_patient_charge_days calendar days after the
+      explanation of benefits arrives, less any deductible estimate already posted for that visit. A non_covered_service
+      charge is posted only under plan_agg_benefit_visit_limit. A returned_from_payment_plan charge re-posts the unpaid
+      part of a charge that came back from a defaulted or cancelled Patient Payment Plan and carries the original
+      charge's reference.
+    eligibility:
+      - id: plan_not_closed_for_charges
+        applies_to: [plan_patient_charge_posted]
+        kind: state
+        condition: "Patient responsibility is posted only while the plan is not closed."
+        evidence_fields: [care_plans.status, care_plans.care_plan_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [care_plans.care_plan_id]
+          action_bindings:
+            care_plans.care_plan_id: care_plan_id
+        state_contract:
+          field: care_plans.status
+          allowed: [intake, active, on_hold, discharged]
+    params:
+      per_tier:
+        Commercial PPO Plan of Care: {collect_copay_at_tos: "=collect_copay_at_tos", collect_deductible_estimate_at_tos: "=collect_deductible_estimate_at_tos", tos_deductible_estimate_cap: "=tos_deductible_estimate_cap"}
+        Commercial High-Deductible Plan of Care: {collect_copay_at_tos: "=collect_copay_at_tos", collect_deductible_estimate_at_tos: "=collect_deductible_estimate_at_tos", tos_deductible_estimate_cap: "=tos_deductible_estimate_cap"}
+        Commercial POS Plan of Care: {collect_copay_at_tos: "=collect_copay_at_tos", collect_deductible_estimate_at_tos: "=collect_deductible_estimate_at_tos", tos_deductible_estimate_cap: "=tos_deductible_estimate_cap"}
+        Commercial HMO Plan of Care: {collect_copay_at_tos: "=collect_copay_at_tos", collect_deductible_estimate_at_tos: "=collect_deductible_estimate_at_tos", tos_deductible_estimate_cap: "=tos_deductible_estimate_cap"}
+        Medicare Part B Plan of Care: {collect_copay_at_tos: "=collect_copay_at_tos", collect_deductible_estimate_at_tos: "=collect_deductible_estimate_at_tos", tos_deductible_estimate_cap: "=tos_deductible_estimate_cap"}
+        Medicare Advantage Plan of Care: {collect_copay_at_tos: "=collect_copay_at_tos", collect_deductible_estimate_at_tos: "=collect_deductible_estimate_at_tos", tos_deductible_estimate_cap: "=tos_deductible_estimate_cap"}
+        Medicaid Managed Care Plan of Care: {collect_copay_at_tos: "=collect_copay_at_tos", collect_deductible_estimate_at_tos: "=collect_deductible_estimate_at_tos", tos_deductible_estimate_cap: "=tos_deductible_estimate_cap"}
+    formula:
+      when: cost_share_billable
+      copay_charge: copay_amount if collect_copay_at_tos else 0
+      deductible_estimate_charge: min(allowed_amount, deductible_remaining, tos_deductible_estimate_cap) if collect_deductible_estimate_at_tos else 0
+
+  - id: plan_medicare_kx_threshold
+    subject: [plan_visit_billed]
+    rule: >-
+      Where kx_threshold_applies is true, the calendar-year therapy allowed total is prior_therapy_allowed_ytd plus
+      plan_msr_allowed_cy. A visit whose allowed amount brings that total above kx_threshold_amount carries the KX
+      modifier, attesting that continued therapy is medically necessary, and every later visit in the calendar year
+      carries it too. Once the total would exceed targeted_review_threshold_amount the plan is flagged for possible
+      targeted medical review and treatment continues with the KX modifier. Where kx_threshold_applies is false the
+      KX modifier is never applied. The threshold is not a hard cap and never by itself makes a visit non-covered.
+    eligibility: []
+    formula:
+      ytd_after_visit: prior_therapy_allowed_ytd + plan_msr_allowed_cy + allowed_amount
+      kx_modifier: kx_threshold_applies and ytd_after_visit > kx_threshold_amount
+      targeted_review_flag: kx_threshold_applies and ytd_after_visit > targeted_review_threshold_amount
+    measures: [plan_msr_allowed_cy]
+
+  - id: plan_certification_and_progress
+    subject: [plan_recertified, plan_visit_billed]
+    rule: >-
+      Where physician_certification_required is true, a new certification period starts the day after the current
+      certification end date and ends recert_interval_days calendar days later; it is recorded only when the physician
+      signs the updated plan, and the new period may start no earlier than the day after the prior one ends. On every
+      tier, once plan_msr_visits_since_progress reaches progress_report_every_visits minus one, the next visit is billed
+      with visit_kind progress_report, which resets the count. A re_evaluation visit is billed only when the plan of care
+      changes materially or at recertification, never routinely.
+    eligibility: []
+    measures: [plan_msr_visits_since_progress]
+
+  - id: plan_evt_authorization_requests
+    subject: [plan_auth_requested, plan_auth_approved, plan_auth_denied, plan_auth_recorded]
+    rule: >-
+      Authorization requests are submitted only while the plan is in intake, active or on_hold status. Where
+      prior_auth_required is true, an extension request is submitted once the remaining authorized visits fall to
+      auth_renewal_trigger_visits or fewer, and in any case no later than auth_request_lead_days calendar days before
+      the current authorization end date. A request still pending after auth_pending_followup_business_days business
+      days is followed up with the payer. A retroactive authorization request is submitted no later than retro_auth_window_days calendar days after the visit date of the earliest visit it asks to cover.
+      Days are counted as calendar days from the visit date, the visit date itself being day zero. A retro_auth_window_days
+      of 0 means the payer accepts no retroactive request, and visits rendered without authorization are then written
+      off and never billed to the patient. After a denial, a peer_to_peer request may be made within
+      peer_to_peer_window_days calendar days, and a written appeal is submitted no later than appeal_window_days calendar days after the date the denial was received.
+      Days are counted as calendar days from the denial date, the denial date itself being day zero. An approval records its authorization number, date span and approved visits, and the plan's current authorization
+      number and end date are updated to the newest approval. An active plan whose authorized visits are exhausted or
+      whose authorization has ended is placed on hold for authorization until a new approval arrives.
+    eligibility:
+      - id: auth_request_status
+        applies_to: [plan_auth_requested]
+        kind: state
+        condition: "Authorization requests are submitted only while the plan is in intake, active or on_hold status."
+        evidence_fields: [care_plans.status, care_plans.care_plan_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [care_plans.care_plan_id]
+          action_bindings:
+            care_plans.care_plan_id: care_plan_id
+        state_contract:
+          field: care_plans.status
+          allowed: [intake, active, on_hold]
+      - id: retro_request_window
+        applies_to: [plan_auth_requested]
+        kind: time
+        condition: "A retroactive authorization request is submitted no later than retro_auth_window_days calendar days after the visit date of the earliest visit it asks to cover."
+        evidence_fields: [care_plan_events.visit_date, care_plans.variant_name]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [care_plan_events.visit_date]
+          action_bindings:
+            care_plan_events.visit_date: visit_date
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the visit date of the earliest visit it asks to cover
+          anchor_source: care_plan_events.visit_date
+          relation: not_after
+          duration_source: variants.retro_auth_window_days
+          unit: calendar_days
+          counting_rule: "Days are counted as calendar days from the visit date, the visit date itself being day zero."
+          boundary: inclusive
+      - id: appeal_window
+        applies_to: [plan_auth_requested]
+        kind: time
+        condition: "a written appeal is submitted no later than appeal_window_days calendar days after the date the denial was received."
+        evidence_fields: [care_plan_events.event_date, care_plan_events.care_plan_event_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [care_plan_events.care_plan_event_id]
+          action_bindings:
+            care_plan_events.care_plan_event_id: source_event_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the date the denial was received
+          anchor_source: care_plan_events.event_date
+          relation: not_after
+          duration_source: variants.appeal_window_days
+          unit: calendar_days
+          counting_rule: "Days are counted as calendar days from the denial date, the denial date itself being day zero."
+          boundary: inclusive
+
+  - id: plan_evt_payment_application
+    subject: [plan_patient_payment, plan_patient_refund]
+    rule: >-
+      Payments are taken only on a plan that is not closed. A payment is applied to the patient charge the patient names;
+      when none is named it is applied to the oldest open charge by posting date. Where a payment leaves the plan in
+      credit and credit_offset_other_balances is true, the credit is first applied to any other open charge on the same
+      plan; any remaining credit is refunded within credit_refund_days calendar days after it arose. A refund goes back
+      to the original card when it is issued within card_refund_window_days calendar days of the card payment, and by
+      check otherwise or when the payment was not made by card. A refund never exceeds the payment it returns.
+    eligibility:
+      - id: payment_plan_not_closed
+        applies_to: [plan_patient_payment]
+        kind: state
+        condition: "Payments are taken only on a plan that is not closed."
+        evidence_fields: [care_plans.status, care_plans.care_plan_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [care_plans.care_plan_id]
+          action_bindings:
+            care_plans.care_plan_id: care_plan_id
+        state_contract:
+          field: care_plans.status
+          allowed: [intake, active, on_hold, discharged]
+
+  - id: plan_evt_balance_adjustments
+    subject: [plan_patient_adjustment, plan_statement_issued]
+    rule: >-
+      Statements are issued on an open patient balance every statement_cycle_days calendar days, numbered from 1 for
+      that balance; statement number statements_before_collections is the final notice. An unpaid balance is transferred to collections no earlier than statement_cycle_days calendar days after the issue date of the final statement.
+      Days are counted as calendar days from the statement date, the statement date itself being day zero. A balance on
+      a Patient Payment Plan in good standing or under a pending hardship application is never transferred. Where
+      small_balance_writeoff_allowed is true, a balance at or below small_balance_writeoff_max still open after the final
+      statement is written off as small_balance_writeoff instead of being transferred. A charge posted above what the
+      payer's explanation of benefits or the benefits on file support is corrected by a billing_error_correction for the
+      excess. A charge for a visit whose claim missed timely_filing_days is removed in full as timely_filing_writeoff. A
+      hardship_discount is posted only from an approved Patient Hardship Discount Program determination and only where
+      hardship_discount_eligible is true. A transfer_to_payment_plan moves the enrolled amount of a charge into a Patient
+      Payment Plan and only where payment_plan_eligible is true. No other adjustment kind exists; copays are never
+      waived as a courtesy.
+    eligibility:
+      - id: final_statement_aged
+        applies_to: [plan_patient_adjustment]
+        kind: time
+        condition: "An unpaid balance is transferred to collections no earlier than statement_cycle_days calendar days after the issue date of the final statement."
+        evidence_fields: [care_plan_events.event_date, care_plan_events.statement_sequence, care_plan_events.care_plan_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [care_plan_events.care_plan_id]
+          action_bindings:
+            care_plan_events.care_plan_id: care_plan_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the issue date of the final statement
+          anchor_source: care_plan_events.event_date
+          relation: not_before
+          duration_source: variants.statement_cycle_days
+          unit: calendar_days
+          counting_rule: "Days are counted as calendar days from the statement date, the statement date itself being day zero."
+          boundary: inclusive
+    params:
+      per_tier:
+        Commercial PPO Plan of Care: {small_balance_writeoff_max: "=small_balance_writeoff_max", statements_before_collections: "=statements_before_collections"}
+        Commercial High-Deductible Plan of Care: {small_balance_writeoff_max: "=small_balance_writeoff_max", statements_before_collections: "=statements_before_collections"}
+        Commercial POS Plan of Care: {small_balance_writeoff_max: "=small_balance_writeoff_max", statements_before_collections: "=statements_before_collections"}
+        Commercial HMO Plan of Care: {small_balance_writeoff_max: "=small_balance_writeoff_max", statements_before_collections: "=statements_before_collections"}
+        Medicare Part B Plan of Care: {small_balance_writeoff_max: "=small_balance_writeoff_max", statements_before_collections: "=statements_before_collections"}
+        Medicare Advantage Plan of Care: {small_balance_writeoff_max: "=small_balance_writeoff_max", statements_before_collections: "=statements_before_collections"}
+        Medicaid Managed Care Plan of Care: {small_balance_writeoff_max: "=small_balance_writeoff_max", statements_before_collections: "=statements_before_collections"}
+
+  - id: plan_hold_and_discharge
+    subject: [plan_held, plan_resumed, plan_discharged, plan_closed]
+    rule: >-
+      An active plan is placed on hold with the matching hold_reason when its authorization is pending, exhausted or
+      ended, when its certification has lapsed, when surgery is pending, when the patient asks to pause, or when no visit
+      has been billed for inactivity_discharge_days calendar days. A plan on hold resumes once the recorded reason is
+      resolved. A plan on hold is discharged for non-attendance no earlier than hold_max_days calendar days after the hold start date on file.
+      Days are counted as calendar days from the hold start date, the hold start date itself being day zero. The discharge
+      summary is sent to the referring provider within discharge_summary_days calendar days after discharge, and any
+      appointments still booked under the plan are released. A discharged plan is closed once its patient balance is
+      zero and none of its charges sits in a Patient Payment Plan that is still pending signature, active, past due or
+      defaulted; a plan still in intake is closed when its initial authorization is denied or the patient declines to
+      proceed.
+    eligibility:
+      - id: hold_aged_for_discharge
+        applies_to: [plan_discharged]
+        kind: time
+        condition: "A plan on hold is discharged for non-attendance no earlier than hold_max_days calendar days after the hold start date on file."
+        evidence_fields: [care_plans.hold_start_date, care_plans.care_plan_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [care_plans.care_plan_id]
+          action_bindings:
+            care_plans.care_plan_id: care_plan_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the hold start date on file
+          anchor_source: care_plans.hold_start_date
+          relation: not_before
+          duration_source: variants.hold_max_days
+          unit: calendar_days
+          counting_rule: "Days are counted as calendar days from the hold start date, the hold start date itself being day zero."
+          boundary: inclusive
+
+  - id: plan_evt_benefit_reverification
+    subject: [plan_benefits_reverified]
+    rule: >-
+      Benefits on an active or on-hold plan are re-verified at least every benefit_reverify_interval_days calendar days
+      after the benefits verified date on file, and, where reverify_benefits_each_calendar_year is true, before the first
+      visit in a new calendar year, when deductibles and visit counts reset. Re-verification replaces the copay,
+      coinsurance, deductible, visit limit, visits used elsewhere and Medicare allowed-to-date figures with the payer's
+      current answer; charges already posted are not recalculated except through plan_evt_balance_adjustments.
+    eligibility: []

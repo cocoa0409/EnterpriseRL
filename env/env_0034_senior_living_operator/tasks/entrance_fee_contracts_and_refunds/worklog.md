@@ -1,0 +1,23 @@
+# worklog — entrance_fee_contracts_and_refunds (M=2)
+
+## Step 0 — difficulty pre-check
+- draw_counts --tasks 2: task0 prerequisite_problems=1 factor_counts=[4,5]; task1 prerequisite_problems=3 factor_counts=[4,5,5,6].
+- Write capabilities (claimed events) and their numeric fields: rescind (refund trigger), cancel_pre_occupancy (processing fee + refund triggers), occupancy_extend (no numeric), termination_notice / withdraw (no numeric), terminate / refund_schedule / reoccupancy / estate_documents / close (dates only), amortization, processing_fee_retention, refurbishment_deduction, refund_payment, tax_letter (amounts), account_offset.
+- HARD CONSTRAINTS found:
+  * entrance_account_offset declares triggers into independent/assisted/memory for every offset_category value -> no task tool may write it (Principle D).
+  * entrance_refurbishment_deduction needs a work-order cost that no table records (work orders are not modelled) -> not usable as a computed write.
+  * customer-owned numeric writes exist only before occupancy (signed cancellation -> processing fee; rescission -> refund). Post-occupancy customer acts (notice, withdrawal) carry no number.
+  * status gates: amortization only while occupied, deductions only while terminated, refunds only while rescinded/cancelled/refund_scheduled -> at most 3 numeric problems per single-agreement world.
+- DECISIONS (unattended, closest established rule):
+  * task0 = pre-occupancy cancellation world: customer's signed cancellation (owner=user, processing fee) -> refund of money paid with escrow interest (agent, root).
+  * task1 = estate settlement world (death, refund_scheduled): final-period amortization catch-up (agent), annual tax letter for the completed year (agent), tax letter for the year of death issued at settlement (agent), estate refund released on the personal representative's signed release (owner=user, root). The release is the payee's own confirmation over the estate's affairs (Principle A lists "a confirmation"); amortization after termination and the year-of-death letter at settlement are declared overrides.
+2026-10-05T07:00:08+00:00 task0 closed: all per-task gates green
+## Closing
+- task0: tree refund (agent, 4 factors) <- signed cancellation (owner=user, 5 factors); task1: estate refund release (owner=user, 5) <- final-period amortization (4), closing-year letter (5) <- annual letter (6). All six extended policies covered, scopes disjoint.
+- Compromises recorded: amortization after termination and the one-letter-per-year gate are superseded by declared overwrites; the estate refund is released by the personal representative's signature (the only customer-owned numeric write available after occupancy); letter windows are whole-month windows from a January issue date because the compute DSL has no calendar-year filter.
+- Final gates (no --task): EXTENDED OK / TASK TOOL CONTRACT OK / REPLAY OK / SOLVABILITY OK / COMPUTE OK / GROUNDING OK / CACHE-DIFF INFO / SCOPE OK. check_traceability skipped (KB not yet published).
+
+## Rework round 2 (2026-10-05T09:31:13+00:00)
+- Inputs: audits/policy_task/entrance_fee_contracts_and_refunds/{_difficulty,task_0,task_1}.md read in full. REDs: F-1..F-5 (charter), F-T1-1, F-T1-2 (task 1). Task 0 PASS (must not regress).
+- Closures: F-1 both letter rules state 'A plan whose medical expense percentages are both 0.0 receives ... 0.00' and compute guards it (honoured, no override). F-2 pre-occupancy refund scoped to the resident's own cancellation; death/illness refunds left to base; 60-day limit restated; prerequisite sentence reworded and propagated to task 0. F-3 rate overwrite now keeps amortization_pct_per_month for every ordinary month and scales only the final period. F-4 step ladder = plan rate x 0.5 / x 0.75 / x 1 (no collision, no step-up on any plan). F-5 / F-T1-1 individual-history medical percentages removed (post_acute_monthly_pct, closing_entrance_pct, closing_il_pct); replaced by stay_payer_basis, closing_care_share, closing_stay_payer (insurer payments and care stays; task 1 seeds a January 2026 recovery stay and LTC insurer EFTs). F-T1-2 months 19-23 reseeded at 5,752.00, refundable_balance 143,800.00. Observations closed opportunistically: O-1 (trial stays excluded from care-stay charges), O-2 (rule wording 'latest deposit payment'), O-6 (annual rule says 'ended'), O-8 (edge-3 effect generalised), O-11 (refund deadline restated), O-13 (entrance_refund_calculation in estate lineage). Left as recorded observations: O-3, O-7, O-9, O-10, O-12, O-14, O-15.
+- New task 1 figures: 191.73 / 22,768.05 / 3,886.83 / 144,243.69. Task 0 unchanged: 2,358.00 / 38,477.69.

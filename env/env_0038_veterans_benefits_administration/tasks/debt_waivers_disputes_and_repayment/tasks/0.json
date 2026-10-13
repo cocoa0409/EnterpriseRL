@@ -1,0 +1,1391 @@
+{
+    "frozen_time": "2026-10-05 10:20:00 EDT",
+    "design_rationale": "WORKLOG task 0 (debt_waivers_disputes_and_repayment), frozen_time 2026-10-05.\n\n[Step 0 draw] draw_counts.py --task 0 -> {\"prerequisite_problems\": 3, \"factor_counts\": [4, 6, 5, 4]}. Assignment: reinstatement deposit 5, waiver amount 4, plan term 4, plan installment (root) 6. Task 1 draw (headroom check): 2 prerequisite problems, counts [6, 4, 4].\n\n[Scope snapshot] Occupied before this task: nothing. Claimed here: debt_ext_plan_reinstatement_deposit (pay_plan_reinstatement_66656e17, owner user, debt_payment_received), debt_ext_waiver_request_amount (submit_waiver_request_4f8614a0, owner user, debt_waiver_requested), debt_ext_plan_request_term (record_repayment_plan_request_018c5870, agent, debt_repayment_plan_requested kind repayment_plan), debt_ext_plan_installment (start_repayment_plan_5152504c, agent, debt_plan_started direct_payment). Left for task 1: the reduced-withholding request and its start (debt_repayment_plan_requested kind reduced_withholding; debt_plan_started benefit_withholding) and the compromise offer (debt_compromise_offered, owner user) - three independent writes on a different debt type (Veterans Pension Overpayment), so task 1 keeps a full tree of its own.\n\n[Why a good test] The caller asks only to get back on monthly payments after his plan was cancelled. The root write (the new installment) is hidden behind three hops the agent must read out of the rules: the installment waits on a plan request dated today; the plan request's months wait on a waiver request carrying the debtor's signed Financial Status Report (a plan longer than 12 months needs a report, and a report reaches a debt only with a request the debtor signs); the waiver amount waits on the reinstatement deposit owed for the cancelled plan. Every hop carries a value: deposit -> balance and payment count; waiver request -> report count, pending cut, and the amount the installment deducts; plan request -> months. Breadth: each computation reads the debt ledger (payments, requests, decisions), date spans (notice age, months since approval) and the compensation award in another difficulty (rating, running status, monthly rate, six months of compensation payments).\n\n[Problem-tree card] root debt_ext_plan_installment.\n edge 1: installment -> plan term, value_input, gate months_requested, form state, sentence (negated direction) 'A repayment plan's monthly installment is not fixed until the debt carries a repayment plan request received on the day the plan starts, stating the number of months the plan is to run.' Only record_repayment_plan_request_018c5870 writes a repayment plan request. False at opening: debt_requests c333a2a2... is the only plan request, received 2026-06-24, 12 months. Skip effect: 72.18 -> 301.83.\n edge 2: plan term -> waiver amount, value_input, gate waiver_fsr_requests, form state, sentence (affirmative) 'For a debtor who asks for a plan longer than the longest plan approved without a Financial Status Report, the number of months on the repayment plan request is fixed only after the debt carries a waiver request, received in the last six months, with the debtor's signed Financial Status Report attached.' Only submit_waiver_request_4f8614a0 writes a waiver request. False at opening: no debt_waiver_requested row. Skip effect: 47 -> 3.\n edge 3: waiver amount -> reinstatement deposit, value_input, gate balance, form state, sentence (affirmative) 'The amount a waiver request asks VA to waive is fixed only after the debt's ledger carries the reinstatement deposit owed on any repayment plan of the debt that was cancelled for missed installments.' Only pay_plan_reinstatement_66656e17 posts a reinstatement deposit. False at opening: status active with plan fields reset, a granted plan decision, and only the 2026-07-22 installment on the ledger. Skip effect: 1753.82 -> 1503.82.\n Four-point test on each sentence: ordering connective ('only after' / 'not until'); waits on a record-visible state; no tool, id or snake_case token; strength matches the condition. Topological order: deposit, waiver request, plan request, plan start (a chain, nothing to reorder). Two problems are the customer's own writes (deposit payment, signed waiver request).\n\n[Base-invariant card] Step 9 (debt_payment_received): debt_agg_collection_order and debt_evt_repayment_plan, no gate for this subject (policy_scope). Step 11 (debt_waiver_requested): debt_evt_waiver.waiver_window - notice 2026-06-10 (debt_accounts.notice_date), 180 days counted from the day after the notice, inclusive, last timely day 2026-12-07, today day 117 -> satisfied; just-fails case 2026-12-08. debt_excl_single_pending_request.no_undecided_request - the debt's requests are a plan request and its decision; no waiver, dispute or compromise is undecided -> satisfied. Step 13 (debt_repayment_plan_requested): debt_evt_repayment_plan.plan_on_active_debt - status active -> satisfied. Step 15 (debt_plan_started): debt_evt_repayment_plan policy_scope. Base clause superseded by the installment policy is declared in its overwrite (the 'at least the balance divided by the months' clause), because the installment now spreads the balance net of a pending waiver request and applies rates.\n\n[Business-object card] Target object: the Disability Compensation Overpayment 7617225e... created from the spouse removal 54d85c1b... (divorce 2023-05-12, effective 2023-06-01, payment adjusted 2026-06): 36 months x 154.21 = 5551.56. Rows in the aggregates: the one direct payment 500.00 of 2026-07-22 (plan month 2026-07), the plan request and its granted decision of 2026-06-24. Excluded: nothing else exists on the debt; there are no offsets because the debt was in a direct-payment plan from July until it defaulted after the 2026-10-01 compensation payment.\n\n[Factor card] (figures from the sensitivity run below)\n deposit: installments_counted method -> 1 (baseline 2, result 425.70); installment_value method -> 420.97 (baseline 462.63, 217.08); deposit_floor parameter comp -> 450.00 (baseline 25.00, 194.16); deposit_pct parameter comp multi-source -> 55 (baseline 100, 412.63); excess_credit parameter -> 37.37 (baseline 0, 247.50). Fall-back 925.26. Near-miss: the 500.00 payment looks like an ordinary installment but 37.37 of it is excess.\n waiver amount: monthly_capacity parameter comp multi-source -> 180.845 (baseline 25.00, 5026.56); horizon_months parameter -> 24 (baseline 12, 3923.96); horizon_counted method -> 21 (baseline 24, 1211.28); repaid_credit parameter -> 710.13 (baseline 0, 1043.69). Fall-back 4541.43. Near-miss: the July payment and today's deposit are both counted; the compensation payments are not debt payments.\n plan term: longest_term parameter -> 60 (baseline 12, 1); months_run method -> 3 (baseline 0, 50); rating_cut parameter comp -> 6 (baseline 0, 53); pending_cut parameter -> 4 (baseline 0, 51). Fall-back 12.\n installment: spread_balance method -> 3087.61 (baseline 4841.43, 113.18); spread_months parameter comp -> 46 (baseline 47, 70.65); uplift_pct parameter comp -> 110 (baseline 100, 65.62); relief_pct parameter comp history multi-source -> 95 (baseline 100, 75.98); restart_pct parameter multi-source -> 105 (baseline 100, 68.74); notice_pct parameter multi-source -> 98 (baseline 100, 73.65). Fall-back 103.01. Near-miss: the April 2026 compensation payment (1962.66) falls outside the six-month window and is not counted; the March and April payments look like part of the drop history.\n\n[Seed rows] customers (identity), comp award 70 percent running (cross-difficulty tiers), 8 monthly compensation payments March-October 2026 (1962.66 before the June adjustment, 1808.45 after; relief tier and confirmation that no offset was taken), spouse added/removed rows (originating record of the debt), the debt, its one payment, the plan request and decision. Removing the payment changes the count, excess and credits; removing the decision removes the cancelled-plan tiers; removing the comp award moves every comp factor to its fall-through.\n\n[Persona] Desmond K. Harrow, tired shift worker on his break, plain speech. Volunteers only the goal (back on monthly payments, lowest and longest allowed, set up today). Gives phone 7045550186 to be found and SSN last four 5318, VA file 352741869, DOB 1979-04-18 one at a time when asked. Passive: pays what he is told to pay when the payment is handed to him; signs a request with his Financial Status Report attached when handed one; repeats the monthly amount and ends when told the plan is set. He never mentions deposits, waivers or plan requests on his own and never corrects a figure.\n\n[Standard solution] Locate by phone, verify with three credentials, read debt, transactions, requests, compensation award, compensation payments and dependency actions. Then: (9) hand over the deposit payment, amount 210.13; (11) hand over the waiver request, 1753.82, report attached, outside the hold window; (13) record the plan request, 47 months; (15) start the plan, 72.18 from 2026-11.\n\n[Verification run] Handling-time recomputation with check_compute's evaluator, replaying gold writes in order: deposit 210.13 (fall-back 925.26), waiver 1753.82 (4541.43), term 47 (12), installment 72.18 (103.01). Prerequisite skips: skip step 9 -> waiver 1503.82; skip step 11 -> term 3; skip step 13 -> installment 301.83. Gates run per task: check_extended, check_task_tools, replay_tasks, check_solvability, check_compute, check_grounding, check_cache_diff, check_cross_fire.\n\n[Draft recomputation from the visible context] From the published rules alone: the installment rule names the plan request it waits on; the term rule names the waiver request with a report; the waiver rule names the deposit for a cancelled plan; the records show the cancelled plan (granted decision, status active, plan fields reset) and no deposit, no waiver request, no request dated today. Reading each rule's ladders against the records reproduces 210.13, 1753.82, 47 and 72.18; no second reading of a tier was found.\n\n[Rework round 2, audit policy_task/debt_waivers_disputes_and_repayment]\nG1 symptom: the plan-term prerequisite sentence made a waiver request with a Financial Status Report a precondition of every plan request, contradicting base 'a plan of up to plan_max_months_without_fsr months is approved on request' and the policy's own 12-month fall-through. Change: the sentence is now conditional ('For a debtor who asks for a plan longer than the longest plan approved without a Financial Status Report, ...'), the rule restates that a plan within the no-report limit is approved on request, and the base clause 'a plan of up to plan_max_months_with_fsr months only with a Financial Status Report' is declared in overwrite with this sentence as its replacement (the extended policy names which signed request carries the report). The caller asks for the lowest payment 'stretched out as long as allowed', so the conditional edge still binds here; values unchanged (47 months, 72.18).\nG4 symptom: longest_term's waiver conjunct held for everyone who reached the write, leaving the fall-through unreachable. With the conditional gate, a debtor asking for a plan within the no-report limit reaches the write with no waiver request and takes the 12-month fall-through, so all three tiers are reachable; plan_request_term keeps four factors.\nG5 symptom: spread_months was labelled method although its tiers only substitute k into months - k. Change: relabelled effect parameter (values K('restart_months_off_comp') / K('restart_months_off_other') / none); plan_installment keeps spread_balance as its method factor. Figures unchanged (70.65).\nO2: the deposit tool's docstring no longer says it reinstates the plan (it posts a deposit and sets up no plan); the plan-request docstring no longer mentions plan start. T0-O1: single-row conditions no longer labelled multi-source in factor_trace.\nGates re-run after the rework: see the final gate block.\n\n\n[Rework round 3, audit revision_2]\nR2-F1 symptom: spread_balance was labelled method although its tiers were one formula (balance - s x amount asked, s in 1 / 0.5 / 0), the shape the charter labels parameter elsewhere. Change: the tiers now apply different operations. With a complete waiver request (report attached) the amount asked is subtracted from the balance. With only an incomplete request (no report) the amount asked is not relied on and the balance is scaled down by its own plain-request reduction (20 percent, param plain_request_reduction_pct, replacing plain_waiver_share_pct), rounded to the cent. Otherwise the balance is spread as it stands. This is the same distinct-operation shape as the accepted approved_figure method (share-and-round / subtract a constant / as made). This world sits on the first tier (waiver request with report today), so spread_balance = 4841.43 - 1753.82 = 3087.61, its baseline gives 113.18, and gold stays 72.18. plan_installment now has one honest method factor (spread_balance) and five parameter factors.\n",
+    "user_scenario": "You are Desmond K. Harrow, a 47-year-old Army veteran living in Charlotte, North Carolina. You talk plainly and a little tiredly; you work shifts at a distribution warehouse and you are calling on your break, so you want this handled on this call without being bounced around. Some background you carry in your head: after your divorce in 2023 you did not tell VA right away, VA kept paying you the extra amount for your ex-wife for years, and in June VA sent you a letter saying you owed the overpayment back. You set up monthly payments on it in June, paid the first one in July, and then your hours were cut and you missed the August and September payments. This week you read that the payment plan was cancelled because of the missed payments and that VA will go back to keeping your compensation to cover the debt. Your disability compensation is your rent money, so what you want is simple: get back on monthly payments on that debt, with the lowest monthly payment VA allows and stretched out as long as allowed, and you want the representative to set it up for you today.\n\nYou open by saying you are calling about the VA debt from your old dependent overpayment because your payment plan got cancelled and you need to get back on monthly payments. When the representative asks how to find you, you give your phone number, 7045550186. When they ask you to confirm who you are, you give the last four of your Social Security number, 5318, your VA file number, 352741869, and your date of birth, 1979-04-18; you give these one at a time as asked rather than reciting everything at once. You do not know any internal reference numbers and you never quote a balance; if asked what you owe you say you think it is around five thousand dollars but you would rather they look it up.\n\nYou do not know VA's rules and you do not suggest steps. If the representative explains that something has to be paid or signed before the new plan can be set, you go along with it: when they tell you an amount you have to pay today and hand the payment over to you, you authorize that payment on the call from your checking account exactly as they set it up, and when they hand you a request to sign that goes in together with your Financial Status Report, you sign and submit it with your Financial Status Report attached, exactly as they set it up, because you have your monthly income and expense figures in front of you and can complete that report on the spot. You do not argue with any figure they give you; you only ask them to repeat it so you can write it down. If they ask how much you could afford each month, you say honestly that you cannot afford much, which is why you want the lowest amount VA allows. If they ask whether there is anything else going on with your benefits, you say no, just this.\n\nOnce the representative tells you the new monthly payment plan is set up and gives you the monthly amount, you repeat the amount back, thank them, and end the call. If at any point the representative says they cannot set up the plan, you ask once what you would need to do, listen, and then end the call politely.",
+    "initial_state": {
+        "customers": {
+            "4881dc33-76d6-45de-99b4-c4fe9088fc8f": {
+                "customer_id": "4881dc33-76d6-45de-99b4-c4fe9088fc8f",
+                "full_name": "Desmond K. Harrow",
+                "date_of_birth": "1979-04-18",
+                "ssn_last4": "5318",
+                "va_file_number": "352741869",
+                "phone_number": "7045550186",
+                "email": "dk.harrow1979@gmail.com",
+                "mailing_state": "NC",
+                "beneficiary_role": "veteran",
+                "sponsor_customer_id": null,
+                "branch_of_service": "Army",
+                "service_entry_date": "1998-06-15",
+                "service_separation_date": "2010-09-30",
+                "discharge_character": "honorable",
+                "date_of_death": ""
+            }
+        },
+        "comp_awards": {
+            "10b1d175-ab1a-4549-a42b-1e4a18f93a55": {
+                "award_id": "10b1d175-ab1a-4549-a42b-1e4a18f93a55",
+                "customer_id": "4881dc33-76d6-45de-99b4-c4fe9088fc8f",
+                "variant_name": "Disability Compensation (70% Combined Rating)",
+                "status": "running",
+                "effective_date": "2013-05-01",
+                "original_service_connection_date": "2010-10-01",
+                "rating_static": false,
+                "permanent_and_total": false,
+                "tdiu_granted": false,
+                "smc_k_count": 0,
+                "attorney_fee_agreement_on_file": false,
+                "payment_method": "direct_deposit",
+                "payment_account_last4": "4417",
+                "suspension_reason": "none",
+                "termination_reason": "none",
+                "opened_date": "2011-03-14",
+                "closed_date": ""
+            }
+        },
+        "comp_payments": {
+            "f2ae2ae0-6d3b-4bb7-823f-682170f9f9ae": {
+                "payment_id": "f2ae2ae0-6d3b-4bb7-823f-682170f9f9ae",
+                "award_id": "10b1d175-ab1a-4549-a42b-1e4a18f93a55",
+                "customer_id": "4881dc33-76d6-45de-99b4-c4fe9088fc8f",
+                "event_type": "comp_monthly_payment",
+                "payment_month": "2026-03",
+                "payment_date": "2026-03-02",
+                "gross_amount": 1962.66,
+                "offset_withheld_amount": 0.0,
+                "attorney_fee_withheld_amount": 0.0,
+                "net_amount": 1962.66,
+                "offset_applied": false,
+                "source_payment_id": null,
+                "decision_id": null,
+                "retro_period_start": "",
+                "retro_period_end": "",
+                "return_reason": "not_applicable",
+                "review_level": "single_signature"
+            },
+            "323f85f8-ee26-4160-bcf9-95d9f16e6e86": {
+                "payment_id": "323f85f8-ee26-4160-bcf9-95d9f16e6e86",
+                "award_id": "10b1d175-ab1a-4549-a42b-1e4a18f93a55",
+                "customer_id": "4881dc33-76d6-45de-99b4-c4fe9088fc8f",
+                "event_type": "comp_monthly_payment",
+                "payment_month": "2026-04",
+                "payment_date": "2026-04-01",
+                "gross_amount": 1962.66,
+                "offset_withheld_amount": 0.0,
+                "attorney_fee_withheld_amount": 0.0,
+                "net_amount": 1962.66,
+                "offset_applied": false,
+                "source_payment_id": null,
+                "decision_id": null,
+                "retro_period_start": "",
+                "retro_period_end": "",
+                "return_reason": "not_applicable",
+                "review_level": "single_signature"
+            },
+            "b98fe6ab-c37f-42e7-952a-b00903300153": {
+                "payment_id": "b98fe6ab-c37f-42e7-952a-b00903300153",
+                "award_id": "10b1d175-ab1a-4549-a42b-1e4a18f93a55",
+                "customer_id": "4881dc33-76d6-45de-99b4-c4fe9088fc8f",
+                "event_type": "comp_monthly_payment",
+                "payment_month": "2026-05",
+                "payment_date": "2026-05-01",
+                "gross_amount": 1962.66,
+                "offset_withheld_amount": 0.0,
+                "attorney_fee_withheld_amount": 0.0,
+                "net_amount": 1962.66,
+                "offset_applied": false,
+                "source_payment_id": null,
+                "decision_id": null,
+                "retro_period_start": "",
+                "retro_period_end": "",
+                "return_reason": "not_applicable",
+                "review_level": "single_signature"
+            },
+            "c44475f3-cef9-4c2a-bf23-c8b198cd93d5": {
+                "payment_id": "c44475f3-cef9-4c2a-bf23-c8b198cd93d5",
+                "award_id": "10b1d175-ab1a-4549-a42b-1e4a18f93a55",
+                "customer_id": "4881dc33-76d6-45de-99b4-c4fe9088fc8f",
+                "event_type": "comp_monthly_payment",
+                "payment_month": "2026-06",
+                "payment_date": "2026-06-01",
+                "gross_amount": 1808.45,
+                "offset_withheld_amount": 0.0,
+                "attorney_fee_withheld_amount": 0.0,
+                "net_amount": 1808.45,
+                "offset_applied": false,
+                "source_payment_id": null,
+                "decision_id": null,
+                "retro_period_start": "",
+                "retro_period_end": "",
+                "return_reason": "not_applicable",
+                "review_level": "single_signature"
+            },
+            "24d55c93-1e8f-461d-809b-2510685f658c": {
+                "payment_id": "24d55c93-1e8f-461d-809b-2510685f658c",
+                "award_id": "10b1d175-ab1a-4549-a42b-1e4a18f93a55",
+                "customer_id": "4881dc33-76d6-45de-99b4-c4fe9088fc8f",
+                "event_type": "comp_monthly_payment",
+                "payment_month": "2026-07",
+                "payment_date": "2026-07-01",
+                "gross_amount": 1808.45,
+                "offset_withheld_amount": 0.0,
+                "attorney_fee_withheld_amount": 0.0,
+                "net_amount": 1808.45,
+                "offset_applied": false,
+                "source_payment_id": null,
+                "decision_id": null,
+                "retro_period_start": "",
+                "retro_period_end": "",
+                "return_reason": "not_applicable",
+                "review_level": "single_signature"
+            },
+            "b4f79fc5-ba01-47d8-bd76-8a0543c9ea39": {
+                "payment_id": "b4f79fc5-ba01-47d8-bd76-8a0543c9ea39",
+                "award_id": "10b1d175-ab1a-4549-a42b-1e4a18f93a55",
+                "customer_id": "4881dc33-76d6-45de-99b4-c4fe9088fc8f",
+                "event_type": "comp_monthly_payment",
+                "payment_month": "2026-08",
+                "payment_date": "2026-07-31",
+                "gross_amount": 1808.45,
+                "offset_withheld_amount": 0.0,
+                "attorney_fee_withheld_amount": 0.0,
+                "net_amount": 1808.45,
+                "offset_applied": false,
+                "source_payment_id": null,
+                "decision_id": null,
+                "retro_period_start": "",
+                "retro_period_end": "",
+                "return_reason": "not_applicable",
+                "review_level": "single_signature"
+            },
+            "7a886edb-00d8-47bf-b976-b61e648319a9": {
+                "payment_id": "7a886edb-00d8-47bf-b976-b61e648319a9",
+                "award_id": "10b1d175-ab1a-4549-a42b-1e4a18f93a55",
+                "customer_id": "4881dc33-76d6-45de-99b4-c4fe9088fc8f",
+                "event_type": "comp_monthly_payment",
+                "payment_month": "2026-09",
+                "payment_date": "2026-09-01",
+                "gross_amount": 1808.45,
+                "offset_withheld_amount": 0.0,
+                "attorney_fee_withheld_amount": 0.0,
+                "net_amount": 1808.45,
+                "offset_applied": false,
+                "source_payment_id": null,
+                "decision_id": null,
+                "retro_period_start": "",
+                "retro_period_end": "",
+                "return_reason": "not_applicable",
+                "review_level": "single_signature"
+            },
+            "552acad5-b6fe-486f-8812-4dfe87ca5d6a": {
+                "payment_id": "552acad5-b6fe-486f-8812-4dfe87ca5d6a",
+                "award_id": "10b1d175-ab1a-4549-a42b-1e4a18f93a55",
+                "customer_id": "4881dc33-76d6-45de-99b4-c4fe9088fc8f",
+                "event_type": "comp_monthly_payment",
+                "payment_month": "2026-10",
+                "payment_date": "2026-10-01",
+                "gross_amount": 1808.45,
+                "offset_withheld_amount": 0.0,
+                "attorney_fee_withheld_amount": 0.0,
+                "net_amount": 1808.45,
+                "offset_applied": false,
+                "source_payment_id": null,
+                "decision_id": null,
+                "retro_period_start": "",
+                "retro_period_end": "",
+                "return_reason": "not_applicable",
+                "review_level": "single_signature"
+            }
+        },
+        "comp_dependents": {
+            "3c0362d1-a425-4a39-83ed-33b967f85aee": {
+                "dependent_event_id": "3c0362d1-a425-4a39-83ed-33b967f85aee",
+                "award_id": "10b1d175-ab1a-4549-a42b-1e4a18f93a55",
+                "customer_id": "4881dc33-76d6-45de-99b4-c4fe9088fc8f",
+                "event_type": "comp_dependent_added",
+                "relationship": "spouse",
+                "dependent_name": "Lorraine M. Harrow",
+                "dependent_birth_date": "1981-09-03",
+                "qualifying_event_date": "2013-08-17",
+                "effective_date": "2013-09-01",
+                "payment_adjust_month": "2013-10",
+                "removal_reason": "not_applicable",
+                "source_dependent_event_id": null,
+                "spouse_aid_attendance": false,
+                "report_channel": "mail",
+                "overpayment_created": false,
+                "claim_id": null
+            },
+            "54d85c1b-f67c-419b-8b13-22e8d4ba7e6c": {
+                "dependent_event_id": "54d85c1b-f67c-419b-8b13-22e8d4ba7e6c",
+                "award_id": "10b1d175-ab1a-4549-a42b-1e4a18f93a55",
+                "customer_id": "4881dc33-76d6-45de-99b4-c4fe9088fc8f",
+                "event_type": "comp_dependent_removed",
+                "relationship": "spouse",
+                "dependent_name": "Lorraine M. Harrow",
+                "dependent_birth_date": "1981-09-03",
+                "qualifying_event_date": "2023-05-12",
+                "effective_date": "2023-06-01",
+                "payment_adjust_month": "2026-06",
+                "removal_reason": "divorce",
+                "source_dependent_event_id": "3c0362d1-a425-4a39-83ed-33b967f85aee",
+                "spouse_aid_attendance": false,
+                "report_channel": "phone",
+                "overpayment_created": true,
+                "claim_id": null
+            }
+        },
+        "debt_accounts": {
+            "7617225e-3894-45e2-bfe5-16a7558d7bde": {
+                "debt_id": "7617225e-3894-45e2-bfe5-16a7558d7bde",
+                "customer_id": "4881dc33-76d6-45de-99b4-c4fe9088fc8f",
+                "variant_name": "Disability Compensation Overpayment",
+                "status": "active",
+                "source_category": "comp",
+                "source_record_id": "54d85c1b-f67c-419b-8b13-22e8d4ba7e6c",
+                "original_amount": 5551.56,
+                "current_balance": 5051.56,
+                "notice_date": "2026-06-10",
+                "collection_hold_reason": "none",
+                "repayment_plan_method": "none",
+                "repayment_plan_monthly_amount": 0.0,
+                "repayment_plan_start_month": "",
+                "fraud_finding": false,
+                "treasury_referral_date": "",
+                "credit_bureau_reported_date": "",
+                "opened_date": "2026-06-08",
+                "closed_date": ""
+            }
+        },
+        "debt_transactions": {
+            "aac75118-2856-47b0-b247-f3b0181561ba": {
+                "debt_txn_id": "aac75118-2856-47b0-b247-f3b0181561ba",
+                "debt_id": "7617225e-3894-45e2-bfe5-16a7558d7bde",
+                "customer_id": "4881dc33-76d6-45de-99b4-c4fe9088fc8f",
+                "event_type": "debt_payment_received",
+                "amount": 500.0,
+                "transaction_date": "2026-07-22",
+                "collection_source": "direct_payment",
+                "source_payment_id": null,
+                "request_id": null,
+                "payment_channel": "pay_gov",
+                "period_month": "2026-07"
+            }
+        },
+        "debt_requests": {
+            "c333a2a2-3e82-4d9a-8b2a-e67e40a6522e": {
+                "request_id": "c333a2a2-3e82-4d9a-8b2a-e67e40a6522e",
+                "debt_id": "7617225e-3894-45e2-bfe5-16a7558d7bde",
+                "customer_id": "4881dc33-76d6-45de-99b4-c4fe9088fc8f",
+                "event_type": "debt_repayment_plan_requested",
+                "request_kind": "repayment_plan",
+                "received_date": "2026-06-24",
+                "requested_amount": 462.63,
+                "requested_term_months": 12,
+                "fsr_submitted": false,
+                "received_within_hold_window": true,
+                "decision_outcome": "pending",
+                "decided_amount": 0.0,
+                "source_request_id": null,
+                "channel": "phone"
+            },
+            "38061c20-7760-4481-8a5e-97133feb51da": {
+                "request_id": "38061c20-7760-4481-8a5e-97133feb51da",
+                "debt_id": "7617225e-3894-45e2-bfe5-16a7558d7bde",
+                "customer_id": "4881dc33-76d6-45de-99b4-c4fe9088fc8f",
+                "event_type": "debt_request_decided",
+                "request_kind": "repayment_plan",
+                "received_date": "2026-06-24",
+                "requested_amount": 0.0,
+                "requested_term_months": 0,
+                "fsr_submitted": false,
+                "received_within_hold_window": false,
+                "decision_outcome": "granted",
+                "decided_amount": 462.63,
+                "source_request_id": "c333a2a2-3e82-4d9a-8b2a-e67e40a6522e",
+                "channel": "phone"
+            }
+        }
+    },
+    "db_closure": {
+        "comp_dependents": {
+            "3c0362d1-a425-4a39-83ed-33b967f85aee": {
+                "dependent_event_id": "3c0362d1-a425-4a39-83ed-33b967f85aee",
+                "award_id": "10b1d175-ab1a-4549-a42b-1e4a18f93a55",
+                "customer_id": "4881dc33-76d6-45de-99b4-c4fe9088fc8f",
+                "event_type": "comp_dependent_added",
+                "relationship": "spouse",
+                "dependent_name": "Lorraine M. Harrow",
+                "dependent_birth_date": "1981-09-03",
+                "qualifying_event_date": "2013-08-17",
+                "effective_date": "2013-09-01",
+                "payment_adjust_month": "2013-10",
+                "removal_reason": "not_applicable",
+                "source_dependent_event_id": null,
+                "spouse_aid_attendance": false,
+                "report_channel": "mail",
+                "overpayment_created": false,
+                "claim_id": null
+            },
+            "54d85c1b-f67c-419b-8b13-22e8d4ba7e6c": {
+                "dependent_event_id": "54d85c1b-f67c-419b-8b13-22e8d4ba7e6c",
+                "award_id": "10b1d175-ab1a-4549-a42b-1e4a18f93a55",
+                "customer_id": "4881dc33-76d6-45de-99b4-c4fe9088fc8f",
+                "event_type": "comp_dependent_removed",
+                "relationship": "spouse",
+                "dependent_name": "Lorraine M. Harrow",
+                "dependent_birth_date": "1981-09-03",
+                "qualifying_event_date": "2023-05-12",
+                "effective_date": "2023-06-01",
+                "payment_adjust_month": "2026-06",
+                "removal_reason": "divorce",
+                "source_dependent_event_id": "3c0362d1-a425-4a39-83ed-33b967f85aee",
+                "spouse_aid_attendance": false,
+                "report_channel": "phone",
+                "overpayment_created": true,
+                "claim_id": null
+            }
+        },
+        "comp_payments": {
+            "323f85f8-ee26-4160-bcf9-95d9f16e6e86": {
+                "payment_id": "323f85f8-ee26-4160-bcf9-95d9f16e6e86",
+                "award_id": "10b1d175-ab1a-4549-a42b-1e4a18f93a55",
+                "customer_id": "4881dc33-76d6-45de-99b4-c4fe9088fc8f",
+                "event_type": "comp_monthly_payment",
+                "payment_month": "2026-04",
+                "payment_date": "2026-04-01",
+                "gross_amount": 1962.66,
+                "offset_withheld_amount": 0.0,
+                "attorney_fee_withheld_amount": 0.0,
+                "net_amount": 1962.66,
+                "offset_applied": false,
+                "source_payment_id": null,
+                "decision_id": null,
+                "retro_period_start": "",
+                "retro_period_end": "",
+                "return_reason": "not_applicable",
+                "review_level": "single_signature"
+            },
+            "b98fe6ab-c37f-42e7-952a-b00903300153": {
+                "payment_id": "b98fe6ab-c37f-42e7-952a-b00903300153",
+                "award_id": "10b1d175-ab1a-4549-a42b-1e4a18f93a55",
+                "customer_id": "4881dc33-76d6-45de-99b4-c4fe9088fc8f",
+                "event_type": "comp_monthly_payment",
+                "payment_month": "2026-05",
+                "payment_date": "2026-05-01",
+                "gross_amount": 1962.66,
+                "offset_withheld_amount": 0.0,
+                "attorney_fee_withheld_amount": 0.0,
+                "net_amount": 1962.66,
+                "offset_applied": false,
+                "source_payment_id": null,
+                "decision_id": null,
+                "retro_period_start": "",
+                "retro_period_end": "",
+                "return_reason": "not_applicable",
+                "review_level": "single_signature"
+            },
+            "7a886edb-00d8-47bf-b976-b61e648319a9": {
+                "payment_id": "7a886edb-00d8-47bf-b976-b61e648319a9",
+                "award_id": "10b1d175-ab1a-4549-a42b-1e4a18f93a55",
+                "customer_id": "4881dc33-76d6-45de-99b4-c4fe9088fc8f",
+                "event_type": "comp_monthly_payment",
+                "payment_month": "2026-09",
+                "payment_date": "2026-09-01",
+                "gross_amount": 1808.45,
+                "offset_withheld_amount": 0.0,
+                "attorney_fee_withheld_amount": 0.0,
+                "net_amount": 1808.45,
+                "offset_applied": false,
+                "source_payment_id": null,
+                "decision_id": null,
+                "retro_period_start": "",
+                "retro_period_end": "",
+                "return_reason": "not_applicable",
+                "review_level": "single_signature"
+            },
+            "552acad5-b6fe-486f-8812-4dfe87ca5d6a": {
+                "payment_id": "552acad5-b6fe-486f-8812-4dfe87ca5d6a",
+                "award_id": "10b1d175-ab1a-4549-a42b-1e4a18f93a55",
+                "customer_id": "4881dc33-76d6-45de-99b4-c4fe9088fc8f",
+                "event_type": "comp_monthly_payment",
+                "payment_month": "2026-10",
+                "payment_date": "2026-10-01",
+                "gross_amount": 1808.45,
+                "offset_withheld_amount": 0.0,
+                "attorney_fee_withheld_amount": 0.0,
+                "net_amount": 1808.45,
+                "offset_applied": false,
+                "source_payment_id": null,
+                "decision_id": null,
+                "retro_period_start": "",
+                "retro_period_end": "",
+                "return_reason": "not_applicable",
+                "review_level": "single_signature"
+            },
+            "24d55c93-1e8f-461d-809b-2510685f658c": {
+                "payment_id": "24d55c93-1e8f-461d-809b-2510685f658c",
+                "award_id": "10b1d175-ab1a-4549-a42b-1e4a18f93a55",
+                "customer_id": "4881dc33-76d6-45de-99b4-c4fe9088fc8f",
+                "event_type": "comp_monthly_payment",
+                "payment_month": "2026-07",
+                "payment_date": "2026-07-01",
+                "gross_amount": 1808.45,
+                "offset_withheld_amount": 0.0,
+                "attorney_fee_withheld_amount": 0.0,
+                "net_amount": 1808.45,
+                "offset_applied": false,
+                "source_payment_id": null,
+                "decision_id": null,
+                "retro_period_start": "",
+                "retro_period_end": "",
+                "return_reason": "not_applicable",
+                "review_level": "single_signature"
+            },
+            "f2ae2ae0-6d3b-4bb7-823f-682170f9f9ae": {
+                "payment_id": "f2ae2ae0-6d3b-4bb7-823f-682170f9f9ae",
+                "award_id": "10b1d175-ab1a-4549-a42b-1e4a18f93a55",
+                "customer_id": "4881dc33-76d6-45de-99b4-c4fe9088fc8f",
+                "event_type": "comp_monthly_payment",
+                "payment_month": "2026-03",
+                "payment_date": "2026-03-02",
+                "gross_amount": 1962.66,
+                "offset_withheld_amount": 0.0,
+                "attorney_fee_withheld_amount": 0.0,
+                "net_amount": 1962.66,
+                "offset_applied": false,
+                "source_payment_id": null,
+                "decision_id": null,
+                "retro_period_start": "",
+                "retro_period_end": "",
+                "return_reason": "not_applicable",
+                "review_level": "single_signature"
+            },
+            "c44475f3-cef9-4c2a-bf23-c8b198cd93d5": {
+                "payment_id": "c44475f3-cef9-4c2a-bf23-c8b198cd93d5",
+                "award_id": "10b1d175-ab1a-4549-a42b-1e4a18f93a55",
+                "customer_id": "4881dc33-76d6-45de-99b4-c4fe9088fc8f",
+                "event_type": "comp_monthly_payment",
+                "payment_month": "2026-06",
+                "payment_date": "2026-06-01",
+                "gross_amount": 1808.45,
+                "offset_withheld_amount": 0.0,
+                "attorney_fee_withheld_amount": 0.0,
+                "net_amount": 1808.45,
+                "offset_applied": false,
+                "source_payment_id": null,
+                "decision_id": null,
+                "retro_period_start": "",
+                "retro_period_end": "",
+                "return_reason": "not_applicable",
+                "review_level": "single_signature"
+            },
+            "b4f79fc5-ba01-47d8-bd76-8a0543c9ea39": {
+                "payment_id": "b4f79fc5-ba01-47d8-bd76-8a0543c9ea39",
+                "award_id": "10b1d175-ab1a-4549-a42b-1e4a18f93a55",
+                "customer_id": "4881dc33-76d6-45de-99b4-c4fe9088fc8f",
+                "event_type": "comp_monthly_payment",
+                "payment_month": "2026-08",
+                "payment_date": "2026-07-31",
+                "gross_amount": 1808.45,
+                "offset_withheld_amount": 0.0,
+                "attorney_fee_withheld_amount": 0.0,
+                "net_amount": 1808.45,
+                "offset_applied": false,
+                "source_payment_id": null,
+                "decision_id": null,
+                "retro_period_start": "",
+                "retro_period_end": "",
+                "return_reason": "not_applicable",
+                "review_level": "single_signature"
+            }
+        },
+        "debt_accounts": {
+            "7617225e-3894-45e2-bfe5-16a7558d7bde": {
+                "debt_id": "7617225e-3894-45e2-bfe5-16a7558d7bde",
+                "customer_id": "4881dc33-76d6-45de-99b4-c4fe9088fc8f",
+                "variant_name": "Disability Compensation Overpayment",
+                "status": "active",
+                "source_category": "comp",
+                "source_record_id": "54d85c1b-f67c-419b-8b13-22e8d4ba7e6c",
+                "original_amount": 5551.56,
+                "current_balance": 5051.56,
+                "notice_date": "2026-06-10",
+                "collection_hold_reason": "none",
+                "repayment_plan_method": "none",
+                "repayment_plan_monthly_amount": 0.0,
+                "repayment_plan_start_month": "",
+                "fraud_finding": false,
+                "treasury_referral_date": "",
+                "credit_bureau_reported_date": "",
+                "opened_date": "2026-06-08",
+                "closed_date": ""
+            }
+        },
+        "comp_awards": {
+            "10b1d175-ab1a-4549-a42b-1e4a18f93a55": {
+                "award_id": "10b1d175-ab1a-4549-a42b-1e4a18f93a55",
+                "customer_id": "4881dc33-76d6-45de-99b4-c4fe9088fc8f",
+                "variant_name": "Disability Compensation (70% Combined Rating)",
+                "status": "running",
+                "effective_date": "2013-05-01",
+                "original_service_connection_date": "2010-10-01",
+                "rating_static": false,
+                "permanent_and_total": false,
+                "tdiu_granted": false,
+                "smc_k_count": 0,
+                "attorney_fee_agreement_on_file": false,
+                "payment_method": "direct_deposit",
+                "payment_account_last4": "4417",
+                "suspension_reason": "none",
+                "termination_reason": "none",
+                "opened_date": "2011-03-14",
+                "closed_date": ""
+            }
+        },
+        "debt_requests": {
+            "c333a2a2-3e82-4d9a-8b2a-e67e40a6522e": {
+                "request_id": "c333a2a2-3e82-4d9a-8b2a-e67e40a6522e",
+                "debt_id": "7617225e-3894-45e2-bfe5-16a7558d7bde",
+                "customer_id": "4881dc33-76d6-45de-99b4-c4fe9088fc8f",
+                "event_type": "debt_repayment_plan_requested",
+                "request_kind": "repayment_plan",
+                "received_date": "2026-06-24",
+                "requested_amount": 462.63,
+                "requested_term_months": 12,
+                "fsr_submitted": false,
+                "received_within_hold_window": true,
+                "decision_outcome": "pending",
+                "decided_amount": 0.0,
+                "source_request_id": null,
+                "channel": "phone"
+            },
+            "38061c20-7760-4481-8a5e-97133feb51da": {
+                "request_id": "38061c20-7760-4481-8a5e-97133feb51da",
+                "debt_id": "7617225e-3894-45e2-bfe5-16a7558d7bde",
+                "customer_id": "4881dc33-76d6-45de-99b4-c4fe9088fc8f",
+                "event_type": "debt_request_decided",
+                "request_kind": "repayment_plan",
+                "received_date": "2026-06-24",
+                "requested_amount": 0.0,
+                "requested_term_months": 0,
+                "fsr_submitted": false,
+                "received_within_hold_window": false,
+                "decision_outcome": "granted",
+                "decided_amount": 462.63,
+                "source_request_id": "c333a2a2-3e82-4d9a-8b2a-e67e40a6522e",
+                "channel": "phone"
+            }
+        },
+        "debt_transactions": {
+            "aac75118-2856-47b0-b247-f3b0181561ba": {
+                "debt_txn_id": "aac75118-2856-47b0-b247-f3b0181561ba",
+                "debt_id": "7617225e-3894-45e2-bfe5-16a7558d7bde",
+                "customer_id": "4881dc33-76d6-45de-99b4-c4fe9088fc8f",
+                "event_type": "debt_payment_received",
+                "amount": 500.0,
+                "transaction_date": "2026-07-22",
+                "collection_source": "direct_payment",
+                "source_payment_id": null,
+                "request_id": null,
+                "payment_channel": "pay_gov",
+                "period_month": "2026-07"
+            }
+        },
+        "customers": {
+            "4881dc33-76d6-45de-99b4-c4fe9088fc8f": {
+                "customer_id": "4881dc33-76d6-45de-99b4-c4fe9088fc8f",
+                "full_name": "Desmond K. Harrow",
+                "date_of_birth": "1979-04-18",
+                "ssn_last4": "5318",
+                "va_file_number": "352741869",
+                "phone_number": "7045550186",
+                "email": "dk.harrow1979@gmail.com",
+                "mailing_state": "NC",
+                "beneficiary_role": "veteran",
+                "sponsor_customer_id": null,
+                "branch_of_service": "Army",
+                "service_entry_date": "1998-06-15",
+                "service_separation_date": "2010-09-30",
+                "discharge_character": "honorable",
+                "date_of_death": ""
+            }
+        }
+    },
+    "db_closure_matches_initial_state": true,
+    "solvability_contract": {
+        "request_binding_version": 1,
+        "request_alignment": [
+            {
+                "claim": "The caller wants his cancelled payment plan on the VA overpayment debt replaced by a new monthly payment plan, as low and as long as allowed, set up on this call by the representative.",
+                "evidence": [
+                    "user_scenario:get back on monthly payments",
+                    "user_scenario:stretched out as long as allowed"
+                ]
+            }
+        ],
+        "gold_actions": [
+            {
+                "step": 9,
+                "business_effect": "A 210.13 direct payment posts on the debt through the phone channel and the balance falls to 4841.43.",
+                "request_binding": {
+                    "action_semantics": "The caller wants back on monthly payments; the published rules make the waiver amount wait on the reinstatement deposit owed for the cancelled plan, and the deposit is the debtor's own direct payment, so the agent hands this payment to the caller.",
+                    "intent_source": {
+                        "kind": "user_scenario",
+                        "evidence": [
+                            "user_scenario:get back on monthly payments"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "back on monthly payments",
+                        "evidence": [
+                            "user_scenario:get back on monthly payments",
+                            "initial_state.debt_accounts.7617225e-3894-45e2-bfe5-16a7558d7bde.status"
+                        ],
+                        "value": "cancelled plan on debt 7617225e-3894-45e2-bfe5-16a7558d7bde"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "performed_by_this_tool",
+                    "fact": "The reinstatement deposit is paid on the call by the debtor's own authorization.",
+                    "evidence": [
+                        "initial_state.debt_accounts.7617225e-3894-45e2-bfe5-16a7558d7bde.status",
+                        "initial_state.debt_requests.38061c20-7760-4481-8a5e-97133feb51da.decided_amount",
+                        "user_scenario:you authorize that payment on the call"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "debt_agg_collection_order",
+                        "eligibility_id": "policy_scope",
+                        "condition": "A direct payment the debtor designates for a specific debt is applied to that debt; the deposit is designated for the overpayment debt.",
+                        "evidence": [
+                            "initial_state.debt_accounts.7617225e-3894-45e2-bfe5-16a7558d7bde"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "debt_evt_repayment_plan",
+                        "eligibility_id": "policy_scope",
+                        "condition": "A debtor may pay off part of the balance at any time without penalty; no eligibility gate applies to a direct payment.",
+                        "evidence": [
+                            "initial_state.debt_accounts.7617225e-3894-45e2-bfe5-16a7558d7bde"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 11,
+                "business_effect": "A waiver request for 1753.82 with a Financial Status Report attached is on file for the debt, received today by phone.",
+                "request_binding": {
+                    "action_semantics": "The caller wants the lowest monthly payment stretched as long as allowed, i.e. a plan longer than the no-report limit; for such a debtor the plan term waits on a waiver request with the debtor's signed Financial Status Report, which reaches the debt only with a request the debtor signs, so the agent hands the waiver request to the caller.",
+                    "intent_source": {
+                        "kind": "user_scenario",
+                        "evidence": [
+                            "user_scenario:stretched out as long as allowed"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "as long as allowed",
+                        "evidence": [
+                            "user_scenario:stretched out as long as allowed"
+                        ],
+                        "value": "waiver request with Financial Status Report on debt 7617225e-3894-45e2-bfe5-16a7558d7bde"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "established_by_prior_tool",
+                    "fact": "The waiver amount is figured on the balance after the reinstatement deposit posted at step 9.",
+                    "evidence": [
+                        "prior_step:9",
+                        "user_scenario:with your Financial Status Report attached"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "debt_evt_waiver",
+                        "eligibility_id": "waiver_window",
+                        "condition": "A waiver request is considered only if it is received not later than waiver_request_window_days calendar days after the date of the initial debt notice.",
+                        "evidence": [
+                            "initial_state.debt_accounts.7617225e-3894-45e2-bfe5-16a7558d7bde.notice_date",
+                            "initial_state.debt_accounts.7617225e-3894-45e2-bfe5-16a7558d7bde.debt_id",
+                            "frozen_time"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "debt_accounts.debt_id",
+                                "source": "initial_state.debt_accounts.7617225e-3894-45e2-bfe5-16a7558d7bde.debt_id",
+                                "action_arg": "debt_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "debt_excl_single_pending_request",
+                        "eligibility_id": "no_undecided_request",
+                        "condition": "a new request of any of these kinds is taken only when no earlier one on the same debt is still undecided",
+                        "evidence": [
+                            "initial_state.debt_requests.38061c20-7760-4481-8a5e-97133feb51da.debt_id",
+                            "initial_state.debt_requests.38061c20-7760-4481-8a5e-97133feb51da.event_type",
+                            "initial_state.debt_requests.38061c20-7760-4481-8a5e-97133feb51da.source_request_id",
+                            "initial_state.debt_requests.c333a2a2-3e82-4d9a-8b2a-e67e40a6522e.event_type"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "debt_requests.debt_id",
+                                "source": "initial_state.debt_requests.38061c20-7760-4481-8a5e-97133feb51da.debt_id",
+                                "action_arg": "debt_id"
+                            }
+                        ],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 13,
+                "business_effect": "A repayment plan request for 47 months is on file for the debt, received today by phone.",
+                "request_binding": {
+                    "action_semantics": "The caller asks to be put back on monthly payments; a new plan starts from a plan request stating its months.",
+                    "intent_source": {
+                        "kind": "user_scenario",
+                        "evidence": [
+                            "user_scenario:get back on monthly payments"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "monthly payments",
+                        "evidence": [
+                            "user_scenario:get back on monthly payments"
+                        ],
+                        "value": "repayment plan request on debt 7617225e-3894-45e2-bfe5-16a7558d7bde"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "established_by_prior_tool",
+                    "fact": "The waiver request with a Financial Status Report recorded at step 11 is the report the term relies on.",
+                    "evidence": [
+                        "prior_step:11"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "debt_evt_repayment_plan",
+                        "eligibility_id": "plan_on_active_debt",
+                        "condition": "A repayment plan request is taken only on a debt whose status is active.",
+                        "evidence": [
+                            "initial_state.debt_accounts.7617225e-3894-45e2-bfe5-16a7558d7bde.status",
+                            "initial_state.debt_accounts.7617225e-3894-45e2-bfe5-16a7558d7bde.debt_id"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "debt_accounts.debt_id",
+                                "source": "initial_state.debt_accounts.7617225e-3894-45e2-bfe5-16a7558d7bde.debt_id",
+                                "action_arg": "debt_id"
+                            }
+                        ],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 15,
+                "business_effect": "The debt goes into repayment_plan status, direct_payment method, 72.18 a month from 2026-11.",
+                "request_binding": {
+                    "action_semantics": "The caller asks for the representative to set up the monthly payment plan today; starting the plan is the representative's action.",
+                    "intent_source": {
+                        "kind": "user_scenario",
+                        "evidence": [
+                            "user_scenario:get back on monthly payments"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "monthly payments",
+                        "evidence": [
+                            "user_scenario:get back on monthly payments"
+                        ],
+                        "value": "direct-payment plan on debt 7617225e-3894-45e2-bfe5-16a7558d7bde"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "established_by_prior_tool",
+                    "fact": "The plan request recorded at step 13 states the months the installment is spread over.",
+                    "evidence": [
+                        "prior_step:13"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "debt_evt_repayment_plan",
+                        "eligibility_id": "policy_scope",
+                        "condition": "Starting an approved plan; a plan of up to plan_max_months_with_fsr months is approved only with a Financial Status Report, which stands on the debt from step 11.",
+                        "evidence": [
+                            "initial_state.debt_accounts.7617225e-3894-45e2-bfe5-16a7558d7bde"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    }
+                ]
+            }
+        ],
+        "temporal_feasibility": [
+            {
+                "step": 11,
+                "policy_id": "debt_evt_waiver",
+                "eligibility_id": "waiver_window",
+                "condition": "A waiver request is considered only if it is received not later than waiver_request_window_days calendar days after the date of the initial debt notice.",
+                "temporal_basis": {
+                    "clock": "frozen_time",
+                    "anchor_event": "the date of the initial debt notice",
+                    "anchor_source": "debt_accounts.notice_date",
+                    "relation": "not_after",
+                    "duration_source": "variants.waiver_request_window_days",
+                    "unit": "calendar_days",
+                    "counting_rule": "Count calendar days starting the day after the notice date; a request received on the last day of the window is timely.",
+                    "boundary": "inclusive"
+                },
+                "as_of": "frozen_time",
+                "evidence": [
+                    "frozen_time",
+                    "initial_state.debt_accounts.7617225e-3894-45e2-bfe5-16a7558d7bde.notice_date",
+                    "initial_state.debt_accounts.7617225e-3894-45e2-bfe5-16a7558d7bde.variant_name"
+                ],
+                "satisfied": true,
+                "boundary_check": {
+                    "just_before": "Notice 2026-06-10 plus 180 calendar days counted from the day after the notice is 2026-12-07; a request received 2026-12-08 would be late and not considered.",
+                    "at_boundary": "A request received on 2026-12-07 is timely (inclusive); today 2026-10-05 is day 117, well inside."
+                }
+            }
+        ],
+        "required_user_inputs": [
+            {
+                "information": "Phone number to locate the profile",
+                "source": "user_scenario:7045550186"
+            },
+            {
+                "information": "SSN last four",
+                "source": "user_scenario:5318"
+            },
+            {
+                "information": "VA file number",
+                "source": "user_scenario:352741869"
+            },
+            {
+                "information": "Date of birth",
+                "source": "user_scenario:1979-04-18"
+            },
+            {
+                "information": "Whether he will pay the amount the representative sets on this call",
+                "source": "user_scenario:you authorize that payment on the call"
+            },
+            {
+                "information": "Whether a Financial Status Report goes in with the request he signs",
+                "source": "user_scenario:with your Financial Status Report attached"
+            },
+            {
+                "information": "How much he can afford each month",
+                "source": "user_scenario:you cannot afford much"
+            }
+        ],
+        "seed_consistency": [
+            {
+                "row": "initial_state.debt_accounts.7617225e-3894-45e2-bfe5-16a7558d7bde",
+                "policy_id": "debt_evt_repayment_plan",
+                "check": "Disability Compensation Overpayment of 5551.56 = 36 months x 154.21 spouse addition at the 70 percent tier (June 2023 through May 2026 after the 2023-05-12 divorce); balance 5051.56 = 5551.56 - 500.00 direct payment; status active with plan fields reset after the plan defaulted on the August and September installments; notice 2026-06-10; no offset taken because the debt was in a direct-payment plan from July until it defaulted after the 2026-10-01 compensation payment.",
+                "evidence": [
+                    "initial_state.debt_accounts.7617225e-3894-45e2-bfe5-16a7558d7bde.original_amount",
+                    "initial_state.debt_accounts.7617225e-3894-45e2-bfe5-16a7558d7bde.current_balance",
+                    "initial_state.comp_dependents.54d85c1b-f67c-419b-8b13-22e8d4ba7e6c.effective_date"
+                ]
+            },
+            {
+                "row": "initial_state.debt_transactions.aac75118-2856-47b0-b247-f3b0181561ba",
+                "policy_id": "debt_evt_repayment_plan",
+                "check": "Plan installment for 2026-07 paid 2026-07-22 by Pay.gov, 500.00, 37.37 above the approved 462.63; it lowered the balance to 5051.56.",
+                "evidence": [
+                    "initial_state.debt_transactions.aac75118-2856-47b0-b247-f3b0181561ba.amount",
+                    "initial_state.debt_requests.38061c20-7760-4481-8a5e-97133feb51da.decided_amount"
+                ]
+            },
+            {
+                "row": "initial_state.debt_requests.c333a2a2-3e82-4d9a-8b2a-e67e40a6522e",
+                "policy_id": "debt_evt_repayment_plan",
+                "check": "Plan request 2026-06-24 by phone for 12 months at 462.63 (5551.56/12 rounded up), no Financial Status Report, within the 12-month no-report limit.",
+                "evidence": [
+                    "initial_state.debt_requests.c333a2a2-3e82-4d9a-8b2a-e67e40a6522e.requested_term_months"
+                ]
+            },
+            {
+                "row": "initial_state.debt_requests.38061c20-7760-4481-8a5e-97133feb51da",
+                "policy_id": "debt_evt_repayment_plan",
+                "check": "Decision granting that plan the same day at 462.63, citing the request; the plan then defaulted after two consecutive missed months (August and September).",
+                "evidence": [
+                    "initial_state.debt_requests.38061c20-7760-4481-8a5e-97133feb51da.source_request_id"
+                ]
+            }
+        ]
+    },
+    "evaluation_criteria": [
+        {
+            "owner": "agent",
+            "tool": "find_customers",
+            "arguments": {
+                "phone_number": "7045550186"
+            },
+            "objective": "Locate the caller's profile from the phone number he states.",
+            "necessity": "Every later read and write needs the beneficiary reference number; the customers finder is the only way to reach it from what the caller says."
+        },
+        {
+            "owner": "agent",
+            "tool": "verify_identity",
+            "arguments": {
+                "customer_id": "4881dc33-76d6-45de-99b4-c4fe9088fc8f",
+                "ssn_last4": "5318",
+                "va_file_number": "352741869",
+                "date_of_birth": "1979-04-18"
+            },
+            "objective": "Verify the caller with three stated credentials (SSN last four, VA file number, date of birth).",
+            "necessity": "Identity must be verified before any debt or benefit is discussed or changed; the verification write is scored."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_debt_accounts",
+            "arguments": {
+                "customer_id": "4881dc33-76d6-45de-99b4-c4fe9088fc8f"
+            },
+            "objective": "Read the debtor's VA debts: type, status active, balance 5051.56, notice date 2026-06-10, plan fields reset, no fraud finding.",
+            "necessity": "Gives the target debt, its balance (every computation), notice age (waiver window, deposit percentage, horizon, notice rate) and the status that shows the earlier plan is no longer in effect."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_debt_transactions",
+            "arguments": {
+                "debt_id": "7617225e-3894-45e2-bfe5-16a7558d7bde"
+            },
+            "objective": "Read every transaction on the debt: the single 500.00 direct payment of 2026-07-22 for plan month 2026-07, and no offsets.",
+            "necessity": "Supplies installments paid and paid total (reinstatement deposit count and excess credit), the direct payments of the last six months (waiver credit) and shows that no reinstatement deposit is on the ledger yet (the state the waiver amount waits on)."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_debt_requests",
+            "arguments": {
+                "debt_id": "7617225e-3894-45e2-bfe5-16a7558d7bde"
+            },
+            "objective": "Read the debt's requests and decisions: the 2026-06-24 plan request for 12 months without a Financial Status Report and its granted decision at 462.63.",
+            "necessity": "Supplies the cancelled plan's approval date, term, report flag and approved installment, and shows no waiver request with a Financial Status Report stands on the debt (the state the plan term waits on) and no undecided waiver, dispute or compromise (the one-pending-request gate)."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_comp_awards",
+            "arguments": {
+                "customer_id": "4881dc33-76d6-45de-99b4-c4fe9088fc8f"
+            },
+            "objective": "Read the debtor's compensation award: 70 percent combined rating, running.",
+            "necessity": "Decides the cross-difficulty tiers: deposit floor and deposit percentage, waiver capacity, plan-term compensation cut, restart months, compensation rate and relief rate."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_comp_payments",
+            "arguments": {
+                "award_id": "10b1d175-ab1a-4549-a42b-1e4a18f93a55"
+            },
+            "objective": "Read the compensation payments: 1962.66 through 2026-05, 1808.45 from 2026-06, no offsets.",
+            "necessity": "Feeds the relief-rate factor of the installment (payments of the last six months above six months at the current 1808.45 rate) and confirms no benefit offset was taken on the debt."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_comp_dependents",
+            "arguments": {
+                "award_id": "10b1d175-ab1a-4549-a42b-1e4a18f93a55"
+            },
+            "objective": "Read the dependency actions on the award: spouse added 2013 and removed for the 2023-05-12 divorce with an overpayment created.",
+            "necessity": "Confirms the originating record the debt cites, so the debt is the one the caller describes and no other debt or award is involved."
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "pay_plan_reinstatement_66656e17"
+            },
+            "objective": "Unlock the hidden task tool pay_plan_reinstatement_66656e17 so it can be called.",
+            "necessity": "First half of the customer's own reinstatement-deposit payment, handed over by the agent. Unlocking has no DB effect and happens once."
+        },
+        {
+            "owner": "user",
+            "tool": "call_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "pay_plan_reinstatement_66656e17",
+                "arguments": {
+                    "debt_id": "7617225e-3894-45e2-bfe5-16a7558d7bde",
+                    "amount": 210.13
+                }
+            },
+            "objective": "The debtor pays the 210.13 reinstatement deposit by direct payment on the call; the debt balance falls from 5051.56 to 4841.43.",
+            "necessity": "debt_ext_plan_reinstatement_deposit computes amount; the waiver amount's prerequisite sentence waits on this deposit standing on the ledger.",
+            "argument_uniqueness_tracing": {
+                "debt_id": "(1) value 7617225e-3894-45e2-bfe5-16a7558d7bde. (2) basis: the debt lookup returned exactly one debt for this debtor, the Disability Compensation Overpayment whose source record is the spouse removal the caller describes; tool docstring: 'the reference number of the VA debt ... as shown on the debt record returned by the debt lookup'. (3) uniqueness: the debtor holds no other debt, so any correct agent passes this id.",
+                "amount": "210.13 = round(max(1 x 420.97, 450.00) x 55% - 37.37). installments_counted (method): 1 installment paid (500.00 on 2026-07-22) and plan months due MONTHS(2026-06-24, 2026-10-05)=3, so 2 missing <= cancelling count 2 -> only the latest missed installment counts (baseline 3-1=2). installment_value (method): cancelled plan approved without a Financial Status Report and balance 5051.56 >= 5000.00 -> 5051.56/12 rounded up = 420.97 (baseline approved 462.63). deposit_floor (parameter, comp): plan approved 3 whole months ago <= 6 and a running compensation award -> 450.00 (baseline 25.00). deposit_pct (parameter, comp): running award rated 70 >= 60 and notice 117 days old <= 180 -> 55 (baseline 100). excess_credit (parameter): direct payments 500.00 exceed 1 x 462.63 by 37.37 and notice within the window -> whole 37.37 credited (baseline 0). Order: 1 x 420.97 = 420.97, raised to floor 450.00, x 55% = 247.50, less 37.37 = 210.13."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "submit_waiver_request_4f8614a0"
+            },
+            "objective": "Unlock the hidden task tool submit_waiver_request_4f8614a0 so it can be called.",
+            "necessity": "First half of the customer's own signed waiver request with his Financial Status Report, handed over by the agent. Unlocking has no DB effect and happens once."
+        },
+        {
+            "owner": "user",
+            "tool": "call_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "submit_waiver_request_4f8614a0",
+                "arguments": {
+                    "debt_id": "7617225e-3894-45e2-bfe5-16a7558d7bde",
+                    "requested_amount": 1753.82,
+                    "fsr_submitted": true,
+                    "received_within_hold_window": false
+                }
+            },
+            "objective": "The debtor submits a waiver request for 1753.82 with his Financial Status Report attached, received today by phone; the debt now carries a waiver request with a report.",
+            "necessity": "debt_ext_waiver_request_amount computes requested_amount; the plan term's prerequisite sentence waits on a waiver request with the debtor's signed report.",
+            "argument_uniqueness_tracing": {
+                "debt_id": "(1) value 7617225e-3894-45e2-bfe5-16a7558d7bde. (2) basis: the debt lookup returned exactly one debt for this debtor, the Disability Compensation Overpayment whose source record is the spouse removal the caller describes; tool docstring: 'the reference number of the VA debt ... as shown on the debt record returned by the debt lookup'. (3) uniqueness: the debtor holds no other debt, so any correct agent passes this id.",
+                "requested_amount": "1753.82 = 4841.43 - (180.845 x 21 - 710.13). Balance after the deposit 4841.43. monthly_capacity (parameter, comp): running award rated 70 >= 60 -> 10% of the 70 percent veteran-alone rate 1808.45 = 180.845 (baseline 25.00). horizon_months (parameter): notice 117 days <= 180 and balance 4841.43 >= 2500.00 -> 24 (baseline 12). horizon_counted (method): a plan was approved 2026-06-24 and the debt is active again -> 24 - MONTHS(2026-06-24, 2026-10-05)=3 -> 21 (baseline 24). repaid_credit (parameter): two direct payments in the last six months (500.00 on 2026-07-22 and the 210.13 deposit today) -> 710.13 credited (baseline 0). Expected repayment 3797.745 - 710.13 = 3087.615; 4841.43 - 3087.615 = 1753.815, rounded once -> 1753.82.",
+                "fsr_submitted": "(1) true. (2) basis: rule of debt_ext_waiver_request_amount: 'A waiver request is signed by the debtor and goes in with the debtor's Financial Status Report attached'; the caller says he will submit 'with your Financial Status Report attached'. (3) uniqueness: false applies only to a request going in without a report, which the policy does not allow here and the caller does not do.",
+                "received_within_hold_window": "(1) false. (2) basis: debt_evt_waiver: 'A request received within collection_hold_window_days calendar days after the notice date holds collection'; the debt record shows notice 2026-06-10 and the 30-day hold window of a Disability Compensation Overpayment; today is 2026-10-05, 117 days after notice. (3) uniqueness: true would require today to fall within 30 days of the notice; it does not."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "record_repayment_plan_request_018c5870"
+            },
+            "objective": "Unlock the hidden task tool record_repayment_plan_request_018c5870 so it can be called.",
+            "necessity": "First half of recording the repayment plan request. Unlocking has no DB effect and happens once."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "record_repayment_plan_request_018c5870",
+                "arguments": {
+                    "debt_id": "7617225e-3894-45e2-bfe5-16a7558d7bde",
+                    "requested_term_months": 47,
+                    "received_within_hold_window": false
+                }
+            },
+            "objective": "Record the debtor's repayment plan request for 47 months, received today by phone.",
+            "necessity": "debt_ext_plan_request_term computes requested_term_months; the installment's prerequisite sentence waits on a plan request received on the day the plan starts.",
+            "argument_uniqueness_tracing": {
+                "debt_id": "(1) value 7617225e-3894-45e2-bfe5-16a7558d7bde. (2) basis: the debt lookup returned exactly one debt for this debtor, the Disability Compensation Overpayment whose source record is the spouse removal the caller describes; tool docstring: 'the reference number of the VA debt ... as shown on the debt record returned by the debt lookup'. (3) uniqueness: the debtor holds no other debt, so any correct agent passes this id.",
+                "requested_term_months": "47 = 60 - 3 - 6 - 4. longest_term (parameter): the debtor asks for a plan as long as allowed, and a waiver request with a Financial Status Report was received today (within six months) and balance 4841.43 >= 3000.00 -> 60 (baseline 12). months_run (method): a plan approved 2026-06-24, debt active again, two direct payments -> MONTHS(2026-06-24, 2026-10-05) = 3 taken off (baseline 0). rating_cut (parameter, comp): running award rated 70 >= 60 -> 6 (baseline 0). pending_cut (parameter): waiver request with a report received within the last calendar month -> 4 (baseline 0). Never below 1.",
+                "received_within_hold_window": "(1) false. (2) basis: tool docstring 'true when today is within that window; false when today is after that window has closed'; debt notice 2026-06-10, hold window 30 days (variant parameter collection_hold_window_days), today 2026-10-05. (3) uniqueness: today is 117 days after notice, outside the window."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "start_repayment_plan_5152504c"
+            },
+            "objective": "Unlock the hidden task tool start_repayment_plan_5152504c so it can be called.",
+            "necessity": "First half of starting the repayment plan. Unlocking has no DB effect and happens once."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "start_repayment_plan_5152504c",
+                "arguments": {
+                    "debt_id": "7617225e-3894-45e2-bfe5-16a7558d7bde",
+                    "monthly_amount": 72.18,
+                    "start_month": "2026-11"
+                }
+            },
+            "objective": "Start the direct-payment repayment plan at 72.18 a month from 2026-11; the debt goes to repayment_plan status.",
+            "necessity": "debt_ext_plan_installment (root problem) computes monthly_amount on the world after the deposit, the waiver request and the 47-month plan request.",
+            "argument_uniqueness_tracing": {
+                "debt_id": "(1) value 7617225e-3894-45e2-bfe5-16a7558d7bde. (2) basis: the debt lookup returned exactly one debt for this debtor, the Disability Compensation Overpayment whose source record is the spouse removal the caller describes; tool docstring: 'the reference number of the VA debt ... as shown on the debt record returned by the debt lookup'. (3) uniqueness: the debtor holds no other debt, so any correct agent passes this id.",
+                "monthly_amount": "72.18 = ceil_cent(3087.61 / 46 x 110% x 95% x 105% x 98%), never below 25.00. spread_balance (method): waiver request with a report received today and notice within 180 days -> 4841.43 - 1753.82 = 3087.61 (baseline 4841.43). spread_months (parameter, comp): a plan was approved before and a running compensation award -> 47 - 1 = 46 (baseline 47 from today's request). uplift_pct (parameter, comp): rated 70 >= 70 -> 110 (baseline 100). relief_pct (parameter, comp history): six monthly payments in the last six months total 11004.91 > 6 x 1808.45 = 10850.70 and rated >= 60 -> 95 (baseline 100). restart_pct (parameter): plan approved before and a direct payment (today's deposit) within the last month -> 105 (baseline 100). notice_pct (parameter): notice 117 days <= 180 and no fraud finding -> 98 (baseline 100). 3087.61/46 = 67.1220 x 1.10 x 0.95 x 1.05 x 0.98 = 72.177 -> rounded up 72.18.",
+                "start_month": "(1) 2026-11. (2) basis: rule of debt_ext_plan_installment: 'the plan's first month is the calendar month after the month in which it starts'; the plan starts today 2026-10-05. (3) uniqueness: the month after October 2026 is 2026-11; any other month contradicts the rule."
+            }
+        }
+    ],
+    "computations": [
+        {
+            "policy_id": "debt_ext_plan_reinstatement_deposit",
+            "target_holding_id": "7617225e-3894-45e2-bfe5-16a7558d7bde",
+            "step": 9,
+            "arg": "amount",
+            "expected": 210.13,
+            "factor_trace": [
+                "installments_counted (method): 1 installment paid (debt_transactions 500.00 2026-07-22), plan months due MONTHS(2026-06-24,2026-10-05)=3, missing 2 <= cancelling count 2 -> tier 'at least one paid AND no more missing than the cancelling count' -> 1 installment; baseline (as booked) 2 -> result 425.70.",
+                "installment_value (method): plan request fsr_submitted false and balance 5051.56 >= 5000.00 -> 5051.56/12 rounded up = 420.97; baseline approved installment 462.63 -> result 217.08.",
+                "deposit_floor (parameter, cross-difficulty comp): plan approved 3 months ago <= 6 AND comp award status running -> 450.00; baseline smallest installment 25.00 -> result 194.16.",
+                "deposit_pct (parameter, cross-difficulty comp, multi-source): comp rating 70 >= 60 AND notice 117 days <= 180 -> 55; baseline 100 -> result 412.63.",
+                "excess_credit (parameter): direct payments 500.00 - 1 x 462.63 = 37.37 > 0 AND notice within window -> 37.37; baseline 0 -> result 247.50.",
+                "plumbing: deposit_base = max(1 x 420.97, 450.00) = 450.00; result = round(450.00 x 55/100 - 37.37, 2) = 210.13."
+            ],
+            "baseline_result": 925.26,
+            "factor_sensitivity": [
+                {
+                    "factor": "installments_counted",
+                    "tier_taken": "at least one installment paid and no more missing than the cancelling count",
+                    "baseline_result": 425.7
+                },
+                {
+                    "factor": "installment_value",
+                    "tier_taken": "approved without a report and balance at least the re-figuring threshold",
+                    "baseline_result": 217.08
+                },
+                {
+                    "factor": "deposit_floor",
+                    "tier_taken": "approved within the reinstatement window and a running compensation award",
+                    "baseline_result": 194.16
+                },
+                {
+                    "factor": "deposit_pct",
+                    "tier_taken": "rated 60 percent or more and notice within the waiver window",
+                    "baseline_result": 412.63
+                },
+                {
+                    "factor": "excess_credit",
+                    "tier_taken": "excess above approved installments and notice within the waiver window",
+                    "baseline_result": 247.5
+                }
+            ]
+        },
+        {
+            "policy_id": "debt_ext_waiver_request_amount",
+            "target_holding_id": "7617225e-3894-45e2-bfe5-16a7558d7bde",
+            "step": 11,
+            "arg": "requested_amount",
+            "expected": 1753.82,
+            "factor_trace": [
+                "monthly_capacity (parameter, cross-difficulty comp; conditions on the comp award): comp award running, rated 70 >= 60, veteran-alone rate 1808.45 -> 180.845; baseline 25.00 -> result 5026.56.",
+                "horizon_months (parameter; notice and balance on the debt row): notice 117 <= 180 AND balance 4841.43 >= 2500.00 -> 24; baseline 12 -> result 3923.96.",
+                "horizon_counted (method): granted plan decision 2026-06-24 AND status active -> 24 - 3 = 21; baseline 24 -> result 1211.28.",
+                "repaid_credit (parameter): direct payments in the last six months 500.00 (2026-07-22) and 210.13 (step 9) = 2 -> 710.13; baseline 0 -> result 1043.69.",
+                "plumbing: balance 4841.43 after step 9; expected = 180.845 x 21 - 710.13 = 3087.615; result = round(max(0, 4841.43 - 3087.615), 2) = 1753.82."
+            ],
+            "baseline_result": 4541.43,
+            "factor_sensitivity": [
+                {
+                    "factor": "monthly_capacity",
+                    "tier_taken": "running award rated 60 percent or more",
+                    "baseline_result": 5026.56
+                },
+                {
+                    "factor": "horizon_months",
+                    "tier_taken": "notice within window and balance at least the large-balance limit",
+                    "baseline_result": 3923.96
+                },
+                {
+                    "factor": "horizon_counted",
+                    "tier_taken": "plan approved and debt again in active collection",
+                    "baseline_result": 1211.28
+                },
+                {
+                    "factor": "repaid_credit",
+                    "tier_taken": "two or more direct payments in the last six months",
+                    "baseline_result": 1043.69
+                }
+            ]
+        },
+        {
+            "policy_id": "debt_ext_plan_request_term",
+            "target_holding_id": "7617225e-3894-45e2-bfe5-16a7558d7bde",
+            "step": 13,
+            "arg": "requested_term_months",
+            "expected": 47,
+            "factor_trace": [
+                "longest_term (parameter, multi-source): waiver request with report received 2026-10-05 (step 11) AND balance 4841.43 >= 3000.00 -> 60; baseline 12 -> result 1.",
+                "months_run (method): granted plan 2026-06-24, status active, 2 direct payments -> 3 months taken off; baseline 0 -> result 50.",
+                "rating_cut (parameter, cross-difficulty comp): rating 70 >= 60 -> 6; baseline 0 -> result 53.",
+                "pending_cut (parameter): waiver request with report within the last month -> 4; baseline 0 -> result 51.",
+                "plumbing: result = max(1, 60 - 3 - 6 - 4) = 47."
+            ],
+            "baseline_result": 12,
+            "factor_sensitivity": [
+                {
+                    "factor": "longest_term",
+                    "tier_taken": "waiver request with a report in the last six months and balance at least the threshold",
+                    "baseline_result": 1
+                },
+                {
+                    "factor": "months_run",
+                    "tier_taken": "plan approved, active again, a direct payment made",
+                    "baseline_result": 50
+                },
+                {
+                    "factor": "rating_cut",
+                    "tier_taken": "rated 60 percent or more",
+                    "baseline_result": 53
+                },
+                {
+                    "factor": "pending_cut",
+                    "tier_taken": "waiver request with a report within the last month",
+                    "baseline_result": 51
+                }
+            ]
+        },
+        {
+            "policy_id": "debt_ext_plan_installment",
+            "target_holding_id": "7617225e-3894-45e2-bfe5-16a7558d7bde",
+            "step": 15,
+            "arg": "monthly_amount",
+            "expected": 72.18,
+            "factor_trace": [
+                "spread_balance (method): waiver request with report received today AND notice within 180 days -> 4841.43 - 1753.82 = 3087.61; baseline 4841.43 -> result 113.18.",
+                "spread_months (parameter, cross-difficulty comp): plan approved before AND comp award running -> 47 - 1 = 46; baseline 47 -> result 70.65.",
+                "uplift_pct (parameter, cross-difficulty comp): rating 70 >= 70 -> 110; baseline 100 -> result 65.62.",
+                "relief_pct (parameter, cross-difficulty comp history, multi-source): comp_payments May-Oct 2026 total 11004.91 > 6 x 1808.45 = 10850.70 AND rating >= 60 -> 95; baseline 100 -> result 75.98.",
+                "restart_pct (parameter, multi-source): plan approved before AND deposit posted today (within one month) -> 105; baseline 100 -> result 68.74.",
+                "notice_pct (parameter; notice and fraud finding on the debt row): notice 117 <= 180 AND fraud_finding false -> 98; baseline 100 -> result 73.65.",
+                "plumbing: months_requested 47 from step 13; 3087.61/46 x 1.10 x 0.95 x 1.05 x 0.98 = 72.177 -> rounded up 72.18 >= 25.00."
+            ],
+            "baseline_result": 103.01,
+            "factor_sensitivity": [
+                {
+                    "factor": "spread_balance",
+                    "tier_taken": "waiver request with a report within the last month and notice within the waiver window",
+                    "baseline_result": 113.18
+                },
+                {
+                    "factor": "spread_months",
+                    "tier_taken": "plan approved before and a running compensation award",
+                    "baseline_result": 70.65
+                },
+                {
+                    "factor": "uplift_pct",
+                    "tier_taken": "rated 70 percent or more",
+                    "baseline_result": 65.62
+                },
+                {
+                    "factor": "relief_pct",
+                    "tier_taken": "payments above current rate and rated 60 percent or more",
+                    "baseline_result": 75.98
+                },
+                {
+                    "factor": "restart_pct",
+                    "tier_taken": "plan approved before and a direct payment within the last month",
+                    "baseline_result": 68.74
+                },
+                {
+                    "factor": "notice_pct",
+                    "tier_taken": "notice within the waiver window and no fraud finding",
+                    "baseline_result": 73.65
+                }
+            ]
+        }
+    ],
+    "prerequisite_closure": {
+        "root_problem": "debt_ext_plan_installment",
+        "edges": [
+            {
+                "from": "debt_ext_plan_installment",
+                "to": "debt_ext_plan_request_term",
+                "kind": "value_input",
+                "gate": "months_requested",
+                "form": "state",
+                "condition": "The latest repayment plan request on the debt is dated the day the plan starts and states the number of months the plan is to run.",
+                "policy_source": "A repayment plan's monthly installment is not fixed until the debt carries a repayment plan request received on the day the plan starts, stating the number of months the plan is to run.",
+                "resolved_by": "record_repayment_plan_request_018c5870",
+                "unresolved_at_frozen_time": {
+                    "why_false": "The only repayment plan request on the debt is the cancelled plan's request of 2026-06-24 for 12 months; none is dated 2026-10-05.",
+                    "evidence": [
+                        "initial_state.debt_requests.c333a2a2-3e82-4d9a-8b2a-e67e40a6522e.received_date = 2026-06-24",
+                        "initial_state.debt_requests.c333a2a2-3e82-4d9a-8b2a-e67e40a6522e.requested_term_months = 12"
+                    ],
+                    "flips_to_true_by": "Step 13 records a plan request dated 2026-10-05 for 47 months, which becomes the latest request the installment reads."
+                }
+            },
+            {
+                "from": "debt_ext_plan_request_term",
+                "to": "debt_ext_waiver_request_amount",
+                "kind": "value_input",
+                "gate": "waiver_fsr_requests",
+                "form": "state",
+                "condition": "Where the debtor asks for a plan longer than the no-report limit, the debt's requests include a waiver request received within the last six calendar months with a Financial Status Report attached; a debtor asking for a plan within the no-report limit needs none.",
+                "policy_source": "For a debtor who asks for a plan longer than the longest plan approved without a Financial Status Report, the number of months on the repayment plan request is fixed only after the debt carries a waiver request, received in the last six months, with the debtor's signed Financial Status Report attached.",
+                "resolved_by": "submit_waiver_request_4f8614a0",
+                "unresolved_at_frozen_time": {
+                    "why_false": "The debt's only requests are a repayment plan request without a Financial Status Report and its decision; no waiver request exists.",
+                    "evidence": [
+                        "initial_state.debt_requests.c333a2a2-3e82-4d9a-8b2a-e67e40a6522e.event_type = debt_repayment_plan_requested",
+                        "initial_state.debt_requests.c333a2a2-3e82-4d9a-8b2a-e67e40a6522e.fsr_submitted = false",
+                        "initial_state.debt_requests.38061c20-7760-4481-8a5e-97133feb51da.event_type = debt_request_decided"
+                    ],
+                    "flips_to_true_by": "Step 11 records a waiver request dated 2026-10-05 with fsr_submitted true; the longest term rises from 12 to 60 and the pending cut of 4 applies."
+                }
+            },
+            {
+                "from": "debt_ext_waiver_request_amount",
+                "to": "debt_ext_plan_reinstatement_deposit",
+                "kind": "value_input",
+                "gate": "balance",
+                "form": "state",
+                "condition": "For a debt whose repayment plan was cancelled for missed installments, a direct payment equal to the reinstatement deposit stands among the debt's transactions, and the outstanding balance and the direct payments of the last six months reflect it.",
+                "policy_source": "The amount a waiver request asks VA to waive is fixed only after the debt's ledger carries the reinstatement deposit owed on any repayment plan of the debt that was cancelled for missed installments.",
+                "resolved_by": "pay_plan_reinstatement_66656e17",
+                "unresolved_at_frozen_time": {
+                    "why_false": "The plan was cancelled for missed installments and the only direct payment on the debt is the July installment; no reinstatement deposit stands on the ledger.",
+                    "evidence": [
+                        "initial_state.debt_accounts.7617225e-3894-45e2-bfe5-16a7558d7bde.status = active",
+                        "initial_state.debt_accounts.7617225e-3894-45e2-bfe5-16a7558d7bde.repayment_plan_method = none",
+                        "initial_state.debt_transactions.aac75118-2856-47b0-b247-f3b0181561ba.transaction_date = 2026-07-22"
+                    ],
+                    "flips_to_true_by": "Step 9 posts the 210.13 deposit; the balance becomes 4841.43 and two direct payments stand in the last six months."
+                }
+            }
+        ],
+        "resolution_order": [
+            "debt_ext_plan_reinstatement_deposit",
+            "debt_ext_waiver_request_amount",
+            "debt_ext_plan_request_term",
+            "debt_ext_plan_installment"
+        ],
+        "order_uniqueness": "The tree is a chain (installment <- plan term <- waiver amount <- reinstatement deposit); no problem has two prerequisites, so there is no parallel pair to reorder, and each write must follow the one it waits on: the deposit changes the balance and the payment count the waiver amount reads, the waiver request changes the report count and pending cut the term reads, and the plan request changes the months the installment reads.",
+        "edge_load_bearing": [
+            {
+                "edge": "debt_ext_plan_installment -> debt_ext_plan_request_term",
+                "skipped_effect": "Skipping the plan request (step 13): the installment reads the cancelled plan's 12 months, spread months 11, and monthly_amount becomes 301.83 instead of 72.18; the plan request row is also missing from the terminal state."
+            },
+            {
+                "edge": "debt_ext_plan_request_term -> debt_ext_waiver_request_amount",
+                "skipped_effect": "Skipping the waiver request (step 11): longest term 12 and no pending cut, so requested_term_months becomes 3 instead of 47 (and the installment changes with it)."
+            },
+            {
+                "edge": "debt_ext_waiver_request_amount -> debt_ext_plan_reinstatement_deposit",
+                "skipped_effect": "Skipping the deposit (step 9): balance 5051.56 and one direct payment in six months (half credit 250.00), so requested_amount becomes 1503.82 instead of 1753.82."
+            }
+        ],
+        "no_user_hint": "user_scenario raises only getting back on monthly payments. It never names the deposit, the waiver or the plan request or any policy id; it says nothing about forgiveness, deposits or reports on its own initiative. The only lines touching them are passive: if the representative explains something must be paid or signed first, he goes along with what is handed to him.",
+        "tools_do_not_block": "task_tools.py: start_repayment_plan_5152504c only updates status, method, amount and start month; record_repayment_plan_request_018c5870 only creates the request row; submit_waiver_request_4f8614a0 only creates the request row; pay_plan_reinstatement_66656e17 only creates the payment row and lowers the balance. None reads another request, payment or status, none returns an error, so each writes faithfully even when its prerequisite is unresolved."
+    },
+    "charter_scope": {
+        "extended_policies": [
+            "debt_ext_plan_reinstatement_deposit",
+            "debt_ext_waiver_request_amount",
+            "debt_ext_plan_request_term",
+            "debt_ext_plan_installment"
+        ],
+        "task_tools": [
+            "pay_plan_reinstatement_66656e17",
+            "submit_waiver_request_4f8614a0",
+            "record_repayment_plan_request_018c5870",
+            "start_repayment_plan_5152504c"
+        ]
+    },
+    "required_documents": [
+        "debt_ext_plan_reinstatement_deposit",
+        "debt_ext_waiver_request_amount",
+        "debt_ext_plan_request_term",
+        "debt_ext_plan_installment"
+    ]
+}

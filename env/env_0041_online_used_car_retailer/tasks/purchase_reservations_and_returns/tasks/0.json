@@ -1,0 +1,2196 @@
+{
+    "frozen_time": "2026-10-06 15:20:00 MST",
+    "design_rationale": "WORKLOG / DOSSIER - task 0 (purchase_reservations_and_returns), frozen_time 2026-10-06 15:20:00 MST.\n\n[0] Draw and scope snapshot. `draw_counts.py <diff> --task 0` printed {\"task\": 0, \"prerequisite_problems\": 1, \"problems\": 2, \"factor_counts\": [5, 4]}; `--tasks 2` shows task 1 = 2 prerequisite problems, factor_counts [6, 5, 6]. Occupied before this task: nothing (task 0 is the first). Claimed here: purchase_ext_exchange_shipping_fee (5 factors, agent, target post_exchange_shipping_fee_0e49ee13) and purchase_ext_debit_card_payment (4 factors, user, target pay_order_by_debit_card_8f259234). Headroom kept for task 1: the signing-time charges of an ordinary (non-exchange) order - its transfer shipping fee and its documentation fee - and the Kestrel Auto Finance cash down a financed buyer pays from a bank account, a separate customer-owned write on a different business object (a financed order, bank rail). The exchange replacement shipping rule is scoped to orders whose exchange source is set, so it does not consume task 1's ordinary shipping fee; the card-payment rule is scoped to orders paid in cash or through an outside lender, so it does not consume the financed cash down.\n\n[1] Why this is a good test. The caller asks one thing - pay off the rest of her replacement RAV4 by debit card. To answer she needs (a) to discover from the card-payment rule's own prerequisite sentence that on an exchange replacement the payment is fixed only after the shipping fee owed for transporting the replacement stands on the order, see in the ledger that it does not, and work out that the exchange replacement shipping rule books it; (b) to price that fee through a five-factor computation spread over four other products' records (delivery appointment date, Kestrel Auto Finance contracts and their returned-payment history, the KestrelCare plan sold with the vehicle, the title service) plus the order's own ledger (carry-over share); and (c) to recompute the balance on the world where that fee now stands and cap the card payment by a four-factor card allowance (ticket size, finance standing, collection method, reschedules). The difficulty comes from reading policy, querying six tables in four categories and calculating, never from picking among similar tools: each write has exactly one tool.\n\n[2] Long and broad. Surface goal (pay the rest by debit card) -> prerequisite sentence of the card rule (\"On an exchange replacement order, the debit-card payment toward the balance is fixed only after the order's money history carries the shipping fee entry owed for transporting the replacement vehicle.\") -> the RAV4 is an exchange replacement (exchange_source_order_id = CR-V order) with no shipping-fee entry -> exchange replacement shipping fee computation -> booked fee raises the balance -> card allowance computation -> payment = min(balance due, card room). Depth: 2 problems in a chain. Breadth: carry-over share (purchase ledger), handover lead time (delivery), borrower discount (finance contracts + finance ledger), plan credit (warranty), interstate surcharge (title), ticket size (purchase ledger), standing uplift (finance), collection method and reschedules (delivery).\n\n[3] Policies, base lineage and factor cards.\npurchase_ext_exchange_shipping_fee - trigger state_due; subject purchase_charge_posted; base_policy_refs purchase_agreement_charges (charges_on_open_order) and purchase_return_settlement (no gate on this subject -> policy_scope). overwrite: the base clause \"a shipping fee equal to the distance-band fee for the full transfer distance reduced by the program's shipping fee discount, rounded to the cent (for an exchange replacement order whose program waives the exchange shipping fee, no shipping fee posts)\" is replaced, for exchange replacement orders, by \"The standard exchange replacement shipping fee is the band fee of the shipping band that the full transfer distance falls in, reduced by the program's shipping fee discount and rounded half up to the cent\" - evaluated on this world base gives 1099.00, the extended rule 731.06, so the override is declared. Bands and band fees are the base charter's own shipping_fee_bands (1-500: 499.00, 501-1000: 799.00, 1001-1500: 1099.00, 1501+: 1490.00), copied into params; the waiver, free distance and program discount are the base tier parameters.\n Factor card (tier taken / evidence / baseline figure from the sensitivity run):\n - carry_over_courtesy_miles (parameter, history): carry-over share = 23260.69 internal-transfer money (entry b4) / 26490.0 vehicle price (b1) = 87.81% >= 80 -> courtesy miles = 2 x free transfer distance 100 = 200, exchange pricing distance 1065 - 200 = 865 miles (band 2, band fee 799.00); baseline (no courtesy miles, pricing distance 1065, band 3) -> 903.56.\n - expedited_exchange_transport_pricing (method, delivery, cross-difficulty): DAYS(2026-10-06 signing, 2026-10-09 scheduled) = 3 -> priority tier: the transport price switches from the band fee to the higher of the band fee (799.00) and per-mile pricing 865 x 1.15 = 994.75 -> 994.75; the rush tier would price purely per mile (865 x 1.45 = 1254.25) and the standard tier uses the band fee alone; baseline (band fee) -> 584.25. Near-miss: original_scheduled_date 2026-10-08 (2 days) would wrongly select rush per-mile pricing (-> 925.69).\n - borrower_shipping_discount (parameter, finance, multi-source): active Tier B contract with autopay_enrolled true AND 0 returned payments within twelve whole months -> program discount 0 + 25 autopay borrower points = 25%; baseline 0% -> 979.75. Near-miss: the returned payment of 2024-12-26 on the paid-off contract is 21 whole months old.\n - protection_plan_shipping_credit (parameter, warranty): KestrelCare Gold sold with the vehicle -> 75.00; baseline 0 -> 806.06.\n - interstate_shipping_surcharge (parameter, title): Kestrel Out-of-State Registration -> 60.00; baseline 0 -> 671.06.\n Whole baseline (computation document only): 1099.00; gold 731.06.\npurchase_ext_debit_card_payment - trigger on_request; subject purchase_payment_posted; base_policy_refs purchase_payment_funding (payment_state inherited; card_cap retired by the declared overwrite of \"Combined debit-card and credit-card money on one order, deposit included, may not exceed the program's card payment cap; card money beyond the cap is refused and must come by ACH, wire or cashier's check.\" with \"Card money on an order paid in cash or through an outside lender may not exceed the order's card allowance; card money beyond the card allowance is refused and must come by ACH, wire or cashier's check.\") - base would cap card money at 5000.00 here, the extended allowance is 5815.55.\n Factor card:\n - ticket_size_card_allowance (method, history): ticket size 26490.00 in [25000, 40000) -> max(5000, 19.5% x 26490) = 5165.55; baseline program cap -> 5650.00.\n - finance_standing_card_uplift (parameter, finance, multi-source, cross-difficulty): paid-off contract AND returned ever = 1 AND returned in 12 months = 0 -> +500.00; baseline 0 -> 5315.55. Near-miss: reading 'paid off' alone suggests the clean-history 1000.00.\n - collection_method_card_adjustment (parameter, delivery): Kestrel Hub Pickup -> +400.00; baseline 0 -> 5415.55.\n - appointment_reschedule_card_reduction (parameter, delivery): reschedule_count 1 -> -250.00; baseline 0 -> 6065.55.\n Whole baseline: 5000.00; gold 5815.55. No new product law: both policies refine base clauses they name; every tier value is a declared param or a base tier parameter.\n\n[4] Base-invariant card. Write 1 (charge on B): purchase_agreement_charges.charges_on_open_order \"Agreement charges post only on an order whose status is contracted, ...\" - B.status = contracted (initial_state.purchase_orders.bacca2a6-e6ba-428f-afd1-72358e635848.status), object correlation purchase_orders.purchase_order_id = call arg. purchase_return_settlement: no gate on purchase_charge_posted -> policy_scope. No time gate: signed_within_hold applies to the signing event, already done on 2026-10-06 (hold expiry 2026-10-07). Write 2 (payment on B): purchase_payment_funding.payment_state \"A payment is posted only on an order whose status is contracted or cancelled; ...\" - B contracted; card_cap retired by overwrite (and in any case the card allowance rule replaces it). Handover readiness (card rail lead time 0 business days) is not a gate on the payment write.\n\n[5] Business-object card. Target: purchase order bacca2a6-e6ba-428f-afd1-72358e635848 (RAV4, exchange replacement of the CR-V order 4154e840-0c3a-4f9d-bf21-0a0007884be6). Ledger rows included in the balance: b1 vehicle price, b2 TX documentation fee, b3 sales tax, b4 internal-transfer down payment, plus the shipping fee booked in-call. Excluded: every CR-V row (a1-a13, scoped to the CR-V order) and the older orders' absence of ledgers. The CR-V refund a13 (exchange_transfer, 23260.69) is the source of b4 (source_txn_id) - the same money, so the carry-over share counts b4 only. Both writes carry purchase_order_id = bacca2a6-e6ba-428f-afd1-72358e635848.\n\n[6] Problem-tree card. Root purchase_ext_debit_card_payment; one edge to purchase_ext_exchange_shipping_fee: kind value_input, gate card_balance_due, form state, policy_source \"On an exchange replacement order, the debit-card payment toward the balance is fixed only after the order's money history carries the shipping fee entry owed for transporting the replacement vehicle.\", condition: a shipping_fee charge entry stands on the exchange replacement whenever one is owed; resolved_by post_exchange_shipping_fee_0e49ee13 (owner agent). Four-point test: ordering connective \"fixed only after\"; record-visible state (a shipping fee entry in the order's money history); no tool, id or snake_case token; strength = hard requirement scoped to exchange replacement orders, matching the condition. Exactly one write of this difficulty books a shipping fee on an exchange replacement order (the exchange replacement shipping rule; the ordinary transfer shipping rule of task 1 excludes exchange replacements). Derivation: sentence + ledger of B (no shipping_fee row) + the exchange shipping rule (\"posted on that replacement order on the day the fee is booked\") -> the agent books the exchange shipping fee. Seed evidence it is false at the opening: B.exchange_source_order_id = 4154e840-0c3a-4f9d-bf21-0a0007884be6, transfer 1065 > 100, b1-b3 are the only charges, cached balance 5600.00. Topological order: shipping fee, then payment. Deletion sensitivity (computed): without the shipping write the payment would be 5600.00 (balance binds) instead of 5815.55 (card room binds). user_scenario names no prerequisite; tools validate nothing (see prerequisite_closure). Owner=user problem: the debit-card payment - only the cardholder can authorise a charge to her own card.\n\n[7] Seed rows. customers (verification); purchase_orders O1/O2 (completed parents of the two finance contracts), A (returned CR-V: source of the carry-over money), B (target); purchase_transactions a1-a13 (a complete, self-consistent CR-V history ending at 0.00 - deposit, charges, wire, reversals, 59.50 + 950.00 return charges, 23260.69 exchange transfer) and b1-b4 (B's signing charges and carry-over); purchase_return_requests R_A (exchange, hub drop-off, completed - the link of b4/a13); delivery_orders for B (Hub Pickup, scheduled 2026-10-09, originally 2026-10-08, reschedule_count 1 - lead time, collection, reschedule factors); title_orders + 2 title_transactions (Out-of-State Registration, fees held 186.50 = 4.00 + 182.50 - interstate factor); service_contracts (Gold, pending, sold with vehicle - plan credit); finance_contracts F1 (Tier C, paid off 2025-05-27) and F2 (Tier B, active, autopay) with 10 finance_transactions (funding, the 2024-12-23 payment returned 2024-12-26 with its 25.00 fee paid 2025-01-08, payoff; F2 funding and three autopay installments). Removing F1's returned payment flips the standing uplift to 1000.00; removing F2's autopay flag drops the discount to 10%; removing the title order removes the surcharge; removing the plan removes the credit; moving the appointment to 2026-10-08 switches the transport price to rush per-mile pricing. Automatic clauses checked: B is not a reserved order (no hold lapse), the CR-V return is completed (no pending settlement), the paid-off contract has no fees due, the delivery appointment is in the future; nothing in the seed owes an obligation other than the shipping fee this task books. No cache trap: B's cached order_balance 5600.00 equals its ledger.\n\n[8] Persona. Marisol is a rushed, friendly hygienist; she volunteers only the surface goal (pay the rest of the RAV4 by debit card) and the true situation (exchange done, replacement signed this morning, pickup Friday at the Phoenix hub - all in the seed). Credentials only when asked (phone 4805551836 first, then DOB 1989-11-03 and SSN last four 1427; email/ZIP as fallbacks). Passive reactions: lets the representative add or update anything on the order first; pays exactly the amount handed to her on the RAV4 order; if the card cannot take everything she accepts and says she will handle the rest herself; ends after the card payment (the last gold action). She never names the shipping fee or any figure.\n\n[9] Easy mistakes and how they are excluded. Paying the 5600.00 seed balance (skips the prerequisite). Using the ordinary signing shipping rule (full distance, band fee, no factors) -> 1099.00. Using original_scheduled_date (rush tier, per-mile 1254.25 before discount). Counting the 21-month-old returned payment as recent (loses the 25% discount, or takes the clean-history uplift). Adding the CR-V money twice (a13 and b4 are the same funds; only B's ledger enters). Capping the card at the program's 5000.00 cap.\n\n[10] Standard solution. find_customers(phone) -> verify (phone, DOB, SSN4) -> find_purchase_orders(customer) -> find_purchase_transactions(customer) -> find_purchase_return_requests(customer) -> find_delivery_orders(B) -> find_title_orders(B) -> find_title_transactions(title order) -> find_service_contracts(B) -> find_finance_contracts(customer) -> find_finance_transactions(customer) -> unlock + call post_exchange_shipping_fee_0e49ee13(B, 731.06) -> unlock_user + Marisol calls pay_order_by_debit_card_8f259234(B, 5815.55).\n\n[11] Verification. A temporary authoring script replayed the gold writes with the real share and task tools on initial_state and evaluated each policy's compute with check_compute's own build_env/eval_compute on the world just before its step: shipping fee 731.06 at step 12; debit-card payment 5815.55 at step 14 (balance due 6331.06, card room 5815.55); factor baselines and the all-baseline figures listed in [3]; skip-prerequisite run 5600.00. Gates run (see the final report): check_extended, check_task_tools, replay_tasks, check_solvability, check_compute, check_grounding, check_cache_diff, check_cross_fire with --task 0.\n\n[12] Closure. policy -> target tool -> GT call: exchange shipping fee -> post_exchange_shipping_fee_0e49ee13 -> step 12 (amount); debit-card payment -> pay_order_by_debit_card_8f259234 -> step 14 (amount). charter_scope = required_documents = computations' policies = the problem tree; task_tools in first-use order. Terminal state: one shipping_fee charge 731.06 and one debit_card down payment 5815.55 on B, balance 515.51.\n\n[13] Solvability vs GT and a draft recomputation from the visible context. With only the rules as they will be published, the tool schemas, the persona's lines and query returns: the card rule's prerequisite sentence sends the reader to the exchange replacement shipping rule; the ledger returned for B shows no shipping entry; the shipping rule's ladders read records the reads above return (internal-transfer down payment, vehicle price, appointment date, finance contracts and returned payments, plan, title service) and give 731.06; the payment rule then gives min(6331.06, 5815.55) = 5815.55. The draft agrees with gold. No real-world wait is involved: the fee is booked and the card is charged synchronously at 2026-10-06 15:20:00 MST.\n\n[14] Manual values gates. Length/breadth and hidden test: shown in [2]/[6]; the owner=user write is the cardholder's own payment and completes on the spot. Need expression: object (RAV4 order), timing (today), authorisation (agent books what rules require; she pays herself), write not quote - all explicit in the persona. Chronology: every volunteered fact (exchange done, signed this morning, Friday pickup) is in the seed. Authority: order status, ledger and appointment are system records; she asserts none of them. Prerequisite sentence direction: affirmative (\"fixed only after\"), as a desk states what a payment amount rests on. Rule/compute two-way: every binding quotes its rule sentence (compute_basis); every ladder tier is stated in the rule. Factors bear weight: each baseline figure differs from gold (see [3]); every tier value is a param or a base tier parameter; the near-misses are the original appointment date and the 21-month-old returned payment.\n\n[R2] Revision log, policy-task audit round 1 (audits/policy_task/purchase_reservations_and_returns). F-1 (no honest method factor in the exchange shipping fee): symptom - carry_over_band_distance and handover_lead_time_band only substituted k and s into one formula; root cause - both ladders moved a distance multiple and a band index; change - carry_over_band_distance is now carry_over_courtesy_miles, labelled parameter (its tiers select a number of courtesy miles), and handover_lead_time_band is replaced by expedited_exchange_transport_pricing, a method factor whose tiers select different pricing algorithms (pure per-mile at the rush rate / higher of band fee and per-mile at the priority rate / band fee), as dedicated expedited carriers are priced by the mile; re-run - shipping fee 731.06 (was 809.25), sensitivities 903.56 / 584.25 / 979.75 / 806.06 / 671.06, all-baseline 1099.00; propagation - gold step 12 amount, computations[0], tracing, prerequisite_closure (balance 5600.00 -> 6331.06, payment still 5815.55 since the card room binds; skip run 5600.00), solvability business effects, terminal balance 515.51. O-2 (posting date): the exchange rule now says the fee is posted on the replacement order dated its signing date, like the base agreement charges. OBS-9 (discount tiers collapsing for higher programs): borrower discount tiers now add points to the program discount (capped at one hundred percent) instead of taking the larger of two percentages; on this world 0 + 25 = 25%, unchanged. OBS-4 (card-money wording): the debit rule now says 'every reservation deposit paid on the order by debit card or credit card'. OBS-1 (card limit for active Kestrel Auto Finance orders): the debit rule's replacement sentence now also keeps the program's card payment cap, deposit included, for orders paid through Kestrel Auto Finance. OBS-3 (first appointment row) and OBS-6 (half-up vs float rounding): no change - each order carries one appointment row and no intermediate in either world lands on a half-cent tie (746.0625 -> 746.06 is not a tie). Persona observation 2: no change (passive conditional, names no write).",
+    "user_scenario": "You are Marisol Benavides, a 36-year-old dental hygienist in Tempe, Arizona, calling Kestrel Auto on a Tuesday afternoon between patients - friendly, a little rushed, and organised. Last month you bought a 2019 Honda CR-V from Kestrel, realised within days that it was too small for your family, and returned it under the 7-day return as an exchange. This morning you e-signed the agreement for the replacement, a 2021 Toyota RAV4 XLE, and you are picking it up this Friday at the Phoenix hub. You understand the money from the CR-V was moved over to the RAV4 but that something is still left to pay, and you want to pay off what is left on the RAV4 with your debit card today so that Friday is just keys and paperwork. You do not know the exact amount left and you have no reference numbers in front of you.\n\nOpen by saying you are the customer who swapped her CR-V for a RAV4 and that you want to put the rest of the RAV4 on your debit card today. When the representative asks how to find you, give your mobile number, 4805551836. When they need more to confirm it is you, give your date of birth, 1989-11-03, and the last four digits of your Social Security number, 1427; only if they ask for something else instead, your email is marisol.benavides@protonmail.com and your home ZIP code is 85281.\n\nIf the representative tells you something has to be added or updated on the RAV4 order before you pay, say that is fine and let them go ahead - you trust them to follow Kestrel's rules and you do not ask what it is for. You pay only with your debit card, never a credit card. When the representative tells you how much can go on the card and hands the payment over to you, complete it on the RAV4 order for exactly the amount they give you. If they explain that your card cannot take the whole remaining balance, accept the amount they say it can take and tell them you will take care of whatever is left yourself before Friday; you do not ask them to set anything up for it. You have no other questions: once the card payment has gone through, thank them and say goodbye.",
+    "initial_state": {
+        "customers": {
+            "1a3f530b-ee5a-456f-907d-a9acaa39c803": {
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "name": "Marisol Benavides",
+                "phone_number": "4805551836",
+                "email": "marisol.benavides@protonmail.com",
+                "date_of_birth": "1989-11-03",
+                "ssn_last4": "1427",
+                "residential_zip": "85281",
+                "home_state": "AZ",
+                "profile_opened_date": "2019-05-20"
+            }
+        },
+        "purchase_orders": {
+            "0c02df9a-3c5e-44ab-9142-69340a6836d9": {
+                "purchase_order_id": "0c02df9a-3c5e-44ab-9142-69340a6836d9",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "variant_name": "Kestrel Inspected",
+                "status": "completed",
+                "vin": "3HGGK5H8XGM104471",
+                "vehicle_description": "2016 Honda Fit EX",
+                "model_year": 2016,
+                "listing_odometer": 61230,
+                "handover_odometer": 61244,
+                "vehicle_price": 12990.0,
+                "payment_method": "kestrel_financing",
+                "selling_dealer_state": "AZ",
+                "registration_state": "AZ",
+                "transfer_distance_miles": 0,
+                "insurance_verified": true,
+                "reserved_date": "2019-05-20",
+                "hold_expires_date": "2019-05-23",
+                "hold_extensions_used": 0,
+                "contract_signed_date": "2019-05-22",
+                "handover_date": "2019-05-25",
+                "return_odometer": null,
+                "exchange_source_order_id": null,
+                "closed_date": "2019-06-02",
+                "closure_reason": "sale_final",
+                "order_balance": 0.0,
+                "deposit_held": 0.0
+            },
+            "eba8395f-4854-4b95-bb2d-d26f25439795": {
+                "purchase_order_id": "eba8395f-4854-4b95-bb2d-d26f25439795",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "variant_name": "Kestrel Certified",
+                "status": "completed",
+                "vin": "KM8J33A44LU117382",
+                "vehicle_description": "2020 Hyundai Tucson SEL",
+                "model_year": 2020,
+                "listing_odometer": 41880,
+                "handover_odometer": 41903,
+                "vehicle_price": 21750.0,
+                "payment_method": "kestrel_financing",
+                "selling_dealer_state": "AZ",
+                "registration_state": "AZ",
+                "transfer_distance_miles": 0,
+                "insurance_verified": true,
+                "reserved_date": "2023-08-01",
+                "hold_expires_date": "2023-08-06",
+                "hold_extensions_used": 0,
+                "contract_signed_date": "2023-08-03",
+                "handover_date": "2023-08-05",
+                "return_odometer": null,
+                "exchange_source_order_id": null,
+                "closed_date": "2023-08-13",
+                "closure_reason": "sale_final",
+                "order_balance": 0.0,
+                "deposit_held": 0.0
+            },
+            "4154e840-0c3a-4f9d-bf21-0a0007884be6": {
+                "purchase_order_id": "4154e840-0c3a-4f9d-bf21-0a0007884be6",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "variant_name": "Kestrel Inspected",
+                "status": "returned",
+                "vin": "5J6RW2H55KL137925",
+                "vehicle_description": "2019 Honda CR-V EX",
+                "model_year": 2019,
+                "listing_odometer": 52118,
+                "handover_odometer": 52131,
+                "vehicle_price": 21990.0,
+                "payment_method": "cash",
+                "selling_dealer_state": "AZ",
+                "registration_state": "AZ",
+                "transfer_distance_miles": 0,
+                "insurance_verified": true,
+                "reserved_date": "2026-09-21",
+                "hold_expires_date": "2026-09-24",
+                "hold_extensions_used": 0,
+                "contract_signed_date": "2026-09-22",
+                "handover_date": "2026-09-24",
+                "return_odometer": 52650,
+                "exchange_source_order_id": null,
+                "closed_date": "2026-09-30",
+                "closure_reason": "returned_for_exchange",
+                "order_balance": 0.0,
+                "deposit_held": 0.0
+            },
+            "bacca2a6-e6ba-428f-afd1-72358e635848": {
+                "purchase_order_id": "bacca2a6-e6ba-428f-afd1-72358e635848",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "variant_name": "Kestrel Certified",
+                "status": "contracted",
+                "vin": "2T3W1RFV1MW158340",
+                "vehicle_description": "2021 Toyota RAV4 XLE",
+                "model_year": 2021,
+                "listing_odometer": 37812,
+                "handover_odometer": null,
+                "vehicle_price": 26490.0,
+                "payment_method": "cash",
+                "selling_dealer_state": "TX",
+                "registration_state": "AZ",
+                "transfer_distance_miles": 1065,
+                "insurance_verified": true,
+                "reserved_date": "2026-10-02",
+                "hold_expires_date": "2026-10-07",
+                "hold_extensions_used": 0,
+                "contract_signed_date": "2026-10-06",
+                "handover_date": null,
+                "return_odometer": null,
+                "exchange_source_order_id": "4154e840-0c3a-4f9d-bf21-0a0007884be6",
+                "closed_date": null,
+                "closure_reason": "none",
+                "order_balance": 5600.0,
+                "deposit_held": 0.0
+            }
+        },
+        "purchase_transactions": {
+            "dd7e2f6e-a454-4697-9d97-911a6d9f9c48": {
+                "purchase_txn_id": "dd7e2f6e-a454-4697-9d97-911a6d9f9c48",
+                "purchase_order_id": "4154e840-0c3a-4f9d-bf21-0a0007884be6",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "purchase_deposit_paid",
+                "txn_date": "2026-09-21",
+                "amount": 250.0,
+                "charge_type": "not_applicable",
+                "payment_source": "not_applicable",
+                "payment_channel": "debit_card",
+                "refund_type": "not_applicable",
+                "reason_code": "not_applicable",
+                "source_txn_id": null,
+                "linked_reference_id": null
+            },
+            "294928dc-c69a-49d1-9d87-2be795553393": {
+                "purchase_txn_id": "294928dc-c69a-49d1-9d87-2be795553393",
+                "purchase_order_id": "4154e840-0c3a-4f9d-bf21-0a0007884be6",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "purchase_charge_posted",
+                "txn_date": "2026-09-22",
+                "amount": 21990.0,
+                "charge_type": "vehicle_price",
+                "payment_source": "not_applicable",
+                "payment_channel": "not_applicable",
+                "refund_type": "not_applicable",
+                "reason_code": "not_applicable",
+                "source_txn_id": null,
+                "linked_reference_id": null
+            },
+            "a5ccbee3-7fde-4acd-aa2b-23a3f292d102": {
+                "purchase_txn_id": "a5ccbee3-7fde-4acd-aa2b-23a3f292d102",
+                "purchase_order_id": "4154e840-0c3a-4f9d-bf21-0a0007884be6",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "purchase_deposit_applied",
+                "txn_date": "2026-09-22",
+                "amount": 250.0,
+                "charge_type": "not_applicable",
+                "payment_source": "not_applicable",
+                "payment_channel": "not_applicable",
+                "refund_type": "not_applicable",
+                "reason_code": "not_applicable",
+                "source_txn_id": "dd7e2f6e-a454-4697-9d97-911a6d9f9c48",
+                "linked_reference_id": null
+            },
+            "e0246171-9a86-4611-acee-4360b2348446": {
+                "purchase_txn_id": "e0246171-9a86-4611-acee-4360b2348446",
+                "purchase_order_id": "4154e840-0c3a-4f9d-bf21-0a0007884be6",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "purchase_payment_posted",
+                "txn_date": "2026-09-22",
+                "amount": 250.0,
+                "charge_type": "not_applicable",
+                "payment_source": "deposit_application",
+                "payment_channel": "internal_transfer",
+                "refund_type": "not_applicable",
+                "reason_code": "not_applicable",
+                "source_txn_id": "dd7e2f6e-a454-4697-9d97-911a6d9f9c48",
+                "linked_reference_id": null
+            },
+            "f7544a56-c1ad-4fe8-863b-d5cd672c5cb0": {
+                "purchase_txn_id": "f7544a56-c1ad-4fe8-863b-d5cd672c5cb0",
+                "purchase_order_id": "4154e840-0c3a-4f9d-bf21-0a0007884be6",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "purchase_charge_posted",
+                "txn_date": "2026-09-22",
+                "amount": 499.0,
+                "charge_type": "documentation_fee",
+                "payment_source": "not_applicable",
+                "payment_channel": "not_applicable",
+                "refund_type": "not_applicable",
+                "reason_code": "not_applicable",
+                "source_txn_id": null,
+                "linked_reference_id": null
+            },
+            "e2b05df1-3745-4751-a2fd-7bd80f5e781c": {
+                "purchase_txn_id": "e2b05df1-3745-4751-a2fd-7bd80f5e781c",
+                "purchase_order_id": "4154e840-0c3a-4f9d-bf21-0a0007884be6",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "purchase_charge_posted",
+                "txn_date": "2026-09-22",
+                "amount": 1781.19,
+                "charge_type": "sales_tax",
+                "payment_source": "not_applicable",
+                "payment_channel": "not_applicable",
+                "refund_type": "not_applicable",
+                "reason_code": "not_applicable",
+                "source_txn_id": null,
+                "linked_reference_id": null
+            },
+            "f5d015c9-485a-47ee-80b1-5ba77d846972": {
+                "purchase_txn_id": "f5d015c9-485a-47ee-80b1-5ba77d846972",
+                "purchase_order_id": "4154e840-0c3a-4f9d-bf21-0a0007884be6",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "purchase_payment_posted",
+                "txn_date": "2026-09-23",
+                "amount": 24020.19,
+                "charge_type": "not_applicable",
+                "payment_source": "down_payment",
+                "payment_channel": "wire",
+                "refund_type": "not_applicable",
+                "reason_code": "not_applicable",
+                "source_txn_id": null,
+                "linked_reference_id": null
+            },
+            "7ac91cf5-4467-4163-9fc0-3bdba91855a5": {
+                "purchase_txn_id": "7ac91cf5-4467-4163-9fc0-3bdba91855a5",
+                "purchase_order_id": "4154e840-0c3a-4f9d-bf21-0a0007884be6",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "purchase_charge_reversed",
+                "txn_date": "2026-09-30",
+                "amount": 21990.0,
+                "charge_type": "vehicle_price",
+                "payment_source": "not_applicable",
+                "payment_channel": "not_applicable",
+                "refund_type": "not_applicable",
+                "reason_code": "vehicle_returned",
+                "source_txn_id": "294928dc-c69a-49d1-9d87-2be795553393",
+                "linked_reference_id": null
+            },
+            "261ae2d7-a76c-47fa-b35e-d4f3c9ad881c": {
+                "purchase_txn_id": "261ae2d7-a76c-47fa-b35e-d4f3c9ad881c",
+                "purchase_order_id": "4154e840-0c3a-4f9d-bf21-0a0007884be6",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "purchase_charge_reversed",
+                "txn_date": "2026-09-30",
+                "amount": 1781.19,
+                "charge_type": "sales_tax",
+                "payment_source": "not_applicable",
+                "payment_channel": "not_applicable",
+                "refund_type": "not_applicable",
+                "reason_code": "vehicle_returned",
+                "source_txn_id": "e2b05df1-3745-4751-a2fd-7bd80f5e781c",
+                "linked_reference_id": null
+            },
+            "a3e8e26d-983c-4557-8ac9-948d4099baa0": {
+                "purchase_txn_id": "a3e8e26d-983c-4557-8ac9-948d4099baa0",
+                "purchase_order_id": "4154e840-0c3a-4f9d-bf21-0a0007884be6",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "purchase_charge_reversed",
+                "txn_date": "2026-09-30",
+                "amount": 499.0,
+                "charge_type": "documentation_fee",
+                "payment_source": "not_applicable",
+                "payment_channel": "not_applicable",
+                "refund_type": "not_applicable",
+                "reason_code": "vehicle_returned",
+                "source_txn_id": "f7544a56-c1ad-4fe8-863b-d5cd672c5cb0",
+                "linked_reference_id": null
+            },
+            "d237dc01-8ac5-4e5e-ad88-fd4a1057da4e": {
+                "purchase_txn_id": "d237dc01-8ac5-4e5e-ad88-fd4a1057da4e",
+                "purchase_order_id": "4154e840-0c3a-4f9d-bf21-0a0007884be6",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "purchase_charge_posted",
+                "txn_date": "2026-10-01",
+                "amount": 59.5,
+                "charge_type": "excess_return_mileage_fee",
+                "payment_source": "not_applicable",
+                "payment_channel": "not_applicable",
+                "refund_type": "not_applicable",
+                "reason_code": "not_applicable",
+                "source_txn_id": null,
+                "linked_reference_id": "ba464c5a-2885-462f-be16-d94c4bcdd6e3"
+            },
+            "e18a1963-3719-4f53-9791-fe0d9574c681": {
+                "purchase_txn_id": "e18a1963-3719-4f53-9791-fe0d9574c681",
+                "purchase_order_id": "4154e840-0c3a-4f9d-bf21-0a0007884be6",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "purchase_charge_posted",
+                "txn_date": "2026-10-01",
+                "amount": 950.0,
+                "charge_type": "return_damage_charge",
+                "payment_source": "not_applicable",
+                "payment_channel": "not_applicable",
+                "refund_type": "not_applicable",
+                "reason_code": "not_applicable",
+                "source_txn_id": null,
+                "linked_reference_id": "ba464c5a-2885-462f-be16-d94c4bcdd6e3"
+            },
+            "704ad678-38a6-4a57-a88a-bb976b75fd1c": {
+                "purchase_txn_id": "704ad678-38a6-4a57-a88a-bb976b75fd1c",
+                "purchase_order_id": "4154e840-0c3a-4f9d-bf21-0a0007884be6",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "purchase_refund_issued",
+                "txn_date": "2026-10-06",
+                "amount": 23260.69,
+                "charge_type": "not_applicable",
+                "payment_source": "not_applicable",
+                "payment_channel": "internal_transfer",
+                "refund_type": "exchange_transfer",
+                "reason_code": "vehicle_returned",
+                "source_txn_id": "f5d015c9-485a-47ee-80b1-5ba77d846972",
+                "linked_reference_id": "ba464c5a-2885-462f-be16-d94c4bcdd6e3"
+            },
+            "84499610-f166-4576-a5b1-efbb44c035bf": {
+                "purchase_txn_id": "84499610-f166-4576-a5b1-efbb44c035bf",
+                "purchase_order_id": "bacca2a6-e6ba-428f-afd1-72358e635848",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "purchase_charge_posted",
+                "txn_date": "2026-10-06",
+                "amount": 26490.0,
+                "charge_type": "vehicle_price",
+                "payment_source": "not_applicable",
+                "payment_channel": "not_applicable",
+                "refund_type": "not_applicable",
+                "reason_code": "not_applicable",
+                "source_txn_id": null,
+                "linked_reference_id": null
+            },
+            "6acb8c03-c23d-436d-a57e-64f10ee35cec": {
+                "purchase_txn_id": "6acb8c03-c23d-436d-a57e-64f10ee35cec",
+                "purchase_order_id": "bacca2a6-e6ba-428f-afd1-72358e635848",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "purchase_charge_posted",
+                "txn_date": "2026-10-06",
+                "amount": 225.0,
+                "charge_type": "documentation_fee",
+                "payment_source": "not_applicable",
+                "payment_channel": "not_applicable",
+                "refund_type": "not_applicable",
+                "reason_code": "not_applicable",
+                "source_txn_id": null,
+                "linked_reference_id": null
+            },
+            "c25eba7b-83a9-4b21-b601-0f6c5131b5d2": {
+                "purchase_txn_id": "c25eba7b-83a9-4b21-b601-0f6c5131b5d2",
+                "purchase_order_id": "bacca2a6-e6ba-428f-afd1-72358e635848",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "purchase_charge_posted",
+                "txn_date": "2026-10-06",
+                "amount": 2145.69,
+                "charge_type": "sales_tax",
+                "payment_source": "not_applicable",
+                "payment_channel": "not_applicable",
+                "refund_type": "not_applicable",
+                "reason_code": "not_applicable",
+                "source_txn_id": null,
+                "linked_reference_id": null
+            },
+            "9eb4d6fe-949b-4107-b021-59fa4a0a049a": {
+                "purchase_txn_id": "9eb4d6fe-949b-4107-b021-59fa4a0a049a",
+                "purchase_order_id": "bacca2a6-e6ba-428f-afd1-72358e635848",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "purchase_payment_posted",
+                "txn_date": "2026-10-06",
+                "amount": 23260.69,
+                "charge_type": "not_applicable",
+                "payment_source": "down_payment",
+                "payment_channel": "internal_transfer",
+                "refund_type": "not_applicable",
+                "reason_code": "not_applicable",
+                "source_txn_id": "704ad678-38a6-4a57-a88a-bb976b75fd1c",
+                "linked_reference_id": "ba464c5a-2885-462f-be16-d94c4bcdd6e3"
+            }
+        },
+        "purchase_return_requests": {
+            "ba464c5a-2885-462f-be16-d94c4bcdd6e3": {
+                "return_request_id": "ba464c5a-2885-462f-be16-d94c4bcdd6e3",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "purchase_order_id": "4154e840-0c3a-4f9d-bf21-0a0007884be6",
+                "requested_date": "2026-09-28",
+                "return_type": "exchange",
+                "return_method": "hub_dropoff",
+                "odometer_reported": 52641,
+                "request_status": "completed",
+                "created_at": "2026-09-28 10:14:00 MST"
+            }
+        },
+        "delivery_orders": {
+            "c79e462e-0dc7-43a4-84da-f0d65a181a73": {
+                "delivery_order_id": "c79e462e-0dc7-43a4-84da-f0d65a181a73",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "purchase_order_id": "bacca2a6-e6ba-428f-afd1-72358e635848",
+                "variant_name": "Kestrel Hub Pickup",
+                "status": "scheduled",
+                "delivery_zip": "85034",
+                "distance_miles": 0,
+                "scheduled_date": "2026-10-09",
+                "time_window": "12:00-16:00",
+                "reschedule_count": 1,
+                "original_scheduled_date": "2026-10-08",
+                "customer_miss_count": 0,
+                "last_miss_cause": "none",
+                "completed_date": null,
+                "closed_date": null,
+                "delivery_fees_due": 0.0
+            }
+        },
+        "title_orders": {
+            "44f16fff-8ec6-4a68-b925-e6541ef11988": {
+                "title_order_id": "44f16fff-8ec6-4a68-b925-e6541ef11988",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "purchase_order_id": "bacca2a6-e6ba-428f-afd1-72358e635848",
+                "variant_name": "Kestrel Out-of-State Registration",
+                "status": "awaiting_documents",
+                "registration_state": "AZ",
+                "lienholder": "none",
+                "opened_date": "2026-10-06",
+                "temp_tag_number": null,
+                "temp_tag_expires_date": null,
+                "temp_tag_extensions_used": 0,
+                "submitted_date": null,
+                "dmv_transaction_number": null,
+                "registered_date": null,
+                "plate_number": null,
+                "completed_date": null,
+                "closed_date": null,
+                "state_fees_held": 186.5
+            }
+        },
+        "title_transactions": {
+            "c0af2fb1-6caa-4029-8f72-630fd6f8c45b": {
+                "title_txn_id": "c0af2fb1-6caa-4029-8f72-630fd6f8c45b",
+                "title_order_id": "44f16fff-8ec6-4a68-b925-e6541ef11988",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "title_state_fee_collected",
+                "txn_date": "2026-10-06",
+                "amount": 4.0,
+                "fee_type": "title_fee",
+                "document_type": "not_applicable",
+                "tag_sequence": 0,
+                "temp_tag_number": null,
+                "tag_expires_date": null,
+                "reject_code": "not_applicable",
+                "reimbursement_reason": "not_applicable",
+                "document_format": "not_applicable",
+                "document_date": null,
+                "citation_number": null,
+                "source_txn_id": null
+            },
+            "de62928e-5a70-422a-aa7f-9fdd08cacc82": {
+                "title_txn_id": "de62928e-5a70-422a-aa7f-9fdd08cacc82",
+                "title_order_id": "44f16fff-8ec6-4a68-b925-e6541ef11988",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "title_state_fee_collected",
+                "txn_date": "2026-10-06",
+                "amount": 182.5,
+                "fee_type": "registration_fee",
+                "document_type": "not_applicable",
+                "tag_sequence": 0,
+                "temp_tag_number": null,
+                "tag_expires_date": null,
+                "reject_code": "not_applicable",
+                "reimbursement_reason": "not_applicable",
+                "document_format": "not_applicable",
+                "document_date": null,
+                "citation_number": null,
+                "source_txn_id": null
+            }
+        },
+        "service_contracts": {
+            "814f3f0b-0382-4c8c-acb7-e4fd939ed043": {
+                "service_contract_id": "814f3f0b-0382-4c8c-acb7-e4fd939ed043",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "purchase_order_id": "bacca2a6-e6ba-428f-afd1-72358e635848",
+                "vin": "2T3W1RFV1MW158340",
+                "variant_name": "KestrelCare Gold",
+                "status": "pending",
+                "contract_price": 2395.0,
+                "term_months": 48,
+                "term_miles": 48000,
+                "deductible_usd": 100.0,
+                "sale_date": "2026-10-06",
+                "sold_with_vehicle": true,
+                "odometer_at_sale": 37812,
+                "coverage_start_date": null,
+                "coverage_start_odometer": null,
+                "expiration_date": null,
+                "expiration_odometer": null,
+                "financed": false,
+                "finance_contract_id": null,
+                "transfer_count": 0,
+                "closed_date": null,
+                "coverage_remaining": 0.0
+            }
+        },
+        "finance_contracts": {
+            "93d2239d-b6d5-469b-a24c-5859ac1ffc2c": {
+                "finance_contract_id": "93d2239d-b6d5-469b-a24c-5859ac1ffc2c",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "purchase_order_id": "0c02df9a-3c5e-44ab-9142-69340a6836d9",
+                "variant_name": "Kestrel Finance Tier C",
+                "status": "paid_off",
+                "application_date": "2019-05-15",
+                "approval_expires_date": "2019-06-14",
+                "amount_financed": 11240.0,
+                "apr": 9.49,
+                "term_months": 72,
+                "monthly_payment": 205.86,
+                "contract_date": "2019-05-22",
+                "first_payment_date": "2019-06-25",
+                "payment_due_day": 25,
+                "next_due_date": null,
+                "maturity_date": "2025-05-25",
+                "last_payment_date": "2025-05-27",
+                "autopay_enrolled": false,
+                "stips_verified": true,
+                "deferrals_used": 0,
+                "due_date_changes_used": 0,
+                "closed_date": "2025-05-27",
+                "principal_balance": 0.0,
+                "fees_due": 0.0
+            },
+            "672c6577-920a-49a0-ad3d-ace18902759a": {
+                "finance_contract_id": "672c6577-920a-49a0-ad3d-ace18902759a",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "purchase_order_id": "eba8395f-4854-4b95-bb2d-d26f25439795",
+                "variant_name": "Kestrel Finance Tier B",
+                "status": "active",
+                "application_date": "2023-07-28",
+                "approval_expires_date": "2023-08-27",
+                "amount_financed": 17980.0,
+                "apr": 7.24,
+                "term_months": 60,
+                "monthly_payment": 357.95,
+                "contract_date": "2023-08-03",
+                "first_payment_date": "2023-09-15",
+                "payment_due_day": 15,
+                "next_due_date": "2026-10-15",
+                "maturity_date": "2028-08-15",
+                "last_payment_date": "2026-09-15",
+                "autopay_enrolled": true,
+                "stips_verified": true,
+                "deferrals_used": 0,
+                "due_date_changes_used": 0,
+                "closed_date": null,
+                "principal_balance": 8912.4,
+                "fees_due": 0.0
+            }
+        },
+        "finance_transactions": {
+            "bf818ae0-82a0-4300-9a9f-c7b86a139d4d": {
+                "finance_txn_id": "bf818ae0-82a0-4300-9a9f-c7b86a139d4d",
+                "finance_contract_id": "93d2239d-b6d5-469b-a24c-5859ac1ffc2c",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "finance_contract_funded",
+                "txn_date": "2019-05-22",
+                "amount": 11240.0,
+                "total_received": 0.0,
+                "interest_portion": 0.0,
+                "fee_portion": 0.0,
+                "payment_channel": "not_applicable",
+                "payment_type": "not_applicable",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": null,
+                "good_through_date": null,
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": "0c02df9a-3c5e-44ab-9142-69340a6836d9"
+            },
+            "766e66a1-6d2b-4d37-911d-65a59fa700f1": {
+                "finance_txn_id": "766e66a1-6d2b-4d37-911d-65a59fa700f1",
+                "finance_contract_id": "93d2239d-b6d5-469b-a24c-5859ac1ffc2c",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2024-12-23",
+                "amount": 196.21,
+                "total_received": 205.86,
+                "interest_portion": 9.65,
+                "fee_portion": 0.0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2024-12-25",
+                "good_through_date": null,
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null
+            },
+            "5d8603f7-9d6e-4a06-bd05-de22f6eeb11b": {
+                "finance_txn_id": "5d8603f7-9d6e-4a06-bd05-de22f6eeb11b",
+                "finance_contract_id": "93d2239d-b6d5-469b-a24c-5859ac1ffc2c",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "finance_payment_returned",
+                "txn_date": "2024-12-26",
+                "amount": 196.21,
+                "total_received": 205.86,
+                "interest_portion": 9.65,
+                "fee_portion": 0.0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2024-12-25",
+                "good_through_date": null,
+                "per_diem_interest": 0.0,
+                "source_txn_id": "766e66a1-6d2b-4d37-911d-65a59fa700f1",
+                "linked_reference_id": null
+            },
+            "cb6f3a97-a395-4b5f-9faa-b72de2e665a7": {
+                "finance_txn_id": "cb6f3a97-a395-4b5f-9faa-b72de2e665a7",
+                "finance_contract_id": "93d2239d-b6d5-469b-a24c-5859ac1ffc2c",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "finance_fee_assessed",
+                "txn_date": "2024-12-26",
+                "amount": 25.0,
+                "total_received": 0.0,
+                "interest_portion": 0.0,
+                "fee_portion": 0.0,
+                "payment_channel": "not_applicable",
+                "payment_type": "not_applicable",
+                "fee_type": "returned_payment_fee",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": null,
+                "good_through_date": null,
+                "per_diem_interest": 0.0,
+                "source_txn_id": "766e66a1-6d2b-4d37-911d-65a59fa700f1",
+                "linked_reference_id": null
+            },
+            "f9bbf1ec-f310-448c-a769-4d379fa45d56": {
+                "finance_txn_id": "f9bbf1ec-f310-448c-a769-4d379fa45d56",
+                "finance_contract_id": "93d2239d-b6d5-469b-a24c-5859ac1ffc2c",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "finance_fee_cleared",
+                "txn_date": "2025-01-08",
+                "amount": 25.0,
+                "total_received": 0.0,
+                "interest_portion": 0.0,
+                "fee_portion": 0.0,
+                "payment_channel": "not_applicable",
+                "payment_type": "not_applicable",
+                "fee_type": "returned_payment_fee",
+                "clearance_type": "paid",
+                "credit_source": "not_applicable",
+                "installment_due_date": null,
+                "good_through_date": null,
+                "per_diem_interest": 0.0,
+                "source_txn_id": "cb6f3a97-a395-4b5f-9faa-b72de2e665a7",
+                "linked_reference_id": null
+            },
+            "f465eddc-908c-47a8-9ec7-6d9da102cee8": {
+                "finance_txn_id": "f465eddc-908c-47a8-9ec7-6d9da102cee8",
+                "finance_contract_id": "93d2239d-b6d5-469b-a24c-5859ac1ffc2c",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2025-05-27",
+                "amount": 1021.44,
+                "total_received": 1023.87,
+                "interest_portion": 2.43,
+                "fee_portion": 0.0,
+                "payment_channel": "online_ach",
+                "payment_type": "payoff",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2025-05-25",
+                "good_through_date": null,
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null
+            },
+            "56b2f104-484d-4102-921c-317792317250": {
+                "finance_txn_id": "56b2f104-484d-4102-921c-317792317250",
+                "finance_contract_id": "672c6577-920a-49a0-ad3d-ace18902759a",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "finance_contract_funded",
+                "txn_date": "2023-08-03",
+                "amount": 17980.0,
+                "total_received": 0.0,
+                "interest_portion": 0.0,
+                "fee_portion": 0.0,
+                "payment_channel": "not_applicable",
+                "payment_type": "not_applicable",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": null,
+                "good_through_date": null,
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": "eba8395f-4854-4b95-bb2d-d26f25439795"
+            },
+            "6345ad43-90cb-4f98-b6ab-2a3b53ae43a9": {
+                "finance_txn_id": "6345ad43-90cb-4f98-b6ab-2a3b53ae43a9",
+                "finance_contract_id": "672c6577-920a-49a0-ad3d-ace18902759a",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2026-07-15",
+                "amount": 302.66,
+                "total_received": 357.95,
+                "interest_portion": 55.29,
+                "fee_portion": 0.0,
+                "payment_channel": "autopay_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2026-07-15",
+                "good_through_date": null,
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null
+            },
+            "97dfae59-e88b-464b-9f42-85c41d4828cb": {
+                "finance_txn_id": "97dfae59-e88b-464b-9f42-85c41d4828cb",
+                "finance_contract_id": "672c6577-920a-49a0-ad3d-ace18902759a",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2026-08-15",
+                "amount": 304.47,
+                "total_received": 357.95,
+                "interest_portion": 53.48,
+                "fee_portion": 0.0,
+                "payment_channel": "autopay_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2026-08-15",
+                "good_through_date": null,
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null
+            },
+            "af7f9e68-a35d-49ec-b82d-668d2f6e85c8": {
+                "finance_txn_id": "af7f9e68-a35d-49ec-b82d-668d2f6e85c8",
+                "finance_contract_id": "672c6577-920a-49a0-ad3d-ace18902759a",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2026-09-15",
+                "amount": 306.3,
+                "total_received": 357.95,
+                "interest_portion": 51.65,
+                "fee_portion": 0.0,
+                "payment_channel": "autopay_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2026-09-15",
+                "good_through_date": null,
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null
+            }
+        }
+    },
+    "db_closure": {
+        "purchase_transactions": {
+            "84499610-f166-4576-a5b1-efbb44c035bf": {
+                "purchase_txn_id": "84499610-f166-4576-a5b1-efbb44c035bf",
+                "purchase_order_id": "bacca2a6-e6ba-428f-afd1-72358e635848",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "purchase_charge_posted",
+                "txn_date": "2026-10-06",
+                "amount": 26490.0,
+                "charge_type": "vehicle_price",
+                "payment_source": "not_applicable",
+                "payment_channel": "not_applicable",
+                "refund_type": "not_applicable",
+                "reason_code": "not_applicable",
+                "source_txn_id": null,
+                "linked_reference_id": null
+            },
+            "6acb8c03-c23d-436d-a57e-64f10ee35cec": {
+                "purchase_txn_id": "6acb8c03-c23d-436d-a57e-64f10ee35cec",
+                "purchase_order_id": "bacca2a6-e6ba-428f-afd1-72358e635848",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "purchase_charge_posted",
+                "txn_date": "2026-10-06",
+                "amount": 225.0,
+                "charge_type": "documentation_fee",
+                "payment_source": "not_applicable",
+                "payment_channel": "not_applicable",
+                "refund_type": "not_applicable",
+                "reason_code": "not_applicable",
+                "source_txn_id": null,
+                "linked_reference_id": null
+            },
+            "c25eba7b-83a9-4b21-b601-0f6c5131b5d2": {
+                "purchase_txn_id": "c25eba7b-83a9-4b21-b601-0f6c5131b5d2",
+                "purchase_order_id": "bacca2a6-e6ba-428f-afd1-72358e635848",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "purchase_charge_posted",
+                "txn_date": "2026-10-06",
+                "amount": 2145.69,
+                "charge_type": "sales_tax",
+                "payment_source": "not_applicable",
+                "payment_channel": "not_applicable",
+                "refund_type": "not_applicable",
+                "reason_code": "not_applicable",
+                "source_txn_id": null,
+                "linked_reference_id": null
+            },
+            "f5d015c9-485a-47ee-80b1-5ba77d846972": {
+                "purchase_txn_id": "f5d015c9-485a-47ee-80b1-5ba77d846972",
+                "purchase_order_id": "4154e840-0c3a-4f9d-bf21-0a0007884be6",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "purchase_payment_posted",
+                "txn_date": "2026-09-23",
+                "amount": 24020.19,
+                "charge_type": "not_applicable",
+                "payment_source": "down_payment",
+                "payment_channel": "wire",
+                "refund_type": "not_applicable",
+                "reason_code": "not_applicable",
+                "source_txn_id": null,
+                "linked_reference_id": null
+            },
+            "a3e8e26d-983c-4557-8ac9-948d4099baa0": {
+                "purchase_txn_id": "a3e8e26d-983c-4557-8ac9-948d4099baa0",
+                "purchase_order_id": "4154e840-0c3a-4f9d-bf21-0a0007884be6",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "purchase_charge_reversed",
+                "txn_date": "2026-09-30",
+                "amount": 499.0,
+                "charge_type": "documentation_fee",
+                "payment_source": "not_applicable",
+                "payment_channel": "not_applicable",
+                "refund_type": "not_applicable",
+                "reason_code": "vehicle_returned",
+                "source_txn_id": "f7544a56-c1ad-4fe8-863b-d5cd672c5cb0",
+                "linked_reference_id": null
+            },
+            "a5ccbee3-7fde-4acd-aa2b-23a3f292d102": {
+                "purchase_txn_id": "a5ccbee3-7fde-4acd-aa2b-23a3f292d102",
+                "purchase_order_id": "4154e840-0c3a-4f9d-bf21-0a0007884be6",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "purchase_deposit_applied",
+                "txn_date": "2026-09-22",
+                "amount": 250.0,
+                "charge_type": "not_applicable",
+                "payment_source": "not_applicable",
+                "payment_channel": "not_applicable",
+                "refund_type": "not_applicable",
+                "reason_code": "not_applicable",
+                "source_txn_id": "dd7e2f6e-a454-4697-9d97-911a6d9f9c48",
+                "linked_reference_id": null
+            },
+            "e0246171-9a86-4611-acee-4360b2348446": {
+                "purchase_txn_id": "e0246171-9a86-4611-acee-4360b2348446",
+                "purchase_order_id": "4154e840-0c3a-4f9d-bf21-0a0007884be6",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "purchase_payment_posted",
+                "txn_date": "2026-09-22",
+                "amount": 250.0,
+                "charge_type": "not_applicable",
+                "payment_source": "deposit_application",
+                "payment_channel": "internal_transfer",
+                "refund_type": "not_applicable",
+                "reason_code": "not_applicable",
+                "source_txn_id": "dd7e2f6e-a454-4697-9d97-911a6d9f9c48",
+                "linked_reference_id": null
+            },
+            "261ae2d7-a76c-47fa-b35e-d4f3c9ad881c": {
+                "purchase_txn_id": "261ae2d7-a76c-47fa-b35e-d4f3c9ad881c",
+                "purchase_order_id": "4154e840-0c3a-4f9d-bf21-0a0007884be6",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "purchase_charge_reversed",
+                "txn_date": "2026-09-30",
+                "amount": 1781.19,
+                "charge_type": "sales_tax",
+                "payment_source": "not_applicable",
+                "payment_channel": "not_applicable",
+                "refund_type": "not_applicable",
+                "reason_code": "vehicle_returned",
+                "source_txn_id": "e2b05df1-3745-4751-a2fd-7bd80f5e781c",
+                "linked_reference_id": null
+            },
+            "d237dc01-8ac5-4e5e-ad88-fd4a1057da4e": {
+                "purchase_txn_id": "d237dc01-8ac5-4e5e-ad88-fd4a1057da4e",
+                "purchase_order_id": "4154e840-0c3a-4f9d-bf21-0a0007884be6",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "purchase_charge_posted",
+                "txn_date": "2026-10-01",
+                "amount": 59.5,
+                "charge_type": "excess_return_mileage_fee",
+                "payment_source": "not_applicable",
+                "payment_channel": "not_applicable",
+                "refund_type": "not_applicable",
+                "reason_code": "not_applicable",
+                "source_txn_id": null,
+                "linked_reference_id": "ba464c5a-2885-462f-be16-d94c4bcdd6e3"
+            },
+            "e18a1963-3719-4f53-9791-fe0d9574c681": {
+                "purchase_txn_id": "e18a1963-3719-4f53-9791-fe0d9574c681",
+                "purchase_order_id": "4154e840-0c3a-4f9d-bf21-0a0007884be6",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "purchase_charge_posted",
+                "txn_date": "2026-10-01",
+                "amount": 950.0,
+                "charge_type": "return_damage_charge",
+                "payment_source": "not_applicable",
+                "payment_channel": "not_applicable",
+                "refund_type": "not_applicable",
+                "reason_code": "not_applicable",
+                "source_txn_id": null,
+                "linked_reference_id": "ba464c5a-2885-462f-be16-d94c4bcdd6e3"
+            },
+            "9eb4d6fe-949b-4107-b021-59fa4a0a049a": {
+                "purchase_txn_id": "9eb4d6fe-949b-4107-b021-59fa4a0a049a",
+                "purchase_order_id": "bacca2a6-e6ba-428f-afd1-72358e635848",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "purchase_payment_posted",
+                "txn_date": "2026-10-06",
+                "amount": 23260.69,
+                "charge_type": "not_applicable",
+                "payment_source": "down_payment",
+                "payment_channel": "internal_transfer",
+                "refund_type": "not_applicable",
+                "reason_code": "not_applicable",
+                "source_txn_id": "704ad678-38a6-4a57-a88a-bb976b75fd1c",
+                "linked_reference_id": "ba464c5a-2885-462f-be16-d94c4bcdd6e3"
+            },
+            "704ad678-38a6-4a57-a88a-bb976b75fd1c": {
+                "purchase_txn_id": "704ad678-38a6-4a57-a88a-bb976b75fd1c",
+                "purchase_order_id": "4154e840-0c3a-4f9d-bf21-0a0007884be6",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "purchase_refund_issued",
+                "txn_date": "2026-10-06",
+                "amount": 23260.69,
+                "charge_type": "not_applicable",
+                "payment_source": "not_applicable",
+                "payment_channel": "internal_transfer",
+                "refund_type": "exchange_transfer",
+                "reason_code": "vehicle_returned",
+                "source_txn_id": "f5d015c9-485a-47ee-80b1-5ba77d846972",
+                "linked_reference_id": "ba464c5a-2885-462f-be16-d94c4bcdd6e3"
+            },
+            "dd7e2f6e-a454-4697-9d97-911a6d9f9c48": {
+                "purchase_txn_id": "dd7e2f6e-a454-4697-9d97-911a6d9f9c48",
+                "purchase_order_id": "4154e840-0c3a-4f9d-bf21-0a0007884be6",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "purchase_deposit_paid",
+                "txn_date": "2026-09-21",
+                "amount": 250.0,
+                "charge_type": "not_applicable",
+                "payment_source": "not_applicable",
+                "payment_channel": "debit_card",
+                "refund_type": "not_applicable",
+                "reason_code": "not_applicable",
+                "source_txn_id": null,
+                "linked_reference_id": null
+            },
+            "e2b05df1-3745-4751-a2fd-7bd80f5e781c": {
+                "purchase_txn_id": "e2b05df1-3745-4751-a2fd-7bd80f5e781c",
+                "purchase_order_id": "4154e840-0c3a-4f9d-bf21-0a0007884be6",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "purchase_charge_posted",
+                "txn_date": "2026-09-22",
+                "amount": 1781.19,
+                "charge_type": "sales_tax",
+                "payment_source": "not_applicable",
+                "payment_channel": "not_applicable",
+                "refund_type": "not_applicable",
+                "reason_code": "not_applicable",
+                "source_txn_id": null,
+                "linked_reference_id": null
+            },
+            "7ac91cf5-4467-4163-9fc0-3bdba91855a5": {
+                "purchase_txn_id": "7ac91cf5-4467-4163-9fc0-3bdba91855a5",
+                "purchase_order_id": "4154e840-0c3a-4f9d-bf21-0a0007884be6",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "purchase_charge_reversed",
+                "txn_date": "2026-09-30",
+                "amount": 21990.0,
+                "charge_type": "vehicle_price",
+                "payment_source": "not_applicable",
+                "payment_channel": "not_applicable",
+                "refund_type": "not_applicable",
+                "reason_code": "vehicle_returned",
+                "source_txn_id": "294928dc-c69a-49d1-9d87-2be795553393",
+                "linked_reference_id": null
+            },
+            "f7544a56-c1ad-4fe8-863b-d5cd672c5cb0": {
+                "purchase_txn_id": "f7544a56-c1ad-4fe8-863b-d5cd672c5cb0",
+                "purchase_order_id": "4154e840-0c3a-4f9d-bf21-0a0007884be6",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "purchase_charge_posted",
+                "txn_date": "2026-09-22",
+                "amount": 499.0,
+                "charge_type": "documentation_fee",
+                "payment_source": "not_applicable",
+                "payment_channel": "not_applicable",
+                "refund_type": "not_applicable",
+                "reason_code": "not_applicable",
+                "source_txn_id": null,
+                "linked_reference_id": null
+            },
+            "294928dc-c69a-49d1-9d87-2be795553393": {
+                "purchase_txn_id": "294928dc-c69a-49d1-9d87-2be795553393",
+                "purchase_order_id": "4154e840-0c3a-4f9d-bf21-0a0007884be6",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "purchase_charge_posted",
+                "txn_date": "2026-09-22",
+                "amount": 21990.0,
+                "charge_type": "vehicle_price",
+                "payment_source": "not_applicable",
+                "payment_channel": "not_applicable",
+                "refund_type": "not_applicable",
+                "reason_code": "not_applicable",
+                "source_txn_id": null,
+                "linked_reference_id": null
+            }
+        },
+        "purchase_orders": {
+            "bacca2a6-e6ba-428f-afd1-72358e635848": {
+                "purchase_order_id": "bacca2a6-e6ba-428f-afd1-72358e635848",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "variant_name": "Kestrel Certified",
+                "status": "contracted",
+                "vin": "2T3W1RFV1MW158340",
+                "vehicle_description": "2021 Toyota RAV4 XLE",
+                "model_year": 2021,
+                "listing_odometer": 37812,
+                "handover_odometer": null,
+                "vehicle_price": 26490.0,
+                "payment_method": "cash",
+                "selling_dealer_state": "TX",
+                "registration_state": "AZ",
+                "transfer_distance_miles": 1065,
+                "insurance_verified": true,
+                "reserved_date": "2026-10-02",
+                "hold_expires_date": "2026-10-07",
+                "hold_extensions_used": 0,
+                "contract_signed_date": "2026-10-06",
+                "handover_date": null,
+                "return_odometer": null,
+                "exchange_source_order_id": "4154e840-0c3a-4f9d-bf21-0a0007884be6",
+                "closed_date": null,
+                "closure_reason": "none",
+                "order_balance": 5600.0,
+                "deposit_held": 0.0
+            },
+            "0c02df9a-3c5e-44ab-9142-69340a6836d9": {
+                "purchase_order_id": "0c02df9a-3c5e-44ab-9142-69340a6836d9",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "variant_name": "Kestrel Inspected",
+                "status": "completed",
+                "vin": "3HGGK5H8XGM104471",
+                "vehicle_description": "2016 Honda Fit EX",
+                "model_year": 2016,
+                "listing_odometer": 61230,
+                "handover_odometer": 61244,
+                "vehicle_price": 12990.0,
+                "payment_method": "kestrel_financing",
+                "selling_dealer_state": "AZ",
+                "registration_state": "AZ",
+                "transfer_distance_miles": 0,
+                "insurance_verified": true,
+                "reserved_date": "2019-05-20",
+                "hold_expires_date": "2019-05-23",
+                "hold_extensions_used": 0,
+                "contract_signed_date": "2019-05-22",
+                "handover_date": "2019-05-25",
+                "return_odometer": null,
+                "exchange_source_order_id": null,
+                "closed_date": "2019-06-02",
+                "closure_reason": "sale_final",
+                "order_balance": 0.0,
+                "deposit_held": 0.0
+            },
+            "4154e840-0c3a-4f9d-bf21-0a0007884be6": {
+                "purchase_order_id": "4154e840-0c3a-4f9d-bf21-0a0007884be6",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "variant_name": "Kestrel Inspected",
+                "status": "returned",
+                "vin": "5J6RW2H55KL137925",
+                "vehicle_description": "2019 Honda CR-V EX",
+                "model_year": 2019,
+                "listing_odometer": 52118,
+                "handover_odometer": 52131,
+                "vehicle_price": 21990.0,
+                "payment_method": "cash",
+                "selling_dealer_state": "AZ",
+                "registration_state": "AZ",
+                "transfer_distance_miles": 0,
+                "insurance_verified": true,
+                "reserved_date": "2026-09-21",
+                "hold_expires_date": "2026-09-24",
+                "hold_extensions_used": 0,
+                "contract_signed_date": "2026-09-22",
+                "handover_date": "2026-09-24",
+                "return_odometer": 52650,
+                "exchange_source_order_id": null,
+                "closed_date": "2026-09-30",
+                "closure_reason": "returned_for_exchange",
+                "order_balance": 0.0,
+                "deposit_held": 0.0
+            },
+            "eba8395f-4854-4b95-bb2d-d26f25439795": {
+                "purchase_order_id": "eba8395f-4854-4b95-bb2d-d26f25439795",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "variant_name": "Kestrel Certified",
+                "status": "completed",
+                "vin": "KM8J33A44LU117382",
+                "vehicle_description": "2020 Hyundai Tucson SEL",
+                "model_year": 2020,
+                "listing_odometer": 41880,
+                "handover_odometer": 41903,
+                "vehicle_price": 21750.0,
+                "payment_method": "kestrel_financing",
+                "selling_dealer_state": "AZ",
+                "registration_state": "AZ",
+                "transfer_distance_miles": 0,
+                "insurance_verified": true,
+                "reserved_date": "2023-08-01",
+                "hold_expires_date": "2023-08-06",
+                "hold_extensions_used": 0,
+                "contract_signed_date": "2023-08-03",
+                "handover_date": "2023-08-05",
+                "return_odometer": null,
+                "exchange_source_order_id": null,
+                "closed_date": "2023-08-13",
+                "closure_reason": "sale_final",
+                "order_balance": 0.0,
+                "deposit_held": 0.0
+            }
+        },
+        "finance_transactions": {
+            "56b2f104-484d-4102-921c-317792317250": {
+                "finance_txn_id": "56b2f104-484d-4102-921c-317792317250",
+                "finance_contract_id": "672c6577-920a-49a0-ad3d-ace18902759a",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "finance_contract_funded",
+                "txn_date": "2023-08-03",
+                "amount": 17980.0,
+                "total_received": 0.0,
+                "interest_portion": 0.0,
+                "fee_portion": 0.0,
+                "payment_channel": "not_applicable",
+                "payment_type": "not_applicable",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": null,
+                "good_through_date": null,
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": "eba8395f-4854-4b95-bb2d-d26f25439795"
+            },
+            "5d8603f7-9d6e-4a06-bd05-de22f6eeb11b": {
+                "finance_txn_id": "5d8603f7-9d6e-4a06-bd05-de22f6eeb11b",
+                "finance_contract_id": "93d2239d-b6d5-469b-a24c-5859ac1ffc2c",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "finance_payment_returned",
+                "txn_date": "2024-12-26",
+                "amount": 196.21,
+                "total_received": 205.86,
+                "interest_portion": 9.65,
+                "fee_portion": 0.0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2024-12-25",
+                "good_through_date": null,
+                "per_diem_interest": 0.0,
+                "source_txn_id": "766e66a1-6d2b-4d37-911d-65a59fa700f1",
+                "linked_reference_id": null
+            },
+            "af7f9e68-a35d-49ec-b82d-668d2f6e85c8": {
+                "finance_txn_id": "af7f9e68-a35d-49ec-b82d-668d2f6e85c8",
+                "finance_contract_id": "672c6577-920a-49a0-ad3d-ace18902759a",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2026-09-15",
+                "amount": 306.3,
+                "total_received": 357.95,
+                "interest_portion": 51.65,
+                "fee_portion": 0.0,
+                "payment_channel": "autopay_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2026-09-15",
+                "good_through_date": null,
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null
+            },
+            "cb6f3a97-a395-4b5f-9faa-b72de2e665a7": {
+                "finance_txn_id": "cb6f3a97-a395-4b5f-9faa-b72de2e665a7",
+                "finance_contract_id": "93d2239d-b6d5-469b-a24c-5859ac1ffc2c",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "finance_fee_assessed",
+                "txn_date": "2024-12-26",
+                "amount": 25.0,
+                "total_received": 0.0,
+                "interest_portion": 0.0,
+                "fee_portion": 0.0,
+                "payment_channel": "not_applicable",
+                "payment_type": "not_applicable",
+                "fee_type": "returned_payment_fee",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": null,
+                "good_through_date": null,
+                "per_diem_interest": 0.0,
+                "source_txn_id": "766e66a1-6d2b-4d37-911d-65a59fa700f1",
+                "linked_reference_id": null
+            },
+            "97dfae59-e88b-464b-9f42-85c41d4828cb": {
+                "finance_txn_id": "97dfae59-e88b-464b-9f42-85c41d4828cb",
+                "finance_contract_id": "672c6577-920a-49a0-ad3d-ace18902759a",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2026-08-15",
+                "amount": 304.47,
+                "total_received": 357.95,
+                "interest_portion": 53.48,
+                "fee_portion": 0.0,
+                "payment_channel": "autopay_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2026-08-15",
+                "good_through_date": null,
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null
+            },
+            "f9bbf1ec-f310-448c-a769-4d379fa45d56": {
+                "finance_txn_id": "f9bbf1ec-f310-448c-a769-4d379fa45d56",
+                "finance_contract_id": "93d2239d-b6d5-469b-a24c-5859ac1ffc2c",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "finance_fee_cleared",
+                "txn_date": "2025-01-08",
+                "amount": 25.0,
+                "total_received": 0.0,
+                "interest_portion": 0.0,
+                "fee_portion": 0.0,
+                "payment_channel": "not_applicable",
+                "payment_type": "not_applicable",
+                "fee_type": "returned_payment_fee",
+                "clearance_type": "paid",
+                "credit_source": "not_applicable",
+                "installment_due_date": null,
+                "good_through_date": null,
+                "per_diem_interest": 0.0,
+                "source_txn_id": "cb6f3a97-a395-4b5f-9faa-b72de2e665a7",
+                "linked_reference_id": null
+            },
+            "bf818ae0-82a0-4300-9a9f-c7b86a139d4d": {
+                "finance_txn_id": "bf818ae0-82a0-4300-9a9f-c7b86a139d4d",
+                "finance_contract_id": "93d2239d-b6d5-469b-a24c-5859ac1ffc2c",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "finance_contract_funded",
+                "txn_date": "2019-05-22",
+                "amount": 11240.0,
+                "total_received": 0.0,
+                "interest_portion": 0.0,
+                "fee_portion": 0.0,
+                "payment_channel": "not_applicable",
+                "payment_type": "not_applicable",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": null,
+                "good_through_date": null,
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": "0c02df9a-3c5e-44ab-9142-69340a6836d9"
+            },
+            "766e66a1-6d2b-4d37-911d-65a59fa700f1": {
+                "finance_txn_id": "766e66a1-6d2b-4d37-911d-65a59fa700f1",
+                "finance_contract_id": "93d2239d-b6d5-469b-a24c-5859ac1ffc2c",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2024-12-23",
+                "amount": 196.21,
+                "total_received": 205.86,
+                "interest_portion": 9.65,
+                "fee_portion": 0.0,
+                "payment_channel": "online_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2024-12-25",
+                "good_through_date": null,
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null
+            },
+            "6345ad43-90cb-4f98-b6ab-2a3b53ae43a9": {
+                "finance_txn_id": "6345ad43-90cb-4f98-b6ab-2a3b53ae43a9",
+                "finance_contract_id": "672c6577-920a-49a0-ad3d-ace18902759a",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2026-07-15",
+                "amount": 302.66,
+                "total_received": 357.95,
+                "interest_portion": 55.29,
+                "fee_portion": 0.0,
+                "payment_channel": "autopay_ach",
+                "payment_type": "scheduled_installment",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2026-07-15",
+                "good_through_date": null,
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null
+            },
+            "f465eddc-908c-47a8-9ec7-6d9da102cee8": {
+                "finance_txn_id": "f465eddc-908c-47a8-9ec7-6d9da102cee8",
+                "finance_contract_id": "93d2239d-b6d5-469b-a24c-5859ac1ffc2c",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "finance_payment_posted",
+                "txn_date": "2025-05-27",
+                "amount": 1021.44,
+                "total_received": 1023.87,
+                "interest_portion": 2.43,
+                "fee_portion": 0.0,
+                "payment_channel": "online_ach",
+                "payment_type": "payoff",
+                "fee_type": "not_applicable",
+                "clearance_type": "not_applicable",
+                "credit_source": "not_applicable",
+                "installment_due_date": "2025-05-25",
+                "good_through_date": null,
+                "per_diem_interest": 0.0,
+                "source_txn_id": null,
+                "linked_reference_id": null
+            }
+        },
+        "finance_contracts": {
+            "672c6577-920a-49a0-ad3d-ace18902759a": {
+                "finance_contract_id": "672c6577-920a-49a0-ad3d-ace18902759a",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "purchase_order_id": "eba8395f-4854-4b95-bb2d-d26f25439795",
+                "variant_name": "Kestrel Finance Tier B",
+                "status": "active",
+                "application_date": "2023-07-28",
+                "approval_expires_date": "2023-08-27",
+                "amount_financed": 17980.0,
+                "apr": 7.24,
+                "term_months": 60,
+                "monthly_payment": 357.95,
+                "contract_date": "2023-08-03",
+                "first_payment_date": "2023-09-15",
+                "payment_due_day": 15,
+                "next_due_date": "2026-10-15",
+                "maturity_date": "2028-08-15",
+                "last_payment_date": "2026-09-15",
+                "autopay_enrolled": true,
+                "stips_verified": true,
+                "deferrals_used": 0,
+                "due_date_changes_used": 0,
+                "closed_date": null,
+                "principal_balance": 8912.4,
+                "fees_due": 0.0
+            },
+            "93d2239d-b6d5-469b-a24c-5859ac1ffc2c": {
+                "finance_contract_id": "93d2239d-b6d5-469b-a24c-5859ac1ffc2c",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "purchase_order_id": "0c02df9a-3c5e-44ab-9142-69340a6836d9",
+                "variant_name": "Kestrel Finance Tier C",
+                "status": "paid_off",
+                "application_date": "2019-05-15",
+                "approval_expires_date": "2019-06-14",
+                "amount_financed": 11240.0,
+                "apr": 9.49,
+                "term_months": 72,
+                "monthly_payment": 205.86,
+                "contract_date": "2019-05-22",
+                "first_payment_date": "2019-06-25",
+                "payment_due_day": 25,
+                "next_due_date": null,
+                "maturity_date": "2025-05-25",
+                "last_payment_date": "2025-05-27",
+                "autopay_enrolled": false,
+                "stips_verified": true,
+                "deferrals_used": 0,
+                "due_date_changes_used": 0,
+                "closed_date": "2025-05-27",
+                "principal_balance": 0.0,
+                "fees_due": 0.0
+            }
+        },
+        "purchase_return_requests": {
+            "ba464c5a-2885-462f-be16-d94c4bcdd6e3": {
+                "return_request_id": "ba464c5a-2885-462f-be16-d94c4bcdd6e3",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "purchase_order_id": "4154e840-0c3a-4f9d-bf21-0a0007884be6",
+                "requested_date": "2026-09-28",
+                "return_type": "exchange",
+                "return_method": "hub_dropoff",
+                "odometer_reported": 52641,
+                "request_status": "completed",
+                "created_at": "2026-09-28 10:14:00 MST"
+            }
+        },
+        "customers": {
+            "1a3f530b-ee5a-456f-907d-a9acaa39c803": {
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "name": "Marisol Benavides",
+                "phone_number": "4805551836",
+                "email": "marisol.benavides@protonmail.com",
+                "date_of_birth": "1989-11-03",
+                "ssn_last4": "1427",
+                "residential_zip": "85281",
+                "home_state": "AZ",
+                "profile_opened_date": "2019-05-20"
+            }
+        },
+        "delivery_orders": {
+            "c79e462e-0dc7-43a4-84da-f0d65a181a73": {
+                "delivery_order_id": "c79e462e-0dc7-43a4-84da-f0d65a181a73",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "purchase_order_id": "bacca2a6-e6ba-428f-afd1-72358e635848",
+                "variant_name": "Kestrel Hub Pickup",
+                "status": "scheduled",
+                "delivery_zip": "85034",
+                "distance_miles": 0,
+                "scheduled_date": "2026-10-09",
+                "time_window": "12:00-16:00",
+                "reschedule_count": 1,
+                "original_scheduled_date": "2026-10-08",
+                "customer_miss_count": 0,
+                "last_miss_cause": "none",
+                "completed_date": null,
+                "closed_date": null,
+                "delivery_fees_due": 0.0
+            }
+        },
+        "title_orders": {
+            "44f16fff-8ec6-4a68-b925-e6541ef11988": {
+                "title_order_id": "44f16fff-8ec6-4a68-b925-e6541ef11988",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "purchase_order_id": "bacca2a6-e6ba-428f-afd1-72358e635848",
+                "variant_name": "Kestrel Out-of-State Registration",
+                "status": "awaiting_documents",
+                "registration_state": "AZ",
+                "lienholder": "none",
+                "opened_date": "2026-10-06",
+                "temp_tag_number": null,
+                "temp_tag_expires_date": null,
+                "temp_tag_extensions_used": 0,
+                "submitted_date": null,
+                "dmv_transaction_number": null,
+                "registered_date": null,
+                "plate_number": null,
+                "completed_date": null,
+                "closed_date": null,
+                "state_fees_held": 186.5
+            }
+        },
+        "service_contracts": {
+            "814f3f0b-0382-4c8c-acb7-e4fd939ed043": {
+                "service_contract_id": "814f3f0b-0382-4c8c-acb7-e4fd939ed043",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "purchase_order_id": "bacca2a6-e6ba-428f-afd1-72358e635848",
+                "vin": "2T3W1RFV1MW158340",
+                "variant_name": "KestrelCare Gold",
+                "status": "pending",
+                "contract_price": 2395.0,
+                "term_months": 48,
+                "term_miles": 48000,
+                "deductible_usd": 100.0,
+                "sale_date": "2026-10-06",
+                "sold_with_vehicle": true,
+                "odometer_at_sale": 37812,
+                "coverage_start_date": null,
+                "coverage_start_odometer": null,
+                "expiration_date": null,
+                "expiration_odometer": null,
+                "financed": false,
+                "finance_contract_id": null,
+                "transfer_count": 0,
+                "closed_date": null,
+                "coverage_remaining": 0.0
+            }
+        },
+        "title_transactions": {
+            "de62928e-5a70-422a-aa7f-9fdd08cacc82": {
+                "title_txn_id": "de62928e-5a70-422a-aa7f-9fdd08cacc82",
+                "title_order_id": "44f16fff-8ec6-4a68-b925-e6541ef11988",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "title_state_fee_collected",
+                "txn_date": "2026-10-06",
+                "amount": 182.5,
+                "fee_type": "registration_fee",
+                "document_type": "not_applicable",
+                "tag_sequence": 0,
+                "temp_tag_number": null,
+                "tag_expires_date": null,
+                "reject_code": "not_applicable",
+                "reimbursement_reason": "not_applicable",
+                "document_format": "not_applicable",
+                "document_date": null,
+                "citation_number": null,
+                "source_txn_id": null
+            },
+            "c0af2fb1-6caa-4029-8f72-630fd6f8c45b": {
+                "title_txn_id": "c0af2fb1-6caa-4029-8f72-630fd6f8c45b",
+                "title_order_id": "44f16fff-8ec6-4a68-b925-e6541ef11988",
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "event_type": "title_state_fee_collected",
+                "txn_date": "2026-10-06",
+                "amount": 4.0,
+                "fee_type": "title_fee",
+                "document_type": "not_applicable",
+                "tag_sequence": 0,
+                "temp_tag_number": null,
+                "tag_expires_date": null,
+                "reject_code": "not_applicable",
+                "reimbursement_reason": "not_applicable",
+                "document_format": "not_applicable",
+                "document_date": null,
+                "citation_number": null,
+                "source_txn_id": null
+            }
+        }
+    },
+    "db_closure_matches_initial_state": true,
+    "solvability_contract": {
+        "request_binding_version": 1,
+        "request_alignment": [
+            {
+                "claim": "The caller wants to pay the rest of her exchange replacement RAV4 order with her debit card today.",
+                "evidence": [
+                    "user_scenario:you want to pay off what is left on the RAV4 with your debit card today"
+                ]
+            },
+            {
+                "claim": "She completes the debit-card payment herself for the amount the representative gives her and pays nothing by credit card.",
+                "evidence": [
+                    "user_scenario:complete it on the RAV4 order for exactly the amount they give you",
+                    "user_scenario:You pay only with your debit card, never a credit card."
+                ]
+            }
+        ],
+        "gold_actions": [
+            {
+                "step": 12,
+                "business_effect": "A shipping fee of 731.06 USD for transporting the RAV4 from the Texas hub to Phoenix is booked on the exchange replacement order, dated 2026-10-06.",
+                "request_binding": {
+                    "action_semantics": "The shipping fee of an exchange replacement order is a state-due charge: the order is signed, its transfer distance (1065) exceeds the program's free transfer distance and Kestrel Certified does not waive exchange shipping, yet no shipping-fee entry stands on it. Only the exchange replacement shipping charge books it; the ordinary signing charges (vehicle price, documentation fee, sales tax) are already on the order.",
+                    "intent_source": {
+                        "kind": "initial_state",
+                        "evidence": [
+                            "initial_state.purchase_orders.bacca2a6-e6ba-428f-afd1-72358e635848.exchange_source_order_id",
+                            "initial_state.purchase_orders.bacca2a6-e6ba-428f-afd1-72358e635848.transfer_distance_miles",
+                            "initial_state.purchase_orders.bacca2a6-e6ba-428f-afd1-72358e635848.contract_signed_date"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "shipping fee owed on a signed exchange replacement order with no shipping-fee entry",
+                        "evidence": [
+                            "initial_state.purchase_orders.bacca2a6-e6ba-428f-afd1-72358e635848.exchange_source_order_id",
+                            "initial_state.purchase_transactions.84499610-f166-4576-a5b1-efbb44c035bf",
+                            "initial_state.purchase_transactions.6acb8c03-c23d-436d-a57e-64f10ee35cec",
+                            "initial_state.purchase_transactions.c25eba7b-83a9-4b21-b601-0f6c5131b5d2"
+                        ],
+                        "action_arg": "purchase_order_id",
+                        "value": "bacca2a6-e6ba-428f-afd1-72358e635848"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "performed_by_this_tool",
+                    "fact": "The tool books the shipping-fee entry on the signed replacement order on the spot; nothing outside the conversation has to happen first.",
+                    "evidence": [
+                        "initial_state.purchase_orders.bacca2a6-e6ba-428f-afd1-72358e635848.status",
+                        "initial_state.purchase_orders.bacca2a6-e6ba-428f-afd1-72358e635848.contract_signed_date"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "purchase_agreement_charges",
+                        "eligibility_id": "charges_on_open_order",
+                        "condition": "Agreement charges post only on an order whose status is contracted, and return charges post only on an order whose status is return_pending or returned.",
+                        "evidence": [
+                            "initial_state.purchase_orders.bacca2a6-e6ba-428f-afd1-72358e635848.status",
+                            "initial_state.purchase_orders.bacca2a6-e6ba-428f-afd1-72358e635848.purchase_order_id"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "purchase_orders.purchase_order_id",
+                                "source": "initial_state.purchase_orders.bacca2a6-e6ba-428f-afd1-72358e635848.purchase_order_id",
+                                "action_arg": "purchase_order_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "purchase_return_settlement",
+                        "eligibility_id": "policy_scope",
+                        "condition": "purchase_return_settlement governs charges posted at a return inspection; it sets no eligibility gate on a charge posted on a contracted order, and the shipping fee here is not a return charge.",
+                        "evidence": [
+                            "initial_state.purchase_orders.bacca2a6-e6ba-428f-afd1-72358e635848.status"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 14,
+                "business_effect": "The buyer pays 5815.55 USD toward the RAV4 order with her debit card; the payment posts as a debit-card down payment dated 2026-10-06 and the balance due falls to 515.51 USD.",
+                "request_binding": {
+                    "action_semantics": "The caller asks to pay the rest of the RAV4 with her debit card; a buyer's own debit-card payment toward an order paid in cash is exactly this action, not a bank payment or a Kestrel Auto Finance cash down.",
+                    "intent_source": {
+                        "kind": "user_scenario",
+                        "evidence": [
+                            "user_scenario:you want to pay off what is left on the RAV4 with your debit card today"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "debit card",
+                        "evidence": [
+                            "user_scenario:you want to pay off what is left on the RAV4 with your debit card today"
+                        ],
+                        "value": "debit card payment on an order paid in cash"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "performed_by_this_tool",
+                    "fact": "The buyer's card payment is taken and recorded on the spot by her own tool call.",
+                    "evidence": [
+                        "initial_state.purchase_orders.bacca2a6-e6ba-428f-afd1-72358e635848.status",
+                        "initial_state.purchase_orders.bacca2a6-e6ba-428f-afd1-72358e635848.payment_method"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "purchase_payment_funding",
+                        "eligibility_id": "payment_state",
+                        "condition": "A payment is posted only on an order whose status is contracted or cancelled; payments on a cancelled order are limited to applying held deposit money against a retained shipping fee.",
+                        "evidence": [
+                            "initial_state.purchase_orders.bacca2a6-e6ba-428f-afd1-72358e635848.status",
+                            "initial_state.purchase_orders.bacca2a6-e6ba-428f-afd1-72358e635848.purchase_order_id"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "purchase_orders.purchase_order_id",
+                                "source": "initial_state.purchase_orders.bacca2a6-e6ba-428f-afd1-72358e635848.purchase_order_id",
+                                "action_arg": "purchase_order_id"
+                            }
+                        ],
+                        "satisfied": true
+                    }
+                ]
+            }
+        ],
+        "temporal_feasibility": [],
+        "required_user_inputs": [
+            {
+                "information": "Mobile number used to locate the profile",
+                "source": "user_scenario:give your mobile number, 4805551836"
+            },
+            {
+                "information": "Date of birth for identity verification",
+                "source": "user_scenario:give your date of birth, 1989-11-03"
+            },
+            {
+                "information": "Last four of the SSN for identity verification",
+                "source": "user_scenario:Social Security number, 1427"
+            },
+            {
+                "information": "Payment rail the buyer uses (debit card only)",
+                "source": "user_scenario:You pay only with your debit card, never a credit card."
+            },
+            {
+                "information": "Which order the payment is for (the RAV4 replacement)",
+                "source": "user_scenario:put the rest of the RAV4 on your debit card today"
+            },
+            {
+                "information": "What she does with any amount the card cannot take",
+                "source": "user_scenario:tell them you will take care of whatever is left yourself before Friday"
+            }
+        ],
+        "seed_consistency": [
+            {
+                "row": "initial_state.purchase_orders.0c02df9a-3c5e-44ab-9142-69340a6836d9",
+                "policy_id": "purchase_sale_finality",
+                "check": "2019 Kestrel Inspected purchase financed by the Tier C contract; handed over 2019-05-25, finalized the day after the 7-day window (2019-06-02), balance 0.00. Parent of the paid-off finance contract.",
+                "evidence": [
+                    "initial_state.purchase_orders.0c02df9a-3c5e-44ab-9142-69340a6836d9.status",
+                    "initial_state.purchase_orders.0c02df9a-3c5e-44ab-9142-69340a6836d9.closed_date"
+                ]
+            },
+            {
+                "row": "initial_state.purchase_orders.eba8395f-4854-4b95-bb2d-d26f25439795",
+                "policy_id": "purchase_sale_finality",
+                "check": "2023 Kestrel Certified purchase financed by the active Tier B contract; finalized 2023-08-13, balance 0.00. Parent of the active autopay contract.",
+                "evidence": [
+                    "initial_state.purchase_orders.eba8395f-4854-4b95-bb2d-d26f25439795.status",
+                    "initial_state.purchase_orders.eba8395f-4854-4b95-bb2d-d26f25439795.closed_date"
+                ]
+            },
+            {
+                "row": "initial_state.purchase_orders.4154e840-0c3a-4f9d-bf21-0a0007884be6",
+                "policy_id": "purchase_return_settlement",
+                "check": "CR-V (Kestrel Inspected) handed over 2026-09-24, return requested 2026-09-28 (day 4, inside the 7-day window), received back 2026-09-30 at 52650 miles (519 miles driven: 119 over the 400-mile allowance at 0.50 = 59.50) with 950.00 of new damage above the 100.00 waiver; agreement charges reversed, return charges posted, refundable funds 24270.19 - 1009.50 = 23260.69 moved out as an exchange transfer; balance 0.00.",
+                "evidence": [
+                    "initial_state.purchase_orders.4154e840-0c3a-4f9d-bf21-0a0007884be6.status",
+                    "initial_state.purchase_orders.4154e840-0c3a-4f9d-bf21-0a0007884be6.return_odometer",
+                    "initial_state.purchase_transactions.704ad678-38a6-4a57-a88a-bb976b75fd1c"
+                ]
+            },
+            {
+                "row": "initial_state.purchase_orders.bacca2a6-e6ba-428f-afd1-72358e635848",
+                "policy_id": "purchase_agreement_charges",
+                "check": "RAV4 exchange replacement (Kestrel Certified: free transfer 100 miles, no shipping discount, exchange shipping not waived, card cap 5000) reserved 2026-10-02 with no deposit (exchange), signed 2026-10-06 within its 5-day hold; vehicle price, Texas documentation fee 225.00 and stated sales tax posted at signing; cached balance 5600.00 equals the ledger. The shipping fee for its 1065-mile transfer is not yet posted.",
+                "evidence": [
+                    "initial_state.purchase_orders.bacca2a6-e6ba-428f-afd1-72358e635848.order_balance",
+                    "initial_state.purchase_transactions.84499610-f166-4576-a5b1-efbb44c035bf",
+                    "initial_state.purchase_transactions.6acb8c03-c23d-436d-a57e-64f10ee35cec",
+                    "initial_state.purchase_transactions.c25eba7b-83a9-4b21-b601-0f6c5131b5d2",
+                    "initial_state.purchase_transactions.9eb4d6fe-949b-4107-b021-59fa4a0a049a"
+                ]
+            },
+            {
+                "row": "initial_state.purchase_transactions.dd7e2f6e-a454-4697-9d97-911a6d9f9c48",
+                "policy_id": "purchase_reservation_deposit",
+                "check": "Kestrel Inspected deposit 250.00 by debit card on the reservation date, inside the program's deposit channels.",
+                "evidence": [
+                    "initial_state.purchase_transactions.dd7e2f6e-a454-4697-9d97-911a6d9f9c48.amount",
+                    "initial_state.purchase_transactions.dd7e2f6e-a454-4697-9d97-911a6d9f9c48.txn_date"
+                ]
+            },
+            {
+                "row": "initial_state.purchase_transactions.294928dc-c69a-49d1-9d87-2be795553393",
+                "policy_id": "purchase_agreement_charges",
+                "check": "Vehicle price 21990.00 charged on the signing date 2026-09-22.",
+                "evidence": [
+                    "initial_state.purchase_transactions.294928dc-c69a-49d1-9d87-2be795553393.amount",
+                    "initial_state.purchase_transactions.294928dc-c69a-49d1-9d87-2be795553393.txn_date"
+                ]
+            },
+            {
+                "row": "initial_state.purchase_transactions.a5ccbee3-7fde-4acd-aa2b-23a3f292d102",
+                "policy_id": "purchase_agreement_charges",
+                "check": "Whole held deposit applied on the signing date.",
+                "evidence": [
+                    "initial_state.purchase_transactions.a5ccbee3-7fde-4acd-aa2b-23a3f292d102.amount",
+                    "initial_state.purchase_transactions.a5ccbee3-7fde-4acd-aa2b-23a3f292d102.txn_date"
+                ]
+            },
+            {
+                "row": "initial_state.purchase_transactions.e0246171-9a86-4611-acee-4360b2348446",
+                "policy_id": "purchase_payment_funding",
+                "check": "Deposit application posted as a payment (internal transfer) on the signing date.",
+                "evidence": [
+                    "initial_state.purchase_transactions.e0246171-9a86-4611-acee-4360b2348446.amount",
+                    "initial_state.purchase_transactions.e0246171-9a86-4611-acee-4360b2348446.txn_date"
+                ]
+            },
+            {
+                "row": "initial_state.purchase_transactions.f7544a56-c1ad-4fe8-863b-d5cd672c5cb0",
+                "policy_id": "purchase_agreement_charges",
+                "check": "Arizona documentation fee 499.00 for the AZ-selling hub.",
+                "evidence": [
+                    "initial_state.purchase_transactions.f7544a56-c1ad-4fe8-863b-d5cd672c5cb0.amount",
+                    "initial_state.purchase_transactions.f7544a56-c1ad-4fe8-863b-d5cd672c5cb0.txn_date"
+                ]
+            },
+            {
+                "row": "initial_state.purchase_transactions.e2b05df1-3745-4751-a2fd-7bd80f5e781c",
+                "policy_id": "purchase_agreement_charges",
+                "check": "Sales tax stated on the CR-V agreement.",
+                "evidence": [
+                    "initial_state.purchase_transactions.e2b05df1-3745-4751-a2fd-7bd80f5e781c.amount",
+                    "initial_state.purchase_transactions.e2b05df1-3745-4751-a2fd-7bd80f5e781c.txn_date"
+                ]
+            },
+            {
+                "row": "initial_state.purchase_transactions.f5d015c9-485a-47ee-80b1-5ba77d846972",
+                "policy_id": "purchase_payment_funding",
+                "check": "Wire down payment 24020.19 clearing the CR-V balance before the 2026-09-24 handover.",
+                "evidence": [
+                    "initial_state.purchase_transactions.f5d015c9-485a-47ee-80b1-5ba77d846972.amount",
+                    "initial_state.purchase_transactions.f5d015c9-485a-47ee-80b1-5ba77d846972.txn_date"
+                ]
+            },
+            {
+                "row": "initial_state.purchase_transactions.7ac91cf5-4467-4163-9fc0-3bdba91855a5",
+                "policy_id": "purchase_return_settlement",
+                "check": "Vehicle price reversed on return completion.",
+                "evidence": [
+                    "initial_state.purchase_transactions.7ac91cf5-4467-4163-9fc0-3bdba91855a5.amount",
+                    "initial_state.purchase_transactions.7ac91cf5-4467-4163-9fc0-3bdba91855a5.txn_date"
+                ]
+            },
+            {
+                "row": "initial_state.purchase_transactions.261ae2d7-a76c-47fa-b35e-d4f3c9ad881c",
+                "policy_id": "purchase_return_settlement",
+                "check": "Sales tax reversed on return completion.",
+                "evidence": [
+                    "initial_state.purchase_transactions.261ae2d7-a76c-47fa-b35e-d4f3c9ad881c.amount",
+                    "initial_state.purchase_transactions.261ae2d7-a76c-47fa-b35e-d4f3c9ad881c.txn_date"
+                ]
+            },
+            {
+                "row": "initial_state.purchase_transactions.a3e8e26d-983c-4557-8ac9-948d4099baa0",
+                "policy_id": "purchase_return_settlement",
+                "check": "Documentation fee reversed on return (the program's documentation fee refundable on return switch is true).",
+                "evidence": [
+                    "initial_state.purchase_transactions.a3e8e26d-983c-4557-8ac9-948d4099baa0.amount",
+                    "initial_state.purchase_transactions.a3e8e26d-983c-4557-8ac9-948d4099baa0.txn_date"
+                ]
+            },
+            {
+                "row": "initial_state.purchase_transactions.d237dc01-8ac5-4e5e-ad88-fd4a1057da4e",
+                "policy_id": "purchase_return_settlement",
+                "check": "Excess-mileage return charge 59.50 linked to the return request (119 miles over 400 at 0.50).",
+                "evidence": [
+                    "initial_state.purchase_transactions.d237dc01-8ac5-4e5e-ad88-fd4a1057da4e.amount",
+                    "initial_state.purchase_transactions.d237dc01-8ac5-4e5e-ad88-fd4a1057da4e.txn_date"
+                ]
+            },
+            {
+                "row": "initial_state.purchase_transactions.e18a1963-3719-4f53-9791-fe0d9574c681",
+                "policy_id": "purchase_return_settlement",
+                "check": "Return damage charge 950.00 (estimate above the 100.00 waiver, charged in full) linked to the return request.",
+                "evidence": [
+                    "initial_state.purchase_transactions.e18a1963-3719-4f53-9791-fe0d9574c681.amount",
+                    "initial_state.purchase_transactions.e18a1963-3719-4f53-9791-fe0d9574c681.txn_date"
+                ]
+            },
+            {
+                "row": "initial_state.purchase_transactions.704ad678-38a6-4a57-a88a-bb976b75fd1c",
+                "policy_id": "purchase_return_settlement",
+                "check": "Exchange transfer refund 23260.69 = buyer's payments 24270.19 less return charges 1009.50, leaving the CR-V order at 0.00.",
+                "evidence": [
+                    "initial_state.purchase_transactions.704ad678-38a6-4a57-a88a-bb976b75fd1c.amount",
+                    "initial_state.purchase_transactions.704ad678-38a6-4a57-a88a-bb976b75fd1c.txn_date"
+                ]
+            },
+            {
+                "row": "initial_state.purchase_transactions.84499610-f166-4576-a5b1-efbb44c035bf",
+                "policy_id": "purchase_agreement_charges",
+                "check": "RAV4 vehicle price 26490.00 charged on the signing date.",
+                "evidence": [
+                    "initial_state.purchase_transactions.84499610-f166-4576-a5b1-efbb44c035bf.amount",
+                    "initial_state.purchase_transactions.84499610-f166-4576-a5b1-efbb44c035bf.txn_date"
+                ]
+            },
+            {
+                "row": "initial_state.purchase_transactions.6acb8c03-c23d-436d-a57e-64f10ee35cec",
+                "policy_id": "purchase_agreement_charges",
+                "check": "Texas documentation fee 225.00 (selling hub in TX).",
+                "evidence": [
+                    "initial_state.purchase_transactions.6acb8c03-c23d-436d-a57e-64f10ee35cec.amount",
+                    "initial_state.purchase_transactions.6acb8c03-c23d-436d-a57e-64f10ee35cec.txn_date"
+                ]
+            },
+            {
+                "row": "initial_state.purchase_transactions.c25eba7b-83a9-4b21-b601-0f6c5131b5d2",
+                "policy_id": "purchase_agreement_charges",
+                "check": "Sales tax stated on the RAV4 agreement.",
+                "evidence": [
+                    "initial_state.purchase_transactions.c25eba7b-83a9-4b21-b601-0f6c5131b5d2.amount",
+                    "initial_state.purchase_transactions.c25eba7b-83a9-4b21-b601-0f6c5131b5d2.txn_date"
+                ]
+            },
+            {
+                "row": "initial_state.purchase_transactions.9eb4d6fe-949b-4107-b021-59fa4a0a049a",
+                "policy_id": "purchase_payment_funding",
+                "check": "The CR-V's refundable funds 23260.69 moved onto the replacement as a down payment by internal transfer at signing.",
+                "evidence": [
+                    "initial_state.purchase_transactions.9eb4d6fe-949b-4107-b021-59fa4a0a049a.amount",
+                    "initial_state.purchase_transactions.9eb4d6fe-949b-4107-b021-59fa4a0a049a.txn_date"
+                ]
+            }
+        ]
+    },
+    "evaluation_criteria": [
+        {
+            "owner": "agent",
+            "tool": "find_customers",
+            "arguments": {
+                "phone_number": "4805551836"
+            },
+            "objective": "Locate the caller's Kestrel profile from the mobile number she states, which returns the customer reference used by every later lookup.",
+            "necessity": "Every account read and both writes are scoped to this customer; without the profile no order, ledger or cross-product record can be found."
+        },
+        {
+            "owner": "agent",
+            "tool": "verify_customer_identity",
+            "arguments": {
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803",
+                "phone_number": "4805551836",
+                "date_of_birth": "1989-11-03",
+                "ssn_last4": "1427"
+            },
+            "objective": "Verify the caller with three stated credentials (mobile number, date of birth, last four of the SSN) before any account information is discussed or any money is booked.",
+            "necessity": "Identity must be verified before account details are discussed or any order is acted on; the payment and the charge are both writes on her order."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_purchase_orders",
+            "arguments": {
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803"
+            },
+            "objective": "List all of Marisol's purchase orders: the returned CR-V order, the contracted RAV4 replacement (exchange source set to the CR-V order, transfer distance 1065 miles, signed 2026-10-06, Kestrel Certified) and two completed older orders.",
+            "necessity": "Identifies the exchange replacement as the business object, and supplies the transfer distance, program (free transfer distance, exchange waiver, card payment cap) and signing date that the shipping-fee band, the exchange waiver test and the handover lead time rest on."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_purchase_transactions",
+            "arguments": {
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803"
+            },
+            "objective": "Read the money history of every order of the customer, in particular the RAV4 replacement's vehicle price, documentation fee, sales tax and the internal-transfer down payment carried over from the CR-V, and the absence of any shipping-fee entry on it.",
+            "necessity": "The carry-over share (internal-transfer money over the vehicle price charged), the balance due, the ticket size and the card money already on the order are all aggregates of this ledger; it also shows that the shipping fee the debit-card payment waits on is not yet on the order."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_purchase_return_requests",
+            "arguments": {
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803"
+            },
+            "objective": "Read the 7-day return request of the CR-V (exchange, hub drop-off, completed), which the replacement's carried-over money and the CR-V return charges are linked to.",
+            "necessity": "Confirms the replacement really is an exchange replacement of a completed exchange return, so the exchange replacement shipping rule (not the ordinary signing charge) governs its transport."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_delivery_orders",
+            "arguments": {
+                "purchase_order_id": "bacca2a6-e6ba-428f-afd1-72358e635848"
+            },
+            "objective": "Read the RAV4 handover appointment: Kestrel Hub Pickup, scheduled 2026-10-09 (originally 2026-10-08), rescheduled once by the customer.",
+            "necessity": "The handover lead time (signing date to scheduled appointment date) moves the shipping band; the collection method and the customer reschedules adjust the card allowance."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_title_orders",
+            "arguments": {
+                "purchase_order_id": "bacca2a6-e6ba-428f-afd1-72358e635848"
+            },
+            "objective": "Read the RAV4 title order: service Kestrel Out-of-State Registration (Texas hub, Arizona registration).",
+            "necessity": "The title service decides the interstate surcharge on the exchange replacement shipping fee."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_title_transactions",
+            "arguments": {
+                "title_order_id": "44f16fff-8ec6-4a68-b925-e6541ef11988"
+            },
+            "objective": "Read the state fees collected on the RAV4 title order, completing the title order record.",
+            "necessity": "Confirms the title order is the open Out-of-State Registration opened at signing (fees held 186.50) and not an earlier or cancelled order, so its service is the one the surcharge reads."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_service_contracts",
+            "arguments": {
+                "purchase_order_id": "bacca2a6-e6ba-428f-afd1-72358e635848"
+            },
+            "objective": "Read the KestrelCare service contract on the RAV4: KestrelCare Gold, pending, sold with the vehicle.",
+            "necessity": "The plan sold with the vehicle decides the protection plan credit against the shipping fee."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_finance_contracts",
+            "arguments": {
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803"
+            },
+            "objective": "Read Marisol's Kestrel Auto Finance contracts: the 2019 Tier C contract (paid off) and the 2023 Tier B contract (active, autopay enrolled).",
+            "necessity": "An active autopay contract sets the borrower shipping discount tier; a paid-off contract opens the standing uplift on the card allowance."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_finance_transactions",
+            "arguments": {
+                "customer_id": "1a3f530b-ee5a-456f-907d-a9acaa39c803"
+            },
+            "objective": "Read the loan history of both contracts, in particular the single returned payment posted 2024-12-26 on the paid-off contract.",
+            "necessity": "Whether any payment was ever returned, and whether one was returned within the last twelve whole months, decides both the borrower shipping discount and the standing uplift tier."
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "post_exchange_shipping_fee_0e49ee13"
+            },
+            "objective": "Unlock the hidden tool that books an exchange replacement shipping fee.",
+            "necessity": "First half of the unlock/call pair for the agent's own write; no DB effect, unlocked once."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "post_exchange_shipping_fee_0e49ee13",
+                "arguments": {
+                    "purchase_order_id": "bacca2a6-e6ba-428f-afd1-72358e635848",
+                    "amount": 731.06
+                }
+            },
+            "objective": "Book the exchange replacement shipping fee of 731.06 USD on the RAV4 order, raising its balance due from 5600.00 to 6331.06 USD.",
+            "necessity": "purchase_ext_exchange_shipping_fee uniquely produces the amount; the debit-card payment waits on this entry standing on the order (its prerequisite sentence), so it must precede the payment.",
+            "argument_uniqueness_tracing": {
+                "purchase_order_id": "Value bacca2a6-e6ba-428f-afd1-72358e635848. Basis: the tool docstring says the id is 'the purchase order reference number of the exchange replacement order that receives the charge, as returned by the purchase order lookup for this customer'; the lookup at step 2 returns exactly one order whose exchange_source_order_id is set (the RAV4, exchange source 4154e840-0c3a-4f9d-bf21-0a0007884be6). Uniqueness: the CR-V order is returned (no shipping fee is booked on a returned order) and the two completed orders are closed, so only the RAV4 replacement can receive an exchange replacement shipping fee.",
+                "amount": "Value 731.06. Carry-over share = internal-transfer down payment 23260.69 / vehicle price charged 26490.00 = 87.81% >= high carry-over share 80 -> courtesy miles 2 x free transfer distance 100 = 200 -> exchange pricing distance 865 miles -> band 2, band fee 799.00; handover lead time DAYS(2026-10-06, 2026-10-09) = 3 > rush 2 and <= priority 5 -> transport price = higher of band fee 799.00 and 865 x priority rate 1.15 = 994.75 -> 994.75; discount: active Tier B contract with autopay and no payment returned in the last twelve whole months (the only return, 2024-12-26, is 21 months old) -> program discount 0 + 25 autopay borrower points = 25% -> RND(994.75 x 0.75, 2) = 746.06; interstate surcharge for Kestrel Out-of-State Registration +60.00; protection plan credit for KestrelCare Gold sold with the vehicle -75.00 -> 731.06; not waived (Kestrel Certified does not waive exchange shipping) and 1065 > free distance 100."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "pay_order_by_debit_card_8f259234"
+            },
+            "objective": "Unlock the customer's debit-card payment tool and hand it to Marisol.",
+            "necessity": "Paying with her own card is the buyer's own act; the agent hands it over, no DB effect."
+        },
+        {
+            "owner": "user",
+            "tool": "call_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "pay_order_by_debit_card_8f259234",
+                "arguments": {
+                    "purchase_order_id": "bacca2a6-e6ba-428f-afd1-72358e635848",
+                    "amount": 5815.55
+                }
+            },
+            "objective": "Marisol pays 5815.55 USD toward the RAV4 order with her debit card - the lesser of the balance due (6331.06) and the card room (5815.55).",
+            "necessity": "purchase_ext_debit_card_payment uniquely produces the amount on the handling-time world in which the shipping fee already stands; this is the root problem the caller raised.",
+            "argument_uniqueness_tracing": {
+                "purchase_order_id": "Value bacca2a6-e6ba-428f-afd1-72358e635848. Basis: the docstring asks for 'the purchase order reference number of the buyer's order the payment goes toward, as given to the buyer by the representative from the purchase order lookup'; the caller says she wants to 'put the rest of the RAV4 on your debit card today', and the only RAV4 order is the contracted replacement. Uniqueness: the CR-V order is returned and the older orders are completed; only the contracted RAV4 order carries a balance due.",
+                "amount": "Value 5815.55. Balance due on the handling-time world = charges 26490.00 + 225.00 + 2145.69 + shipping 731.06 - internal-transfer payment 23260.69 = 6331.06. Card allowance basis: ticket size 26490.00 is at least the middle ticket size 25000 and below 40000 -> larger of program cap 5000 and 19.5% x 26490.00 = 5165.55; standing uplift: the 2019 contract is paid off and one payment was returned (2024-12-26) but none within twelve whole months -> recovered-history uplift +500.00; collection: Kestrel Hub Pickup -> +400.00; one customer reschedule -> -250.00; card allowance 5815.55; card money already on the order 0.00 -> card room 5815.55; payment = lesser of 6331.06 and 5815.55 = 5815.55."
+            }
+        }
+    ],
+    "prerequisite_closure": {
+        "root_problem": "purchase_ext_debit_card_payment",
+        "edges": [
+            {
+                "from": "purchase_ext_debit_card_payment",
+                "to": "purchase_ext_exchange_shipping_fee",
+                "kind": "value_input",
+                "gate": "card_balance_due",
+                "form": "state",
+                "condition": "Whenever an exchange replacement shipping fee is owed on the replacement order, its purchase_transactions carry a purchase_charge_posted entry with charge_type shipping_fee for the replacement's transfer.",
+                "policy_source": "On an exchange replacement order, the debit-card payment toward the balance is fixed only after the order's money history carries the shipping fee entry owed for transporting the replacement vehicle.",
+                "resolved_by": "post_exchange_shipping_fee_0e49ee13",
+                "unresolved_at_frozen_time": {
+                    "why_false": "The RAV4 is an exchange replacement with a 1065-mile transfer, above the Kestrel Certified free transfer distance (100) and in a program that does not waive exchange shipping, so a shipping fee is owed; its ledger carries only the vehicle price, documentation fee, sales tax and the internal-transfer down payment - no shipping-fee entry.",
+                    "evidence": [
+                        "initial_state.purchase_orders.bacca2a6-e6ba-428f-afd1-72358e635848.exchange_source_order_id = 4154e840-0c3a-4f9d-bf21-0a0007884be6",
+                        "initial_state.purchase_orders.bacca2a6-e6ba-428f-afd1-72358e635848.transfer_distance_miles = 1065",
+                        "initial_state.purchase_transactions.84499610-f166-4576-a5b1-efbb44c035bf.charge_type = vehicle_price",
+                        "initial_state.purchase_transactions.6acb8c03-c23d-436d-a57e-64f10ee35cec.charge_type = documentation_fee",
+                        "initial_state.purchase_transactions.c25eba7b-83a9-4b21-b601-0f6c5131b5d2.charge_type = sales_tax",
+                        "initial_state.purchase_orders.bacca2a6-e6ba-428f-afd1-72358e635848.order_balance = 5600.0"
+                    ],
+                    "flips_to_true_by": "post_exchange_shipping_fee_0e49ee13 books a shipping_fee charge of 731.06 on the RAV4 order; card_balance_due rises from 5600.00 to 6331.06."
+                }
+            }
+        ],
+        "resolution_order": [
+            "purchase_ext_exchange_shipping_fee",
+            "purchase_ext_debit_card_payment"
+        ],
+        "order_uniqueness": "Single prerequisite edge, chain of two problems: the shipping fee must stand before the debit-card payment is fixed (the prerequisite sentence of the payment rule); no parallel prerequisites to reorder.",
+        "edge_load_bearing": [
+            {
+                "edge": "purchase_ext_debit_card_payment -> purchase_ext_exchange_shipping_fee",
+                "skipped_effect": "Skipping the shipping-fee write leaves the balance due at 5600.00, below the card room 5815.55, so the debit-card payment would be 5600.00 instead of 5815.55; the terminal ledger also lacks the 731.06 shipping-fee entry."
+            }
+        ],
+        "no_user_hint": "user_scenario never names the shipping fee, transport, the exchange replacement shipping rule or the policy id; it only says the money from the CR-V moved over, that she wants to pay the rest by debit card, and - as a passive reaction - that if the representative says something has to be added or updated on the order first she lets them go ahead.",
+        "tools_do_not_block": "pay_order_by_debit_card_8f259234 looks up the order only to read its cached balance, then creates the payment entry and updates the balance unconditionally; it never checks for a shipping-fee entry, the card cap or the order status, and never returns an error. post_exchange_shipping_fee_0e49ee13 likewise books whatever amount it is given."
+    },
+    "charter_scope": {
+        "extended_policies": [
+            "purchase_ext_exchange_shipping_fee",
+            "purchase_ext_debit_card_payment"
+        ],
+        "task_tools": [
+            "post_exchange_shipping_fee_0e49ee13",
+            "pay_order_by_debit_card_8f259234"
+        ]
+    },
+    "required_documents": [
+        "purchase_ext_exchange_shipping_fee",
+        "purchase_ext_debit_card_payment"
+    ],
+    "computations": [
+        {
+            "policy_id": "purchase_ext_exchange_shipping_fee",
+            "target_holding_id": "bacca2a6-e6ba-428f-afd1-72358e635848",
+            "step": 12,
+            "arg": "amount",
+            "expected": 731.06,
+            "factor_trace": [
+                "carry_over_courtesy_miles (parameter): internal-transfer down payment 23260.69 (entry b4) over vehicle price charged 26490.00 (entry b1, no reversal) = 87.81% >= high carry-over share 80 -> tier 1, 200 courtesy miles, exchange pricing distance 865 (band 2); baseline 0 courtesy miles (pricing distance 1065, band 3) gives 903.56.",
+                "expedited_exchange_transport_pricing (method): contract_signed_date 2026-10-06 to delivery scheduled_date 2026-10-09 = 3 days (the original 2026-10-08 date, 2 days, is the near-miss: rush per-mile pricing 865 x 1.45 = 1254.25) -> tier 2, transport price = max(band fee 799.00, 865 x 1.15 = 994.75) = 994.75; baseline band fee 799.00 gives 584.25.",
+                "borrower_shipping_discount (parameter): active Tier B contract with autopay_enrolled true, returned payments within twelve whole months = 0 (the 2024-12-26 return is 21 months old, near-miss) -> tier 1, discount = min(100, 0 + 25) = 25; baseline program discount 0 gives 979.75.",
+                "protection_plan_shipping_credit (parameter): KestrelCare Gold sold with the vehicle -> tier 2, credit 75.00; baseline credit 0 gives 806.06.",
+                "interstate_shipping_surcharge (parameter): title order service Kestrel Out-of-State Registration -> tier 2, surcharge 60.00; baseline 0 gives 671.06.",
+                "plumbing: exchange_band 2 from 865 miles, band fee 799.00; discounted RND(994.75 x 75 / 100, 2) = 746.06; adjusted = max(0, 746.06 + 60.00 - 75.00) = 731.06; result: not waived (exchange_shipping_fee_waived false), 1065 > free 100, so 731.06."
+            ],
+            "baseline_result": 1099.0,
+            "factor_sensitivity": [
+                {
+                    "factor": "carry_over_courtesy_miles",
+                    "tier_taken": "the carry-over share is at least the high carry-over share",
+                    "baseline_result": 903.56
+                },
+                {
+                    "factor": "expedited_exchange_transport_pricing",
+                    "tier_taken": "the handover lead time is above the rush lead days and no more than the priority lead days",
+                    "baseline_result": 584.25
+                },
+                {
+                    "factor": "borrower_shipping_discount",
+                    "tier_taken": "the buyer holds an active Kestrel Auto Finance contract enrolled in autopay and no payment on any of the buyer's Kestrel Auto Finance contracts was returned within the twelve whole months before today",
+                    "baseline_result": 979.75
+                },
+                {
+                    "factor": "protection_plan_shipping_credit",
+                    "tier_taken": "the KestrelCare service contract sold with the replacement vehicle is KestrelCare Silver or KestrelCare Gold",
+                    "baseline_result": 806.06
+                },
+                {
+                    "factor": "interstate_shipping_surcharge",
+                    "tier_taken": "the replacement's title order service is Kestrel Out-of-State Registration",
+                    "baseline_result": 671.06
+                }
+            ]
+        },
+        {
+            "policy_id": "purchase_ext_debit_card_payment",
+            "target_holding_id": "bacca2a6-e6ba-428f-afd1-72358e635848",
+            "step": 14,
+            "arg": "amount",
+            "expected": 5815.55,
+            "factor_trace": [
+                "ticket_size_card_allowance (method): ticket size 26490.00 (entry b1) >= middle 25000 and < high 40000 -> tier 2, basis = max(5000, RND(26490 x 19.5 / 100, 2)) = 5165.55; baseline basis = program cap 5000 gives 5650.00.",
+                "finance_standing_card_uplift (parameter): paid-off contract exists, returned payments ever = 1, within twelve whole months = 0 -> tier 2, +500.00 (a careless reader who stops at 'paid off' takes the clean-history 1000); baseline 0 gives 5315.55.",
+                "collection_method_card_adjustment (parameter): appointment Kestrel Hub Pickup -> tier 1, +400.00; baseline 0 gives 5415.55.",
+                "appointment_reschedule_card_reduction (parameter): reschedule_count 1 (customer_miss_count 0 is not a reschedule) -> tier 2, -250.00; baseline 0 gives 6065.55.",
+                "plumbing: balance due = 29591.75 charges (incl. shipping 731.06) - 23260.69 payments = 6331.06; card money on order 0.00; card allowance 5165.55 + 500 + 400 - 250 = 5815.55; card room 5815.55; result = min(6331.06, 5815.55) = 5815.55."
+            ],
+            "baseline_result": 5000.0,
+            "factor_sensitivity": [
+                {
+                    "factor": "ticket_size_card_allowance",
+                    "tier_taken": "the ticket size is at or above the middle ticket size but below the high ticket size",
+                    "baseline_result": 5650.0
+                },
+                {
+                    "factor": "finance_standing_card_uplift",
+                    "tier_taken": "one of the buyer's Kestrel Auto Finance contracts is paid off and payments have been returned, but none within the twelve whole months before today",
+                    "baseline_result": 5315.55
+                },
+                {
+                    "factor": "collection_method_card_adjustment",
+                    "tier_taken": "the order's handover appointment is a Kestrel Hub Pickup",
+                    "baseline_result": 5415.55
+                },
+                {
+                    "factor": "appointment_reschedule_card_reduction",
+                    "tier_taken": "the customer has rescheduled the order's handover appointment once",
+                    "baseline_result": 6065.55
+                }
+            ]
+        }
+    ]
+}

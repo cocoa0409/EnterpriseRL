@@ -1,0 +1,2773 @@
+{
+    "frozen_time": "2026-10-10 14:20:00 MST",
+    "design_rationale": "WORKLOG / TEST DOSSIER - moving_truck_rentals task 0 (written as the task was designed; every figure below is the output of /tmp/run_0051/moving_truck_rentals/calc_t0.py, which replays the gold writes with the real tools and evaluates each policy's compute with check_compute's own primitives at that write's handling time).\n\n[Step 0 - draw and scope] draw_counts.py --task 0 printed {\"prerequisite_problems\": 3, \"problems\": 4, \"factor_counts\": [4, 4, 6, 6]}. Assignment: truck_ext_move_in_rental_waiver (root) 6 factors, truck_ext_move_in_mileage_allowance 6, truck_ext_late_cancellation_fee 4, truck_ext_additional_day_charge 4. Occupied before this task: nothing (first task of the difficulty). Claimed here: those four policies and their tools cancel_truck_reservation_ee0618b8 (owner=user), post_additional_rental_day_charge_add5e32c, apply_move_in_claim_miles_credit_24951572, credit_move_in_rental_waiver_7c9a948d. Left for task 1 (draw: 1 prerequisite, factors [6, 5]): the pickup side of the counter - the first-day rental fee (truck_ext_first_day_rate) and the deposit authorization placed when the renter signs the contract (truck_ext_signing_authorization_hold, owner=user) - a disjoint subject (truck_pickup / truck_deposit_hold) with its own user tool, so task 1 has an independent load-bearing tree.\n\n[Why this is a good test] The caller says only that the free move-in truck was not applied to last week's truck bill. Getting the bill right needs the agent to (1) read the free move-in rules and find that the benefit can be claimed on that contract only when no other open truck contract of hers holds a claim on the same storage unit - and her Sunday 2026-10-11 reservation does; (2) notice that the returned contract started a second rental day that nobody charged, because the mileage allowance waits on every started day being charged; (3) record the claim with the included-miles credit, and only then (4) credit the rental waiver, whose shares read the claimed unit through the contract. Each write is a multi-factor calculation over history (storage ledger counts, contract ledger lines), dates (weekday, booked days, move-in date) and three other products (unit, protect, autopay). Nothing is guessable from tool names; every number comes from policy plus records.\n\n[Problem-tree card] root = truck_ext_move_in_rental_waiver. Edges:\n E1 waiver -> mileage allowance: kind value_input, gate claimed_size (the waiver's claimed-unit reads), form state, prerequisite sentence \"The rental waiver is not credited before the truck contract carries the storage-unit claim it is credited for.\" (negated direction). Four-point test: ordering connective 'not ... before'; waits on a record-visible state (the contract's linked storage unit); names no tool/id/code token; strength = hard requirement, scope = the one contract. Exactly one write of this difficulty sets truck_rentals.linked_rental_id: apply_move_in_claim_miles_credit_24951572 (no other tool writes that field). Opening fact: initial_state.truck_rentals.<C>.linked_rental_id = null (walk-in contract, never linked). Resolved by the agent.\n E2 mileage allowance -> late cancellation fee: kind state_gate, gate truck_rentals.status, form state, sentence \"The included-miles credit is not posted until no other reserved, picked-up or returned truck contract of the renter carries a claim on the same storage unit.\" (negated). Only the renter's cancellation moves a reservation out of reserved status in this difficulty (the no-show is a system transition with no tool), so the sentence + the records (reservation R, status reserved, linked to unit K-214) + the cancellation policy's own rule lead to exactly one action: the renter cancels R. Opening fact: initial_state.truck_rentals.<R>.status = reserved with linked_rental_id = <K-214>. Resolved by the customer through the hand-over tool (owner=user): cancelling a booking is the renter's own act (blueprint summary).\n E3 mileage allowance -> additional-day charge: kind value_input, gate rental_days_charged, form state, sentence \"The included-miles credit is fixed only after every rental day the contract started stands charged on the contract.\" (affirmative). Only post_additional_rental_day_charge_add5e32c posts base rental fee lines at check-in (the first-day line is posted when a contract opens, which already happened). Opening fact: C was picked up 2026-10-02 09:15 and returned 2026-10-03 13:10 (two rental days started) but carries a single base_rental_fee line of quantity 1, so one rental day is charged (initial_state.truck_charges.<first-day line>).\n Topological order: {cancel R, additional day} -> mileage allowance -> waiver; gold uses cancel(9), additional day(11), miles(13), waiver(15). Cancel and additional day are parallel prerequisites of the mileage allowance and touch different contracts (R vs C) and different rows, ids are content hashes of their own arguments, so either order gives the same terminal hash. Directions in the charter: two negated (E1, E2), one affirmative (E3); task 1 adds another affirmative.\n Deletion sensitivity (calc_t0.py skip run): skipping the claim (step 13) moves the waiver from 12.37 to 22.91; skipping the additional day (step 11) moves the mileage credit from 185.13 to 155.43; skipping the cancellation leaves the mileage figure at 185.13 but leaves R reserved with its claim, so the once-per-unit gate on the credit is false and the terminal state differs (R status and fee line) - the state_gate edge bears weight on the gate, as declared.\n user_scenario never names the Sunday booking, a fee, miles or extra days; the booking appears only as a passive reaction after the agent raises it. The tools validate nothing (see tools_do_not_block).\n\n[Base-invariant card] Cancellation (subject truck_reservation_cancelled): governed by truck_evt_cancellation_no_show only; its single gate (free_cancellation_cutoff) applies to truck_charge, so the write carries policy_scope; the free/late split is inherited unchanged: 10 ft free_cancellation_hours_before_pickup = 24; R's pickup is 2026-10-11 09:00 and frozen_time is 2026-10-10 14:20 MST, 18 h 40 m before, so the cancellation is late and the fee computation applies (a cancellation at 2026-10-10 09:00 or earlier would have been free). Additional day (subject truck_return): truck_evt_pricing and truck_evt_late_return, neither with a gate on truck_return -> policy_scope; no late fee arises because C came back before its scheduled return 2026-10-04 09:15. Credits (subject truck_credit): truck_agg_free_move_in_once.once_per_unit (dedup on linked_rental_id over reserved/picked_up/returned/closed contracts - false at the opening because R holds the claim), truck_evt_free_move_in.unit_status_ok (K-214 active, same customer), inside_window (time: pickup 2026-10-02 vs move-in 2026-10-03 + free_move_in_window_days 7 = 2026-10-10 and not earlier than 2026-09-26; counting from the day after the move-in date, last day included; a pickup on 2026-10-11 would fail, 2026-10-10 passes), class_eligible (10 ft: free_move_in_eligible true), truck_evt_breakdown_and_corrections.not_already_credited (the mileage line and the first-day line carry no credit).\n\n[Business-object card] Target contract C (10 ft, PHX-031, returned) for the mileage, additional-day and waiver writes; target reservation R (10 ft, PHX-031, reserved, booked 2026-09-21, pickup Sun 2026-10-11 09:00, return 2026-10-13 09:00, linked to K-214) for the cancellation. Correlation keys: credits reference the exact line credited (mileage line, first-day line); the claim is the storage agreement of her latest storage administrative fee (K-214, admin fee 2026-10-03) - not L-033 (admin fee 2025-07-12). Rows excluded: the hold line and the environmental fee line (stay chargeable), L-033's own ledger except as rent-count evidence.\n\n[Factor card - values are the calc_t0.py output]\n Late cancellation fee (4): fee basis (method) booked 2 days -> the larger of one base_rate_usd 29.95 and the flat 25.00 = 29.95 (baseline flat 25.00 -> 21.09); notice share 1 day -> 0.75 (baseline 1.0 -> 33.69); peak day Sunday -> 1.5 (-> 16.85); tenant courtesy (cross-difficulty unit) existing-tenant tier 0.75 because no active agreement at the reservation's facility PHX-031 moved in within a month and rent was billed within twelve months (-> 33.69). Result 25.27; all-baseline 25.00. Near-miss: K-214 moved in 2026-10-03 but at PHX-027; a careless reader who ignores the facility puts her on the new-tenant tier 0.5 and gets 16.85.\n Additional day (4): last-day share back 13:10 on the day the second day began, within the two booked days, after 12:00 and by 15:00 -> 0.75 day (baseline whole day -> 29.66); additional-day rate source (method) booked two days -> the first-day fee as posted 32.95 (baseline class rate 29.95 -> 20.22); second day began Saturday 2026-10-03 -> 1.2 (-> 18.53); move-in share (multi-source, cross-difficulty unit) K-214 moved in on the return date but at PHX-027, not the pickup facility -> 0.75 (-> 29.66). Result 22.24 (22.24125, no half-cent tie); all-baseline 29.95. Near-miss: the facility of K-214; ignoring it gives the same-facility tier 0.5 and 14.83.\n Mileage allowance (6): claimed unit = latest admin fee -> K-214 5x10 -> 60 miles (-> 170.28); rental days charged (quantities of the base rental fee lines) 2 after the additional day -> +20 (-> 155.43); move-in trip miles (method) pickup one day before move-in -> 10 miles per day of lead = 10 (-> 170.28); Climate Plus -> +10 (-> 170.28); unit at PHX-027, truck from PHX-031, pickup before move-in -> +25 (multi-source; -> 148.50); $5,000 protection plan active (cross-difficulty protect) x1.5 (-> 123.75). Allowance int(125 x 1.5) = 187 < 230 miles charged; credit 187 x 0.99 = 185.13; all-baseline 50 x 0.99 = 49.50. Near-miss: L-033 (5x5 Interior Standard, own insurance) would give 50 miles x1.0 if a reader took her older unit.\n Rental waiver (6): basis (method) two-day booking with a Friday scheduled pickup -> the lower of the posted 32.95 and the class base_rate_usd, 29.95 (-> 13.61); 5x10 -> 0.8 (-> 15.47); first-month promotion on K-214 -> 0.75 (-> 16.50); 13 rent charges in 12 months -> 0.85 (-> 14.56); other facility, pickup before move-in -> 0.9 (multi-source; -> 13.75); no AutoPay ever on K-214 (cross-difficulty autopay; L-033's cancelled authorization is the near-miss: it belongs to another agreement, and counting it as K-214's inactive authorization gives the 0.95 tier and 13.06) -> 0.9 (-> 13.75). The figured waiver is compared with the balance the contract owes when it is credited (ledger reconciliation over C's charge, credit, payment and refund lines: 287.89 charged - 185.13 credited = 102.76), which does not bind. Result 12.37; all-baseline 32.95.\n Every factor's tier rests on seeded rows; no stamp names an outcome.\n\n[Seed design] 2 storage agreements (L-033 since 2025-07-12 with 15 monthly rent charges and payments; K-214 moved in 2026-10-03 with admin fee, discounted first rent 56.00 = 112 x 0.5, payment 85.00), K-214's active $5,000 plan (premium balance 0.00), L-033's AutoPay given 2025-07-12 and revoked 2025-07-30 before any draft, contract C with hold 250.40 (credit card, 10 ft: 150.00 x 1.25 last-minute share + 32.95 first-day fee + 29.95 two-day rental estimate under the signing-hold rule), first-day fee 32.95 (29.95 x 1.1 Friday rate, no other first-day adjustment applies to a walk-in with no unit at PHX-031), mileage 230 x 0.99 = 227.70 posted without included miles because C was not linked at check-in, environmental fee 5.00, balance 265.65; reservation R. Fuel came back full and the truck clean, so no fuel or cleaning obligation is lit; no breakdown, no waiver taken, no additional driver.\n\n[Persona] Brisk, practical voice; volunteers only the surface goal; identity details and truck/unit facts only when asked; the Sunday booking only as a reaction; accepts quoted fees; ends when told the move-in credit is on the bill. The last gold write is that credit.\n\n[Standard solution] find_customers by phone -> verify (DOB + photo ID last four) -> read truck contracts, C's charges, storage agreements and ledger, protection plans, AutoPay -> explain that the Sunday booking holds the unit's claim; renter cancels it with fee 25.27 -> post the additional day 22.24 (service date 2026-10-03, 1 additional day) -> record the claim on C for K-214 and credit 185.13 against the mileage line -> credit the waiver 12.37 against the first-day line.\n\n[Revision log] replay_tasks first failed: empty-string id fields counted as dangling foreign keys and two protection fee rows were read by no action -> empty id fields seeded as null, the unread fee rows dropped (the plan's premium balance 0.00 carries the same fact); re-run: REPLAY OK, figures unchanged (16.85 / 7.19 / 185.13 / 12.37).\n[Revision 2] the final check_compute suite rule needs one task with >= 8 reconciled history rows; the waiver's rule already implied that a credit never exceeds what the contract owes, so that cap is now stated in the rule and computed from C's ledger (charges, refunds, credits, payments), lifting task 0's reconciled rows to 8; figures unchanged.\n[Manual values gates - task 0] Length: surface goal -> waiver's sentence (claim on the contract) -> mileage allowance's two sentences (no other open claim; every rental day charged) -> cancellation and additional-day computations; breadth: unit, protect and autopay records plus contract ledger and dates. The owner=user tool is the cancellation of her own booking, decided by her on the spot. Persona never names a prerequisite; volunteered facts (truck last week, new unit) are in initial_state. Base gates checked above with boundary dates. No real-world wait. Ladders are stated in full in each rule, tiers disjoint, baselines are the computation documents' standard methods. Draft from visible context agrees with gold.\n[Revision 3 - policy-task audit round 2] F-1: the condition of the mileage -> cancellation edge now matches its sentence (no other reserved, picked_up or returned contract carries the unit; closed contracts are admitted). F-2: mislabelled method factors replaced - additional day: the last-day count is now a parameter and a genuine method (additional-day rate source: first-day fee as posted / lower of it and the class rate / class rate) replaces the booked-length share; mileage: protection multiple relabelled parameter, move-in trip miles became the method (flat miles on the move-in date, miles per day of lead for earlier pickups); waiver: the basis switches source (class rate for weekend/Friday longer bookings, a share of the class rate for part-day bookings, the posted fee otherwise). F-3: rental-day miles now read the rental days charged (sum of base rental fee quantities), so all three tiers are reachable. F-6/T0-F2: the courtesy tiers use 'less than one whole calendar month / twelve whole calendar months before the cancellation date' and tier 1 requires the agreement at the reservation's facility. T0-F4: near-misses now exist in the cancellation (K-214 at another facility, 16.85 if counted) and the additional day (same record, 9.88 if counted). T0-O1: the persona ends only when told the truck rental itself is credited (the rental waiver, the last write), without naming any other adjustment. T0-O2: C's hold reseeded to the signing-hold rule (250.40). O-1: rental days beyond the booked days are late-return periods, not additional days. Figures now: 25.27 / 14.83 / 185.13 / 12.37, all recomputed by calc_t0.py.\n[Revision 4 - policy-task audit round 3] R2-F1: the waiver's discount sentence and its basis tiers now agree - the part-day and Friday-to-Sunday tiers take the lower of the posted first-day fee and the tariff figure, and the rule states that the waiver is never figured on more than the fee as posted. O-5: an authorization given but no longer active now keeps 0.95 of the waiver (above the 0.9 of a unit that never had AutoPay), and the tenancy share is stated as following from the benefit being an acquisition benefit for new storage customers. R2-O1 (contracted day rate x second-day surcharge) and R2-O2 (vault military floor equals the former-military rate) reviewed and kept, reasons below. No scored value of this task moved (25.27 / 14.83 / 185.13 / 12.37); the AutoPay near-miss figure is now 13.06.\n[Accepted observations] R2-O1: a two-day booking is billed its contracted day rate (the first-day fee as posted) for the extra day, and the second-day weekday multiple prices demand on the day actually used; a rental agreement that fixes a day rate and adds a day-of-use surcharge is a published pattern, so both stay. R2-O2: for the vault class, whose own military_discount_pct is 0.00, the active-military tier yields the 0.05 floor, the same figure as a former-military renter - a coherent \"at least the former-military rate\" floor. O-2 (base measure vs base dedup) and O-3 (subjects outside the blueprint claim list) come from the frozen base and move nothing here.\n[Revision 5 - KB audit round 4, source-side notes] The additional-day charge used to land on an exact half-cent (32.95 x 0.5 x 1.2 x 0.75 = 14.8275), where \"rounded to the cent once\" leaves half-up and half-even apart. The world was moved off the tie rather than the charter changed (the published KB stays a lossless rendering): contract C now came back at 13:10 instead of 11:40, so the last additional day takes the afternoon share 0.75 and the charge is 32.95 x 0.75 x 1.2 x 0.75 = 22.24125 -> 22.24 under any rounding convention. Every other scored value of this task (25.27 / 185.13 / 12.37) has no tie: 25.2703, 185.13 exactly, 12.3723. The return at 13:10 is still within the booked days (scheduled return 2026-10-04 09:15), so no late-return period arises; the waiver's balance cap is now 102.76 and still does not bind. Identity-verification note: gold verifies with date of birth and photo ID last four; an agent that also passes the phone number writes the same verification record (its id is a hash of the customer id, its fields verified/verified_at), so the terminal state is identical - no source change.\n[Verification] calc_t0.py output reproduced in computations; gates run per task: check_extended, check_task_tools, replay_tasks, check_solvability, check_compute, check_grounding, check_cache_diff, check_cross_fire (results in the final report of this run). Draft from visible context: with the four policy texts, the tool schemas, the finder outputs and the persona, a reader reaches the same order and numbers; the only judgement calls (which unit is claimed, which lines are credited) are pinned by the latest-admin-fee sentence and by the reference lines named in the rules.\n",
+    "user_scenario": "You are Marisol Tavares, a dental hygienist in Scottsdale who moved a load of things into a new Bluegate storage unit last weekend. You are calling on a Saturday afternoon, polite but a little worn out, and you like to get to the point. You open with: \"Hi, I rented one of your moving trucks last week for my move-in and the bill still shows the full truck rental. When I signed for my new unit they told me the move-in truck comes free with it, so I'd like that put right on the truck bill.\" You want whatever is owed to you on that truck bill handled on this call, and you are happy for the agent to make the changes on the bill for you. You only give your details when the agent asks for them: the mobile number on your profile is 6025554731, your date of birth is 1988-04-19, the last four characters of your photo ID are 4096, and if a third detail is wanted your billing ZIP code is 85257. If the agent asks about the truck, you remember picking up a 10 ft truck at the Bluegate lot on Friday morning, October 2, and dropping it back a little after one in the afternoon on Saturday, October 3; you had it booked through Sunday but finished early. If the agent asks about the unit, it is your new 5x10 climate unit K-214, which you signed for on Saturday, October 3, at the other Phoenix Bluegate, the same place where you have kept your small unit L-033 since last summer. If you are asked, you took the $5,000 protection plan on the new unit, you pay that unit in the office, and you never set up AutoPay on it. You do not know how the move-in benefit is worked out, what the miles or days cost, or what the bill should come to, and you say so if asked. If the agent tells you that you still have another truck booking, the one for Sunday, October 11, you are surprised and say you completely forgot about it: you booked it back in September when you thought you would move in later, and you have no use for it now. If the agent then explains that this booking is what stands in the way of the move-in benefit on last week's truck, you tell them you will cancel that Sunday booking yourself, and you accept whatever cancellation fee the agent tells you without arguing; when the agent hands the cancellation over to you, you carry it out on that Sunday booking with the fee amount the agent gives you, and you read back what the confirmation says if asked. You do not bring that booking up on your own. Whatever amounts the agent tells you, you take them as given; if a number sounds odd you simply say you trust them to have it right. You end the call only once the agent tells you that the truck rental itself has been credited on last week's truck bill; then you thank them and hang up.",
+    "initial_state": {
+        "customers": {
+            "223fe4bb-f0b7-474c-bf19-e0435f3add5c": {
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "full_name": "Marisol Tavares",
+                "phone_number": "6025554731",
+                "email": "marisol.tavares@fastmail.com",
+                "date_of_birth": "1988-04-19",
+                "drivers_license_last4": "4096",
+                "billing_zip": "85257",
+                "mailing_address": "7741 E Camelback Rd Apt 1128, Scottsdale, AZ 85257",
+                "customer_since": "2025-07-12",
+                "customer_type": "individual",
+                "business_name": "",
+                "alternate_contact_name": "",
+                "alternate_contact_phone": "",
+                "military_status": "none"
+            }
+        },
+        "unit_rentals": {
+            "da8eeda9-a61a-4f94-8087-58f5d5042ffa": {
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "variant_name": "Bluegate Interior Standard",
+                "status": "active",
+                "facility_code": "PHX-027",
+                "unit_number": "L-033",
+                "unit_size": "5x5",
+                "monthly_rent": 54.0,
+                "reservation_date": "2025-07-05",
+                "move_in_date": "2025-07-12",
+                "billing_day": 12,
+                "balance_due": 0.0,
+                "deposit_held": 0.0,
+                "delinquent_since": "",
+                "last_rate_change_date": "2025-07-12",
+                "coverage_source": "own_insurance",
+                "lock_status": "tenant_lock",
+                "promo_code": "none",
+                "military_discount_applied": false,
+                "move_out_date": ""
+            },
+            "e85e7727-28e9-46ef-a0fd-36d2cf6d30e7": {
+                "rental_id": "e85e7727-28e9-46ef-a0fd-36d2cf6d30e7",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "variant_name": "Bluegate Climate Plus",
+                "status": "active",
+                "facility_code": "PHX-027",
+                "unit_number": "K-214",
+                "unit_size": "5x10",
+                "monthly_rent": 112.0,
+                "reservation_date": "2026-09-20",
+                "move_in_date": "2026-10-03",
+                "billing_day": 3,
+                "balance_due": 0.0,
+                "deposit_held": 0.0,
+                "delinquent_since": "",
+                "last_rate_change_date": "2026-10-03",
+                "coverage_source": "bluegate_protection",
+                "lock_status": "tenant_lock",
+                "promo_code": "first_month_discount",
+                "military_discount_applied": false,
+                "move_out_date": ""
+            }
+        },
+        "unit_ledger": {
+            "5c9a1189-1900-41da-b088-40ae859c3f1c": {
+                "entry_id": "5c9a1189-1900-41da-b088-40ae859c3f1c",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_fee_charge",
+                "amount": 29.0,
+                "entry_date": "2025-07-12",
+                "period_start": "2025-07-12",
+                "period_end": "",
+                "fee_type": "admin_fee",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "4f0a7f24-9337-4b33-8d5f-25a4eff74498": {
+                "entry_id": "4f0a7f24-9337-4b33-8d5f-25a4eff74498",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_payment",
+                "amount": 29.0,
+                "entry_date": "2025-07-12",
+                "period_start": "",
+                "period_end": "",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "debit_card",
+                "payment_channel": "facility_office",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "bfec9149-4f97-4973-959c-2cd0a6295576": {
+                "entry_id": "bfec9149-4f97-4973-959c-2cd0a6295576",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_rent_charge",
+                "amount": 54.0,
+                "entry_date": "2025-07-12",
+                "period_start": "2025-07-12",
+                "period_end": "2025-08-11",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "2b02b44b-5f4f-4ee4-97c4-a409d5ddf1a9": {
+                "entry_id": "2b02b44b-5f4f-4ee4-97c4-a409d5ddf1a9",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_payment",
+                "amount": 54.0,
+                "entry_date": "2025-07-12",
+                "period_start": "",
+                "period_end": "",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "debit_card",
+                "payment_channel": "facility_office",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "1bc96098-5099-44d4-83a9-982ce53c5a22": {
+                "entry_id": "1bc96098-5099-44d4-83a9-982ce53c5a22",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_rent_charge",
+                "amount": 54.0,
+                "entry_date": "2025-08-12",
+                "period_start": "2025-08-12",
+                "period_end": "2025-09-11",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "cd64372f-60ca-4c88-b8cb-73614f6d9aae": {
+                "entry_id": "cd64372f-60ca-4c88-b8cb-73614f6d9aae",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_payment",
+                "amount": 54.0,
+                "entry_date": "2025-08-11",
+                "period_start": "",
+                "period_end": "",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "debit_card",
+                "payment_channel": "online_portal",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "085bd84b-ae6e-47d8-bd6e-63b78a6217d7": {
+                "entry_id": "085bd84b-ae6e-47d8-bd6e-63b78a6217d7",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_rent_charge",
+                "amount": 54.0,
+                "entry_date": "2025-09-12",
+                "period_start": "2025-09-12",
+                "period_end": "2025-10-11",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "51323c6d-4c08-49f4-9fa8-08ddc188d101": {
+                "entry_id": "51323c6d-4c08-49f4-9fa8-08ddc188d101",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_payment",
+                "amount": 54.0,
+                "entry_date": "2025-09-11",
+                "period_start": "",
+                "period_end": "",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "debit_card",
+                "payment_channel": "online_portal",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "2a0c69c1-1da8-44f1-99f1-7ad26b23bf78": {
+                "entry_id": "2a0c69c1-1da8-44f1-99f1-7ad26b23bf78",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_rent_charge",
+                "amount": 54.0,
+                "entry_date": "2025-10-12",
+                "period_start": "2025-10-12",
+                "period_end": "2025-11-11",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "fd97b9d7-8847-48c3-b003-bf8f8ef2d673": {
+                "entry_id": "fd97b9d7-8847-48c3-b003-bf8f8ef2d673",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_payment",
+                "amount": 54.0,
+                "entry_date": "2025-10-10",
+                "period_start": "",
+                "period_end": "",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "debit_card",
+                "payment_channel": "online_portal",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "9dfec227-52fd-48d2-87b5-74516179c207": {
+                "entry_id": "9dfec227-52fd-48d2-87b5-74516179c207",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_rent_charge",
+                "amount": 54.0,
+                "entry_date": "2025-11-12",
+                "period_start": "2025-11-12",
+                "period_end": "2025-12-11",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "5c9b22f7-efa8-4a3f-bf6c-d295d260076b": {
+                "entry_id": "5c9b22f7-efa8-4a3f-bf6c-d295d260076b",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_payment",
+                "amount": 54.0,
+                "entry_date": "2025-11-11",
+                "period_start": "",
+                "period_end": "",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "debit_card",
+                "payment_channel": "online_portal",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "5889f30f-6118-4548-8483-319e9753e2e7": {
+                "entry_id": "5889f30f-6118-4548-8483-319e9753e2e7",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_rent_charge",
+                "amount": 54.0,
+                "entry_date": "2025-12-12",
+                "period_start": "2025-12-12",
+                "period_end": "2026-01-11",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "e999ced5-3bf7-4427-b38a-42ff3237ef96": {
+                "entry_id": "e999ced5-3bf7-4427-b38a-42ff3237ef96",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_payment",
+                "amount": 54.0,
+                "entry_date": "2025-12-11",
+                "period_start": "",
+                "period_end": "",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "debit_card",
+                "payment_channel": "online_portal",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "0420de48-6464-4132-8866-63a64941b52b": {
+                "entry_id": "0420de48-6464-4132-8866-63a64941b52b",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_rent_charge",
+                "amount": 54.0,
+                "entry_date": "2026-01-12",
+                "period_start": "2026-01-12",
+                "period_end": "2026-02-11",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "17a2fbf3-8873-4739-a0ce-e1f80af81f03": {
+                "entry_id": "17a2fbf3-8873-4739-a0ce-e1f80af81f03",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_payment",
+                "amount": 54.0,
+                "entry_date": "2026-01-10",
+                "period_start": "",
+                "period_end": "",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "debit_card",
+                "payment_channel": "online_portal",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "dcb3a829-9241-4ec6-b261-3ed75f6f2cf3": {
+                "entry_id": "dcb3a829-9241-4ec6-b261-3ed75f6f2cf3",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_rent_charge",
+                "amount": 54.0,
+                "entry_date": "2026-02-12",
+                "period_start": "2026-02-12",
+                "period_end": "2026-03-11",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "ec7381d1-c9ab-46df-aeb8-c8b0d84a4ec5": {
+                "entry_id": "ec7381d1-c9ab-46df-aeb8-c8b0d84a4ec5",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_payment",
+                "amount": 54.0,
+                "entry_date": "2026-02-11",
+                "period_start": "",
+                "period_end": "",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "debit_card",
+                "payment_channel": "online_portal",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "d7100017-1489-4db9-8b9c-a8dde1912759": {
+                "entry_id": "d7100017-1489-4db9-8b9c-a8dde1912759",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_rent_charge",
+                "amount": 54.0,
+                "entry_date": "2026-03-12",
+                "period_start": "2026-03-12",
+                "period_end": "2026-04-11",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "d2c17bff-3413-4782-903a-5803bec9057c": {
+                "entry_id": "d2c17bff-3413-4782-903a-5803bec9057c",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_payment",
+                "amount": 54.0,
+                "entry_date": "2026-03-11",
+                "period_start": "",
+                "period_end": "",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "debit_card",
+                "payment_channel": "online_portal",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "4cd9f5ce-d313-45bb-84bb-cf374a33f070": {
+                "entry_id": "4cd9f5ce-d313-45bb-84bb-cf374a33f070",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_rent_charge",
+                "amount": 54.0,
+                "entry_date": "2026-04-12",
+                "period_start": "2026-04-12",
+                "period_end": "2026-05-11",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "4cf46368-5db7-4d4f-87f9-a96d1f7d9bfd": {
+                "entry_id": "4cf46368-5db7-4d4f-87f9-a96d1f7d9bfd",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_payment",
+                "amount": 54.0,
+                "entry_date": "2026-04-10",
+                "period_start": "",
+                "period_end": "",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "debit_card",
+                "payment_channel": "online_portal",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "578b2f48-8cb5-4b9b-950f-47cc61b09012": {
+                "entry_id": "578b2f48-8cb5-4b9b-950f-47cc61b09012",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_rent_charge",
+                "amount": 54.0,
+                "entry_date": "2026-05-12",
+                "period_start": "2026-05-12",
+                "period_end": "2026-06-11",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "f183e523-7f3c-4234-a209-539aab938217": {
+                "entry_id": "f183e523-7f3c-4234-a209-539aab938217",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_payment",
+                "amount": 54.0,
+                "entry_date": "2026-05-11",
+                "period_start": "",
+                "period_end": "",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "debit_card",
+                "payment_channel": "online_portal",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "25d76bc7-9b6c-456d-a97c-6b7999db5ab5": {
+                "entry_id": "25d76bc7-9b6c-456d-a97c-6b7999db5ab5",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_rent_charge",
+                "amount": 54.0,
+                "entry_date": "2026-06-12",
+                "period_start": "2026-06-12",
+                "period_end": "2026-07-11",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "45e84817-b948-4a73-8981-d98f60be1607": {
+                "entry_id": "45e84817-b948-4a73-8981-d98f60be1607",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_payment",
+                "amount": 54.0,
+                "entry_date": "2026-06-11",
+                "period_start": "",
+                "period_end": "",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "debit_card",
+                "payment_channel": "online_portal",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "a7596d9a-de8a-481f-8e87-1937ad4508af": {
+                "entry_id": "a7596d9a-de8a-481f-8e87-1937ad4508af",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_rent_charge",
+                "amount": 54.0,
+                "entry_date": "2026-07-12",
+                "period_start": "2026-07-12",
+                "period_end": "2026-08-11",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "fb2ceb86-275e-4d9a-99de-bd6b4ced823a": {
+                "entry_id": "fb2ceb86-275e-4d9a-99de-bd6b4ced823a",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_payment",
+                "amount": 54.0,
+                "entry_date": "2026-07-10",
+                "period_start": "",
+                "period_end": "",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "debit_card",
+                "payment_channel": "online_portal",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "64da59c0-0e7b-485b-a48c-ea54021de037": {
+                "entry_id": "64da59c0-0e7b-485b-a48c-ea54021de037",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_rent_charge",
+                "amount": 54.0,
+                "entry_date": "2026-08-12",
+                "period_start": "2026-08-12",
+                "period_end": "2026-09-11",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "cb1dc4ad-0d6d-4728-832f-1a4cad47ed0b": {
+                "entry_id": "cb1dc4ad-0d6d-4728-832f-1a4cad47ed0b",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_payment",
+                "amount": 54.0,
+                "entry_date": "2026-08-11",
+                "period_start": "",
+                "period_end": "",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "debit_card",
+                "payment_channel": "online_portal",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "090ac53c-0022-4e31-bc32-b8f3c8749abf": {
+                "entry_id": "090ac53c-0022-4e31-bc32-b8f3c8749abf",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_rent_charge",
+                "amount": 54.0,
+                "entry_date": "2026-09-12",
+                "period_start": "2026-09-12",
+                "period_end": "2026-10-11",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "9071b044-58df-42eb-b2fc-878760801e83": {
+                "entry_id": "9071b044-58df-42eb-b2fc-878760801e83",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_payment",
+                "amount": 54.0,
+                "entry_date": "2026-09-11",
+                "period_start": "",
+                "period_end": "",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "debit_card",
+                "payment_channel": "online_portal",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "21de076e-0988-451e-80de-2f073cdc14a7": {
+                "entry_id": "21de076e-0988-451e-80de-2f073cdc14a7",
+                "rental_id": "e85e7727-28e9-46ef-a0fd-36d2cf6d30e7",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_fee_charge",
+                "amount": 29.0,
+                "entry_date": "2026-10-03",
+                "period_start": "2026-10-03",
+                "period_end": "",
+                "fee_type": "admin_fee",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "372809cd-26ba-4952-8962-cbd370392d2b": {
+                "entry_id": "372809cd-26ba-4952-8962-cbd370392d2b",
+                "rental_id": "e85e7727-28e9-46ef-a0fd-36d2cf6d30e7",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_rent_charge",
+                "amount": 56.0,
+                "entry_date": "2026-10-03",
+                "period_start": "2026-10-03",
+                "period_end": "2026-11-02",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "5c647dba-6873-4c9b-9d07-6e1883ce4e4d": {
+                "entry_id": "5c647dba-6873-4c9b-9d07-6e1883ce4e4d",
+                "rental_id": "e85e7727-28e9-46ef-a0fd-36d2cf6d30e7",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_payment",
+                "amount": 85.0,
+                "entry_date": "2026-10-03",
+                "period_start": "",
+                "period_end": "",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "credit_card",
+                "payment_channel": "facility_office",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            }
+        },
+        "protect_plans": {
+            "666c09a9-f2d3-4674-98d2-b04c68644199": {
+                "plan_id": "666c09a9-f2d3-4674-98d2-b04c68644199",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "rental_id": "e85e7727-28e9-46ef-a0fd-36d2cf6d30e7",
+                "variant_name": "Bluegate Tenant Protection $5,000 Plan",
+                "status": "active",
+                "enrollment_date": "2026-10-03",
+                "effective_date": "2026-10-03",
+                "coverage_limit": 5000.0,
+                "monthly_fee": 22.0,
+                "deductible": 100.0,
+                "enrollment_channel": "facility_office",
+                "last_change_date": "2026-10-03",
+                "lapse_date": "",
+                "cancellation_date": "",
+                "termination_date": "",
+                "premium_balance_due": 0.0,
+                "claims_paid_total": 0.0
+            }
+        },
+        "autopay_enrollments": {
+            "91d6bf5e-de2f-4f83-9e3e-de8d47d1a9f2": {
+                "autopay_id": "91d6bf5e-de2f-4f83-9e3e-de8d47d1a9f2",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "variant_name": "Bluegate AutoPay (Debit Card)",
+                "status": "cancelled",
+                "agreement_kind": "unit_rental",
+                "agreement_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "enrollment_date": "2025-07-12",
+                "method_last4": "4610",
+                "card_expiry": "08/27",
+                "account_holder_name": "Marisol Tavares",
+                "authorization_channel": "facility_office",
+                "verified_date": "2025-07-12",
+                "first_draft_due_date": "2025-08-12",
+                "next_draft_due_date": "",
+                "suspension_date": "",
+                "suspension_reason": "",
+                "reinstated_date": "",
+                "cancellation_date": "2025-07-30",
+                "end_reason": "tenant_revoked"
+            }
+        },
+        "truck_rentals": {
+            "c24ce5ff-d156-43f0-87db-7030a1d54365": {
+                "truck_rental_id": "c24ce5ff-d156-43f0-87db-7030a1d54365",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "variant_name": "Bluegate 10 ft Moving Truck",
+                "status": "returned",
+                "facility_code": "PHX-031",
+                "reservation_date": "2026-10-02",
+                "scheduled_pickup_date": "2026-10-02",
+                "scheduled_pickup_time": "09:15",
+                "scheduled_return_date": "2026-10-04",
+                "scheduled_return_time": "09:15",
+                "linked_rental_id": null,
+                "cancelled_at_date": "",
+                "cancelled_at_time": "",
+                "actual_pickup_date": "2026-10-02",
+                "actual_pickup_time": "09:15",
+                "truck_unit_number": "PHX-10447",
+                "odometer_out": 48213,
+                "fuel_out_eighths": 8,
+                "damage_waiver": "none",
+                "deposit_method": "credit_card",
+                "additional_drivers": 0,
+                "actual_return_date": "2026-10-03",
+                "actual_return_time": "13:10",
+                "odometer_in": 48443,
+                "fuel_in_eighths": 8,
+                "return_condition": "clean",
+                "closed_date": "",
+                "balance_due": 265.65,
+                "deposit_hold_amount": 250.4
+            },
+            "7883803b-add0-4abb-b5a4-7ce3029aa0f4": {
+                "truck_rental_id": "7883803b-add0-4abb-b5a4-7ce3029aa0f4",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "variant_name": "Bluegate 10 ft Moving Truck",
+                "status": "reserved",
+                "facility_code": "PHX-031",
+                "reservation_date": "2026-09-21",
+                "scheduled_pickup_date": "2026-10-11",
+                "scheduled_pickup_time": "09:00",
+                "scheduled_return_date": "2026-10-13",
+                "scheduled_return_time": "09:00",
+                "linked_rental_id": "e85e7727-28e9-46ef-a0fd-36d2cf6d30e7",
+                "cancelled_at_date": "",
+                "cancelled_at_time": "",
+                "actual_pickup_date": "",
+                "actual_pickup_time": "",
+                "truck_unit_number": "",
+                "odometer_out": "",
+                "fuel_out_eighths": "",
+                "damage_waiver": "",
+                "deposit_method": "credit_card",
+                "additional_drivers": "",
+                "actual_return_date": "",
+                "actual_return_time": "",
+                "odometer_in": "",
+                "fuel_in_eighths": "",
+                "return_condition": "",
+                "closed_date": "",
+                "balance_due": 0.0,
+                "deposit_hold_amount": 0.0
+            }
+        },
+        "truck_charges": {
+            "2a844d59-d7ff-4e51-bddb-74176c973411": {
+                "truck_charge_id": "2a844d59-d7ff-4e51-bddb-74176c973411",
+                "truck_rental_id": "c24ce5ff-d156-43f0-87db-7030a1d54365",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "truck_deposit_hold",
+                "charge_type": "",
+                "credit_type": "",
+                "amount": 250.4,
+                "service_date": "2026-10-02",
+                "quantity": "",
+                "reference_id": null,
+                "payment_method": "",
+                "release_type": ""
+            },
+            "6fb8bf13-f3b6-4c55-b909-25780cfb79c9": {
+                "truck_charge_id": "6fb8bf13-f3b6-4c55-b909-25780cfb79c9",
+                "truck_rental_id": "c24ce5ff-d156-43f0-87db-7030a1d54365",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "truck_charge",
+                "charge_type": "base_rental_fee",
+                "credit_type": "",
+                "amount": 32.95,
+                "service_date": "2026-10-02",
+                "quantity": 1,
+                "reference_id": null,
+                "payment_method": "",
+                "release_type": ""
+            },
+            "1482ebce-1715-4094-85c3-9c0368463cd1": {
+                "truck_charge_id": "1482ebce-1715-4094-85c3-9c0368463cd1",
+                "truck_rental_id": "c24ce5ff-d156-43f0-87db-7030a1d54365",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "truck_charge",
+                "charge_type": "mileage",
+                "credit_type": "",
+                "amount": 227.7,
+                "service_date": "2026-10-03",
+                "quantity": 230,
+                "reference_id": null,
+                "payment_method": "",
+                "release_type": ""
+            },
+            "6b507227-0520-402d-98e9-688dd4fcd83a": {
+                "truck_charge_id": "6b507227-0520-402d-98e9-688dd4fcd83a",
+                "truck_rental_id": "c24ce5ff-d156-43f0-87db-7030a1d54365",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "truck_charge",
+                "charge_type": "environmental_fee",
+                "credit_type": "",
+                "amount": 5.0,
+                "service_date": "2026-10-03",
+                "quantity": 1,
+                "reference_id": null,
+                "payment_method": "",
+                "release_type": ""
+            }
+        }
+    },
+    "db_closure": {
+        "unit_ledger": {
+            "64da59c0-0e7b-485b-a48c-ea54021de037": {
+                "entry_id": "64da59c0-0e7b-485b-a48c-ea54021de037",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_rent_charge",
+                "amount": 54.0,
+                "entry_date": "2026-08-12",
+                "period_start": "2026-08-12",
+                "period_end": "2026-09-11",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "4cd9f5ce-d313-45bb-84bb-cf374a33f070": {
+                "entry_id": "4cd9f5ce-d313-45bb-84bb-cf374a33f070",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_rent_charge",
+                "amount": 54.0,
+                "entry_date": "2026-04-12",
+                "period_start": "2026-04-12",
+                "period_end": "2026-05-11",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "372809cd-26ba-4952-8962-cbd370392d2b": {
+                "entry_id": "372809cd-26ba-4952-8962-cbd370392d2b",
+                "rental_id": "e85e7727-28e9-46ef-a0fd-36d2cf6d30e7",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_rent_charge",
+                "amount": 56.0,
+                "entry_date": "2026-10-03",
+                "period_start": "2026-10-03",
+                "period_end": "2026-11-02",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "fb2ceb86-275e-4d9a-99de-bd6b4ced823a": {
+                "entry_id": "fb2ceb86-275e-4d9a-99de-bd6b4ced823a",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_payment",
+                "amount": 54.0,
+                "entry_date": "2026-07-10",
+                "period_start": "",
+                "period_end": "",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "debit_card",
+                "payment_channel": "online_portal",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "25d76bc7-9b6c-456d-a97c-6b7999db5ab5": {
+                "entry_id": "25d76bc7-9b6c-456d-a97c-6b7999db5ab5",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_rent_charge",
+                "amount": 54.0,
+                "entry_date": "2026-06-12",
+                "period_start": "2026-06-12",
+                "period_end": "2026-07-11",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "5c9a1189-1900-41da-b088-40ae859c3f1c": {
+                "entry_id": "5c9a1189-1900-41da-b088-40ae859c3f1c",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_fee_charge",
+                "amount": 29.0,
+                "entry_date": "2025-07-12",
+                "period_start": "2025-07-12",
+                "period_end": "",
+                "fee_type": "admin_fee",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "4cf46368-5db7-4d4f-87f9-a96d1f7d9bfd": {
+                "entry_id": "4cf46368-5db7-4d4f-87f9-a96d1f7d9bfd",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_payment",
+                "amount": 54.0,
+                "entry_date": "2026-04-10",
+                "period_start": "",
+                "period_end": "",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "debit_card",
+                "payment_channel": "online_portal",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "45e84817-b948-4a73-8981-d98f60be1607": {
+                "entry_id": "45e84817-b948-4a73-8981-d98f60be1607",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_payment",
+                "amount": 54.0,
+                "entry_date": "2026-06-11",
+                "period_start": "",
+                "period_end": "",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "debit_card",
+                "payment_channel": "online_portal",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "51323c6d-4c08-49f4-9fa8-08ddc188d101": {
+                "entry_id": "51323c6d-4c08-49f4-9fa8-08ddc188d101",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_payment",
+                "amount": 54.0,
+                "entry_date": "2025-09-11",
+                "period_start": "",
+                "period_end": "",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "debit_card",
+                "payment_channel": "online_portal",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "5889f30f-6118-4548-8483-319e9753e2e7": {
+                "entry_id": "5889f30f-6118-4548-8483-319e9753e2e7",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_rent_charge",
+                "amount": 54.0,
+                "entry_date": "2025-12-12",
+                "period_start": "2025-12-12",
+                "period_end": "2026-01-11",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "1bc96098-5099-44d4-83a9-982ce53c5a22": {
+                "entry_id": "1bc96098-5099-44d4-83a9-982ce53c5a22",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_rent_charge",
+                "amount": 54.0,
+                "entry_date": "2025-08-12",
+                "period_start": "2025-08-12",
+                "period_end": "2025-09-11",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "21de076e-0988-451e-80de-2f073cdc14a7": {
+                "entry_id": "21de076e-0988-451e-80de-2f073cdc14a7",
+                "rental_id": "e85e7727-28e9-46ef-a0fd-36d2cf6d30e7",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_fee_charge",
+                "amount": 29.0,
+                "entry_date": "2026-10-03",
+                "period_start": "2026-10-03",
+                "period_end": "",
+                "fee_type": "admin_fee",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "ec7381d1-c9ab-46df-aeb8-c8b0d84a4ec5": {
+                "entry_id": "ec7381d1-c9ab-46df-aeb8-c8b0d84a4ec5",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_payment",
+                "amount": 54.0,
+                "entry_date": "2026-02-11",
+                "period_start": "",
+                "period_end": "",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "debit_card",
+                "payment_channel": "online_portal",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "2b02b44b-5f4f-4ee4-97c4-a409d5ddf1a9": {
+                "entry_id": "2b02b44b-5f4f-4ee4-97c4-a409d5ddf1a9",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_payment",
+                "amount": 54.0,
+                "entry_date": "2025-07-12",
+                "period_start": "",
+                "period_end": "",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "debit_card",
+                "payment_channel": "facility_office",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "4f0a7f24-9337-4b33-8d5f-25a4eff74498": {
+                "entry_id": "4f0a7f24-9337-4b33-8d5f-25a4eff74498",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_payment",
+                "amount": 29.0,
+                "entry_date": "2025-07-12",
+                "period_start": "",
+                "period_end": "",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "debit_card",
+                "payment_channel": "facility_office",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "0420de48-6464-4132-8866-63a64941b52b": {
+                "entry_id": "0420de48-6464-4132-8866-63a64941b52b",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_rent_charge",
+                "amount": 54.0,
+                "entry_date": "2026-01-12",
+                "period_start": "2026-01-12",
+                "period_end": "2026-02-11",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "17a2fbf3-8873-4739-a0ce-e1f80af81f03": {
+                "entry_id": "17a2fbf3-8873-4739-a0ce-e1f80af81f03",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_payment",
+                "amount": 54.0,
+                "entry_date": "2026-01-10",
+                "period_start": "",
+                "period_end": "",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "debit_card",
+                "payment_channel": "online_portal",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "e999ced5-3bf7-4427-b38a-42ff3237ef96": {
+                "entry_id": "e999ced5-3bf7-4427-b38a-42ff3237ef96",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_payment",
+                "amount": 54.0,
+                "entry_date": "2025-12-11",
+                "period_start": "",
+                "period_end": "",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "debit_card",
+                "payment_channel": "online_portal",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "bfec9149-4f97-4973-959c-2cd0a6295576": {
+                "entry_id": "bfec9149-4f97-4973-959c-2cd0a6295576",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_rent_charge",
+                "amount": 54.0,
+                "entry_date": "2025-07-12",
+                "period_start": "2025-07-12",
+                "period_end": "2025-08-11",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "cd64372f-60ca-4c88-b8cb-73614f6d9aae": {
+                "entry_id": "cd64372f-60ca-4c88-b8cb-73614f6d9aae",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_payment",
+                "amount": 54.0,
+                "entry_date": "2025-08-11",
+                "period_start": "",
+                "period_end": "",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "debit_card",
+                "payment_channel": "online_portal",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "5c647dba-6873-4c9b-9d07-6e1883ce4e4d": {
+                "entry_id": "5c647dba-6873-4c9b-9d07-6e1883ce4e4d",
+                "rental_id": "e85e7727-28e9-46ef-a0fd-36d2cf6d30e7",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_payment",
+                "amount": 85.0,
+                "entry_date": "2026-10-03",
+                "period_start": "",
+                "period_end": "",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "credit_card",
+                "payment_channel": "facility_office",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "085bd84b-ae6e-47d8-bd6e-63b78a6217d7": {
+                "entry_id": "085bd84b-ae6e-47d8-bd6e-63b78a6217d7",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_rent_charge",
+                "amount": 54.0,
+                "entry_date": "2025-09-12",
+                "period_start": "2025-09-12",
+                "period_end": "2025-10-11",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "a7596d9a-de8a-481f-8e87-1937ad4508af": {
+                "entry_id": "a7596d9a-de8a-481f-8e87-1937ad4508af",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_rent_charge",
+                "amount": 54.0,
+                "entry_date": "2026-07-12",
+                "period_start": "2026-07-12",
+                "period_end": "2026-08-11",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "dcb3a829-9241-4ec6-b261-3ed75f6f2cf3": {
+                "entry_id": "dcb3a829-9241-4ec6-b261-3ed75f6f2cf3",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_rent_charge",
+                "amount": 54.0,
+                "entry_date": "2026-02-12",
+                "period_start": "2026-02-12",
+                "period_end": "2026-03-11",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "cb1dc4ad-0d6d-4728-832f-1a4cad47ed0b": {
+                "entry_id": "cb1dc4ad-0d6d-4728-832f-1a4cad47ed0b",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_payment",
+                "amount": 54.0,
+                "entry_date": "2026-08-11",
+                "period_start": "",
+                "period_end": "",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "debit_card",
+                "payment_channel": "online_portal",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "d2c17bff-3413-4782-903a-5803bec9057c": {
+                "entry_id": "d2c17bff-3413-4782-903a-5803bec9057c",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_payment",
+                "amount": 54.0,
+                "entry_date": "2026-03-11",
+                "period_start": "",
+                "period_end": "",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "debit_card",
+                "payment_channel": "online_portal",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "5c9b22f7-efa8-4a3f-bf6c-d295d260076b": {
+                "entry_id": "5c9b22f7-efa8-4a3f-bf6c-d295d260076b",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_payment",
+                "amount": 54.0,
+                "entry_date": "2025-11-11",
+                "period_start": "",
+                "period_end": "",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "debit_card",
+                "payment_channel": "online_portal",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "578b2f48-8cb5-4b9b-950f-47cc61b09012": {
+                "entry_id": "578b2f48-8cb5-4b9b-950f-47cc61b09012",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_rent_charge",
+                "amount": 54.0,
+                "entry_date": "2026-05-12",
+                "period_start": "2026-05-12",
+                "period_end": "2026-06-11",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "d7100017-1489-4db9-8b9c-a8dde1912759": {
+                "entry_id": "d7100017-1489-4db9-8b9c-a8dde1912759",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_rent_charge",
+                "amount": 54.0,
+                "entry_date": "2026-03-12",
+                "period_start": "2026-03-12",
+                "period_end": "2026-04-11",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "9071b044-58df-42eb-b2fc-878760801e83": {
+                "entry_id": "9071b044-58df-42eb-b2fc-878760801e83",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_payment",
+                "amount": 54.0,
+                "entry_date": "2026-09-11",
+                "period_start": "",
+                "period_end": "",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "debit_card",
+                "payment_channel": "online_portal",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "fd97b9d7-8847-48c3-b003-bf8f8ef2d673": {
+                "entry_id": "fd97b9d7-8847-48c3-b003-bf8f8ef2d673",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_payment",
+                "amount": 54.0,
+                "entry_date": "2025-10-10",
+                "period_start": "",
+                "period_end": "",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "debit_card",
+                "payment_channel": "online_portal",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "9dfec227-52fd-48d2-87b5-74516179c207": {
+                "entry_id": "9dfec227-52fd-48d2-87b5-74516179c207",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_rent_charge",
+                "amount": 54.0,
+                "entry_date": "2025-11-12",
+                "period_start": "2025-11-12",
+                "period_end": "2025-12-11",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "f183e523-7f3c-4234-a209-539aab938217": {
+                "entry_id": "f183e523-7f3c-4234-a209-539aab938217",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_payment",
+                "amount": 54.0,
+                "entry_date": "2026-05-11",
+                "period_start": "",
+                "period_end": "",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "debit_card",
+                "payment_channel": "online_portal",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "090ac53c-0022-4e31-bc32-b8f3c8749abf": {
+                "entry_id": "090ac53c-0022-4e31-bc32-b8f3c8749abf",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_rent_charge",
+                "amount": 54.0,
+                "entry_date": "2026-09-12",
+                "period_start": "2026-09-12",
+                "period_end": "2026-10-11",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            },
+            "2a0c69c1-1da8-44f1-99f1-7ad26b23bf78": {
+                "entry_id": "2a0c69c1-1da8-44f1-99f1-7ad26b23bf78",
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "unit_rent_charge",
+                "amount": 54.0,
+                "entry_date": "2025-10-12",
+                "period_start": "2025-10-12",
+                "period_end": "2025-11-11",
+                "fee_type": "",
+                "credit_type": "",
+                "reference_entry_id": null,
+                "payment_method": "",
+                "payment_channel": "",
+                "autopay_draft_id": null,
+                "reversal_reason": "",
+                "refund_method": "",
+                "release_type": ""
+            }
+        },
+        "autopay_enrollments": {
+            "91d6bf5e-de2f-4f83-9e3e-de8d47d1a9f2": {
+                "autopay_id": "91d6bf5e-de2f-4f83-9e3e-de8d47d1a9f2",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "variant_name": "Bluegate AutoPay (Debit Card)",
+                "status": "cancelled",
+                "agreement_kind": "unit_rental",
+                "agreement_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "enrollment_date": "2025-07-12",
+                "method_last4": "4610",
+                "card_expiry": "08/27",
+                "account_holder_name": "Marisol Tavares",
+                "authorization_channel": "facility_office",
+                "verified_date": "2025-07-12",
+                "first_draft_due_date": "2025-08-12",
+                "next_draft_due_date": "",
+                "suspension_date": "",
+                "suspension_reason": "",
+                "reinstated_date": "",
+                "cancellation_date": "2025-07-30",
+                "end_reason": "tenant_revoked"
+            }
+        },
+        "truck_rentals": {
+            "7883803b-add0-4abb-b5a4-7ce3029aa0f4": {
+                "truck_rental_id": "7883803b-add0-4abb-b5a4-7ce3029aa0f4",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "variant_name": "Bluegate 10 ft Moving Truck",
+                "status": "reserved",
+                "facility_code": "PHX-031",
+                "reservation_date": "2026-09-21",
+                "scheduled_pickup_date": "2026-10-11",
+                "scheduled_pickup_time": "09:00",
+                "scheduled_return_date": "2026-10-13",
+                "scheduled_return_time": "09:00",
+                "linked_rental_id": "e85e7727-28e9-46ef-a0fd-36d2cf6d30e7",
+                "cancelled_at_date": "",
+                "cancelled_at_time": "",
+                "actual_pickup_date": "",
+                "actual_pickup_time": "",
+                "truck_unit_number": "",
+                "odometer_out": "",
+                "fuel_out_eighths": "",
+                "damage_waiver": "",
+                "deposit_method": "credit_card",
+                "additional_drivers": "",
+                "actual_return_date": "",
+                "actual_return_time": "",
+                "odometer_in": "",
+                "fuel_in_eighths": "",
+                "return_condition": "",
+                "closed_date": "",
+                "balance_due": 0.0,
+                "deposit_hold_amount": 0.0
+            },
+            "c24ce5ff-d156-43f0-87db-7030a1d54365": {
+                "truck_rental_id": "c24ce5ff-d156-43f0-87db-7030a1d54365",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "variant_name": "Bluegate 10 ft Moving Truck",
+                "status": "returned",
+                "facility_code": "PHX-031",
+                "reservation_date": "2026-10-02",
+                "scheduled_pickup_date": "2026-10-02",
+                "scheduled_pickup_time": "09:15",
+                "scheduled_return_date": "2026-10-04",
+                "scheduled_return_time": "09:15",
+                "linked_rental_id": null,
+                "cancelled_at_date": "",
+                "cancelled_at_time": "",
+                "actual_pickup_date": "2026-10-02",
+                "actual_pickup_time": "09:15",
+                "truck_unit_number": "PHX-10447",
+                "odometer_out": 48213,
+                "fuel_out_eighths": 8,
+                "damage_waiver": "none",
+                "deposit_method": "credit_card",
+                "additional_drivers": 0,
+                "actual_return_date": "2026-10-03",
+                "actual_return_time": "13:10",
+                "odometer_in": 48443,
+                "fuel_in_eighths": 8,
+                "return_condition": "clean",
+                "closed_date": "",
+                "balance_due": 265.65,
+                "deposit_hold_amount": 250.4
+            }
+        },
+        "truck_charges": {
+            "1482ebce-1715-4094-85c3-9c0368463cd1": {
+                "truck_charge_id": "1482ebce-1715-4094-85c3-9c0368463cd1",
+                "truck_rental_id": "c24ce5ff-d156-43f0-87db-7030a1d54365",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "truck_charge",
+                "charge_type": "mileage",
+                "credit_type": "",
+                "amount": 227.7,
+                "service_date": "2026-10-03",
+                "quantity": 230,
+                "reference_id": null,
+                "payment_method": "",
+                "release_type": ""
+            },
+            "2a844d59-d7ff-4e51-bddb-74176c973411": {
+                "truck_charge_id": "2a844d59-d7ff-4e51-bddb-74176c973411",
+                "truck_rental_id": "c24ce5ff-d156-43f0-87db-7030a1d54365",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "truck_deposit_hold",
+                "charge_type": "",
+                "credit_type": "",
+                "amount": 250.4,
+                "service_date": "2026-10-02",
+                "quantity": "",
+                "reference_id": null,
+                "payment_method": "",
+                "release_type": ""
+            },
+            "6b507227-0520-402d-98e9-688dd4fcd83a": {
+                "truck_charge_id": "6b507227-0520-402d-98e9-688dd4fcd83a",
+                "truck_rental_id": "c24ce5ff-d156-43f0-87db-7030a1d54365",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "truck_charge",
+                "charge_type": "environmental_fee",
+                "credit_type": "",
+                "amount": 5.0,
+                "service_date": "2026-10-03",
+                "quantity": 1,
+                "reference_id": null,
+                "payment_method": "",
+                "release_type": ""
+            },
+            "6fb8bf13-f3b6-4c55-b909-25780cfb79c9": {
+                "truck_charge_id": "6fb8bf13-f3b6-4c55-b909-25780cfb79c9",
+                "truck_rental_id": "c24ce5ff-d156-43f0-87db-7030a1d54365",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "event_type": "truck_charge",
+                "charge_type": "base_rental_fee",
+                "credit_type": "",
+                "amount": 32.95,
+                "service_date": "2026-10-02",
+                "quantity": 1,
+                "reference_id": null,
+                "payment_method": "",
+                "release_type": ""
+            }
+        },
+        "unit_rentals": {
+            "da8eeda9-a61a-4f94-8087-58f5d5042ffa": {
+                "rental_id": "da8eeda9-a61a-4f94-8087-58f5d5042ffa",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "variant_name": "Bluegate Interior Standard",
+                "status": "active",
+                "facility_code": "PHX-027",
+                "unit_number": "L-033",
+                "unit_size": "5x5",
+                "monthly_rent": 54.0,
+                "reservation_date": "2025-07-05",
+                "move_in_date": "2025-07-12",
+                "billing_day": 12,
+                "balance_due": 0.0,
+                "deposit_held": 0.0,
+                "delinquent_since": "",
+                "last_rate_change_date": "2025-07-12",
+                "coverage_source": "own_insurance",
+                "lock_status": "tenant_lock",
+                "promo_code": "none",
+                "military_discount_applied": false,
+                "move_out_date": ""
+            },
+            "e85e7727-28e9-46ef-a0fd-36d2cf6d30e7": {
+                "rental_id": "e85e7727-28e9-46ef-a0fd-36d2cf6d30e7",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "variant_name": "Bluegate Climate Plus",
+                "status": "active",
+                "facility_code": "PHX-027",
+                "unit_number": "K-214",
+                "unit_size": "5x10",
+                "monthly_rent": 112.0,
+                "reservation_date": "2026-09-20",
+                "move_in_date": "2026-10-03",
+                "billing_day": 3,
+                "balance_due": 0.0,
+                "deposit_held": 0.0,
+                "delinquent_since": "",
+                "last_rate_change_date": "2026-10-03",
+                "coverage_source": "bluegate_protection",
+                "lock_status": "tenant_lock",
+                "promo_code": "first_month_discount",
+                "military_discount_applied": false,
+                "move_out_date": ""
+            }
+        },
+        "protect_plans": {
+            "666c09a9-f2d3-4674-98d2-b04c68644199": {
+                "plan_id": "666c09a9-f2d3-4674-98d2-b04c68644199",
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "rental_id": "e85e7727-28e9-46ef-a0fd-36d2cf6d30e7",
+                "variant_name": "Bluegate Tenant Protection $5,000 Plan",
+                "status": "active",
+                "enrollment_date": "2026-10-03",
+                "effective_date": "2026-10-03",
+                "coverage_limit": 5000.0,
+                "monthly_fee": 22.0,
+                "deductible": 100.0,
+                "enrollment_channel": "facility_office",
+                "last_change_date": "2026-10-03",
+                "lapse_date": "",
+                "cancellation_date": "",
+                "termination_date": "",
+                "premium_balance_due": 0.0,
+                "claims_paid_total": 0.0
+            }
+        },
+        "customers": {
+            "223fe4bb-f0b7-474c-bf19-e0435f3add5c": {
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "full_name": "Marisol Tavares",
+                "phone_number": "6025554731",
+                "email": "marisol.tavares@fastmail.com",
+                "date_of_birth": "1988-04-19",
+                "drivers_license_last4": "4096",
+                "billing_zip": "85257",
+                "mailing_address": "7741 E Camelback Rd Apt 1128, Scottsdale, AZ 85257",
+                "customer_since": "2025-07-12",
+                "customer_type": "individual",
+                "business_name": "",
+                "alternate_contact_name": "",
+                "alternate_contact_phone": "",
+                "military_status": "none"
+            }
+        }
+    },
+    "db_closure_matches_initial_state": true,
+    "solvability_contract": {
+        "request_binding_version": 1,
+        "request_alignment": [
+            {
+                "claim": "The caller wants the free move-in truck that came with her new storage unit applied to last week's truck bill.",
+                "evidence": [
+                    "user_scenario:the move-in truck comes free with it, so I'd like that put right on the truck bill."
+                ]
+            },
+            {
+                "claim": "She authorizes the agent to make the changes on that bill during the call.",
+                "evidence": [
+                    "user_scenario:you are happy for the agent to make the changes on the bill for you."
+                ]
+            }
+        ],
+        "gold_actions": [
+            {
+                "step": 9,
+                "business_effect": "Reservation R moves to cancelled with the cancellation time stamped and a late cancellation fee line of 25.27 on R; R no longer holds a claim on K-214.",
+                "request_binding": {
+                    "action_semantics": "The renter cancels her own unneeded Sunday booking once told it holds the unit's move-in claim; cancelling is the only write in this difficulty that takes a reservation out of reserved status, and the renter performs it herself.",
+                    "intent_source": {
+                        "kind": "user_scenario",
+                        "evidence": [
+                            "user_scenario:you tell them you will cancel that Sunday booking yourself"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "cancel that Sunday booking",
+                        "evidence": [
+                            "user_scenario:you tell them you will cancel that Sunday booking yourself",
+                            "initial_state.truck_rentals.7883803b-add0-4abb-b5a4-7ce3029aa0f4.scheduled_pickup_date"
+                        ],
+                        "action_arg": "truck_rental_id",
+                        "value": "7883803b-add0-4abb-b5a4-7ce3029aa0f4"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "performed_by_this_tool",
+                    "fact": "R is reserved for 2026-10-11 09:00 at the opening; the cancellation is completed by this call.",
+                    "evidence": [
+                        "initial_state.truck_rentals.7883803b-add0-4abb-b5a4-7ce3029aa0f4.status",
+                        "initial_state.truck_rentals.7883803b-add0-4abb-b5a4-7ce3029aa0f4.scheduled_pickup_time"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "truck_evt_cancellation_no_show",
+                        "eligibility_id": "policy_scope",
+                        "condition": "A reservation in reserved status may be cancelled; free at least free_cancellation_hours_before_pickup before the scheduled pickup, otherwise the late cancellation fee applies.",
+                        "evidence": [
+                            "initial_state.truck_rentals.7883803b-add0-4abb-b5a4-7ce3029aa0f4.status",
+                            "initial_state.truck_rentals.7883803b-add0-4abb-b5a4-7ce3029aa0f4.scheduled_pickup_date",
+                            "frozen_time"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 11,
+                "business_effect": "Contract C gains one base rental fee line of 22.24 (quantity 1, dated 2026-10-03) for its second rental day and its balance rises by that amount.",
+                "request_binding": {
+                    "action_semantics": "A returned contract whose times start a second rental day owes that day at check-in; it is a charge already due on the system record, distinct from a late-return fee (C came back before its scheduled return).",
+                    "intent_source": {
+                        "kind": "initial_state",
+                        "evidence": [
+                            "initial_state.truck_rentals.c24ce5ff-d156-43f0-87db-7030a1d54365.actual_return_time",
+                            "initial_state.truck_rentals.c24ce5ff-d156-43f0-87db-7030a1d54365.actual_pickup_time",
+                            "initial_state.truck_charges.6fb8bf13-f3b6-4c55-b909-25780cfb79c9"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "second rental day started and not charged",
+                        "evidence": [
+                            "initial_state.truck_rentals.c24ce5ff-d156-43f0-87db-7030a1d54365.actual_return_date",
+                            "initial_state.truck_charges.6fb8bf13-f3b6-4c55-b909-25780cfb79c9.charge_type"
+                        ],
+                        "action_arg": "service_date",
+                        "value": "2026-10-03"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "preexisting_before_conversation",
+                    "fact": "C was checked in on 2026-10-03 at 13:10 with a single base rental fee line.",
+                    "evidence": [
+                        "initial_state.truck_rentals.c24ce5ff-d156-43f0-87db-7030a1d54365.status",
+                        "initial_state.truck_rentals.c24ce5ff-d156-43f0-87db-7030a1d54365.actual_return_time"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "truck_evt_pricing",
+                        "eligibility_id": "policy_scope",
+                        "condition": "Each rental period started is charged base_rate_usd; amounts are rounded to the cent.",
+                        "evidence": [
+                            "initial_state.truck_rentals.c24ce5ff-d156-43f0-87db-7030a1d54365.actual_pickup_time",
+                            "initial_state.truck_rentals.c24ce5ff-d156-43f0-87db-7030a1d54365.actual_return_time"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "truck_evt_late_return",
+                        "eligibility_id": "policy_scope",
+                        "condition": "A late-return fee applies only past the scheduled return plus grace; C came back before its scheduled return 2026-10-04 09:15, so no late fee arises.",
+                        "evidence": [
+                            "initial_state.truck_rentals.c24ce5ff-d156-43f0-87db-7030a1d54365.scheduled_return_date",
+                            "initial_state.truck_rentals.c24ce5ff-d156-43f0-87db-7030a1d54365.actual_return_date"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 13,
+                "business_effect": "Contract C carries K-214 as its linked storage unit and a free move-in waiver credit of 185.13 against its mileage line; its balance falls by that amount.",
+                "request_binding": {
+                    "action_semantics": "The free move-in benefit of K-214 is owed on the truck she moved in with; recording the claim with the included-miles credit is the free move-in write on the mileage line, distinct from the rental waiver on the first-day line.",
+                    "intent_source": {
+                        "kind": "initial_state",
+                        "evidence": [
+                            "initial_state.unit_rentals.e85e7727-28e9-46ef-a0fd-36d2cf6d30e7.move_in_date",
+                            "initial_state.truck_rentals.c24ce5ff-d156-43f0-87db-7030a1d54365.linked_rental_id",
+                            "prior_step:9"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "included miles credited against the mileage line",
+                        "evidence": [
+                            "initial_state.truck_charges.1482ebce-1715-4094-85c3-9c0368463cd1.charge_type"
+                        ],
+                        "action_arg": "reference_id",
+                        "value": "1482ebce-1715-4094-85c3-9c0368463cd1"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "established_by_prior_tool",
+                    "fact": "The unit's claim is free once R is cancelled (step 9) and both rental days stand charged (step 11).",
+                    "evidence": [
+                        "prior_step:9",
+                        "prior_step:11"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "truck_agg_free_move_in_once",
+                        "eligibility_id": "once_per_unit",
+                        "condition": "Each unit rental agreement supports one free move-in truck rental, counted by truck_msr_free_move_in_used, and a customer moving into two units may claim it once for each unit.",
+                        "evidence": [
+                            "initial_state.truck_rentals.7883803b-add0-4abb-b5a4-7ce3029aa0f4.linked_rental_id",
+                            "initial_state.truck_rentals.7883803b-add0-4abb-b5a4-7ce3029aa0f4.status",
+                            "prior_step:9"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "truck_rentals.linked_rental_id",
+                                "action_arg": "linked_rental_id",
+                                "source": "initial_state.truck_rentals.7883803b-add0-4abb-b5a4-7ce3029aa0f4.linked_rental_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "truck_evt_free_move_in",
+                        "eligibility_id": "unit_status_ok",
+                        "condition": "The linked unit rental must be in reserved or active status and belong to the same customer.",
+                        "evidence": [
+                            "initial_state.unit_rentals.e85e7727-28e9-46ef-a0fd-36d2cf6d30e7.status",
+                            "initial_state.unit_rentals.e85e7727-28e9-46ef-a0fd-36d2cf6d30e7.customer_id",
+                            "initial_state.unit_rentals.e85e7727-28e9-46ef-a0fd-36d2cf6d30e7.rental_id"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "unit_rentals.rental_id",
+                                "source": "initial_state.unit_rentals.e85e7727-28e9-46ef-a0fd-36d2cf6d30e7.rental_id",
+                                "action_arg": "linked_rental_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "truck_evt_free_move_in",
+                        "eligibility_id": "inside_window",
+                        "condition": "The free move-in truck may be claimed only when the pickup date is not later than the unit move-in date plus free_move_in_window_days, and not earlier than the move-in date minus the same number of days for a reserved unit whose move-in is scheduled.",
+                        "evidence": [
+                            "frozen_time",
+                            "initial_state.unit_rentals.e85e7727-28e9-46ef-a0fd-36d2cf6d30e7.move_in_date",
+                            "initial_state.unit_rentals.e85e7727-28e9-46ef-a0fd-36d2cf6d30e7.rental_id",
+                            "initial_state.truck_rentals.c24ce5ff-d156-43f0-87db-7030a1d54365.actual_pickup_date"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "unit_rentals.rental_id",
+                                "source": "initial_state.unit_rentals.e85e7727-28e9-46ef-a0fd-36d2cf6d30e7.rental_id",
+                                "action_arg": "linked_rental_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "truck_evt_free_move_in",
+                        "eligibility_id": "class_eligible",
+                        "condition": "A tenant moving into a Bluegate storage unit may claim one free move-in truck for that unit on a vehicle class whose free_move_in_eligible is true.",
+                        "evidence": [
+                            "initial_state.truck_rentals.c24ce5ff-d156-43f0-87db-7030a1d54365.variant_name",
+                            "initial_state.truck_rentals.c24ce5ff-d156-43f0-87db-7030a1d54365.truck_rental_id"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "truck_rentals.truck_rental_id",
+                                "source": "initial_state.truck_rentals.c24ce5ff-d156-43f0-87db-7030a1d54365.truck_rental_id",
+                                "action_arg": "truck_rental_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "truck_evt_breakdown_and_corrections",
+                        "eligibility_id": "not_already_credited",
+                        "condition": "A charge already credited is not credited again.",
+                        "evidence": [
+                            "initial_state.truck_charges.1482ebce-1715-4094-85c3-9c0368463cd1.truck_charge_id",
+                            "initial_state.truck_charges.1482ebce-1715-4094-85c3-9c0368463cd1.reference_id",
+                            "initial_state.truck_charges.1482ebce-1715-4094-85c3-9c0368463cd1.credit_type"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "truck_charges.reference_id",
+                                "source": "initial_state.truck_charges.1482ebce-1715-4094-85c3-9c0368463cd1.truck_charge_id",
+                                "action_arg": "reference_id"
+                            }
+                        ],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 15,
+                "business_effect": "Contract C carries a free move-in waiver credit of 12.37 against its first-day rental fee line; its balance falls by that amount.",
+                "request_binding": {
+                    "action_semantics": "The customer's request - the free move-in truck on last week's truck bill - is the rental waiver against the first-day fee line; it is credited once the contract carries the unit's claim.",
+                    "intent_source": {
+                        "kind": "prior_step",
+                        "evidence": [
+                            "prior_step:13",
+                            "initial_state.truck_charges.6fb8bf13-f3b6-4c55-b909-25780cfb79c9"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "rental waiver against the first-day fee line",
+                        "evidence": [
+                            "initial_state.truck_charges.6fb8bf13-f3b6-4c55-b909-25780cfb79c9.service_date"
+                        ],
+                        "action_arg": "reference_id",
+                        "value": "6fb8bf13-f3b6-4c55-b909-25780cfb79c9"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "established_by_prior_tool",
+                    "fact": "The claim on C is recorded at step 13.",
+                    "evidence": [
+                        "prior_step:13"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "truck_agg_free_move_in_once",
+                        "eligibility_id": "once_per_unit",
+                        "condition": "Each unit rental agreement supports one free move-in truck rental, counted by truck_msr_free_move_in_used, and a customer moving into two units may claim it once for each unit.",
+                        "evidence": [
+                            "prior_step:13",
+                            "prior_step:9"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "truck_rentals.linked_rental_id",
+                                "action_arg": "linked_rental_id",
+                                "source": "prior_step:13",
+                                "source_table": "truck_rentals",
+                                "source_field": "linked_rental_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "truck_evt_free_move_in",
+                        "eligibility_id": "unit_status_ok",
+                        "condition": "The linked unit rental must be in reserved or active status and belong to the same customer.",
+                        "evidence": [
+                            "initial_state.unit_rentals.e85e7727-28e9-46ef-a0fd-36d2cf6d30e7.status",
+                            "initial_state.unit_rentals.e85e7727-28e9-46ef-a0fd-36d2cf6d30e7.customer_id",
+                            "initial_state.unit_rentals.e85e7727-28e9-46ef-a0fd-36d2cf6d30e7.rental_id"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "unit_rentals.rental_id",
+                                "source": "initial_state.unit_rentals.e85e7727-28e9-46ef-a0fd-36d2cf6d30e7.rental_id",
+                                "action_arg": "linked_rental_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "truck_evt_free_move_in",
+                        "eligibility_id": "inside_window",
+                        "condition": "The free move-in truck may be claimed only when the pickup date is not later than the unit move-in date plus free_move_in_window_days, and not earlier than the move-in date minus the same number of days for a reserved unit whose move-in is scheduled.",
+                        "evidence": [
+                            "frozen_time",
+                            "initial_state.unit_rentals.e85e7727-28e9-46ef-a0fd-36d2cf6d30e7.move_in_date",
+                            "initial_state.unit_rentals.e85e7727-28e9-46ef-a0fd-36d2cf6d30e7.rental_id",
+                            "initial_state.truck_rentals.c24ce5ff-d156-43f0-87db-7030a1d54365.actual_pickup_date"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "unit_rentals.rental_id",
+                                "source": "initial_state.unit_rentals.e85e7727-28e9-46ef-a0fd-36d2cf6d30e7.rental_id",
+                                "action_arg": "linked_rental_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "truck_evt_free_move_in",
+                        "eligibility_id": "class_eligible",
+                        "condition": "A tenant moving into a Bluegate storage unit may claim one free move-in truck for that unit on a vehicle class whose free_move_in_eligible is true.",
+                        "evidence": [
+                            "initial_state.truck_rentals.c24ce5ff-d156-43f0-87db-7030a1d54365.variant_name",
+                            "initial_state.truck_rentals.c24ce5ff-d156-43f0-87db-7030a1d54365.truck_rental_id"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "truck_rentals.truck_rental_id",
+                                "source": "initial_state.truck_rentals.c24ce5ff-d156-43f0-87db-7030a1d54365.truck_rental_id",
+                                "action_arg": "truck_rental_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "truck_evt_breakdown_and_corrections",
+                        "eligibility_id": "not_already_credited",
+                        "condition": "A charge already credited is not credited again.",
+                        "evidence": [
+                            "initial_state.truck_charges.6fb8bf13-f3b6-4c55-b909-25780cfb79c9.truck_charge_id",
+                            "initial_state.truck_charges.6fb8bf13-f3b6-4c55-b909-25780cfb79c9.reference_id",
+                            "initial_state.truck_charges.6fb8bf13-f3b6-4c55-b909-25780cfb79c9.credit_type"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "truck_charges.reference_id",
+                                "source": "initial_state.truck_charges.6fb8bf13-f3b6-4c55-b909-25780cfb79c9.truck_charge_id",
+                                "action_arg": "reference_id"
+                            }
+                        ],
+                        "satisfied": true
+                    }
+                ]
+            }
+        ],
+        "temporal_feasibility": [
+            {
+                "step": 13,
+                "policy_id": "truck_evt_free_move_in",
+                "eligibility_id": "inside_window",
+                "condition": "The free move-in truck may be claimed only when the pickup date is not later than the unit move-in date plus free_move_in_window_days, and not earlier than the move-in date minus the same number of days for a reserved unit whose move-in is scheduled.",
+                "temporal_basis": {
+                    "clock": "frozen_time",
+                    "anchor_event": "the unit move-in date",
+                    "anchor_source": "unit_rentals.move_in_date",
+                    "relation": "not_after",
+                    "duration_source": "variants.free_move_in_window_days",
+                    "unit": "calendar_days",
+                    "counting_rule": "Window days are calendar days counted from the day after the move-in date, and the last counted day is included.",
+                    "boundary": "inclusive"
+                },
+                "as_of": "frozen_time",
+                "evidence": [
+                    "frozen_time",
+                    "initial_state.unit_rentals.e85e7727-28e9-46ef-a0fd-36d2cf6d30e7.move_in_date",
+                    "initial_state.truck_rentals.c24ce5ff-d156-43f0-87db-7030a1d54365.actual_pickup_date"
+                ],
+                "satisfied": true,
+                "boundary_check": {
+                    "just_before": "K-214 moved in 2026-10-03 with free_move_in_window_days 7: a pickup on 2026-10-11 (the eighth day after) would be outside the window and no free move-in credit could be posted; C was picked up 2026-10-02.",
+                    "at_boundary": "A pickup on 2026-10-10 (the seventh counted day, last day included) or on 2026-09-26 (seven days before a scheduled move-in) is still inside; 2026-10-02 is inside."
+                }
+            },
+            {
+                "step": 15,
+                "policy_id": "truck_evt_free_move_in",
+                "eligibility_id": "inside_window",
+                "condition": "The free move-in truck may be claimed only when the pickup date is not later than the unit move-in date plus free_move_in_window_days, and not earlier than the move-in date minus the same number of days for a reserved unit whose move-in is scheduled.",
+                "temporal_basis": {
+                    "clock": "frozen_time",
+                    "anchor_event": "the unit move-in date",
+                    "anchor_source": "unit_rentals.move_in_date",
+                    "relation": "not_after",
+                    "duration_source": "variants.free_move_in_window_days",
+                    "unit": "calendar_days",
+                    "counting_rule": "Window days are calendar days counted from the day after the move-in date, and the last counted day is included.",
+                    "boundary": "inclusive"
+                },
+                "as_of": "frozen_time",
+                "evidence": [
+                    "frozen_time",
+                    "initial_state.unit_rentals.e85e7727-28e9-46ef-a0fd-36d2cf6d30e7.move_in_date",
+                    "initial_state.truck_rentals.c24ce5ff-d156-43f0-87db-7030a1d54365.actual_pickup_date"
+                ],
+                "satisfied": true,
+                "boundary_check": {
+                    "just_before": "K-214 moved in 2026-10-03 with free_move_in_window_days 7: a pickup on 2026-10-11 (the eighth day after) would be outside the window and no free move-in credit could be posted; C was picked up 2026-10-02.",
+                    "at_boundary": "A pickup on 2026-10-10 (the seventh counted day, last day included) or on 2026-09-26 (seven days before a scheduled move-in) is still inside; 2026-10-02 is inside."
+                }
+            }
+        ],
+        "required_user_inputs": [
+            {
+                "information": "Mobile number to locate the profile",
+                "source": "user_scenario:the mobile number on your profile is 6025554731"
+            },
+            {
+                "information": "Date of birth for verification",
+                "source": "user_scenario:your date of birth is 1988-04-19"
+            },
+            {
+                "information": "Photo ID last four for verification",
+                "source": "user_scenario:the last four characters of your photo ID are 4096"
+            },
+            {
+                "information": "Her decision about the forgotten Sunday booking",
+                "source": "user_scenario:you tell them you will cancel that Sunday booking yourself"
+            },
+            {
+                "information": "Acceptance of the quoted cancellation fee",
+                "source": "user_scenario:you accept whatever cancellation fee the agent tells you without arguing"
+            },
+            {
+                "information": "Authorization to correct the truck bill",
+                "source": "user_scenario:you are happy for the agent to make the changes on the bill for you."
+            }
+        ],
+        "seed_consistency": [
+            {
+                "row": "initial_state.truck_rentals.c24ce5ff-d156-43f0-87db-7030a1d54365",
+                "policy_id": "truck_evt_pricing",
+                "check": "Returned 10 ft walk-in contract: picked up 2026-10-02 09:15, back 2026-10-03 13:10 before the scheduled 2026-10-04 09:15; 230 miles, fuel 8/8 out and in, clean; balance 265.65 = 32.95 + 227.70 + 5.00; hold 250.40 = the signing-hold rule for this walk-in (150.00 x 1.25 + 32.95 + 29.95); not linked at check-in.",
+                "evidence": [
+                    "initial_state.truck_rentals.c24ce5ff-d156-43f0-87db-7030a1d54365.balance_due",
+                    "initial_state.truck_rentals.c24ce5ff-d156-43f0-87db-7030a1d54365.deposit_hold_amount"
+                ]
+            },
+            {
+                "row": "initial_state.truck_rentals.7883803b-add0-4abb-b5a4-7ce3029aa0f4",
+                "policy_id": "truck_agg_free_move_in_once",
+                "check": "Reservation booked 2026-09-21 for Sun 2026-10-11 09:00 to 2026-10-13 09:00 with the free move-in claim on K-214 (then reserved); nothing posted; still reserved at frozen_time.",
+                "evidence": [
+                    "initial_state.truck_rentals.7883803b-add0-4abb-b5a4-7ce3029aa0f4.linked_rental_id",
+                    "initial_state.truck_rentals.7883803b-add0-4abb-b5a4-7ce3029aa0f4.status"
+                ]
+            },
+            {
+                "row": "initial_state.truck_charges.2a844d59-d7ff-4e51-bddb-74176c973411",
+                "policy_id": "truck_evt_deposit_and_settlement",
+                "check": "One hold per contract, placed at pickup 2026-10-02 for 250.40 on the credit card: card deposit 150.00 x booking-lead share 1.25 (walk-in, booked the pickup day) = 187.50, plus the first-day fee 32.95 and the rental estimate 29.95 (two booked days, one day after the first) under the signing-hold rule.",
+                "evidence": [
+                    "initial_state.truck_charges.2a844d59-d7ff-4e51-bddb-74176c973411.amount"
+                ]
+            },
+            {
+                "row": "initial_state.truck_charges.6fb8bf13-f3b6-4c55-b909-25780cfb79c9",
+                "policy_id": "truck_evt_pricing",
+                "check": "First-day fee 32.95 = 29.95 x 1.1 for a Friday pickup; rated on the scheduled Friday (walk-in, morning pickup), no unit at PHX-031, no military discount, no active AutoPay, not a same-day booking, so no other first-day adjustment applies; dated the pickup date, quantity 1.",
+                "evidence": [
+                    "initial_state.truck_charges.6fb8bf13-f3b6-4c55-b909-25780cfb79c9.amount",
+                    "initial_state.truck_rentals.c24ce5ff-d156-43f0-87db-7030a1d54365.scheduled_pickup_date"
+                ]
+            },
+            {
+                "row": "initial_state.truck_charges.1482ebce-1715-4094-85c3-9c0368463cd1",
+                "policy_id": "truck_evt_pricing",
+                "check": "Mileage at check-in: (48443 - 48213) = 230 miles x per_mile_usd 0.99 = 227.70, no included miles because the contract was not linked.",
+                "evidence": [
+                    "initial_state.truck_charges.1482ebce-1715-4094-85c3-9c0368463cd1.quantity",
+                    "initial_state.truck_rentals.c24ce5ff-d156-43f0-87db-7030a1d54365.odometer_in"
+                ]
+            },
+            {
+                "row": "initial_state.truck_charges.6b507227-0520-402d-98e9-688dd4fcd83a",
+                "policy_id": "truck_evt_pricing",
+                "check": "Environmental fee 5.00 posted once at return; it stays chargeable on a free move-in contract.",
+                "evidence": [
+                    "initial_state.truck_charges.6b507227-0520-402d-98e9-688dd4fcd83a.amount"
+                ]
+            }
+        ]
+    },
+    "evaluation_criteria": [
+        {
+            "owner": "agent",
+            "tool": "find_customers",
+            "arguments": {
+                "phone_number": "6025554731"
+            },
+            "objective": "Locate the caller's profile from the mobile number she states.",
+            "necessity": "Every later read and write needs her customer reference number; the persona gives the phone number when asked."
+        },
+        {
+            "owner": "agent",
+            "tool": "verify_customer_identity",
+            "arguments": {
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                "date_of_birth": "1988-04-19",
+                "drivers_license_last4": "4096"
+            },
+            "objective": "Record identity verification with two stated credentials (date of birth, photo ID last four).",
+            "necessity": "No account information may be discussed or changed before verification passes."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_truck_rentals",
+            "arguments": {
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c"
+            },
+            "objective": "Read her truck contracts: the returned 10 ft contract C (pickup 2026-10-02 09:15, return 2026-10-03 13:10, not linked) and the reservation R for 2026-10-11 linked to K-214.",
+            "necessity": "Shows that the once-per-unit claim is held by R (the state the mileage allowance waits on), the booked and actual dates every computation reads, and R's booked days and weekday for the cancellation fee."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_truck_charges",
+            "arguments": {
+                "truck_rental_id": "c24ce5ff-d156-43f0-87db-7030a1d54365"
+            },
+            "objective": "Read contract C's ledger: hold, first-day fee 32.95, mileage 230 miles 227.70, environmental fee 5.00.",
+            "necessity": "Shows a single base rental fee line although two rental days started (the additional-day state is missing), the mileage line the credit references and the first-day line the waiver references."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_unit_rentals",
+            "arguments": {
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c"
+            },
+            "objective": "Read her storage agreements L-033 and K-214.",
+            "necessity": "K-214's size 5x10, class, facility PHX-027, move-in 2026-10-03 and first-month promotion decide the claim and four waiver/allowance factors; its move-in on the return date decides the additional-day move-in share."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_unit_ledger",
+            "arguments": {
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c"
+            },
+            "objective": "Read her storage ledger.",
+            "necessity": "The latest administrative fee identifies the claimed unit; the 2026-10-03 admin fee (new tenant) and 13 rent charges in 12 months decide the cancellation courtesy share and the waiver tenancy share."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_protect_plans",
+            "arguments": {
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c"
+            },
+            "objective": "Read her protection plans.",
+            "necessity": "K-214's active $5,000 plan decides the allowance protection multiple."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_autopay_enrollments",
+            "arguments": {
+                "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c"
+            },
+            "objective": "Read her AutoPay authorizations.",
+            "necessity": "No authorization exists for K-214 (L-033's revoked one is another agreement), which decides the waiver AutoPay share."
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "cancel_truck_reservation_ee0618b8"
+            },
+            "objective": "Unlock the renter's reservation-cancellation tool so she can cancel R herself.",
+            "necessity": "First half of the hand-over; cancelling a booking is the renter's own act."
+        },
+        {
+            "owner": "user",
+            "tool": "call_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "cancel_truck_reservation_ee0618b8",
+                "arguments": {
+                    "truck_rental_id": "7883803b-add0-4abb-b5a4-7ce3029aa0f4",
+                    "late_cancellation_fee": 25.27
+                }
+            },
+            "objective": "The renter cancels reservation R and accepts the late cancellation fee 25.27.",
+            "necessity": "Releases the unit's claim held by R (the included-miles credit is not posted until no other open contract carries it) and books the fee truck_ext_late_cancellation_fee computes.",
+            "argument_uniqueness_tracing": {
+                "truck_rental_id": "Value 7883803b-add0-4abb-b5a4-7ce3029aa0f4. Basis: the truck rental lookup returns reservation R, status reserved, linked_rental_id e85e7727-28e9-46ef-a0fd-36d2cf6d30e7, the only open contract other than C that carries K-214; the persona agrees to cancel 'that Sunday booking' (scheduled_pickup_date 2026-10-11). Uniqueness: C is returned and cannot be cancelled; R is the only reservation.",
+                "late_cancellation_fee": "Value 25.27. Fee basis 29.95 (booked 2026-10-11 to 2026-10-13 = 2 days -> the larger of one base_rate_usd 29.95 and the flat 25.00) x peak multiple 1.5 (2026-10-11 is a Sunday) x notice share 0.75 (cancelled 2026-10-10, one calendar day before) x tenant courtesy 0.75 (no active storage agreement at the reservation's facility PHX-031 moved in within a month - K-214 is at PHX-027 - but storage rent billed within twelve months) = 25.2703 -> 25.27. The free-cancellation window does not apply: 18 h 40 m before pickup, under the 24 hours of the class."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "post_additional_rental_day_charge_add5e32c"
+            },
+            "objective": "Unlock the additional-day charge tool.",
+            "necessity": "First half of the unlock/call pair."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "post_additional_rental_day_charge_add5e32c",
+                "arguments": {
+                    "truck_rental_id": "c24ce5ff-d156-43f0-87db-7030a1d54365",
+                    "customer_id": "223fe4bb-f0b7-474c-bf19-e0435f3add5c",
+                    "service_date": "2026-10-03",
+                    "additional_days": 1,
+                    "amount": 22.24
+                }
+            },
+            "objective": "Post the second rental day on C: one base rental fee line of 22.24, quantity 1, dated 2026-10-03.",
+            "necessity": "The included-miles credit is fixed only after every rental day started stands charged; truck_ext_additional_day_charge computes the amount.",
+            "argument_uniqueness_tracing": {
+                "truck_rental_id": "Value c24ce5ff-d156-43f0-87db-7030a1d54365. Basis: the only returned contract; its pickup 2026-10-02 09:15 and return 2026-10-03 13:10 start two rental days while it carries one base rental fee line. Uniqueness: R is a reservation with no rental days.",
+                "customer_id": "Value 223fe4bb-f0b7-474c-bf19-e0435f3add5c. Basis: the customer profile located and verified at steps 0-1; the contract's renter. Uniqueness: single profile.",
+                "service_date": "Value 2026-10-03. Basis: the rule 'posted as one base rental fee line dated the actual return date'; C's actual_return_date is 2026-10-03. Uniqueness: the rule names that one date.",
+                "additional_days": "Value 1. Basis: 'the rental days started are the calendar days from the actual pickup date to the actual return date, plus one more when the actual return time is later than the actual pickup time' = 1 + 1 = 2, and every day after the first is an additional day (with its quantity on the line). Uniqueness: arithmetic on the contract fields.",
+                "amount": "Value 22.24. Additional-day rate 32.95 (booked two days -> the first-day fee posted on 2026-10-02, as posted) x counted days 0.75 (the second day began 2026-10-03 09:15, within the two booked days, and the truck came back 13:10, after 12:00 and no later than 15:00) x second-day multiple 1.2 (Saturday) x move-in-day share 0.75 (K-214 moved in 2026-10-03 = return date, at PHX-027, not the pickup facility PHX-031) = 22.24125 -> 22.24."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "apply_move_in_claim_miles_credit_24951572"
+            },
+            "objective": "Unlock the claim and included-miles tool.",
+            "necessity": "First half of the unlock/call pair."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "apply_move_in_claim_miles_credit_24951572",
+                "arguments": {
+                    "truck_rental_id": "c24ce5ff-d156-43f0-87db-7030a1d54365",
+                    "linked_rental_id": "e85e7727-28e9-46ef-a0fd-36d2cf6d30e7",
+                    "reference_id": "1482ebce-1715-4094-85c3-9c0368463cd1",
+                    "amount": 185.13
+                }
+            },
+            "objective": "Record K-214's free move-in claim on C and credit 185.13 against the mileage line.",
+            "necessity": "The waiver waits on the contract carrying the claim; truck_ext_move_in_mileage_allowance computes the credit on the world after the cancellation and the additional day.",
+            "argument_uniqueness_tracing": {
+                "truck_rental_id": "Value c24ce5ff-d156-43f0-87db-7030a1d54365. Basis: the contract the free move-in is claimed on - the returned truck the customer moved in with. Uniqueness: R is cancelled at step 9.",
+                "linked_rental_id": "Value e85e7727-28e9-46ef-a0fd-36d2cf6d30e7. Basis: 'the renter's storage unit with the most recent move-in, which is the storage agreement of the renter's latest storage administrative fee' - the 2026-10-03 admin fee belongs to K-214. Uniqueness: L-033's admin fee is 2025-07-12.",
+                "reference_id": "Value 1482ebce-1715-4094-85c3-9c0368463cd1. Basis: the rule credits the claimed miles 'against the contract's mileage line'; C carries exactly one mileage line. Uniqueness: no other mileage line exists.",
+                "amount": "Value 185.13. Allowance: unit-size miles 60 (5x10) + rental-day miles 20 (rental days charged 1 + 1 = 2 after step 11) + move-in trip miles 10 (pickup 2026-10-02, one calendar day before the 2026-10-03 move-in: 10 miles per day of lead) + unit-class miles 10 (Climate Plus) + cross-facility miles 25 (K-214 at PHX-027, truck from PHX-031, pickup before move-in) = 125, x protection multiple 1.5 (active $5,000 plan) = 187.5 -> 187 whole miles; credited miles min(230, 187) = 187; 187 x 0.99 = 185.13."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "credit_move_in_rental_waiver_7c9a948d"
+            },
+            "objective": "Unlock the rental waiver tool.",
+            "necessity": "First half of the unlock/call pair."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "credit_move_in_rental_waiver_7c9a948d",
+                "arguments": {
+                    "truck_rental_id": "c24ce5ff-d156-43f0-87db-7030a1d54365",
+                    "linked_rental_id": "e85e7727-28e9-46ef-a0fd-36d2cf6d30e7",
+                    "reference_id": "6fb8bf13-f3b6-4c55-b909-25780cfb79c9",
+                    "amount": 12.37
+                }
+            },
+            "objective": "Credit the free move-in rental waiver 12.37 against C's first-day fee line.",
+            "necessity": "The customer's surface request; truck_ext_move_in_rental_waiver computes it once the claim stands on the contract.",
+            "argument_uniqueness_tracing": {
+                "truck_rental_id": "Value c24ce5ff-d156-43f0-87db-7030a1d54365. Basis: the contract that now carries K-214's claim (step 13). Uniqueness: the only claimed contract.",
+                "linked_rental_id": "Value e85e7727-28e9-46ef-a0fd-36d2cf6d30e7. Basis: the storage-unit claim recorded on C at step 13 (receipt linked_rental_id). Uniqueness: one claim.",
+                "reference_id": "Value 6fb8bf13-f3b6-4c55-b909-25780cfb79c9. Basis: the waiver is credited 'against that first-day fee line', the base rental fee line dated the actual pickup date 2026-10-02. Uniqueness: the step-11 line is dated 2026-10-03.",
+                "amount": "Value 12.37. Waiver basis 29.95 (a two-day booking with a Friday scheduled pickup -> the lower of the posted fee 32.95 and the class base_rate_usd 29.95, so the Friday surcharge stays payable) x 0.8 (5x10) x 0.75 (first-month promotion) x 0.85 (13 rent charges in 12 months) x 0.9 (other facility, pickup before move-in) x 0.9 (no AutoPay ever on K-214) = 12.372, below the balance the contract then owes (102.76), -> 12.37."
+            }
+        }
+    ],
+    "computations": [
+        {
+            "policy_id": "truck_ext_late_cancellation_fee",
+            "target_holding_id": "7883803b-add0-4abb-b5a4-7ce3029aa0f4",
+            "step": 9,
+            "arg": "late_cancellation_fee",
+            "expected": 25.27,
+            "factor_trace": [
+                "cancellation_fee_basis (method): booked_days = DAYS(2026-10-11, 2026-10-13) = 2 -> the larger of one base_rate_usd 29.95 and the flat 25.00 = 29.95; baseline flat late_cancellation_fee_usd 25.00 gives 21.09.",
+                "cancellation_notice_share (parameter): notice_days = DAYS(2026-10-10, 2026-10-11) = 1 -> 0.75; baseline 1.0 gives 33.69.",
+                "cancellation_peak_day (parameter): 2026-10-11 is a Sunday (weekday index 0) -> 1.5; baseline 1.0 gives 16.85.",
+                "cancellation_tenant_courtesy (parameter, cross-difficulty unit): no active storage agreement at PHX-031 (K-214, moved in 2026-10-03, is at PHX-027 - the near-miss a careless reader counts toward the new-tenant tier 0.5), 13 rent charges in 12 months -> existing-tenant tier 0.75; baseline 1.0 gives 33.69.",
+                "result = RND(29.95 x 1.5 x 0.75 x 0.75, 2) = 25.27."
+            ],
+            "baseline_result": 25.0,
+            "factor_sensitivity": [
+                {
+                    "factor": "cancellation_fee_basis",
+                    "tier_taken": "the reservation was booked for two rental days",
+                    "baseline_result": 21.09
+                },
+                {
+                    "factor": "cancellation_notice_share",
+                    "tier_taken": "the cancellation is made one calendar day before the scheduled pickup date",
+                    "baseline_result": 33.69
+                },
+                {
+                    "factor": "cancellation_peak_day",
+                    "tier_taken": "the scheduled pickup date is a Saturday or a Sunday",
+                    "baseline_result": 16.85
+                },
+                {
+                    "factor": "cancellation_tenant_courtesy",
+                    "tier_taken": "no such agreement, but the renter was billed storage rent less than twelve whole calendar months before the cancellation date",
+                    "baseline_result": 33.69
+                }
+            ]
+        },
+        {
+            "policy_id": "truck_ext_additional_day_charge",
+            "target_holding_id": "c24ce5ff-d156-43f0-87db-7030a1d54365",
+            "step": 11,
+            "arg": "amount",
+            "expected": 22.24,
+            "factor_trace": [
+                "last_day_return_share (parameter): days_started = 1 + 1 = 2 within booked_periods 2, additional_days = 1, return 13:10 later than pickup 09:15, after 12:00 and no later than 15:00 -> 0.75 of a day; baseline 1.0 -> 29.66.",
+                "additional_day_rate_source (method): booked 2026-10-02 to 2026-10-04 = 2 days -> each additional day priced at the first-day fee posted on 2026-10-02, 32.95; baseline class base_rate_usd 29.95 -> 20.22.",
+                "second_day_weekday (parameter): second day began 2026-10-03, Saturday -> 1.2; baseline 1.0 -> 18.53.",
+                "move_in_day_share (parameter, multi-source, cross-difficulty unit): K-214 active with move_in_date 2026-10-03 = actual return date, at PHX-027 (not the pickup facility PHX-031 - the near-miss a careless reader puts on the 0.5 tier, 14.83) -> 0.75; baseline 1.0 -> 29.66.",
+                "result = RND(32.95 x 0.75 x 1.2 x 0.75, 2) = 22.24 (22.24125; no half-cent tie)."
+            ],
+            "baseline_result": 29.95,
+            "factor_sensitivity": [
+                {
+                    "factor": "last_day_return_share",
+                    "tier_taken": "the vehicle came back within the rental days booked, on the calendar day the last rental day began, after 12:00 and no later than 15:00",
+                    "baseline_result": 29.66
+                },
+                {
+                    "factor": "additional_day_rate_source",
+                    "tier_taken": "the contract was booked for two days",
+                    "baseline_result": 20.22
+                },
+                {
+                    "factor": "second_day_weekday",
+                    "tier_taken": "the contract's second rental day began on a Saturday or a Sunday",
+                    "baseline_result": 18.53
+                },
+                {
+                    "factor": "move_in_day_share",
+                    "tier_taken": "such a move-in is on an active storage agreement of the renter at another facility",
+                    "baseline_result": 29.66
+                }
+            ]
+        },
+        {
+            "policy_id": "truck_ext_move_in_mileage_allowance",
+            "target_holding_id": "c24ce5ff-d156-43f0-87db-7030a1d54365",
+            "step": 13,
+            "arg": "amount",
+            "expected": 185.13,
+            "factor_trace": [
+                "claimed_unit_size_miles (parameter, cross-difficulty unit): latest admin fee -> e85e7727-28e9-46ef-a0fd-36d2cf6d30e7 (K-214, 5x10) -> 60; baseline free_move_in_included_miles 50 -> 170.28.",
+                "rental_day_miles (parameter): rental days charged = quantities of the base rental fee lines 1 + 1 = 2 after step 11 -> 20; baseline 0 -> 155.43.",
+                "move_in_trip_miles (method, cross-difficulty unit): pickup 2026-10-02, move-in 2026-10-03, lead 1 day -> per-lead-day rule 10 x 1 = 10; baseline no trip miles -> 170.28.",
+                "claimed_unit_class_miles (parameter, cross-difficulty unit): Bluegate Climate Plus -> 10; baseline 0 -> 170.28.",
+                "cross_facility_miles (parameter, multi-source, cross-difficulty unit): PHX-027 != PHX-031 and pickup before move-in -> 25; baseline 0 -> 148.5.",
+                "protection_multiple (parameter, cross-difficulty protect): active $5,000 plan -> x1.5; baseline x1.0 -> 123.75.",
+                "allowance_miles = int(125 x 1.5) = 187; miles_charged = 230 (mileage line quantity); result = RND(min(230, 187) x 0.99, 2) = 185.13."
+            ],
+            "baseline_result": 49.5,
+            "factor_sensitivity": [
+                {
+                    "factor": "claimed_unit_size_miles",
+                    "tier_taken": "the claimed storage unit is 5x10, 5x15 or 10x10",
+                    "baseline_result": 170.28
+                },
+                {
+                    "factor": "rental_day_miles",
+                    "tier_taken": "two rental days are charged on the contract",
+                    "baseline_result": 155.43
+                },
+                {
+                    "factor": "move_in_trip_miles",
+                    "tier_taken": "the truck was picked up one to early_pickup_max_days days before the claimed unit's move-in date",
+                    "baseline_result": 170.28
+                },
+                {
+                    "factor": "claimed_unit_class_miles",
+                    "tier_taken": "the claimed unit is a Bluegate Climate Controlled or a Bluegate Climate Plus unit",
+                    "baseline_result": 170.28
+                },
+                {
+                    "factor": "cross_facility_miles",
+                    "tier_taken": "the claimed unit is at a facility other than the pickup facility and the truck was picked up on or before the unit's move-in date",
+                    "baseline_result": 148.5
+                },
+                {
+                    "factor": "protection_multiple",
+                    "tier_taken": "the claimed unit carries an active Bluegate Tenant Protection Plan with a coverage limit of high_coverage_limit or more",
+                    "baseline_result": 123.75
+                }
+            ]
+        },
+        {
+            "policy_id": "truck_ext_move_in_rental_waiver",
+            "target_holding_id": "c24ce5ff-d156-43f0-87db-7030a1d54365",
+            "step": 15,
+            "arg": "amount",
+            "expected": 12.37,
+            "factor_trace": [
+                "waiver_basis_source (method): two-day booking, scheduled pickup Friday -> the lower of the posted 32.95 and the class base_rate_usd 29.95 = 29.95; baseline the posted fee 32.95 -> 13.61.",
+                "waiver_unit_size_share (parameter, cross-difficulty unit): claimed unit (contract link set at step 13) 5x10 -> 0.8; baseline 1.0 -> 15.47.",
+                "waiver_promotion_share (parameter, cross-difficulty unit): promo_code first_month_discount -> 0.75; baseline 1.0 -> 16.5.",
+                "waiver_tenancy_share (parameter, cross-difficulty unit history): 13 rent charges in 12 months >= 12 -> 0.85; baseline 1.0 -> 14.56.",
+                "waiver_facility_share (parameter, multi-source, cross-difficulty unit): PHX-027 != PHX-031, pickup before the 2026-10-03 move-in -> 0.9; baseline 1.0 -> 13.75.",
+                "waiver_autopay_share (parameter, cross-difficulty autopay): no authorization for K-214 -> 0.9; baseline 1.0 -> 13.75.",
+                "contract_balance (plain ledger reconciliation, not a factor) = charges 32.95 + 227.70 + 5.00 + 22.24 + refunds 0 - credits 185.13 - payments 0 = 102.76 when the waiver is credited, above the figured waiver, so the cap does not bind; result = RND(min(29.95 x 0.8 x 0.75 x 0.85 x 0.9 x 0.9, 102.76), 2) = 12.37."
+            ],
+            "baseline_result": 32.95,
+            "factor_sensitivity": [
+                {
+                    "factor": "waiver_basis_source",
+                    "tier_taken": "a longer booking with a Friday, Saturday or Sunday scheduled pickup date",
+                    "baseline_result": 13.61
+                },
+                {
+                    "factor": "waiver_unit_size_share",
+                    "tier_taken": "the claimed storage unit is 5x10 or 5x15",
+                    "baseline_result": 15.47
+                },
+                {
+                    "factor": "waiver_promotion_share",
+                    "tier_taken": "the claimed unit took the first-month discount promotion",
+                    "baseline_result": 16.5
+                },
+                {
+                    "factor": "waiver_tenancy_share",
+                    "tier_taken": "long_tenant_rent_bills or more storage rent charges were billed to the renter in the last twelve months",
+                    "baseline_result": 14.56
+                },
+                {
+                    "factor": "waiver_facility_share",
+                    "tier_taken": "the claimed unit is at a facility other than the pickup facility and the truck was picked up before the unit's move-in date",
+                    "baseline_result": 13.75
+                },
+                {
+                    "factor": "waiver_autopay_share",
+                    "tier_taken": "no AutoPay authorization was ever given for the claimed unit",
+                    "baseline_result": 13.75
+                }
+            ]
+        }
+    ],
+    "prerequisite_closure": {
+        "root_problem": "truck_ext_move_in_rental_waiver",
+        "edges": [
+            {
+                "from": "truck_ext_move_in_rental_waiver",
+                "to": "truck_ext_move_in_mileage_allowance",
+                "kind": "value_input",
+                "gate": "claimed_size",
+                "form": "state",
+                "condition": "The truck contract's linked storage unit is set to the renter's storage unit with the most recent move-in, so the claimed unit's size, promotion, facility and move-in date can be read through the contract.",
+                "policy_source": "The rental waiver is not credited before the truck contract carries the storage-unit claim it is credited for.",
+                "resolved_by": "apply_move_in_claim_miles_credit_24951572",
+                "unresolved_at_frozen_time": {
+                    "why_false": "Contract C was opened at the counter as a walk-in and carries no linked storage unit, so the waiver's claimed-unit reads are empty.",
+                    "evidence": [
+                        "initial_state.truck_rentals.c24ce5ff-d156-43f0-87db-7030a1d54365.linked_rental_id = None"
+                    ],
+                    "flips_to_true_by": "Step 13 sets truck_rentals.c24ce5ff-d156-43f0-87db-7030a1d54365.linked_rental_id = e85e7727-28e9-46ef-a0fd-36d2cf6d30e7; the claimed size becomes 5x10 and the waiver shares read K-214."
+                }
+            },
+            {
+                "from": "truck_ext_move_in_mileage_allowance",
+                "to": "truck_ext_late_cancellation_fee",
+                "kind": "state_gate",
+                "gate": "truck_rentals.status",
+                "form": "state",
+                "condition": "No truck contract of the renter other than the credited one stands in reserved, picked_up or returned status with the claimed storage unit as its linked storage unit.",
+                "policy_source": "The included-miles credit is not posted until no other reserved, picked-up or returned truck contract of the renter carries a claim on the same storage unit.",
+                "resolved_by": "cancel_truck_reservation_ee0618b8",
+                "unresolved_at_frozen_time": {
+                    "why_false": "Reservation R is still reserved and carries the claim on K-214, so another open contract holds the unit's claim.",
+                    "evidence": [
+                        "initial_state.truck_rentals.7883803b-add0-4abb-b5a4-7ce3029aa0f4.status = reserved",
+                        "initial_state.truck_rentals.7883803b-add0-4abb-b5a4-7ce3029aa0f4.linked_rental_id = e85e7727-28e9-46ef-a0fd-36d2cf6d30e7"
+                    ],
+                    "flips_to_true_by": "Step 9 moves R to cancelled; no reserved, picked-up or returned contract other than C carries K-214."
+                }
+            },
+            {
+                "from": "truck_ext_move_in_mileage_allowance",
+                "to": "truck_ext_additional_day_charge",
+                "kind": "value_input",
+                "gate": "rental_days_charged",
+                "form": "state",
+                "condition": "The quantities of the contract's base rental fee lines add up to every rental day the contract started, up to its rental days booked.",
+                "policy_source": "The included-miles credit is fixed only after every rental day the contract started stands charged on the contract.",
+                "resolved_by": "post_additional_rental_day_charge_add5e32c",
+                "unresolved_at_frozen_time": {
+                    "why_false": "C started two rental days (09:15 Friday to 13:10 Saturday) but carries a single base rental fee line.",
+                    "evidence": [
+                        "initial_state.truck_charges.6fb8bf13-f3b6-4c55-b909-25780cfb79c9.charge_type = base_rental_fee",
+                        "initial_state.truck_rentals.c24ce5ff-d156-43f0-87db-7030a1d54365.actual_return_time = 13:10"
+                    ],
+                    "flips_to_true_by": "Step 11 posts the second base rental fee line; rental days charged become 2 and the rental-day miles 20."
+                }
+            }
+        ],
+        "resolution_order": [
+            "truck_ext_late_cancellation_fee",
+            "truck_ext_additional_day_charge",
+            "truck_ext_move_in_mileage_allowance",
+            "truck_ext_move_in_rental_waiver"
+        ],
+        "order_uniqueness": "The cancellation (writes reservation R and a fee line on R) and the additional-day charge (writes a line on C and C's balance) are parallel prerequisites of the mileage allowance; they touch disjoint rows, their ids hash only their own arguments, and neither reads the other, so cancel-then-charge and charge-then-cancel give the same terminal hash and the same 185.13 / 12.37. The mileage allowance must precede the waiver (the waiver reads the link it writes) and follows both, as the two prerequisite sentences of the mileage policy state.",
+        "edge_load_bearing": [
+            {
+                "edge": "truck_ext_move_in_rental_waiver -> truck_ext_move_in_mileage_allowance",
+                "skipped_effect": "Without step 13 the contract has no linked unit: the waiver evaluates to 22.91 instead of 12.37, and C keeps an empty linked_rental_id and no mileage credit line."
+            },
+            {
+                "edge": "truck_ext_move_in_mileage_allowance -> truck_ext_late_cancellation_fee",
+                "skipped_effect": "Without step 9 R stays reserved with K-214's claim: the once-per-unit gate of the included-miles credit is false, the terminal state lacks R's cancelled status and its 25.27 fee line, and a credit posted anyway would duplicate the claim (state_gate; the computed figure itself stays 185.13)."
+            },
+            {
+                "edge": "truck_ext_move_in_mileage_allowance -> truck_ext_additional_day_charge",
+                "skipped_effect": "Without step 11 C carries one rental day charged: rental-day miles 0, allowance int(105 x 1.5) = 157, credit 155.43 instead of 185.13, and the 22.24 line is missing."
+            }
+        ],
+        "no_user_hint": "user_scenario raises only the free move-in truck on last week's bill. It never mentions miles, a second rental day, a cancellation or a fee; the Sunday booking appears only as her reaction after the agent tells her about it, and she cancels only after the agent explains it and hands the cancellation over.",
+        "tools_do_not_block": "cancel_truck_reservation_ee0618b8, post_additional_rental_day_charge_add5e32c, apply_move_in_claim_miles_credit_24951572 and credit_move_in_rental_waiver_7c9a948d each read the contract only to carry its balance and renter forward and then write exactly what they are given: none checks the reservation's status, the claim on the unit, the rental days charged or the link, none returns an error for an unmet prerequisite (task_tools.py bodies: ctx.find for the balance, ctx.update / ctx.create, a receipt)."
+    },
+    "charter_scope": {
+        "extended_policies": [
+            "truck_ext_late_cancellation_fee",
+            "truck_ext_additional_day_charge",
+            "truck_ext_move_in_mileage_allowance",
+            "truck_ext_move_in_rental_waiver"
+        ],
+        "task_tools": [
+            "cancel_truck_reservation_ee0618b8",
+            "post_additional_rental_day_charge_add5e32c",
+            "apply_move_in_claim_miles_credit_24951572",
+            "credit_move_in_rental_waiver_7c9a948d"
+        ]
+    },
+    "required_documents": [
+        "truck_ext_late_cancellation_fee",
+        "truck_ext_additional_day_charge",
+        "truck_ext_move_in_mileage_allowance",
+        "truck_ext_move_in_rental_waiver"
+    ]
+}

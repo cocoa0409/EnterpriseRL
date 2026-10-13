@@ -1,0 +1,992 @@
+category: retail
+display_name: Retail Pharmacy Network Benefit
+
+binding:
+  holding_table: retail_benefits
+  event_tables: [retail_claims, retail_overrides, retail_reimbursements]
+  status_field: status
+  variant_field: variant_name
+  quantity_fields: {reimbursement_balance: reimbursement_due}
+
+lifecycle:
+  states: [pending_effective, active, lock_in, terminated]
+  transitions:
+    - {from: pending_effective, to: active, by: system, means: The plan coverage effective date is reached and the member can fill at network pharmacies.}
+    - {from: pending_effective, to: terminated, by: system, means: The future-dated plan enrollment is cancelled before it takes effect.}
+    - {from: active, to: terminated, by: system, means: Plan coverage ends and retail coverage ends with it.}
+    - {from: lock_in, to: terminated, by: system, means: Plan coverage ends while the member is locked in.}
+    - {from: terminated, to: active, by: system, means: A COBRA reinstatement restores retail coverage.}
+    - {from: active, to: lock_in, by: system, means: The controlled-substance safety review places the member in pharmacy lock-in.}
+    - {from: lock_in, to: active, by: system, means: The lock-in period ends or the safety review releases the member.}
+
+accounts:
+  - key: member_cost_share
+    unit: USD
+    meaning: Member cost share paid at network pharmacies on retail claims; raised by paid claims and lowered by reversals.
+  - key: reimbursement_due
+    unit: USD
+    meaning: Approved paper-claim reimbursement owed to the member and not yet paid; raised by approvals and lowered by payments.
+
+parameter_schema:
+  network_pharmacy_count: approximate number of contracted retail pharmacies in the network (informational, quoted to members)
+  preferred_pharmacy_subnetwork: the network has a preferred-pharmacy subset with lower member cost share; boolean
+  preferred_reduction_t1: amount the member's tier 1 cost share is reduced at a preferred pharmacy per 30-day supply, USD (never below 0.00)
+  preferred_reduction_t2: amount the member's tier 2 cost share is reduced at a preferred pharmacy per 30-day supply, USD
+  preferred_reduction_t3: amount the member's tier 3 cost share is reduced at a preferred pharmacy per 30-day supply, USD
+  oon_coverage: 'out-of-network retail coverage: emergency_only (only urgent fills while away from any network pharmacy, reimbursed by paper claim) or covered_with_penalty (any out-of-network fill reimbursed at oon_reimbursement_rate); enum'
+  oon_reimbursement_rate: fraction of the network allowed amount used as the allowed amount for an out-of-network fill
+  oon_emergency_days_supply_max: maximum days supply reimbursed for an emergency out-of-network fill
+  max_days_supply_retail: maximum days supply per retail fill
+  retail_90_allowed: a 61-90 day supply may be filled at a retail pharmacy; boolean
+  band_35_60_multiplier: multiple of the 30-day cost share charged for a 35-60 day retail supply (fills of 1-34 days are one 30-day cost share)
+  band_61_90_multiplier: multiple of the 30-day cost share charged for a 61-90 day retail supply (0.0 where retail_90_allowed is false)
+  maintenance_program: 'maintenance-medication rule at retail: mandatory_after_courtesy (after the courtesy fills a 30-day retail fill of a maintenance drug carries the maintenance penalty), retail90_or_mail (after the courtesy fills a maintenance drug must be filled as 90 days at retail or by home delivery), none; enum'
+  maintenance_courtesy_fills: 30-day retail fills of the same maintenance drug allowed per plan year before the maintenance rule applies (0 where maintenance_program is none)
+  maintenance_penalty: 'what the member pays on a 30-day retail maintenance fill after the courtesy fills: full_cost (the full allowed amount, not counted toward deductible or out-of-pocket), double_copay (twice the 30-day cost share), reject (claim rejects; must be filled as 90 days at retail or home delivery), none; enum'
+  maintenance_opt_out_allowed: the member may elect to keep filling 30-day maintenance supplies at retail at the normal cost share by recording an opt-out choice; boolean
+  maintenance_drugs: drugs from the Northbridge Rx drug master list treated as maintenance medications
+  controlled_substance_drugs: drugs from the Northbridge Rx drug master list that are DEA-scheduled controlled substances (all are opioids for the opioid edits)
+  early_refill_threshold_noncontrolled: fraction of the previous fill's days supply that must have elapsed before a non-controlled drug can be refilled
+  early_refill_threshold_controlled: fraction of the previous fill's days supply that must have elapsed before a controlled substance can be refilled
+  early_refill_accumulation_limit_days: maximum extra days supply a member may accumulate through early refills of one drug within the accumulation window
+  early_refill_accumulation_window_days: rolling window in calendar days over which accumulated early-refill days are counted
+  vacation_override_per_plan_year: vacation-supply overrides allowed per drug per plan year
+  vacation_override_max_days_supply: maximum days supply a vacation override allows in one fill
+  vacation_override_lead_days: earliest number of calendar days before the departure date that a vacation override may be granted
+  lost_stolen_override_per_plan_year: lost, stolen or damaged medication overrides allowed per drug per plan year
+  lost_stolen_controlled_allowed: a lost or stolen controlled substance may be replaced by override; boolean
+  lost_stolen_controlled_police_report: a lost or stolen controlled-substance override requires a police report number; boolean
+  dose_change_override_allowed: an early refill is allowed when the prescriber increased the dose and the new prescription is on file; boolean
+  emergency_supply_days: days supply of an emergency override for a drug whose coverage review is pending
+  emergency_supply_per_drug_per_year: emergency supply overrides allowed per drug per plan year
+  opioid_initial_days_supply_limit: maximum days supply of a first opioid fill for a member with no opioid claim in the opioid-naive lookback
+  opioid_naive_lookback_days: calendar days with no paid opioid claim that make a member opioid-naive
+  opioid_mme_daily_limit: daily morphine milligram equivalent above which an opioid claim rejects without a coverage review
+  controlled_lockin_allowed: the network runs a controlled-substance pharmacy lock-in program; boolean
+  lockin_trigger_prescribers: number of different prescribers of controlled substances within the trigger window that qualifies a member for lock-in review
+  lockin_trigger_pharmacies: number of different pharmacies dispensing controlled substances within the trigger window that qualifies a member for lock-in review
+  lockin_trigger_window_days: rolling window in calendar days for the lock-in trigger counts
+  lockin_period_months: length of a lock-in period in months from the lock-in start date
+  lockin_pharmacy_changes_per_period: member-requested changes of the lock-in pharmacy allowed per lock-in period (a pharmacy closure never counts)
+  dmr_filing_limit_days: calendar days after the date of service within which a direct member reimbursement (paper claim) must be received
+  dmr_processing_days: calendar days from receipt within which a paper claim is decided and, if approved, paid
+  dmr_reimbursement_basis: 'how a paper claim is priced: the network allowed amount (or the out-of-network allowed amount) for the drug, capped at what the member paid, less the member cost share the plan would have charged; enum'
+  dmr_minimum_payment: reimbursements below this amount are approved but no payment is issued, USD
+  dmr_receipt_required: an itemized pharmacy receipt showing drug, NDC, quantity, days supply and amount paid is required; boolean
+  dmr_foreign_claims_covered: emergency fills purchased outside the United States may be reimbursed; boolean
+  dmr_payment_methods: payment methods for approved paper claims; direct deposit is used when banking details are on file
+  return_to_stock_days: calendar days after the date of service after which a fill not picked up is reversed by the pharmacy
+  claim_reprocessing_window_days: calendar days after the date of service within which Northbridge Rx may reverse and re-adjudicate a paid claim to correct the member cost share
+  pharmacy_refund_days: calendar days after a re-adjudication within which the network pharmacy must refund the member's overpayment
+  lesser_of_usual_and_customary: the member pays the lesser of the computed cost share and the pharmacy's usual and customary cash price; boolean
+  copay_card_secondary_billing: network pharmacies may bill a manufacturer copay card as secondary payer on a retail claim; boolean
+
+variants:
+  - name: Northbridge Performance Network
+    rank: 1
+    entry_gate:
+      sponsor_elected_network: true
+      min_enrolled_lives: 2
+      plan_design_types: [hdhp_hsa, deductible_copay]
+    parameters:
+      network_pharmacy_count: 24000
+      preferred_pharmacy_subnetwork: false
+      preferred_reduction_t1: 0.0
+      preferred_reduction_t2: 0.0
+      preferred_reduction_t3: 0.0
+      oon_coverage: emergency_only
+      oon_reimbursement_rate: 1.0
+      oon_emergency_days_supply_max: 10
+      max_days_supply_retail: 30
+      retail_90_allowed: false
+      band_35_60_multiplier: 2.0
+      band_61_90_multiplier: 0.0
+      maintenance_program: mandatory_after_courtesy
+      maintenance_courtesy_fills: 2
+      maintenance_penalty: full_cost
+      maintenance_opt_out_allowed: false
+      maintenance_drugs: &id001 [atorvastatin, lisinopril, metformin, sertraline, levothyroxine, insulin glargine-yfgn, Lantus, Eliquis, Xarelto, Jardiance, Ozempic, Mounjaro, Trelegy Ellipta, Breztri Aerosphere]
+      controlled_substance_drugs: &id002 [oxycodone-acetaminophen]
+      early_refill_threshold_noncontrolled: 0.8
+      early_refill_threshold_controlled: 0.9
+      early_refill_accumulation_limit_days: 7
+      early_refill_accumulation_window_days: 180
+      vacation_override_per_plan_year: 1
+      vacation_override_max_days_supply: 30
+      vacation_override_lead_days: 7
+      lost_stolen_override_per_plan_year: 1
+      lost_stolen_controlled_allowed: false
+      lost_stolen_controlled_police_report: true
+      dose_change_override_allowed: true
+      emergency_supply_days: 3
+      emergency_supply_per_drug_per_year: 1
+      opioid_initial_days_supply_limit: 7
+      opioid_naive_lookback_days: 120
+      opioid_mme_daily_limit: 90
+      controlled_lockin_allowed: true
+      lockin_trigger_prescribers: 4
+      lockin_trigger_pharmacies: 4
+      lockin_trigger_window_days: 90
+      lockin_period_months: 12
+      lockin_pharmacy_changes_per_period: 1
+      dmr_filing_limit_days: 90
+      dmr_processing_days: 30
+      dmr_reimbursement_basis: network_rate_less_cost_share
+      dmr_minimum_payment: 1.0
+      dmr_receipt_required: true
+      dmr_foreign_claims_covered: false
+      dmr_payment_methods: [check]
+      return_to_stock_days: 10
+      claim_reprocessing_window_days: 90
+      pharmacy_refund_days: 30
+      lesser_of_usual_and_customary: true
+      copay_card_secondary_billing: true
+  - name: Northbridge Essential Network
+    rank: 2
+    entry_gate:
+      sponsor_elected_network: true
+      min_enrolled_lives: 2
+      plan_design_types: [hdhp_hsa, deductible_copay, copay_only]
+    parameters:
+      network_pharmacy_count: 38000
+      preferred_pharmacy_subnetwork: false
+      preferred_reduction_t1: 0.0
+      preferred_reduction_t2: 0.0
+      preferred_reduction_t3: 0.0
+      oon_coverage: emergency_only
+      oon_reimbursement_rate: 1.0
+      oon_emergency_days_supply_max: 10
+      max_days_supply_retail: 30
+      retail_90_allowed: false
+      band_35_60_multiplier: 2.0
+      band_61_90_multiplier: 0.0
+      maintenance_program: mandatory_after_courtesy
+      maintenance_courtesy_fills: 2
+      maintenance_penalty: full_cost
+      maintenance_opt_out_allowed: true
+      maintenance_drugs: *id001
+      controlled_substance_drugs: *id002
+      early_refill_threshold_noncontrolled: 0.8
+      early_refill_threshold_controlled: 0.9
+      early_refill_accumulation_limit_days: 7
+      early_refill_accumulation_window_days: 180
+      vacation_override_per_plan_year: 1
+      vacation_override_max_days_supply: 30
+      vacation_override_lead_days: 7
+      lost_stolen_override_per_plan_year: 1
+      lost_stolen_controlled_allowed: false
+      lost_stolen_controlled_police_report: true
+      dose_change_override_allowed: true
+      emergency_supply_days: 3
+      emergency_supply_per_drug_per_year: 1
+      opioid_initial_days_supply_limit: 7
+      opioid_naive_lookback_days: 120
+      opioid_mme_daily_limit: 90
+      controlled_lockin_allowed: true
+      lockin_trigger_prescribers: 4
+      lockin_trigger_pharmacies: 4
+      lockin_trigger_window_days: 90
+      lockin_period_months: 12
+      lockin_pharmacy_changes_per_period: 1
+      dmr_filing_limit_days: 180
+      dmr_processing_days: 30
+      dmr_reimbursement_basis: network_rate_less_cost_share
+      dmr_minimum_payment: 1.0
+      dmr_receipt_required: true
+      dmr_foreign_claims_covered: false
+      dmr_payment_methods: [check]
+      return_to_stock_days: 10
+      claim_reprocessing_window_days: 90
+      pharmacy_refund_days: 30
+      lesser_of_usual_and_customary: true
+      copay_card_secondary_billing: true
+  - name: Northbridge National Network
+    rank: 3
+    entry_gate:
+      sponsor_elected_network: true
+      min_enrolled_lives: 2
+      plan_design_types: [hdhp_hsa, deductible_copay, copay_only]
+    parameters:
+      network_pharmacy_count: 61000
+      preferred_pharmacy_subnetwork: false
+      preferred_reduction_t1: 0.0
+      preferred_reduction_t2: 0.0
+      preferred_reduction_t3: 0.0
+      oon_coverage: emergency_only
+      oon_reimbursement_rate: 1.0
+      oon_emergency_days_supply_max: 14
+      max_days_supply_retail: 34
+      retail_90_allowed: false
+      band_35_60_multiplier: 2.0
+      band_61_90_multiplier: 0.0
+      maintenance_program: mandatory_after_courtesy
+      maintenance_courtesy_fills: 3
+      maintenance_penalty: double_copay
+      maintenance_opt_out_allowed: true
+      maintenance_drugs: *id001
+      controlled_substance_drugs: *id002
+      early_refill_threshold_noncontrolled: 0.75
+      early_refill_threshold_controlled: 0.85
+      early_refill_accumulation_limit_days: 10
+      early_refill_accumulation_window_days: 180
+      vacation_override_per_plan_year: 2
+      vacation_override_max_days_supply: 30
+      vacation_override_lead_days: 14
+      lost_stolen_override_per_plan_year: 1
+      lost_stolen_controlled_allowed: true
+      lost_stolen_controlled_police_report: true
+      dose_change_override_allowed: true
+      emergency_supply_days: 3
+      emergency_supply_per_drug_per_year: 1
+      opioid_initial_days_supply_limit: 7
+      opioid_naive_lookback_days: 120
+      opioid_mme_daily_limit: 90
+      controlled_lockin_allowed: true
+      lockin_trigger_prescribers: 4
+      lockin_trigger_pharmacies: 4
+      lockin_trigger_window_days: 90
+      lockin_period_months: 12
+      lockin_pharmacy_changes_per_period: 1
+      dmr_filing_limit_days: 365
+      dmr_processing_days: 21
+      dmr_reimbursement_basis: network_rate_less_cost_share
+      dmr_minimum_payment: 1.0
+      dmr_receipt_required: true
+      dmr_foreign_claims_covered: false
+      dmr_payment_methods: [check, direct_deposit]
+      return_to_stock_days: 14
+      claim_reprocessing_window_days: 180
+      pharmacy_refund_days: 30
+      lesser_of_usual_and_customary: true
+      copay_card_secondary_billing: true
+  - name: Northbridge Preferred Savings Network
+    rank: 4
+    entry_gate:
+      sponsor_elected_network: true
+      min_enrolled_lives: 51
+      plan_design_types: [deductible_copay, copay_only]
+    parameters:
+      network_pharmacy_count: 63000
+      preferred_pharmacy_subnetwork: true
+      preferred_reduction_t1: 5.0
+      preferred_reduction_t2: 10.0
+      preferred_reduction_t3: 10.0
+      oon_coverage: emergency_only
+      oon_reimbursement_rate: 1.0
+      oon_emergency_days_supply_max: 14
+      max_days_supply_retail: 34
+      retail_90_allowed: true
+      band_35_60_multiplier: 2.0
+      band_61_90_multiplier: 3.0
+      maintenance_program: none
+      maintenance_courtesy_fills: 0
+      maintenance_penalty: none
+      maintenance_opt_out_allowed: true
+      maintenance_drugs: *id001
+      controlled_substance_drugs: *id002
+      early_refill_threshold_noncontrolled: 0.75
+      early_refill_threshold_controlled: 0.85
+      early_refill_accumulation_limit_days: 10
+      early_refill_accumulation_window_days: 180
+      vacation_override_per_plan_year: 2
+      vacation_override_max_days_supply: 60
+      vacation_override_lead_days: 14
+      lost_stolen_override_per_plan_year: 1
+      lost_stolen_controlled_allowed: true
+      lost_stolen_controlled_police_report: true
+      dose_change_override_allowed: true
+      emergency_supply_days: 3
+      emergency_supply_per_drug_per_year: 2
+      opioid_initial_days_supply_limit: 7
+      opioid_naive_lookback_days: 120
+      opioid_mme_daily_limit: 90
+      controlled_lockin_allowed: true
+      lockin_trigger_prescribers: 4
+      lockin_trigger_pharmacies: 4
+      lockin_trigger_window_days: 90
+      lockin_period_months: 12
+      lockin_pharmacy_changes_per_period: 2
+      dmr_filing_limit_days: 365
+      dmr_processing_days: 21
+      dmr_reimbursement_basis: network_rate_less_cost_share
+      dmr_minimum_payment: 1.0
+      dmr_receipt_required: true
+      dmr_foreign_claims_covered: true
+      dmr_payment_methods: [check, direct_deposit]
+      return_to_stock_days: 14
+      claim_reprocessing_window_days: 180
+      pharmacy_refund_days: 30
+      lesser_of_usual_and_customary: true
+      copay_card_secondary_billing: true
+  - name: Northbridge Retail90 Network
+    rank: 5
+    entry_gate:
+      sponsor_elected_network: true
+      min_enrolled_lives: 101
+      plan_design_types: [deductible_copay, copay_only]
+    parameters:
+      network_pharmacy_count: 63000
+      preferred_pharmacy_subnetwork: true
+      preferred_reduction_t1: 5.0
+      preferred_reduction_t2: 10.0
+      preferred_reduction_t3: 10.0
+      oon_coverage: emergency_only
+      oon_reimbursement_rate: 1.0
+      oon_emergency_days_supply_max: 14
+      max_days_supply_retail: 90
+      retail_90_allowed: true
+      band_35_60_multiplier: 2.0
+      band_61_90_multiplier: 2.5
+      maintenance_program: retail90_or_mail
+      maintenance_courtesy_fills: 1
+      maintenance_penalty: reject
+      maintenance_opt_out_allowed: false
+      maintenance_drugs: *id001
+      controlled_substance_drugs: *id002
+      early_refill_threshold_noncontrolled: 0.75
+      early_refill_threshold_controlled: 0.85
+      early_refill_accumulation_limit_days: 15
+      early_refill_accumulation_window_days: 180
+      vacation_override_per_plan_year: 2
+      vacation_override_max_days_supply: 90
+      vacation_override_lead_days: 14
+      lost_stolen_override_per_plan_year: 1
+      lost_stolen_controlled_allowed: true
+      lost_stolen_controlled_police_report: true
+      dose_change_override_allowed: true
+      emergency_supply_days: 5
+      emergency_supply_per_drug_per_year: 2
+      opioid_initial_days_supply_limit: 7
+      opioid_naive_lookback_days: 120
+      opioid_mme_daily_limit: 90
+      controlled_lockin_allowed: true
+      lockin_trigger_prescribers: 4
+      lockin_trigger_pharmacies: 4
+      lockin_trigger_window_days: 90
+      lockin_period_months: 12
+      lockin_pharmacy_changes_per_period: 2
+      dmr_filing_limit_days: 365
+      dmr_processing_days: 14
+      dmr_reimbursement_basis: network_rate_less_cost_share
+      dmr_minimum_payment: 1.0
+      dmr_receipt_required: true
+      dmr_foreign_claims_covered: true
+      dmr_payment_methods: [check, direct_deposit]
+      return_to_stock_days: 14
+      claim_reprocessing_window_days: 180
+      pharmacy_refund_days: 30
+      lesser_of_usual_and_customary: true
+      copay_card_secondary_billing: true
+  - name: Northbridge Open Choice Network
+    rank: 6
+    entry_gate:
+      sponsor_elected_network: true
+      min_enrolled_lives: 501
+      plan_design_types: [copay_only]
+    parameters:
+      network_pharmacy_count: 66000
+      preferred_pharmacy_subnetwork: false
+      preferred_reduction_t1: 0.0
+      preferred_reduction_t2: 0.0
+      preferred_reduction_t3: 0.0
+      oon_coverage: covered_with_penalty
+      oon_reimbursement_rate: 0.8
+      oon_emergency_days_supply_max: 30
+      max_days_supply_retail: 90
+      retail_90_allowed: true
+      band_35_60_multiplier: 2.0
+      band_61_90_multiplier: 3.0
+      maintenance_program: none
+      maintenance_courtesy_fills: 0
+      maintenance_penalty: none
+      maintenance_opt_out_allowed: true
+      maintenance_drugs: *id001
+      controlled_substance_drugs: *id002
+      early_refill_threshold_noncontrolled: 0.75
+      early_refill_threshold_controlled: 0.85
+      early_refill_accumulation_limit_days: 15
+      early_refill_accumulation_window_days: 180
+      vacation_override_per_plan_year: 2
+      vacation_override_max_days_supply: 90
+      vacation_override_lead_days: 14
+      lost_stolen_override_per_plan_year: 1
+      lost_stolen_controlled_allowed: true
+      lost_stolen_controlled_police_report: true
+      dose_change_override_allowed: true
+      emergency_supply_days: 5
+      emergency_supply_per_drug_per_year: 2
+      opioid_initial_days_supply_limit: 7
+      opioid_naive_lookback_days: 120
+      opioid_mme_daily_limit: 90
+      controlled_lockin_allowed: true
+      lockin_trigger_prescribers: 4
+      lockin_trigger_pharmacies: 4
+      lockin_trigger_window_days: 90
+      lockin_period_months: 12
+      lockin_pharmacy_changes_per_period: 2
+      dmr_filing_limit_days: 365
+      dmr_processing_days: 14
+      dmr_reimbursement_basis: network_rate_less_cost_share
+      dmr_minimum_payment: 1.0
+      dmr_receipt_required: true
+      dmr_foreign_claims_covered: true
+      dmr_payment_methods: [check, direct_deposit]
+      return_to_stock_days: 14
+      claim_reprocessing_window_days: 180
+      pharmacy_refund_days: 30
+      lesser_of_usual_and_customary: true
+      copay_card_secondary_billing: true
+
+events:
+  - type: retail_enroll
+    target: retail_benefits
+    mutation: create
+    meaning: A retail network benefit is opened for a member when the plan enrollment is created.
+    grain: one row per plan enrollment
+    fields:
+      customer_id: covered member
+      plan_enrollment_id: plan enrollment the benefit belongs to
+      variant_name: network the sponsor elected
+      effective_date: plan coverage effective date
+      maintenance_choice: undecided at opening
+      lock_in_changes_used: 0 at opening
+      reimbursement_balance: 0.00 at opening
+    triggers: []
+  - type: retail_activate
+    target: retail_benefits
+    mutation: {transition: {from: pending_effective, to: active}}
+    meaning: Retail coverage takes effect with the plan coverage.
+    grain: one row per transaction
+    fields:
+      effective_date: the effective date reached
+    triggers: []
+  - type: retail_terminate
+    target: retail_benefits
+    mutation:
+      transition:
+        - {from: active, to: terminated}
+        - {from: lock_in, to: terminated}
+        - {from: pending_effective, to: terminated}
+    meaning: Retail coverage ends because plan coverage ended or was cancelled.
+    grain: one row per transaction
+    fields:
+      end_date: last day of plan coverage
+    triggers: []
+  - type: retail_reinstate
+    target: retail_benefits
+    mutation: {transition: {from: terminated, to: active}}
+    meaning: Retail coverage is restored by a COBRA reinstatement.
+    grain: one row per transaction
+    fields:
+      end_date: cleared, because coverage continues
+    triggers: []
+  - type: retail_lockin_start
+    target: retail_benefits
+    mutation: {transition: {from: active, to: lock_in}}
+    meaning: The member is placed in controlled-substance pharmacy lock-in with one designated pharmacy.
+    grain: one row per transaction
+    fields:
+      lock_in_pharmacy_npi: designated pharmacy
+      lock_in_start_date: first day of lock-in
+      lock_in_end_date: last day of lock-in
+      lock_in_changes_used: 0 at the start of the period
+    triggers: []
+  - type: retail_lockin_end
+    target: retail_benefits
+    mutation: {transition: {from: lock_in, to: active}}
+    meaning: The lock-in period ends or the member is released early by the safety review.
+    grain: one row per transaction
+    fields:
+      lock_in_pharmacy_npi: cleared
+      lock_in_end_date: actual last day of lock-in
+    triggers: []
+  - type: retail_lockin_pharmacy_change
+    target: retail_benefits
+    mutation: update
+    meaning: A locked-in member's designated pharmacy is changed.
+    grain: one row per transaction
+    fields:
+      lock_in_pharmacy_npi: the new designated pharmacy
+      lock_in_changes_used: incremented by one for a member-requested change, unchanged when the old pharmacy closed
+    triggers: []
+  - type: retail_maintenance_choice
+    target: retail_benefits
+    mutation: update
+    meaning: The member records how they will fill maintenance medications under the network's maintenance program.
+    grain: one row per transaction
+    fields:
+      maintenance_choice: the member's choice
+      maintenance_choice_date: date the choice was recorded
+    triggers: []
+  - type: retail_claim_paid
+    target: retail_claims
+    meaning: A network pharmacy claim is adjudicated and paid, and the member pays their cost share at the counter.
+    grain: one row per prescription fill transaction
+    distinguish_by: [rx_number, fill_number, date_of_service, pharmacy_npi]
+    fields:
+      rx_number: prescription number
+      fill_number: refill sequence
+      date_of_service: fill date
+      pharmacy_npi: dispensing pharmacy
+      prescriber_npi: prescriber
+      pharmacy_network_status: preferred, standard network or out of network
+      drug_name: drug dispensed
+      drug_strength: strength dispensed
+      quantity: quantity dispensed
+      days_supply: days supply
+      formulary_tier: tier adjudicated
+      daw_code: dispense-as-written code
+      override_reference_id: override used, if any
+      allowed_amount: allowed cost
+      deductible_amount: deductible portion
+      copay_amount: cost share after deductible
+      daw_penalty_amount: brand-generic difference
+      member_paid_amount: total member payment
+      accumulator_amount: amount counting toward out-of-pocket
+      plan_paid_amount: plan payment
+    account: member_cost_share
+    direction: in
+    triggers:
+      - event: plan:plan_ded_post
+        when: {deductible_amount: {not: 0}}
+        map: {amount: deductible_amount, accrual_date: date_of_service, source_type: pharmacy_claim, source_reference_id: retail_claim_id, channel: retail, funding_source: member_paid, formulary_tier: formulary_tier, claim_allowed_amount: allowed_amount}
+      - event: plan:plan_oop_post
+        when: {accumulator_amount: {not: 0}}
+        map: {amount: accumulator_amount, accrual_date: date_of_service, source_type: pharmacy_claim, source_reference_id: retail_claim_id, channel: retail, funding_source: member_paid, formulary_tier: formulary_tier, claim_allowed_amount: allowed_amount}
+  - type: retail_claim_reversed
+    target: retail_claims
+    meaning: A paid retail claim is reversed (not picked up, re-adjudicated, retroactive termination, coordination-of-benefits rebill or pharmacy error), and the member's payment is refunded by the pharmacy.
+    grain: one row per reversed paid claim
+    distinguish_by: [original_claim_id]
+    fields:
+      original_claim_id: the paid claim reversed
+      rx_number: prescription number of the original claim
+      fill_number: refill sequence of the original claim
+      date_of_service: date of service of the original claim
+      pharmacy_npi: pharmacy of the original claim
+      drug_name: drug of the original claim
+      deductible_amount: deductible portion reversed
+      member_paid_amount: member payment reversed
+      accumulator_amount: out-of-pocket amount reversed
+      reversal_reason: why it was reversed
+    account: member_cost_share
+    direction: out
+    triggers:
+      - event: plan:plan_ded_reverse
+        when: {deductible_amount: {not: 0}}
+        map: {amount: deductible_amount, accrual_date: date_of_service, source_type: pharmacy_claim, source_reference_id: original_claim_id, channel: retail}
+      - event: plan:plan_oop_reverse
+        when: {accumulator_amount: {not: 0}}
+        map: {amount: accumulator_amount, accrual_date: date_of_service, source_type: pharmacy_claim, source_reference_id: original_claim_id, channel: retail}
+  - type: retail_override_granted
+    target: retail_overrides
+    meaning: A refill-too-soon or emergency override is granted so a network pharmacy can fill one prescription outside the normal edits.
+    grain: one row per override granted for one prescription
+    distinguish_by: [override_type, rx_number, granted_date]
+    fields:
+      override_type: vacation supply, lost or stolen, dose change or emergency supply
+      drug_name: drug
+      rx_number: prescription number
+      granted_date: date granted
+      valid_through_date: last date the pharmacy may use it
+      days_supply_allowed: days supply permitted
+      departure_date: departure date for a vacation supply
+      police_report_number: police report for a lost or stolen controlled substance
+    triggers: []
+  - type: retail_dmr_submitted
+    target: retail_reimbursements
+    meaning: A member's paper claim (direct member reimbursement) for a prescription they paid for is received.
+    grain: one row per receipt submitted for one fill
+    distinguish_by: [date_of_service, drug_name, pharmacy_npi, received_date]
+    fields:
+      received_date: date received
+      date_of_service: fill date on the receipt
+      pharmacy_npi: pharmacy on the receipt
+      pharmacy_network_status: network status of that pharmacy
+      foreign_purchase: bought outside the United States
+      drug_name: drug on the receipt
+      drug_strength: strength on the receipt
+      days_supply: days supply on the receipt
+      submitted_amount: amount the member paid
+    triggers: []
+  - type: retail_dmr_approved
+    target: retail_reimbursements
+    meaning: A paper claim is approved for reimbursement.
+    grain: one row per approved submission
+    distinguish_by: [source_reimbursement_id]
+    fields:
+      source_reimbursement_id: the submission approved
+      received_date: decision date
+      date_of_service: fill date
+      drug_name: drug
+      formulary_tier: tier applied
+      allowed_amount: allowed amount used
+      deductible_amount: deductible portion
+      member_cost_share: member cost share applied
+      reimbursement_amount: amount approved
+      decision_reason: approved_network_rate
+    account: reimbursement_due
+    direction: in
+    triggers:
+      - event: plan:plan_ded_post
+        when: {deductible_amount: {not: 0}}
+        map: {amount: deductible_amount, accrual_date: date_of_service, source_type: pharmacy_claim, source_reference_id: source_reimbursement_id, channel: retail, funding_source: member_paid, formulary_tier: formulary_tier, claim_allowed_amount: allowed_amount}
+      - event: plan:plan_oop_post
+        when: {member_cost_share: {not: 0}}
+        map: {amount: member_cost_share, accrual_date: date_of_service, source_type: pharmacy_claim, source_reference_id: source_reimbursement_id, channel: retail, funding_source: member_paid, formulary_tier: formulary_tier, claim_allowed_amount: allowed_amount}
+  - type: retail_dmr_denied
+    target: retail_reimbursements
+    meaning: A paper claim is denied.
+    grain: one row per denied submission
+    distinguish_by: [source_reimbursement_id]
+    fields:
+      source_reimbursement_id: the submission denied
+      received_date: decision date
+      drug_name: drug
+      decision_reason: reason for denial
+    triggers: []
+  - type: retail_dmr_paid
+    target: retail_reimbursements
+    meaning: An approved paper-claim reimbursement is paid to the member.
+    grain: one row per payment of one approved submission
+    distinguish_by: [source_reimbursement_id]
+    fields:
+      source_reimbursement_id: the submission paid
+      received_date: payment date
+      reimbursement_amount: amount paid
+      payment_method: check or direct deposit
+    account: reimbursement_due
+    direction: out
+    triggers: []
+
+measures:
+  - id: retail_msr_maintenance_fills_ytd
+    window: current plan year, from the plan enrollment's plan_year_start_date through frozen_time, inclusive
+    measure: count of retail_claim_paid rows for the same drug_name with days_supply of 34 or fewer that have no retail_claim_reversed row pointing at them
+  - id: retail_msr_overrides_ytd
+    window: current plan year, from the plan enrollment's plan_year_start_date through frozen_time, inclusive
+    measure: count of retail_override_granted rows on this benefit for the same drug_name and the same override_type
+  - id: retail_msr_early_refill_days
+    window: rolling early_refill_accumulation_window_days calendar days ending on the date of service being evaluated
+    measure: sum over paid, unreversed retail claims of the same drug of the days by which each fill came before the date its prior fill's full days supply ran out
+  - id: retail_msr_controlled_prescribers
+    window: rolling lockin_trigger_window_days calendar days ending at frozen_time
+    measure: count of distinct prescriber_npi values and, separately, distinct pharmacy_npi values on paid, unreversed retail claims for drugs in controlled_substance_drugs
+
+policies:
+  - id: retail_agg_multi_holding
+    subject: [retail_enroll]
+    rule: >-
+      A member holds at most one retail network benefit that is not terminated, tied to their open plan enrollment.
+      A new retail benefit may be opened only when no retail benefit of that member is pending_effective, active or lock_in.
+    eligibility:
+      - id: one_open_retail_benefit
+        applies_to: [retail_enroll]
+        kind: dedup
+        condition: A new retail benefit may be opened only when no retail benefit of that member is pending_effective, active or lock_in.
+        evidence_fields: [retail_benefits.customer_id, retail_benefits.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [retail_benefits.customer_id]
+          action_bindings:
+            retail_benefits.customer_id: customer_id
+        dedup_contract:
+          table: retail_benefits
+          mode: separate_record
+          object_bindings: {customer_id: customer_id}
+          duplicate_filters: {status: [pending_effective, active, lock_in]}
+          distinct_fields: [effective_date]
+    params:
+      max_per_customer: 1
+
+  - id: retail_claim_cost_share
+    subject: [retail_claim_paid]
+    rule: >-
+      A retail claim starts from the 30-day cost share the member's Pharmacy Benefit Plan sets for the drug's formulary tier (after any deductible portion, which the plan's deductible rule sets).
+      For a fill of 1 to 34 days the 30-day cost share applies once; for 35 to 60 days it is multiplied by band_35_60_multiplier; for 61 to 90 days, only where retail_90_allowed is true, it is multiplied by band_61_90_multiplier; a fill longer than max_days_supply_retail rejects.
+      Only networks whose preferred_pharmacy_subnetwork is true have preferred pharmacies, and network_pharmacy_count is the approximate number of contracted pharmacies quoted to members.
+      At a pharmacy whose network status is preferred, the per-30-day cost share for tiers 1 to 3 is lowered by preferred_reduction_t1, preferred_reduction_t2 or preferred_reduction_t3 respectively, before the day-supply multiple is applied and never below zero; specialty tiers get no preferred reduction.
+      When lesser_of_usual_and_customary is true the member pays the lesser of that result and the pharmacy's usual and customary price.
+      The member's payment is deductible_amount plus copay_amount plus any brand-generic difference the plan charges, and accumulator_amount is that payment less any part the plan does not count toward out-of-pocket.
+      When copay_card_secondary_billing is true the pharmacy may bill a manufacturer copay card after Northbridge Rx; how the card's payment accumulates follows the plan's copay-assistance rule.
+    eligibility: []
+    params:
+      per_tier:
+        Northbridge Performance Network: {t1_reduction: "=preferred_reduction_t1", t2_reduction: "=preferred_reduction_t2", t3_reduction: "=preferred_reduction_t3", multiplier_90: "=band_61_90_multiplier"}
+        Northbridge Essential Network: {t1_reduction: "=preferred_reduction_t1", t2_reduction: "=preferred_reduction_t2", t3_reduction: "=preferred_reduction_t3", multiplier_90: "=band_61_90_multiplier"}
+        Northbridge National Network: {t1_reduction: "=preferred_reduction_t1", t2_reduction: "=preferred_reduction_t2", t3_reduction: "=preferred_reduction_t3", multiplier_90: "=band_61_90_multiplier"}
+        Northbridge Preferred Savings Network: {t1_reduction: "=preferred_reduction_t1", t2_reduction: "=preferred_reduction_t2", t3_reduction: "=preferred_reduction_t3", multiplier_90: "=band_61_90_multiplier"}
+        Northbridge Retail90 Network: {t1_reduction: "=preferred_reduction_t1", t2_reduction: "=preferred_reduction_t2", t3_reduction: "=preferred_reduction_t3", multiplier_90: "=band_61_90_multiplier"}
+        Northbridge Open Choice Network: {t1_reduction: "=preferred_reduction_t1", t2_reduction: "=preferred_reduction_t2", t3_reduction: "=preferred_reduction_t3", multiplier_90: "=band_61_90_multiplier"}
+    formula:
+      member_paid_amount: "deductible_amount + copay_amount + daw_penalty_amount"
+      day_supply_multiple: "1 if days_supply <= 34 else (band_35_60_multiplier if days_supply <= 60 else band_61_90_multiplier)"
+
+  - id: retail_maintenance_program
+    subject: [retail_claim_paid, retail_maintenance_choice]
+    rule: >-
+      Drugs in maintenance_drugs are maintenance medications; specialty-tier drugs never are.
+      Under maintenance_program mandatory_after_courtesy, once the member has had maintenance_courtesy_fills paid 30-day-or-shorter retail fills of the same maintenance drug in the plan year (retail_msr_maintenance_fills_ytd), each further such fill carries maintenance_penalty; under retail90_or_mail such a fill rejects and must be filled as a 61-90 day retail supply or through home delivery; under none there is no limit.
+      A full_cost penalty means the member pays the whole allowed amount and nothing posts to the deductible or out-of-pocket; a double_copay penalty means twice the 30-day cost share, which does post.
+      A member whose recorded maintenance_choice is opt_out_retail_30 keeps the normal cost share on 30-day maintenance fills, and that choice can be recorded only when maintenance_opt_out_allowed is true; a choice of home_delivery or retail_90 never changes pricing by itself.
+      A member whose home delivery account is held under Northbridge Maintenance Choice may fill a 61-90 day maintenance supply at any network pharmacy at the home delivery cost share even where retail_90_allowed is false, and is never charged the maintenance penalty.
+      A maintenance choice is recorded only at the member's own request.
+      A maintenance choice can be recorded only while the retail benefit is active or lock_in.
+    eligibility:
+      - id: choice_on_open_benefit
+        applies_to: [retail_maintenance_choice]
+        kind: state
+        condition: A maintenance choice can be recorded only while the retail benefit is active or lock_in.
+        evidence_fields: [retail_benefits.status, retail_benefits.retail_benefit_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [retail_benefits.retail_benefit_id]
+          action_bindings:
+            retail_benefits.retail_benefit_id: retail_benefit_id
+        state_contract:
+          field: retail_benefits.status
+          allowed: [active, lock_in]
+    measures: [retail_msr_maintenance_fills_ytd]
+
+  - id: retail_refill_too_soon
+    subject: [retail_claim_paid]
+    rule: >-
+      A refill of the same drug rejects as too soon until the fraction early_refill_threshold_noncontrolled (early_refill_threshold_controlled for a controlled substance) of the previous paid fill's days supply has elapsed, counting the previous date of service as day zero.
+      Even when the threshold is met, a refill rejects when the extra days supply accumulated by earlier-than-due refills of the same drug within early_refill_accumulation_window_days (retail_msr_early_refill_days) would exceed early_refill_accumulation_limit_days.
+      A refill that rejects as too soon is paid only under an override granted by the override rules.
+    eligibility: []
+    measures: [retail_msr_early_refill_days]
+    formula:
+      earliest_refill_day_offset: "days_supply * early_refill_threshold_noncontrolled"
+
+  - id: retail_evt_override
+    subject: [retail_override_granted]
+    rule: >-
+      An override lets a network pharmacy fill one prescription past the refill-too-soon edit or, for emergency_supply, before a pending coverage review is decided; it is recorded against one prescription number and drug.
+      A vacation supply may be granted no earlier than vacation_override_lead_days calendar days before the departure date the member gives, for up to vacation_override_max_days_supply days, and at most vacation_override_per_plan_year times per drug per plan year (retail_msr_overrides_ytd); vacation supplies are never granted for controlled substances.
+      The lead time counts back from the departure date, the departure date being day zero, and the departure date is taken as the member states it.
+      A lost, stolen or damaged medication replacement is granted at most lost_stolen_override_per_plan_year times per drug per plan year; for a controlled substance it is granted only when lost_stolen_controlled_allowed is true and, when lost_stolen_controlled_police_report is true, only with the member's police report number.
+      A dose-change override is granted when dose_change_override_allowed is true and the new prescription at the higher dose is on file.
+      An emergency supply of emergency_supply_days days is granted only while a coverage review for that drug is pending, at most emergency_supply_per_drug_per_year times per drug per plan year.
+      Each override is valid through the seventh calendar day after it is granted, the grant date being day zero.
+      An override may be granted only while the retail benefit is active or lock_in.
+      A locked-in member's override for a controlled substance is valid only at the lock-in pharmacy.
+    eligibility:
+      - id: override_open_benefit
+        applies_to: [retail_override_granted]
+        kind: state
+        condition: An override may be granted only while the retail benefit is active or lock_in.
+        evidence_fields: [retail_benefits.status, retail_benefits.retail_benefit_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [retail_benefits.retail_benefit_id]
+          action_bindings:
+            retail_benefits.retail_benefit_id: retail_benefit_id
+        state_contract:
+          field: retail_benefits.status
+          allowed: [active, lock_in]
+      - id: vacation_lead_time
+        applies_to: [retail_override_granted]
+        kind: caller_fact
+        condition: A vacation supply may be granted no earlier than vacation_override_lead_days calendar days before the departure date the member gives, for up to vacation_override_max_days_supply days, and at most vacation_override_per_plan_year times per drug per plan year (retail_msr_overrides_ytd); vacation supplies are never granted for controlled substances.
+        evidence_fields: [retail_overrides.departure_date, retail_overrides.rx_number]
+        evidence_contract:
+          authority: caller_statement
+          timing: pre_action
+          correlation_keys:
+            - [retail_overrides.rx_number]
+          action_bindings:
+            retail_overrides.rx_number: rx_number
+    params:
+      validity_days: 7
+    measures: [retail_msr_overrides_ytd]
+
+  - id: retail_evt_claim_reversal
+    subject: [retail_claim_reversed]
+    rule: >-
+      A reversal cancels exactly one paid claim, named by original_claim_id, for the full amounts of that claim; the pharmacy refunds the member's payment and every accumulator posting from the claim is reversed.
+      A paid claim may be reversed only once: a reversal may be recorded only when no reversal already points at the same original claim.
+      A fill not picked up is reversed by the pharmacy after return_to_stock_days; a re-adjudication to correct the member's cost share is a reversal with reason reprocessed_cost_share followed by a new paid claim, allowed only within claim_reprocessing_window_days calendar days after the date of service, the date of service being day zero; after that window the member's remedy is a manual accumulator correction or an appeal, not a reversal.
+      After a re-adjudication the pharmacy refunds the difference to the member within pharmacy_refund_days.
+    eligibility:
+      - id: reverse_once
+        applies_to: [retail_claim_reversed]
+        kind: dedup
+        condition: a reversal may be recorded only when no reversal already points at the same original claim.
+        evidence_fields: [retail_claims.original_claim_id, retail_claims.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [retail_claims.original_claim_id]
+          action_bindings:
+            retail_claims.original_claim_id: original_claim_id
+        dedup_contract:
+          table: retail_claims
+          mode: separate_record
+          object_bindings: {original_claim_id: original_claim_id}
+          duplicate_filters: {event_type: [retail_claim_reversed]}
+          distinct_fields: []
+      - id: reprocess_window
+        applies_to: [retail_claim_reversed]
+        kind: time
+        condition: a re-adjudication to correct the member's cost share is a reversal with reason reprocessed_cost_share followed by a new paid claim, allowed only within claim_reprocessing_window_days calendar days after the date of service, the date of service being day zero
+        evidence_fields: [retail_claims.date_of_service, retail_claims.retail_claim_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [retail_claims.retail_claim_id]
+          action_bindings:
+            retail_claims.retail_claim_id: original_claim_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the date of service
+          anchor_source: retail_claims.date_of_service
+          relation: not_after
+          duration_source: variants.claim_reprocessing_window_days
+          unit: calendar_days
+          counting_rule: the date of service being day zero
+          boundary: inclusive
+
+  - id: retail_evt_dmr
+    subject: [retail_dmr_submitted, retail_dmr_approved, retail_dmr_denied]
+    rule: >-
+      A paper claim reimburses a member who paid out of pocket for a covered prescription; it is filed with the itemized receipt that dmr_receipt_required calls for, and a submission without one is denied with missing_receipt.
+      A paper claim is payable only when it is received no later than dmr_filing_limit_days calendar days after the date of service, the date of service being day zero; one received later is denied with filed_late.
+      For a member whose coverage has ended, a paper claim for a date of service while covered must also arrive within the plan's claims run-out period, and the earlier of the two deadlines governs.
+      It is denied with not_eligible_on_date_of_service when the member had no active plan coverage on the date of service, with duplicate_of_paid_claim when a paid, unreversed retail claim exists for the same drug, date of service and pharmacy, with not_covered when the drug is not covered on the member's formulary on that date, and with coverage_review_required when the drug needs a coverage review that has no approval in force on the date of service.
+      Out-of-network fills are reimbursed only as oon_coverage allows: under emergency_only only for an urgent fill of at most oon_emergency_days_supply_max days made while no network pharmacy was reasonably available; foreign purchases only when dmr_foreign_claims_covered is true.
+      Paper claims are priced per dmr_reimbursement_basis: the reimbursement is the allowed amount (the network rate, multiplied by oon_reimbursement_rate for an out-of-network fill) capped at the amount the member paid, less the member cost share the plan would have charged on that date, never below zero; an approved amount below dmr_minimum_payment is approved without payment.
+      The receipt date is the received_date on the submission row, whenever the decision is made.
+      Each paper claim is decided within dmr_processing_days calendar days of receipt, and a submission takes exactly one decision.
+      A submission may be decided only when it has no approval or denial yet.
+    eligibility:
+      - id: filed_on_time
+        applies_to: [retail_dmr_approved]
+        kind: time
+        condition: A paper claim is payable only when it is received no later than dmr_filing_limit_days calendar days after the date of service, the date of service being day zero; one received later is denied with filed_late.
+        evidence_fields: [retail_reimbursements.date_of_service, retail_reimbursements.received_date, retail_reimbursements.retail_reimbursement_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [retail_reimbursements.retail_reimbursement_id]
+          action_bindings:
+            retail_reimbursements.retail_reimbursement_id: source_reimbursement_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the date of service
+          anchor_source: retail_reimbursements.date_of_service
+          relation: not_after
+          duration_source: variants.dmr_filing_limit_days
+          unit: calendar_days
+          counting_rule: the date of service being day zero
+          boundary: inclusive
+      - id: decide_once
+        applies_to: [retail_dmr_approved, retail_dmr_denied]
+        kind: dedup
+        condition: A submission may be decided only when it has no approval or denial yet.
+        evidence_fields: [retail_reimbursements.source_reimbursement_id, retail_reimbursements.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [retail_reimbursements.source_reimbursement_id]
+          action_bindings:
+            retail_reimbursements.source_reimbursement_id: source_reimbursement_id
+        dedup_contract:
+          table: retail_reimbursements
+          mode: separate_record
+          object_bindings: {source_reimbursement_id: source_reimbursement_id}
+          duplicate_filters: {event_type: [retail_dmr_approved, retail_dmr_denied]}
+          distinct_fields: []
+    formula:
+      reimbursement_amount: "max(min(allowed_amount, submitted_amount) - member_cost_share, 0)"
+
+  - id: retail_evt_dmr_payment
+    subject: [retail_dmr_paid]
+    rule: >-
+      An approved reimbursement of at least dmr_minimum_payment is paid in full, once, by one of dmr_payment_methods: direct deposit when the member has banking details on file and the network allows it, otherwise a check mailed to the address on file.
+      A reimbursement may be paid only after its submission has been approved, and only once.
+      The payment amount equals the approved reimbursement_amount; partial payments are not made.
+    eligibility:
+      - id: approved_before_paid
+        applies_to: [retail_dmr_paid]
+        kind: authorization
+        condition: A reimbursement may be paid only after its submission has been approved, and only once.
+        evidence_fields: [retail_reimbursements.source_reimbursement_id, retail_reimbursements.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [retail_reimbursements.source_reimbursement_id]
+          action_bindings:
+            retail_reimbursements.source_reimbursement_id: source_reimbursement_id
+      - id: pay_once
+        applies_to: [retail_dmr_paid]
+        kind: dedup
+        condition: A reimbursement may be paid only after its submission has been approved, and only once.
+        evidence_fields: [retail_reimbursements.source_reimbursement_id, retail_reimbursements.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [retail_reimbursements.source_reimbursement_id]
+          action_bindings:
+            retail_reimbursements.source_reimbursement_id: source_reimbursement_id
+        dedup_contract:
+          table: retail_reimbursements
+          mode: separate_record
+          object_bindings: {source_reimbursement_id: source_reimbursement_id}
+          duplicate_filters: {event_type: [retail_dmr_paid]}
+          distinct_fields: []
+    formula:
+      paid_amount: "reimbursement_amount if reimbursement_amount >= dmr_minimum_payment else 0"
+
+  - id: retail_lockin
+    subject: [retail_lockin_start, retail_lockin_end, retail_lockin_pharmacy_change]
+    rule: >-
+      When controlled_lockin_allowed is true, the controlled-substance safety review may place a member in lock-in when, within lockin_trigger_window_days, their paid controlled-substance claims involve at least lockin_trigger_prescribers different prescribers and at least lockin_trigger_pharmacies different pharmacies (retail_msr_controlled_prescribers); member services never starts or ends a lock-in.
+      Lock-in lasts lockin_period_months from the start date, during which controlled substances are covered only at the designated pharmacy; non-controlled drugs are unaffected.
+      A locked-in member may ask to change the designated pharmacy at most lockin_pharmacy_changes_per_period times per period, and the change takes effect on the day it is recorded; when the designated pharmacy closes or stops carrying the drug the change does not count.
+      A pharmacy change may be recorded only while the retail benefit is in lock_in.
+    eligibility:
+      - id: change_only_in_lockin
+        applies_to: [retail_lockin_pharmacy_change]
+        kind: state
+        condition: A pharmacy change may be recorded only while the retail benefit is in lock_in.
+        evidence_fields: [retail_benefits.status, retail_benefits.retail_benefit_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [retail_benefits.retail_benefit_id]
+          action_bindings:
+            retail_benefits.retail_benefit_id: retail_benefit_id
+        state_contract:
+          field: retail_benefits.status
+          allowed: [lock_in]
+    measures: [retail_msr_controlled_prescribers]
+
+  - id: retail_opioid_safety
+    subject: [retail_claim_paid]
+    rule: >-
+      A first opioid fill for a member with no paid opioid claim in the previous opioid_naive_lookback_days is limited to opioid_initial_days_supply_limit days supply; a longer fill rejects until the pharmacy reduces it or a coverage review approves it.
+      An opioid claim whose daily dose, added to the member's other active opioid claims, exceeds opioid_mme_daily_limit morphine milligram equivalents rejects without a coverage review approval.
+      Members with an active cancer, sickle cell or hospice diagnosis on a coverage review approval are exempt from both edits.
+    eligibility: []
+
+  - id: retail_lifecycle
+    subject: [retail_enroll, retail_activate, retail_terminate, retail_reinstate]
+    rule: >-
+      The retail benefit follows the plan enrollment: it opens with it, takes effect on its effective date, ends with it and is restored by a COBRA reinstatement; member services never opens or ends it on request.
+      Claims are paid only for dates of service on which the benefit is active or lock_in; claims with a date of service after a retroactive termination are reversed with reason retro_termination.
+      Approved paper claims stay payable after termination.
+    eligibility: []

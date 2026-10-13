@@ -1,0 +1,2420 @@
+# Paloma Remit — product charter: Mobile Wallet transfers.
+# Each personal transfer credited to a recipient's mobile-money wallet (GCash, Maya, M-Pesa,
+# MTN MoMo, bKash, Nequi, Tigo Money) is one holding: the transfer order the customer booked at one
+# Mobile Wallet tier, with its principal, fee, locked rate, the wallet it is addressed to and its
+# disclosed availability. Wallet credits are near-instant but can bounce: the recipient's wallet may
+# be unregistered, over its provider limit, suspended, or held in another name. The tier decides the
+# price, the speed promise, and how failed credits are retried, redirected or refunded. The
+# Remittance Transfer Rule (Regulation E, subpart B) governs cancellation, refunds and errors.
+
+category: wallet
+display_name: Mobile Wallet
+
+binding:
+  holding_table: wallet_transfers
+  event_tables: [wallet_ledger, wallet_cases]
+  status_field: status
+  variant_field: variant_name
+  quantity_fields: {principal_held_usd: principal_held, fees_held_usd: fees_held}
+
+lifecycle:
+  states: [awaiting_funds, on_hold, processing, credited, credit_failed, cancelled, refunded]
+  transitions:
+    - {from: awaiting_funds, to: processing, by: system, means: "Funds are collected (or ACH principal is released early) and screening passes; the credit is sent to the wallet provider."}
+    - {from: awaiting_funds, to: on_hold, by: system, means: "A compliance, funding or new-recipient screening hold is placed before release."}
+    - {from: processing, to: on_hold, by: system, means: "The wallet provider or Paloma compliance stops a credit in progress for screening."}
+    - {from: on_hold, to: processing, by: system, means: "Compliance clears the hold and the credit is sent."}
+    - {from: processing, to: credited, by: system, means: "The wallet provider confirms the money is in the recipient's wallet."}
+    - {from: processing, to: credit_failed, by: system, means: "The wallet provider rejects the credit and the money comes back to Paloma."}
+    - {from: credit_failed, to: processing, by: agent, means: "The failed credit is retried at the customer's request, to the same wallet once its problem is fixed or to a corrected wallet of the same recipient."}
+    - {from: credited, to: processing, by: agent, means: "After an error resolution found in the customer's favour, the money is credited again at no cost."}
+    - {from: awaiting_funds, to: cancelled, by: user, means: "The customer cancels a transfer that has not been released."}
+    - {from: on_hold, to: cancelled, by: user, means: "The customer cancels a held transfer."}
+    - {from: on_hold, to: cancelled, by: system, means: "Paloma cancels a held transfer whose request for information expired unanswered or that compliance rejected."}
+    - {from: awaiting_funds, to: cancelled, by: system, means: "The customer's payment fails or an inbound wire does not arrive in time."}
+    - {from: cancelled, to: refunded, by: agent, means: "The collected money owed back on a cancelled transfer is refunded."}
+    - {from: credit_failed, to: refunded, by: agent, means: "The money of a failed credit is refunded, at the customer's choice or when the retry window ends."}
+    - {from: credited, to: refunded, by: agent, means: "After an error resolution, Paloma refunds the customer for a transfer recorded as credited."}
+
+accounts:
+  - key: principal_held
+    unit: USD
+    meaning: "Customer principal Paloma holds for this transfer: collected funds, reversed failed credits and Paloma make-good credits in; credits sent to the wallet provider and refunds out."
+  - key: fees_held
+    unit: USD
+    meaning: "Fees Paloma has collected on this transfer net of fee refunds: fee charges in, fee refunds out."
+
+parameter_schema:
+  funding_methods_allowed: "Funding methods the tier accepts (list); the account level may narrow it further."
+  entry_min_account_level: "Lowest Personal Sender Account level (official name) that may book this tier."
+  entry_min_completed_transfers: "Fewest completed personal transfers (account_msr_completed_transfers) needed before booking this tier (count)."
+  corridors_served: "Corridors where this tier credits wallets (list)."
+  providers_by_corridor: "Wallet providers Paloma credits in each corridor (mapping corridor -> list of providers)."
+  min_send_usd: "Smallest principal (USD) per transfer."
+  max_send_usd: "Largest principal (USD) per transfer, before the account level's per-transfer limit."
+  provider_cap_usd: "Largest principal (USD) a single credit to each provider may carry, reflecting the provider's own receiving limits (mapping provider -> USD)."
+  max_transfers_per_recipient_24h: "Largest number of Mobile Wallet transfers to one recipient in a rolling 24 hours (count)."
+  fee_ladder: "Transfer fee by principal band: list of {from_usd, to_usd, fee_usd}, inclusive at both ends."
+  credit_card_fee_pct: "Card funding fee as a percentage of principal for credit-card funding (percent; 0 when not accepted)."
+  debit_card_fee_usd: "Flat fee (USD) added for debit-card funding."
+  pay_by_bank_fee_discount_usd: "Amount (USD) taken off the ladder fee for pay-by-bank funding, never below 0.00."
+  fx_margin_pct: "Exchange-rate margin below mid-market (percent)."
+  margin_reduction_threshold_usd: "Principal (USD) at or above which the reduced margin applies."
+  margin_reduction_pct_points: "Percentage points taken off fx_margin_pct at or above the threshold."
+  rate_lock_hours: "Hours from booked_at for which the quoted rate stays guaranteed while funds are awaited."
+  credit_business_days: "Paloma business days from release to the disclosed date available (0 = credited within minutes of release)."
+  booking_cutoff_ct: "Latest US Central time on a business day for release to count from that day (HH:MM, or 24x7)."
+  weekend_credit: "Whether credits are made on Saturdays, Sundays and holidays (boolean)."
+  credit_promise_minutes: "Minutes after release within which the credit is promised on this tier (0 = no minute promise; the date promise applies)."
+  on_time_promise: "Whether Paloma refunds the transfer fee when the credit lands after its promise for a reason on Paloma's side (boolean)."
+  wallet_name_check: "Whether the provider's registered wallet name is checked against the recipient before the credit is sent (boolean)."
+  first_transfer_fee_waived: "Whether the transfer fee is waived on the customer's first-ever personal transfer when booked on this tier (boolean)."
+  first_transfer_promo_cap_usd: "Largest principal (USD) a first-transfer promotion covers (USD; 0 = no promotion)."
+  first_transfer_promo_margin_pct: "Margin applied to a first transfer covered by the promotion (percent)."
+  cancel_full_refund_window_hours: "Elapsed hours after booked_at within which a cancellation refunds principal and every fee in full (the Regulation E 30-minute right, in hours)."
+  late_cancel_fee_refund_pct: "Share of each booking fee refunded when the transfer is cancelled after the full-refund window (percent)."
+  refund_business_days: "Paloma business days within which a refund owed must be issued, counted from the day it becomes owed."
+  rfi_response_days: "Calendar days to answer a transfer-level request for information before the transfer is cancelled."
+  rfi_expiry_fee_refund_pct: "Share of each booking fee refunded when Paloma cancels a held transfer (percent)."
+  hold_review_business_days: "Paloma business days compliance takes to clear a hold once its request for information is answered."
+  funding_deadline_hours: "Hours after booked_at within which an inbound wire must arrive (0 = not applicable)."
+  auto_retry_attempts: "Automatic re-sends of a credit that fails for a technical provider reason before it is treated as failed (count)."
+  auto_retry_interval_minutes: "Minutes between automatic re-sends (minutes)."
+  failure_reason_attribution: "Whether each failure reason is on the recipient's side (sender) or on Paloma's or the provider's side (paloma) (mapping failure_reason -> sender | paloma)."
+  failed_credit_hold_days: "Calendar days a failed credit waits for a retry or redirect before Paloma refunds it."
+  free_retries: "Customer-requested retries of a failed credit that carry no fee (count)."
+  retry_fee_usd: "Fee (USD) for each customer-requested retry beyond the free ones after a sender-side failure."
+  max_retries: "Largest number of customer-requested retries on one transfer (count)."
+  redirect_allowed: "Whether a failed credit may be redirected to a different wallet of the same recipient (boolean)."
+  redirect_fee_usd: "Fee (USD) for each redirect after a sender-side failure."
+  max_redirects: "Largest number of redirects on one transfer (count)."
+  same_recipient_redirect_only: "Whether a redirect must stay with the same recipient, whose name the new wallet must be registered in (boolean)."
+  sender_side_failure_fee_refund_pct: "Share of the transfer fee refunded when a credit that failed on the recipient's side is refunded (percent)."
+  error_notice_window_days: "Calendar days after the disclosed date_available within which an error notice may be given."
+  error_investigation_days: "Calendar days after an error notice within which Paloma must decide it."
+  recredit_business_days: "Paloma business days within which money is credited again after the customer chooses re-credit as a remedy."
+  purpose_code_corridors: "Corridors where a transfer_purpose must be stated at booking (list)."
+
+variants:
+  - name: Mobile Wallet Micro
+    rank: 1
+    entry_gate: {min_account_level: Paloma Starter, max_send_usd: 100.00, funding: [debit_card, pay_by_bank]}
+    parameters:
+      funding_methods_allowed: [debit_card, pay_by_bank]
+      entry_min_account_level: Paloma Starter
+      entry_min_completed_transfers: 0
+      corridors_served: [PH-PHP, KE-KES, GH-GHS, BD-BDT, CO-COP, GT-GTQ, HN-HNL]
+      providers_by_corridor: {PH-PHP: [gcash, maya], KE-KES: [mpesa], GH-GHS: [mtn_momo], BD-BDT: [bkash], CO-COP: [nequi], GT-GTQ: [tigo_money], HN-HNL: [tigo_money]}
+      min_send_usd: 5.00
+      max_send_usd: 100.00
+      provider_cap_usd: {gcash: 1700.00, maya: 1700.00, mpesa: 1930.00, mtn_momo: 1200.00, bkash: 2450.00, nequi: 1600.00, tigo_money: 650.00}
+      max_transfers_per_recipient_24h: 5
+      fee_ladder: [{from_usd: 5.00, to_usd: 100.00, fee_usd: 0.99}]
+      credit_card_fee_pct: 0.00
+      debit_card_fee_usd: 0.00
+      pay_by_bank_fee_discount_usd: 0.00
+      fx_margin_pct: 1.95
+      margin_reduction_threshold_usd: 100.00
+      margin_reduction_pct_points: 0.00
+      rate_lock_hours: 24
+      credit_business_days: 0
+      booking_cutoff_ct: 24x7
+      weekend_credit: true
+      credit_promise_minutes: 0
+      on_time_promise: true
+      wallet_name_check: true
+      first_transfer_fee_waived: false
+      first_transfer_promo_cap_usd: 0.00
+      first_transfer_promo_margin_pct: 1.95
+      cancel_full_refund_window_hours: 0.50
+      late_cancel_fee_refund_pct: 0
+      refund_business_days: 1
+      rfi_response_days: 7
+      rfi_expiry_fee_refund_pct: 100
+      hold_review_business_days: 1
+      funding_deadline_hours: 0
+      auto_retry_attempts: 3
+      auto_retry_interval_minutes: 30
+      failure_reason_attribution: {wallet_limit_exceeded: sender, wallet_not_registered: sender, wallet_name_mismatch: sender, wallet_number_invalid: sender, wallet_suspended: sender, provider_unavailable: paloma}
+      failed_credit_hold_days: 7
+      free_retries: 1
+      retry_fee_usd: 0.99
+      max_retries: 2
+      redirect_allowed: true
+      redirect_fee_usd: 0.00
+      max_redirects: 1
+      same_recipient_redirect_only: true
+      sender_side_failure_fee_refund_pct: 0
+      error_notice_window_days: 180
+      error_investigation_days: 90
+      recredit_business_days: 1
+      purpose_code_corridors: [BD-BDT]
+  - name: Mobile Wallet Economy
+    rank: 2
+    entry_gate: {min_account_level: Paloma Starter, funding: [ach_debit]}
+    parameters:
+      funding_methods_allowed: [ach_debit]
+      entry_min_account_level: Paloma Starter
+      entry_min_completed_transfers: 0
+      corridors_served: [PH-PHP, KE-KES, GH-GHS, BD-BDT, CO-COP, GT-GTQ, HN-HNL]
+      providers_by_corridor: {PH-PHP: [gcash, maya], KE-KES: [mpesa], GH-GHS: [mtn_momo], BD-BDT: [bkash], CO-COP: [nequi], GT-GTQ: [tigo_money], HN-HNL: [tigo_money]}
+      min_send_usd: 10.00
+      max_send_usd: 2999.00
+      provider_cap_usd: {gcash: 1700.00, maya: 1700.00, mpesa: 1930.00, mtn_momo: 1200.00, bkash: 2450.00, nequi: 1600.00, tigo_money: 650.00}
+      max_transfers_per_recipient_24h: 3
+      fee_ladder: [{from_usd: 10.00, to_usd: 999.99, fee_usd: 1.99}, {from_usd: 1000.00, to_usd: 2999.00, fee_usd: 2.99}]
+      credit_card_fee_pct: 0.00
+      debit_card_fee_usd: 0.00
+      pay_by_bank_fee_discount_usd: 0.00
+      fx_margin_pct: 1.15
+      margin_reduction_threshold_usd: 2000.00
+      margin_reduction_pct_points: 0.10
+      rate_lock_hours: 96
+      credit_business_days: 1
+      booking_cutoff_ct: "15:00"
+      weekend_credit: true
+      credit_promise_minutes: 0
+      on_time_promise: true
+      wallet_name_check: true
+      first_transfer_fee_waived: true
+      first_transfer_promo_cap_usd: 1000.00
+      first_transfer_promo_margin_pct: 0.00
+      cancel_full_refund_window_hours: 0.50
+      late_cancel_fee_refund_pct: 100
+      refund_business_days: 3
+      rfi_response_days: 10
+      rfi_expiry_fee_refund_pct: 100
+      hold_review_business_days: 2
+      funding_deadline_hours: 0
+      auto_retry_attempts: 3
+      auto_retry_interval_minutes: 30
+      failure_reason_attribution: {wallet_limit_exceeded: sender, wallet_not_registered: sender, wallet_name_mismatch: sender, wallet_number_invalid: sender, wallet_suspended: sender, provider_unavailable: paloma}
+      failed_credit_hold_days: 14
+      free_retries: 1
+      retry_fee_usd: 1.99
+      max_retries: 2
+      redirect_allowed: true
+      redirect_fee_usd: 0.00
+      max_redirects: 1
+      same_recipient_redirect_only: true
+      sender_side_failure_fee_refund_pct: 0
+      error_notice_window_days: 180
+      error_investigation_days: 90
+      recredit_business_days: 1
+      purpose_code_corridors: [BD-BDT]
+  - name: Mobile Wallet Express
+    rank: 3
+    entry_gate: {min_account_level: Paloma Starter, funding: [debit_card, credit_card, pay_by_bank]}
+    parameters:
+      funding_methods_allowed: [debit_card, credit_card, pay_by_bank]
+      entry_min_account_level: Paloma Starter
+      entry_min_completed_transfers: 0
+      corridors_served: [PH-PHP, KE-KES, GH-GHS, BD-BDT, CO-COP, GT-GTQ, HN-HNL]
+      providers_by_corridor: {PH-PHP: [gcash, maya], KE-KES: [mpesa], GH-GHS: [mtn_momo], BD-BDT: [bkash], CO-COP: [nequi], GT-GTQ: [tigo_money], HN-HNL: [tigo_money]}
+      min_send_usd: 10.00
+      max_send_usd: 2999.00
+      provider_cap_usd: {gcash: 1700.00, maya: 1700.00, mpesa: 1930.00, mtn_momo: 1200.00, bkash: 2450.00, nequi: 1600.00, tigo_money: 650.00}
+      max_transfers_per_recipient_24h: 5
+      fee_ladder: [{from_usd: 10.00, to_usd: 499.99, fee_usd: 2.99}, {from_usd: 500.00, to_usd: 999.99, fee_usd: 3.99}, {from_usd: 1000.00, to_usd: 2999.00, fee_usd: 4.99}]
+      credit_card_fee_pct: 3.00
+      debit_card_fee_usd: 0.00
+      pay_by_bank_fee_discount_usd: 1.00
+      fx_margin_pct: 1.70
+      margin_reduction_threshold_usd: 1500.00
+      margin_reduction_pct_points: 0.10
+      rate_lock_hours: 24
+      credit_business_days: 0
+      booking_cutoff_ct: 24x7
+      weekend_credit: true
+      credit_promise_minutes: 0
+      on_time_promise: true
+      wallet_name_check: true
+      first_transfer_fee_waived: true
+      first_transfer_promo_cap_usd: 500.00
+      first_transfer_promo_margin_pct: 0.00
+      cancel_full_refund_window_hours: 0.50
+      late_cancel_fee_refund_pct: 0
+      refund_business_days: 1
+      rfi_response_days: 7
+      rfi_expiry_fee_refund_pct: 100
+      hold_review_business_days: 1
+      funding_deadline_hours: 0
+      auto_retry_attempts: 3
+      auto_retry_interval_minutes: 15
+      failure_reason_attribution: {wallet_limit_exceeded: sender, wallet_not_registered: sender, wallet_name_mismatch: sender, wallet_number_invalid: sender, wallet_suspended: sender, provider_unavailable: paloma}
+      failed_credit_hold_days: 14
+      free_retries: 1
+      retry_fee_usd: 2.99
+      max_retries: 2
+      redirect_allowed: true
+      redirect_fee_usd: 0.00
+      max_redirects: 1
+      same_recipient_redirect_only: true
+      sender_side_failure_fee_refund_pct: 0
+      error_notice_window_days: 180
+      error_investigation_days: 90
+      recredit_business_days: 1
+      purpose_code_corridors: [BD-BDT]
+  - name: Mobile Wallet Express Plus
+    rank: 4
+    entry_gate: {min_account_level: Paloma Verified Plus, min_completed_transfers: 5, funding: [debit_card, credit_card, pay_by_bank]}
+    parameters:
+      funding_methods_allowed: [debit_card, credit_card, pay_by_bank]
+      entry_min_account_level: Paloma Verified Plus
+      entry_min_completed_transfers: 5
+      corridors_served: [PH-PHP, KE-KES, GH-GHS, BD-BDT, CO-COP, GT-GTQ, HN-HNL]
+      providers_by_corridor: {PH-PHP: [gcash, maya], KE-KES: [mpesa], GH-GHS: [mtn_momo], BD-BDT: [bkash], CO-COP: [nequi], GT-GTQ: [tigo_money], HN-HNL: [tigo_money]}
+      min_send_usd: 50.00
+      max_send_usd: 5000.00
+      provider_cap_usd: {gcash: 1700.00, maya: 1700.00, mpesa: 1930.00, mtn_momo: 1200.00, bkash: 2450.00, nequi: 1600.00, tigo_money: 650.00}
+      max_transfers_per_recipient_24h: 5
+      fee_ladder: [{from_usd: 50.00, to_usd: 999.99, fee_usd: 2.49}, {from_usd: 1000.00, to_usd: 2999.99, fee_usd: 3.49}, {from_usd: 3000.00, to_usd: 5000.00, fee_usd: 4.49}]
+      credit_card_fee_pct: 3.00
+      debit_card_fee_usd: 0.00
+      pay_by_bank_fee_discount_usd: 1.00
+      fx_margin_pct: 1.30
+      margin_reduction_threshold_usd: 3000.00
+      margin_reduction_pct_points: 0.10
+      rate_lock_hours: 24
+      credit_business_days: 0
+      booking_cutoff_ct: 24x7
+      weekend_credit: true
+      credit_promise_minutes: 0
+      on_time_promise: true
+      wallet_name_check: true
+      first_transfer_fee_waived: false
+      first_transfer_promo_cap_usd: 0.00
+      first_transfer_promo_margin_pct: 1.30
+      cancel_full_refund_window_hours: 0.50
+      late_cancel_fee_refund_pct: 50
+      refund_business_days: 1
+      rfi_response_days: 7
+      rfi_expiry_fee_refund_pct: 100
+      hold_review_business_days: 1
+      funding_deadline_hours: 0
+      auto_retry_attempts: 4
+      auto_retry_interval_minutes: 15
+      failure_reason_attribution: {wallet_limit_exceeded: sender, wallet_not_registered: sender, wallet_name_mismatch: sender, wallet_number_invalid: sender, wallet_suspended: sender, provider_unavailable: paloma}
+      failed_credit_hold_days: 21
+      free_retries: 2
+      retry_fee_usd: 0.00
+      max_retries: 3
+      redirect_allowed: true
+      redirect_fee_usd: 0.00
+      max_redirects: 2
+      same_recipient_redirect_only: true
+      sender_side_failure_fee_refund_pct: 50
+      error_notice_window_days: 180
+      error_investigation_days: 90
+      recredit_business_days: 1
+      purpose_code_corridors: [BD-BDT]
+  - name: Mobile Wallet Priority
+    rank: 5
+    entry_gate: {min_account_level: Paloma Verified, funding: [debit_card, pay_by_bank]}
+    parameters:
+      funding_methods_allowed: [debit_card, pay_by_bank]
+      entry_min_account_level: Paloma Verified
+      entry_min_completed_transfers: 0
+      corridors_served: [PH-PHP, KE-KES, GH-GHS, BD-BDT, CO-COP, GT-GTQ, HN-HNL]
+      providers_by_corridor: {PH-PHP: [gcash, maya], KE-KES: [mpesa], GH-GHS: [mtn_momo], BD-BDT: [bkash], CO-COP: [nequi], GT-GTQ: [tigo_money], HN-HNL: [tigo_money]}
+      min_send_usd: 10.00
+      max_send_usd: 2999.00
+      provider_cap_usd: {gcash: 1700.00, maya: 1700.00, mpesa: 1930.00, mtn_momo: 1200.00, bkash: 2450.00, nequi: 1600.00, tigo_money: 650.00}
+      max_transfers_per_recipient_24h: 5
+      fee_ladder: [{from_usd: 10.00, to_usd: 999.99, fee_usd: 4.99}, {from_usd: 1000.00, to_usd: 2999.00, fee_usd: 6.49}]
+      credit_card_fee_pct: 0.00
+      debit_card_fee_usd: 0.00
+      pay_by_bank_fee_discount_usd: 1.00
+      fx_margin_pct: 1.55
+      margin_reduction_threshold_usd: 1500.00
+      margin_reduction_pct_points: 0.10
+      rate_lock_hours: 24
+      credit_business_days: 0
+      booking_cutoff_ct: 24x7
+      weekend_credit: true
+      credit_promise_minutes: 10
+      on_time_promise: true
+      wallet_name_check: true
+      first_transfer_fee_waived: false
+      first_transfer_promo_cap_usd: 0.00
+      first_transfer_promo_margin_pct: 1.55
+      cancel_full_refund_window_hours: 0.50
+      late_cancel_fee_refund_pct: 0
+      refund_business_days: 1
+      rfi_response_days: 7
+      rfi_expiry_fee_refund_pct: 100
+      hold_review_business_days: 1
+      funding_deadline_hours: 0
+      auto_retry_attempts: 6
+      auto_retry_interval_minutes: 10
+      failure_reason_attribution: {wallet_limit_exceeded: sender, wallet_not_registered: sender, wallet_name_mismatch: sender, wallet_number_invalid: sender, wallet_suspended: sender, provider_unavailable: paloma}
+      failed_credit_hold_days: 21
+      free_retries: 3
+      retry_fee_usd: 0.00
+      max_retries: 3
+      redirect_allowed: true
+      redirect_fee_usd: 0.00
+      max_redirects: 2
+      same_recipient_redirect_only: true
+      sender_side_failure_fee_refund_pct: 100
+      error_notice_window_days: 180
+      error_investigation_days: 90
+      recredit_business_days: 1
+      purpose_code_corridors: [BD-BDT]
+  - name: Mobile Wallet Large Amount
+    rank: 6
+    entry_gate: {min_account_level: Paloma Enhanced, min_completed_transfers: 5, min_send_usd: 1500.00, funding: [wire, pay_by_bank], corridors: [PH-PHP, KE-KES, BD-BDT]}
+    parameters:
+      funding_methods_allowed: [wire, pay_by_bank]
+      entry_min_account_level: Paloma Enhanced
+      entry_min_completed_transfers: 5
+      corridors_served: [PH-PHP, KE-KES, BD-BDT]
+      providers_by_corridor: {PH-PHP: [gcash, maya], KE-KES: [mpesa], BD-BDT: [bkash]}
+      min_send_usd: 1500.00
+      max_send_usd: 5000.00
+      provider_cap_usd: {gcash: 1700.00, maya: 1700.00, mpesa: 1930.00, mtn_momo: 1200.00, bkash: 2450.00, nequi: 1600.00, tigo_money: 650.00}
+      max_transfers_per_recipient_24h: 1
+      fee_ladder: [{from_usd: 1500.00, to_usd: 5000.00, fee_usd: 7.99}]
+      credit_card_fee_pct: 0.00
+      debit_card_fee_usd: 0.00
+      pay_by_bank_fee_discount_usd: 0.00
+      fx_margin_pct: 0.95
+      margin_reduction_threshold_usd: 3000.00
+      margin_reduction_pct_points: 0.10
+      rate_lock_hours: 48
+      credit_business_days: 0
+      booking_cutoff_ct: "13:00"
+      weekend_credit: true
+      credit_promise_minutes: 0
+      on_time_promise: true
+      wallet_name_check: true
+      first_transfer_fee_waived: false
+      first_transfer_promo_cap_usd: 0.00
+      first_transfer_promo_margin_pct: 0.95
+      cancel_full_refund_window_hours: 0.50
+      late_cancel_fee_refund_pct: 100
+      refund_business_days: 2
+      rfi_response_days: 14
+      rfi_expiry_fee_refund_pct: 100
+      hold_review_business_days: 3
+      funding_deadline_hours: 48
+      auto_retry_attempts: 3
+      auto_retry_interval_minutes: 30
+      failure_reason_attribution: {wallet_limit_exceeded: sender, wallet_not_registered: sender, wallet_name_mismatch: sender, wallet_number_invalid: sender, wallet_suspended: sender, provider_unavailable: paloma}
+      failed_credit_hold_days: 21
+      free_retries: 1
+      retry_fee_usd: 4.99
+      max_retries: 2
+      redirect_allowed: true
+      redirect_fee_usd: 4.99
+      max_redirects: 1
+      same_recipient_redirect_only: true
+      sender_side_failure_fee_refund_pct: 0
+      error_notice_window_days: 180
+      error_investigation_days: 90
+      recredit_business_days: 2
+      purpose_code_corridors: [PH-PHP, KE-KES, BD-BDT]
+
+events:
+  # ---- holding writes (wallet_transfers) ----
+  - type: wallet_transfer_booked
+    target: wallet_transfers
+    mutation: create
+    meaning: "The customer books and pays for a Mobile Wallet transfer after seeing the pre-payment disclosure."
+    grain: "One row per transfer order."
+    fields:
+      customer_id: "The sending customer."
+      sender_account_id: "Personal Sender Account the transfer is booked under."
+      recipient_id: "The saved recipient whose wallet is credited."
+      variant_name: "The Mobile Wallet tier chosen."
+      corridor: "Destination corridor."
+      confirmation_number: "Confirmation number on the customer's receipt."
+      send_amount_usd: "Principal in USD."
+      transfer_fee_usd: "Transfer fee disclosed, after any promotion or pay-by-bank discount."
+      card_fee_usd: "Credit-card funding fee disclosed; 0.00 when none."
+      fx_rate: "Customer exchange rate locked at booking."
+      receive_amount: "Amount credited to the wallet in local currency."
+      funding_method: "How the customer pays."
+      transfer_purpose: "Stated purpose of the transfer."
+      wallet_provider: "Wallet provider credited."
+      wallet_number: "Wallet number credited, copied from the saved recipient."
+      wallet_holder_name: "Name the wallet must be registered in, copied from the saved recipient."
+      booked_at: "Moment the customer authorised payment."
+      date_available: "Disclosed date the money will be in the wallet."
+    triggers:
+      - event: wallet:wallet_funds_received
+        when: {funding_method: [debit_card, credit_card, pay_by_bank]}
+        map: {amount_usd: send_amount_usd}
+      - event: wallet:wallet_fee_charged
+        when: {funding_method: [debit_card, credit_card, pay_by_bank], transfer_fee_usd: {not: 0.0}}
+        map: {fee_type: transfer_fee, amount_usd: transfer_fee_usd, fee_seq: 1}
+      - event: wallet:wallet_fee_charged
+        when: {funding_method: credit_card}
+        map: {fee_type: card_funding_fee, amount_usd: card_fee_usd, fee_seq: 1}
+  - type: wallet_rate_requoted
+    target: wallet_transfers
+    mutation: update
+    meaning: "Funds arrive after the rate lock lapsed and the rate, amount credited and date available are re-disclosed."
+    grain: "One row per re-quote."
+    fields:
+      fx_rate: "New customer exchange rate."
+      receive_amount: "New amount to be credited."
+      date_available: "Re-disclosed date available."
+    triggers: []
+  - type: wallet_released
+    target: wallet_transfers
+    mutation: {transition: {from: awaiting_funds, to: processing}}
+    meaning: "The transfer is released and the first credit is sent to the wallet provider."
+    grain: "One row per first release."
+    fields:
+      released_at: "Moment the credit was first sent."
+    triggers:
+      - event: wallet:wallet_credit_sent
+        map: {credit_attempt: 1}
+  - type: wallet_hold_placed
+    target: wallet_transfers
+    mutation: {transition: [{from: awaiting_funds, to: on_hold}, {from: processing, to: on_hold}]}
+    meaning: "Compliance, funding review, provider screening or new-recipient cooling-off stops the transfer."
+    grain: "One row per hold."
+    fields:
+      hold_reason: "Why the transfer is held."
+      held_at: "Moment the hold was placed."
+    triggers: []
+  - type: wallet_hold_released
+    target: wallet_transfers
+    mutation: {transition: {from: on_hold, to: processing}}
+    meaning: "Compliance clears the hold and the credit is sent."
+    grain: "One row per hold release."
+    fields:
+      hold_reason: "Reset to none."
+      released_at: "Moment the credit was sent after the hold."
+      date_available: "Re-disclosed date available counted from the release."
+    triggers: []
+  - type: wallet_credit_confirmed
+    target: wallet_transfers
+    mutation: {transition: {from: processing, to: credited}}
+    meaning: "The wallet provider confirms the credit to the recipient's wallet."
+    grain: "One row per confirmed credit."
+    fields:
+      credited_at: "Moment the provider confirmed the credit."
+      closed_date: "Date part of credited_at."
+    triggers:
+      - event: rewards:rewards_points_earned
+        map: {source_transfer_id: wallet_transfer_id, source_category: wallet}
+  - type: wallet_credit_failed_marked
+    target: wallet_transfers
+    mutation: {transition: {from: processing, to: credit_failed}}
+    meaning: "The provider rejected the credit after any automatic re-sends and the money is back with Paloma."
+    grain: "One row per failure."
+    fields:
+      failed_at: "Moment the failure was confirmed."
+    triggers: []
+  - type: wallet_credit_retried
+    target: wallet_transfers
+    mutation: {transition: [{from: credit_failed, to: processing}, {from: credited, to: processing}]}
+    meaning: "A failed credit is sent again at the customer's request, or a credit is sent again at no cost after an error resolution."
+    grain: "One row per retry."
+    fields:
+      released_at: "Moment the new credit was sent."
+      date_available: "Re-disclosed date available for the new credit."
+    triggers:
+      - event: wallet:wallet_credit_sent
+        map: {}
+  - type: wallet_transfer_cancelled
+    target: wallet_transfers
+    mutation: {transition: [{from: awaiting_funds, to: cancelled}, {from: on_hold, to: cancelled}]}
+    meaning: "The customer cancels their own transfer before it is released."
+    grain: "One row per customer cancellation."
+    fields:
+      cancelled_at: "Moment the customer confirmed the cancellation."
+    triggers: []
+  - type: wallet_transfer_auto_cancelled
+    target: wallet_transfers
+    mutation: {transition: [{from: on_hold, to: cancelled}, {from: awaiting_funds, to: cancelled}]}
+    meaning: "Paloma cancels the transfer: an unanswered or rejected request for information, a compliance rejection, or a failed or late payment."
+    grain: "One row per Paloma-initiated cancellation."
+    fields:
+      cancelled_at: "Moment Paloma cancelled it."
+      hold_reason: "The reason that led to the cancellation."
+    triggers: []
+  - type: wallet_transfer_refunded
+    target: wallet_transfers
+    mutation: {transition: [{from: cancelled, to: refunded}, {from: credit_failed, to: refunded}, {from: credited, to: refunded}]}
+    meaning: "The money owed back has been refunded and the transfer is closed."
+    grain: "One row per closing refund."
+    fields:
+      closed_date: "Date of the closing refund."
+    triggers: []
+  - type: wallet_destination_updated
+    target: wallet_transfers
+    mutation: update
+    meaning: "The wallet a failed credit is addressed to is replaced by another wallet of the same recipient."
+    grain: "One row per destination change."
+    fields:
+      wallet_provider: "New wallet provider."
+      wallet_number: "New wallet number, exactly as the customer gives it."
+      wallet_holder_name: "Name the new wallet is registered in, exactly as the customer gives it."
+    triggers: []
+  # ---- ledger writes (wallet_ledger) ----
+  - type: wallet_funds_received
+    target: wallet_ledger
+    meaning: "The customer's payment for the principal is collected."
+    grain: "One row per principal collection on a transfer."
+    distinguish_by: [entry_date]
+    fields:
+      amount_usd: "Principal collected (positive)."
+      entry_date: "Date collected."
+    account: principal_held
+    direction: in
+    triggers: []
+  - type: wallet_fee_charged
+    target: wallet_ledger
+    meaning: "A fee is collected: transfer fee, card funding fee, retry fee or redirect fee."
+    grain: "One row per fee type per sequence number."
+    distinguish_by: [fee_type, fee_seq]
+    fields:
+      fee_type: "Kind of fee."
+      amount_usd: "Fee collected (positive)."
+      fee_seq: "1 for booking fees; the retry or redirect number otherwise."
+      entry_date: "Date collected."
+    account: fees_held
+    direction: in
+    triggers: []
+  - type: wallet_fee_refunded
+    target: wallet_ledger
+    meaning: "All or part of one collected fee is refunded."
+    grain: "One row per refunded fee charge."
+    distinguish_by: [related_entry_id]
+    fields:
+      related_entry_id: "ledger_entry_id of the wallet_fee_charged row refunded."
+      amount_usd: "Amount refunded (positive)."
+      fee_refund_reason: "Why the fee is refunded."
+      entry_date: "Date refunded."
+    account: fees_held
+    direction: out
+    triggers: []
+  - type: wallet_credit_sent
+    target: wallet_ledger
+    meaning: "Principal is sent to the wallet provider for credit to the recipient's wallet."
+    grain: "One row per credit attempt."
+    distinguish_by: [credit_attempt]
+    fields:
+      amount_usd: "USD principal sent (positive)."
+      receive_amount: "Local-currency amount sent."
+      fx_rate_applied: "Rate used."
+      credit_attempt: "1 for the first credit, 2 and up for each retry or redirect."
+      entry_date: "Date sent."
+    account: principal_held
+    direction: out
+    triggers: []
+  - type: wallet_credit_reversed
+    target: wallet_ledger
+    meaning: "The provider rejects a credit and its principal comes back to Paloma in full."
+    grain: "One row per failed credit attempt."
+    distinguish_by: [credit_attempt]
+    fields:
+      amount_usd: "USD principal back with Paloma (positive), equal to the attempt's amount sent."
+      failure_reason: "Provider's rejection reason."
+      credit_attempt: "The credit attempt that failed."
+      entry_date: "Date of the rejection."
+    account: principal_held
+    direction: in
+    triggers:
+      - event: wallet:wallet_credit_failed_marked
+        map: {}
+  - type: wallet_paloma_credit
+    target: wallet_ledger
+    meaning: "Paloma funds a re-credit or refund after an error found on a transfer recorded as credited."
+    grain: "One row per make-good credit per source entry."
+    distinguish_by: [credit_reason, related_entry_id]
+    fields:
+      credit_reason: "error_recredit, error_refund or incorrect_amount_shortfall."
+      amount_usd: "Amount Paloma puts in (positive)."
+      related_entry_id: "The wallet_credit_sent row the error concerned."
+      entry_date: "Date credited."
+    account: principal_held
+    direction: in
+    triggers: []
+  - type: wallet_refund_issued
+    target: wallet_ledger
+    meaning: "Principal owed back to the customer is refunded to the original funding method."
+    grain: "One row per principal refund per basis and source entry."
+    distinguish_by: [refund_basis, related_entry_id]
+    fields:
+      amount_usd: "Principal refunded (positive)."
+      refund_basis: "Why the refund is owed."
+      related_entry_id: "The ledger entry the refund pays back (funds received, the last reversal, or the Paloma credit)."
+      entry_date: "Date refunded."
+    account: principal_held
+    direction: out
+    triggers:
+      - event: wallet:wallet_transfer_refunded
+        when: {refund_basis: {not: error_shortfall}}
+        map: {closed_date: entry_date}
+  # ---- case writes (wallet_cases) ----
+  - type: wallet_redirect_requested
+    target: wallet_cases
+    meaning: "The customer gives another wallet of the same recipient for a failed credit."
+    grain: "One row per redirect."
+    distinguish_by: [redirect_seq]
+    fields:
+      new_wallet_provider: "Provider of the new wallet."
+      new_wallet_number: "New wallet number, exactly as the customer gives it."
+      new_wallet_holder_name: "Name the new wallet is registered in, exactly as the customer gives it."
+      redirect_seq: "1 for the first redirect on the transfer, 2 for the second."
+      case_date: "Date of the request."
+    triggers:
+      - event: wallet:wallet_destination_updated
+        map: {wallet_provider: new_wallet_provider, wallet_number: new_wallet_number, wallet_holder_name: new_wallet_holder_name}
+  - type: wallet_rfi_answer_logged
+    target: wallet_cases
+    meaning: "The customer's answer to a transfer-level request for information is logged."
+    grain: "One row per uploaded answer."
+    distinguish_by: [doc_reference]
+    fields:
+      rfi_topic: "What the request asked."
+      doc_reference: "Upload reference of the answer document, as the app shows it."
+      case_date: "Date logged."
+    triggers: []
+  - type: wallet_error_notice_filed
+    target: wallet_cases
+    meaning: "The customer gives notice of an error on a wallet transfer under the Remittance Transfer Rule."
+    grain: "One row per error notice."
+    distinguish_by: [case_type, case_date]
+    fields:
+      case_type: "Kind of error asserted."
+      case_date: "Date of the notice."
+      resolution_due_date: "Last day for Paloma's decision."
+    triggers: []
+  - type: wallet_error_decided
+    target: wallet_cases
+    meaning: "Paloma's error-resolution team records its finding on one notice."
+    grain: "One row per decision."
+    distinguish_by: [related_case_id]
+    fields:
+      related_case_id: "case_id of the notice."
+      case_outcome: "error_found or no_error."
+      case_date: "Date decided."
+    triggers: []
+  - type: wallet_remedy_chosen
+    target: wallet_cases
+    meaning: "After an error is found, the customer chooses a refund or a re-credit at no cost."
+    grain: "One row per choice."
+    distinguish_by: [related_case_id]
+    fields:
+      related_case_id: "case_id of the notice."
+      remedy_choice: "refund or recredit for a wrong wallet; refund_shortfall or recredit_shortfall for an incorrect amount."
+      case_date: "Date chosen."
+    triggers:
+      - event: wallet:wallet_refund_issued
+        when: {remedy_choice: refund}
+        map: {refund_basis: error_resolution}
+      - event: wallet:wallet_refund_issued
+        when: {remedy_choice: refund_shortfall}
+        map: {refund_basis: error_shortfall}
+      - event: wallet:wallet_credit_retried
+        when: {remedy_choice: [recredit, recredit_shortfall]}
+        map: {}
+
+measures:
+  - id: wallet_msr_transfers_to_recipient_24h
+    window: "Rolling 24 hours ending at frozen_time: booked_at strictly later than frozen_time minus 24 hours."
+    measure: "Count of wallet_transfers on the same recipient_id, excluding status cancelled or refunded."
+  - id: wallet_msr_customer_retries
+    window: "The life of one transfer."
+    measure: "Count of wallet_credit_sent rows on this wallet_transfer_id with credit_attempt of 2 or more that were sent to the same wallet (not after a wallet_redirect_requested row) and followed a wallet_credit_reversed row whose failure_reason is attributed to the sender."
+  - id: wallet_msr_redirects
+    window: "The life of one transfer."
+    measure: "Count of wallet_redirect_requested rows on this wallet_transfer_id."
+
+policies:
+  - id: wallet_agg_multi_holding
+    subject: [wallet_transfer_booked]
+    rule: >-
+      A customer may hold any number of Mobile Wallet transfers at once; each booking has its own
+      confirmation number, principal, fees, rate and wallet destination. They are bounded only by the
+      aggregate sending limits of the customer's Personal Sender Account, the per-recipient frequency
+      cap and the provider cap (wallet_agg_sending_limits). Transfers are never combined: a retry,
+      redirect or refund on one transfer never touches another.
+    eligibility: []
+    params:
+      max_per_customer: null
+
+  - id: wallet_agg_sending_limits
+    subject: [wallet_transfer_booked]
+    rule: >-
+      A Mobile Wallet transfer is booked only under the customer's own Personal Sender Account, and
+      only while that account's status is active. Its principal must fit every ceiling of
+      account_sending_limits for the account's level at the moment of booking, aggregated over all of
+      the customer's personal transfers in Bank Deposit, Cash Pickup and Mobile Wallet. The principal
+      must lie between the tier's min_send_usd and max_send_usd, both inclusive, and may not exceed
+      the wallet provider's entry in provider_cap_usd. No more than max_transfers_per_recipient_24h
+      Mobile Wallet transfers to one recipient may be booked as counted by
+      wallet_msr_transfers_to_recipient_24h including the new one. The binding ceiling is the lowest
+      of the account level's per_transfer_limit_usd, the tier's max_send_usd and the provider cap. A
+      booking over any ceiling is not made; Paloma never splits one requested amount into several
+      wallet credits, and a provider cap is never worked around by sending to a second wallet.
+    eligibility:
+      - id: sender_account_active
+        applies_to: [wallet_transfer_booked]
+        kind: state
+        condition: "A Mobile Wallet transfer is booked only under the customer's own Personal Sender Account, and only while that account's status is active."
+        evidence_fields: [sender_accounts.sender_account_id, sender_accounts.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [sender_accounts.sender_account_id]
+          action_bindings:
+            sender_accounts.sender_account_id: sender_account_id
+        state_contract:
+          field: sender_accounts.status
+          allowed: [active]
+    params:
+      per_tier:
+        Mobile Wallet Micro: {min_send_usd: "=min_send_usd", max_send_usd: "=max_send_usd", provider_cap_usd: "=provider_cap_usd", max_transfers_per_recipient_24h: "=max_transfers_per_recipient_24h"}
+        Mobile Wallet Economy: {min_send_usd: "=min_send_usd", max_send_usd: "=max_send_usd", provider_cap_usd: "=provider_cap_usd", max_transfers_per_recipient_24h: "=max_transfers_per_recipient_24h"}
+        Mobile Wallet Express: {min_send_usd: "=min_send_usd", max_send_usd: "=max_send_usd", provider_cap_usd: "=provider_cap_usd", max_transfers_per_recipient_24h: "=max_transfers_per_recipient_24h"}
+        Mobile Wallet Express Plus: {min_send_usd: "=min_send_usd", max_send_usd: "=max_send_usd", provider_cap_usd: "=provider_cap_usd", max_transfers_per_recipient_24h: "=max_transfers_per_recipient_24h"}
+        Mobile Wallet Priority: {min_send_usd: "=min_send_usd", max_send_usd: "=max_send_usd", provider_cap_usd: "=provider_cap_usd", max_transfers_per_recipient_24h: "=max_transfers_per_recipient_24h"}
+        Mobile Wallet Large Amount: {min_send_usd: "=min_send_usd", max_send_usd: "=max_send_usd", provider_cap_usd: "=provider_cap_usd", max_transfers_per_recipient_24h: "=max_transfers_per_recipient_24h"}
+    measures: [wallet_msr_transfers_to_recipient_24h]
+
+  - id: wallet_evt_booking_eligibility
+    subject: [wallet_transfer_booked]
+    rule: >-
+      Booking is the customer's own authorisation of payment: the agent may quote and explain, and
+      the customer books. A tier may be booked only when the account's level is at or above the
+      tier's entry_min_account_level (by level_number) and account_msr_completed_transfers is at
+      least the tier's entry_min_completed_transfers. The funding method must be in the tier's
+      funding_methods_allowed and also allowed by the account level; the narrower wins. The corridor
+      must be in corridors_served and the wallet provider must be listed for that corridor in
+      providers_by_corridor. The recipient must be a saved recipient of the same customer whose
+      status is active, whose corridor equals the transfer's corridor and who has a saved mobile
+      wallet; wallet_provider and wallet_number are copied from the saved recipient and
+      wallet_holder_name is the recipient's full_name. On a tier whose wallet_name_check is true the
+      credit is sent only when the provider's registered name for the wallet matches
+      wallet_holder_name; a mismatch fails the credit with failure_reason wallet_name_mismatch. In a
+      corridor listed in purpose_code_corridors a transfer_purpose must be stated.
+    eligibility:
+      - id: tier_entry
+        applies_to: [wallet_transfer_booked]
+        kind: authorization
+        condition: "A tier may be booked only when the account's level is at or above the tier's entry_min_account_level (by level_number) and account_msr_completed_transfers is at least the tier's entry_min_completed_transfers."
+        evidence_fields: [sender_accounts.sender_account_id, sender_accounts.variant_name]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [sender_accounts.sender_account_id]
+          action_bindings:
+            sender_accounts.sender_account_id: sender_account_id
+      - id: recipient_wallet_on_file
+        applies_to: [wallet_transfer_booked]
+        kind: authorization
+        condition: "The recipient must be a saved recipient of the same customer whose status is active, whose corridor equals the transfer's corridor and who has a saved mobile wallet"
+        evidence_fields: [recipients.recipient_id, recipients.customer_id, recipients.status, recipients.corridor, recipients.mobile_wallet_provider, recipients.mobile_wallet_number]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [recipients.recipient_id]
+          action_bindings:
+            recipients.recipient_id: recipient_id
+    params:
+      per_tier:
+        Mobile Wallet Micro: {entry_min_account_level: "=entry_min_account_level", entry_min_completed_transfers: "=entry_min_completed_transfers", funding_methods_allowed: "=funding_methods_allowed", corridors_served: "=corridors_served", providers_by_corridor: "=providers_by_corridor", wallet_name_check: "=wallet_name_check", purpose_code_corridors: "=purpose_code_corridors"}
+        Mobile Wallet Economy: {entry_min_account_level: "=entry_min_account_level", entry_min_completed_transfers: "=entry_min_completed_transfers", funding_methods_allowed: "=funding_methods_allowed", corridors_served: "=corridors_served", providers_by_corridor: "=providers_by_corridor", wallet_name_check: "=wallet_name_check", purpose_code_corridors: "=purpose_code_corridors"}
+        Mobile Wallet Express: {entry_min_account_level: "=entry_min_account_level", entry_min_completed_transfers: "=entry_min_completed_transfers", funding_methods_allowed: "=funding_methods_allowed", corridors_served: "=corridors_served", providers_by_corridor: "=providers_by_corridor", wallet_name_check: "=wallet_name_check", purpose_code_corridors: "=purpose_code_corridors"}
+        Mobile Wallet Express Plus: {entry_min_account_level: "=entry_min_account_level", entry_min_completed_transfers: "=entry_min_completed_transfers", funding_methods_allowed: "=funding_methods_allowed", corridors_served: "=corridors_served", providers_by_corridor: "=providers_by_corridor", wallet_name_check: "=wallet_name_check", purpose_code_corridors: "=purpose_code_corridors"}
+        Mobile Wallet Priority: {entry_min_account_level: "=entry_min_account_level", entry_min_completed_transfers: "=entry_min_completed_transfers", funding_methods_allowed: "=funding_methods_allowed", corridors_served: "=corridors_served", providers_by_corridor: "=providers_by_corridor", wallet_name_check: "=wallet_name_check", purpose_code_corridors: "=purpose_code_corridors"}
+        Mobile Wallet Large Amount: {entry_min_account_level: "=entry_min_account_level", entry_min_completed_transfers: "=entry_min_completed_transfers", funding_methods_allowed: "=funding_methods_allowed", corridors_served: "=corridors_served", providers_by_corridor: "=providers_by_corridor", wallet_name_check: "=wallet_name_check", purpose_code_corridors: "=purpose_code_corridors"}
+
+  - id: wallet_evt_pricing
+    subject: [wallet_transfer_booked, wallet_fee_charged]
+    rule: >-
+      The transfer fee is the fee_usd of the fee_ladder band containing the principal, less
+      pay_by_bank_fee_discount_usd when funded by pay_by_bank (never below 0.00). A first personal
+      transfer (no other personal transfer on the sender account in any delivery method except ones
+      whose status is cancelled or refunded) booked on a tier whose first_transfer_fee_waived is true
+      with principal at or below first_transfer_promo_cap_usd has a 0.00 transfer fee and the margin
+      first_transfer_promo_margin_pct; above the cap the regular price applies to the whole
+      transfer, and the promotion never stacks with the pay-by-bank discount. card_fee_usd is
+      credit_card_fee_pct of the principal, rounded half up to the cent, for credit-card funding and
+      debit_card_fee_usd for debit-card funding. The margin is fx_margin_pct, less
+      margin_reduction_pct_points at or above margin_reduction_threshold_usd (the promotional margin
+      replaces both); fx_rate is the corridor's mid_market_rate in the Paloma rate sheet for the
+      booking date times one minus the margin over 100, rounded half up to 4 decimals, and
+      receive_amount is the principal times fx_rate rounded half up to 2 decimals. date_available is
+      the release day, counted from booking_cutoff_ct as for Bank Deposit, plus credit_business_days
+      Paloma business days; when weekend_credit is true the date may fall on any calendar day. Fees
+      are collected with the principal as wallet_fee_charged rows with fee_seq 1.
+    eligibility: []
+    params:
+      per_tier:
+        Mobile Wallet Micro: {fee_ladder: "=fee_ladder", pay_by_bank_fee_discount_usd: "=pay_by_bank_fee_discount_usd", first_transfer_fee_waived: "=first_transfer_fee_waived", first_transfer_promo_cap_usd: "=first_transfer_promo_cap_usd", first_transfer_promo_margin_pct: "=first_transfer_promo_margin_pct", credit_card_fee_pct: "=credit_card_fee_pct", debit_card_fee_usd: "=debit_card_fee_usd", fx_margin_pct: "=fx_margin_pct", margin_reduction_threshold_usd: "=margin_reduction_threshold_usd", margin_reduction_pct_points: "=margin_reduction_pct_points", booking_cutoff_ct: "=booking_cutoff_ct", credit_business_days: "=credit_business_days", weekend_credit: "=weekend_credit"}
+        Mobile Wallet Economy: {fee_ladder: "=fee_ladder", pay_by_bank_fee_discount_usd: "=pay_by_bank_fee_discount_usd", first_transfer_fee_waived: "=first_transfer_fee_waived", first_transfer_promo_cap_usd: "=first_transfer_promo_cap_usd", first_transfer_promo_margin_pct: "=first_transfer_promo_margin_pct", credit_card_fee_pct: "=credit_card_fee_pct", debit_card_fee_usd: "=debit_card_fee_usd", fx_margin_pct: "=fx_margin_pct", margin_reduction_threshold_usd: "=margin_reduction_threshold_usd", margin_reduction_pct_points: "=margin_reduction_pct_points", booking_cutoff_ct: "=booking_cutoff_ct", credit_business_days: "=credit_business_days", weekend_credit: "=weekend_credit"}
+        Mobile Wallet Express: {fee_ladder: "=fee_ladder", pay_by_bank_fee_discount_usd: "=pay_by_bank_fee_discount_usd", first_transfer_fee_waived: "=first_transfer_fee_waived", first_transfer_promo_cap_usd: "=first_transfer_promo_cap_usd", first_transfer_promo_margin_pct: "=first_transfer_promo_margin_pct", credit_card_fee_pct: "=credit_card_fee_pct", debit_card_fee_usd: "=debit_card_fee_usd", fx_margin_pct: "=fx_margin_pct", margin_reduction_threshold_usd: "=margin_reduction_threshold_usd", margin_reduction_pct_points: "=margin_reduction_pct_points", booking_cutoff_ct: "=booking_cutoff_ct", credit_business_days: "=credit_business_days", weekend_credit: "=weekend_credit"}
+        Mobile Wallet Express Plus: {fee_ladder: "=fee_ladder", pay_by_bank_fee_discount_usd: "=pay_by_bank_fee_discount_usd", first_transfer_fee_waived: "=first_transfer_fee_waived", first_transfer_promo_cap_usd: "=first_transfer_promo_cap_usd", first_transfer_promo_margin_pct: "=first_transfer_promo_margin_pct", credit_card_fee_pct: "=credit_card_fee_pct", debit_card_fee_usd: "=debit_card_fee_usd", fx_margin_pct: "=fx_margin_pct", margin_reduction_threshold_usd: "=margin_reduction_threshold_usd", margin_reduction_pct_points: "=margin_reduction_pct_points", booking_cutoff_ct: "=booking_cutoff_ct", credit_business_days: "=credit_business_days", weekend_credit: "=weekend_credit"}
+        Mobile Wallet Priority: {fee_ladder: "=fee_ladder", pay_by_bank_fee_discount_usd: "=pay_by_bank_fee_discount_usd", first_transfer_fee_waived: "=first_transfer_fee_waived", first_transfer_promo_cap_usd: "=first_transfer_promo_cap_usd", first_transfer_promo_margin_pct: "=first_transfer_promo_margin_pct", credit_card_fee_pct: "=credit_card_fee_pct", debit_card_fee_usd: "=debit_card_fee_usd", fx_margin_pct: "=fx_margin_pct", margin_reduction_threshold_usd: "=margin_reduction_threshold_usd", margin_reduction_pct_points: "=margin_reduction_pct_points", booking_cutoff_ct: "=booking_cutoff_ct", credit_business_days: "=credit_business_days", weekend_credit: "=weekend_credit"}
+        Mobile Wallet Large Amount: {fee_ladder: "=fee_ladder", pay_by_bank_fee_discount_usd: "=pay_by_bank_fee_discount_usd", first_transfer_fee_waived: "=first_transfer_fee_waived", first_transfer_promo_cap_usd: "=first_transfer_promo_cap_usd", first_transfer_promo_margin_pct: "=first_transfer_promo_margin_pct", credit_card_fee_pct: "=credit_card_fee_pct", debit_card_fee_usd: "=debit_card_fee_usd", fx_margin_pct: "=fx_margin_pct", margin_reduction_threshold_usd: "=margin_reduction_threshold_usd", margin_reduction_pct_points: "=margin_reduction_pct_points", booking_cutoff_ct: "=booking_cutoff_ct", credit_business_days: "=credit_business_days", weekend_credit: "=weekend_credit"}
+    formula:
+      card_fee: "round(send_amount_usd * credit_card_fee_pct / 100, 2)"
+      effective_margin_pct: "fx_margin_pct - margin_reduction_pct_points if send_amount_usd >= margin_reduction_threshold_usd else fx_margin_pct"
+      receive_amount: "round(send_amount_usd * fx_rate, 2)"
+
+  - id: wallet_evt_funding_and_rate_lock
+    subject: [wallet_funds_received, wallet_rate_requoted, wallet_transfer_auto_cancelled]
+    rule: >-
+      Card and pay-by-bank payments are collected at booking, an ACH debit when it settles and a wire
+      when it arrives. The quoted rate is guaranteed for rate_lock_hours elapsed hours from booked_at.
+      A rate is re-quoted only when funds are collected more than rate_lock_hours after the transfer
+      was booked. Lock hours are counted as elapsed hours from booked_at to the moment the funds are
+      collected. A re-quote uses the rate sheet for the collection date with the same margin rule,
+      re-discloses fx_rate, receive_amount and date_available, and never changes fees. On a tier
+      whose funding_deadline_hours is above 0, Paloma cancels a wire-funded booking
+      whose funds have not arrived by booked_at plus funding_deadline_hours elapsed hours. When an
+      ACH debit is returned unpaid before release or a card capture fails, Paloma cancels the
+      transfer with hold_reason funding_failed. Nothing is owed back on a cancellation for missing or
+      failed funding, and the transfer stays cancelled.
+    eligibility:
+      - id: rate_lock_lapsed
+        applies_to: [wallet_rate_requoted]
+        kind: time
+        condition: "A rate is re-quoted only when funds are collected more than rate_lock_hours after the transfer was booked."
+        evidence_fields: [wallet_transfers.wallet_transfer_id, wallet_transfers.booked_at]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [wallet_transfers.wallet_transfer_id]
+          action_bindings:
+            wallet_transfers.wallet_transfer_id: wallet_transfer_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the transfer was booked"
+          anchor_source: wallet_transfers.booked_at
+          relation: not_before
+          duration_source: variants.rate_lock_hours
+          unit: elapsed_hours
+          counting_rule: "Lock hours are counted as elapsed hours from booked_at to the moment the funds are collected."
+          boundary: exclusive
+    params:
+      per_tier:
+        Mobile Wallet Micro: {rate_lock_hours: "=rate_lock_hours", funding_deadline_hours: "=funding_deadline_hours"}
+        Mobile Wallet Economy: {rate_lock_hours: "=rate_lock_hours", funding_deadline_hours: "=funding_deadline_hours"}
+        Mobile Wallet Express: {rate_lock_hours: "=rate_lock_hours", funding_deadline_hours: "=funding_deadline_hours"}
+        Mobile Wallet Express Plus: {rate_lock_hours: "=rate_lock_hours", funding_deadline_hours: "=funding_deadline_hours"}
+        Mobile Wallet Priority: {rate_lock_hours: "=rate_lock_hours", funding_deadline_hours: "=funding_deadline_hours"}
+        Mobile Wallet Large Amount: {rate_lock_hours: "=rate_lock_hours", funding_deadline_hours: "=funding_deadline_hours"}
+
+  - id: wallet_evt_release_holds_and_credit
+    subject: [wallet_released, wallet_hold_placed, wallet_hold_released, wallet_credit_sent, wallet_credit_confirmed, wallet_credit_reversed, wallet_credit_failed_marked, wallet_rfi_answer_logged, wallet_transfer_auto_cancelled]
+    rule: >-
+      A transfer is released once its principal is collected (or ACH principal is released early
+      within the account's allowance) and any new-recipient cooling-off has run; release sends the
+      first credit (credit_attempt 1) at the transfer's fx_rate and records released_at. A credit the
+      provider cannot complete for a technical reason (provider_unavailable) is re-sent automatically
+      up to auto_retry_attempts times, auto_retry_interval_minutes apart, before it is treated as
+      failed. Any other rejection (wallet_limit_exceeded, wallet_not_registered,
+      wallet_name_mismatch, wallet_number_invalid, wallet_suspended) fails the credit at once: the
+      principal comes back in full and the transfer becomes credit_failed, handled under
+      wallet_evt_failed_credit. Compliance may hold a transfer before or during processing; a hold
+      with hold_reason rfi_transfer asks the customer for information. An answer is logged only
+      while the transfer is on_hold with hold_reason rfi_transfer. Each upload reference is logged
+      once. Only compliance releases a hold, within hold_review_business_days Paloma business days
+      of a complete answer, and date_available is then re-disclosed from the release. A held
+      transfer is cancelled by Paloma when its request for information goes unanswered for more than
+      rfi_response_days calendar days after held_at, or when compliance rejects it. When the
+      provider confirms the credit the transfer is credited, earning Paloma Rewards points.
+    eligibility:
+      - id: rfi_hold_open
+        applies_to: [wallet_rfi_answer_logged]
+        kind: state
+        condition: "An answer is logged only while the transfer is on_hold with hold_reason rfi_transfer."
+        evidence_fields: [wallet_transfers.wallet_transfer_id, wallet_transfers.status, wallet_transfers.hold_reason]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [wallet_transfers.wallet_transfer_id]
+          action_bindings:
+            wallet_transfers.wallet_transfer_id: wallet_transfer_id
+        state_contract:
+          field: wallet_transfers.status
+          allowed: [on_hold]
+      - id: one_log_per_upload
+        applies_to: [wallet_rfi_answer_logged]
+        kind: dedup
+        condition: "Each upload reference is logged once."
+        evidence_fields: [wallet_cases.doc_reference, wallet_cases.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [wallet_cases.doc_reference]
+          action_bindings:
+            wallet_cases.doc_reference: doc_reference
+        dedup_contract:
+          table: wallet_cases
+          mode: separate_record
+          object_bindings: {doc_reference: doc_reference}
+          duplicate_filters: {event_type: [wallet_rfi_answer_logged]}
+          distinct_fields: []
+    params:
+      per_tier:
+        Mobile Wallet Micro: {auto_retry_attempts: "=auto_retry_attempts", auto_retry_interval_minutes: "=auto_retry_interval_minutes", hold_review_business_days: "=hold_review_business_days", rfi_response_days: "=rfi_response_days"}
+        Mobile Wallet Economy: {auto_retry_attempts: "=auto_retry_attempts", auto_retry_interval_minutes: "=auto_retry_interval_minutes", hold_review_business_days: "=hold_review_business_days", rfi_response_days: "=rfi_response_days"}
+        Mobile Wallet Express: {auto_retry_attempts: "=auto_retry_attempts", auto_retry_interval_minutes: "=auto_retry_interval_minutes", hold_review_business_days: "=hold_review_business_days", rfi_response_days: "=rfi_response_days"}
+        Mobile Wallet Express Plus: {auto_retry_attempts: "=auto_retry_attempts", auto_retry_interval_minutes: "=auto_retry_interval_minutes", hold_review_business_days: "=hold_review_business_days", rfi_response_days: "=rfi_response_days"}
+        Mobile Wallet Priority: {auto_retry_attempts: "=auto_retry_attempts", auto_retry_interval_minutes: "=auto_retry_interval_minutes", hold_review_business_days: "=hold_review_business_days", rfi_response_days: "=rfi_response_days"}
+        Mobile Wallet Large Amount: {auto_retry_attempts: "=auto_retry_attempts", auto_retry_interval_minutes: "=auto_retry_interval_minutes", hold_review_business_days: "=hold_review_business_days", rfi_response_days: "=rfi_response_days"}
+
+  - id: wallet_evt_failed_credit
+    subject: [wallet_credit_retried, wallet_redirect_requested, wallet_destination_updated, wallet_fee_charged]
+    rule: >-
+      A failed credit waits with Paloma for the customer's instruction. The failure reason's entry in
+      failure_reason_attribution decides who bears its cost. The customer may have the credit retried
+      to the same wallet once the recipient has fixed its cause (registered the wallet, raised its
+      provider limit, lifted a suspension), or redirected to another wallet. A retry or redirect is
+      possible only within failed_credit_hold_days calendar days after the credit failed. The window
+      is counted in calendar days from the date part of failed_at, and an instruction on the last
+      day of the window is on time. A retry or redirect is accepted only while the transfer is credit_failed. A
+      redirect is allowed only on a tier whose redirect_allowed is true, only to another wallet
+      registered in the recipient's own name when same_recipient_redirect_only is true, only to a
+      provider listed for the corridor, and at most max_redirects times per transfer
+      (wallet_msr_redirects); the new wallet details are recorded exactly as the customer gives them
+      and the credit is then sent to them. Paying a different person requires a refund and a new
+      booking. A transfer may receive at most max_retries customer-requested retries
+      (wallet_msr_customer_retries). After a failure on the sender's side, each retry beyond
+      free_retries carries retry_fee_usd (fee_type retry_fee, fee_seq the retry number) and each
+      redirect carries redirect_fee_usd (fee_type redirect_fee, fee_seq the redirect number) when
+      above 0.00; after a failure on Paloma's side retries and redirects are free and do not count
+      toward max_retries. A retried or redirected credit uses the transfer's original fx_rate and
+      receive_amount, and date_available is re-disclosed as the retry day. With no instruction by
+      the end of the window, or once max_retries is used up, the transfer is refunded under
+      wallet_evt_refunds.
+    eligibility:
+      - id: retry_window
+        applies_to: [wallet_credit_retried, wallet_redirect_requested]
+        kind: time
+        condition: "A retry or redirect is possible only within failed_credit_hold_days calendar days after the credit failed."
+        evidence_fields: [wallet_transfers.wallet_transfer_id, wallet_transfers.failed_at]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [wallet_transfers.wallet_transfer_id]
+          action_bindings:
+            wallet_transfers.wallet_transfer_id: wallet_transfer_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the credit failed"
+          anchor_source: wallet_transfers.failed_at
+          relation: not_after
+          duration_source: variants.failed_credit_hold_days
+          unit: calendar_days
+          counting_rule: "The window is counted in calendar days from the date part of failed_at, and an instruction on the last day of the window is on time."
+          boundary: inclusive
+      - id: failed_status
+        applies_to: [wallet_redirect_requested]
+        kind: state
+        condition: "A retry or redirect is accepted only while the transfer is credit_failed."
+        evidence_fields: [wallet_transfers.wallet_transfer_id, wallet_transfers.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [wallet_transfers.wallet_transfer_id]
+          action_bindings:
+            wallet_transfers.wallet_transfer_id: wallet_transfer_id
+        state_contract:
+          field: wallet_transfers.status
+          allowed: [credit_failed]
+      - id: redirect_rules
+        applies_to: [wallet_redirect_requested]
+        kind: authorization
+        condition: "A redirect is allowed only on a tier whose redirect_allowed is true, only to another wallet registered in the recipient's own name when same_recipient_redirect_only is true, only to a provider listed for the corridor, and at most max_redirects times per transfer (wallet_msr_redirects)"
+        evidence_fields: [wallet_transfers.wallet_transfer_id, wallet_transfers.variant_name, wallet_transfers.recipient_id, wallet_cases.wallet_transfer_id, wallet_cases.redirect_seq]
+        evidence_contract:
+          authority: mixed
+          timing: pre_action
+          correlation_keys:
+            - [wallet_transfers.wallet_transfer_id, wallet_cases.wallet_transfer_id]
+          action_bindings:
+            wallet_transfers.wallet_transfer_id: wallet_transfer_id
+            wallet_cases.wallet_transfer_id: wallet_transfer_id
+      - id: retry_cap
+        applies_to: [wallet_credit_retried]
+        kind: authorization
+        condition: "A transfer may receive at most max_retries customer-requested retries (wallet_msr_customer_retries)."
+        evidence_fields: [wallet_ledger.wallet_transfer_id, wallet_ledger.event_type, wallet_ledger.credit_attempt]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [wallet_ledger.wallet_transfer_id]
+          action_bindings:
+            wallet_ledger.wallet_transfer_id: wallet_transfer_id
+    params:
+      per_tier:
+        Mobile Wallet Micro: {failure_reason_attribution: "=failure_reason_attribution", failed_credit_hold_days: "=failed_credit_hold_days", free_retries: "=free_retries", retry_fee_usd: "=retry_fee_usd", max_retries: "=max_retries", redirect_allowed: "=redirect_allowed", redirect_fee_usd: "=redirect_fee_usd", max_redirects: "=max_redirects", same_recipient_redirect_only: "=same_recipient_redirect_only", providers_by_corridor: "=providers_by_corridor"}
+        Mobile Wallet Economy: {failure_reason_attribution: "=failure_reason_attribution", failed_credit_hold_days: "=failed_credit_hold_days", free_retries: "=free_retries", retry_fee_usd: "=retry_fee_usd", max_retries: "=max_retries", redirect_allowed: "=redirect_allowed", redirect_fee_usd: "=redirect_fee_usd", max_redirects: "=max_redirects", same_recipient_redirect_only: "=same_recipient_redirect_only", providers_by_corridor: "=providers_by_corridor"}
+        Mobile Wallet Express: {failure_reason_attribution: "=failure_reason_attribution", failed_credit_hold_days: "=failed_credit_hold_days", free_retries: "=free_retries", retry_fee_usd: "=retry_fee_usd", max_retries: "=max_retries", redirect_allowed: "=redirect_allowed", redirect_fee_usd: "=redirect_fee_usd", max_redirects: "=max_redirects", same_recipient_redirect_only: "=same_recipient_redirect_only", providers_by_corridor: "=providers_by_corridor"}
+        Mobile Wallet Express Plus: {failure_reason_attribution: "=failure_reason_attribution", failed_credit_hold_days: "=failed_credit_hold_days", free_retries: "=free_retries", retry_fee_usd: "=retry_fee_usd", max_retries: "=max_retries", redirect_allowed: "=redirect_allowed", redirect_fee_usd: "=redirect_fee_usd", max_redirects: "=max_redirects", same_recipient_redirect_only: "=same_recipient_redirect_only", providers_by_corridor: "=providers_by_corridor"}
+        Mobile Wallet Priority: {failure_reason_attribution: "=failure_reason_attribution", failed_credit_hold_days: "=failed_credit_hold_days", free_retries: "=free_retries", retry_fee_usd: "=retry_fee_usd", max_retries: "=max_retries", redirect_allowed: "=redirect_allowed", redirect_fee_usd: "=redirect_fee_usd", max_redirects: "=max_redirects", same_recipient_redirect_only: "=same_recipient_redirect_only", providers_by_corridor: "=providers_by_corridor"}
+        Mobile Wallet Large Amount: {failure_reason_attribution: "=failure_reason_attribution", failed_credit_hold_days: "=failed_credit_hold_days", free_retries: "=free_retries", retry_fee_usd: "=retry_fee_usd", max_retries: "=max_retries", redirect_allowed: "=redirect_allowed", redirect_fee_usd: "=redirect_fee_usd", max_redirects: "=max_redirects", same_recipient_redirect_only: "=same_recipient_redirect_only", providers_by_corridor: "=providers_by_corridor"}
+    measures: [wallet_msr_customer_retries, wallet_msr_redirects]
+
+  - id: wallet_evt_cancellation
+    subject: [wallet_transfer_cancelled, wallet_fee_refunded]
+    rule: >-
+      Only the customer can cancel their own transfer; the agent explains what will be refunded and
+      the customer confirms. A wallet transfer can be cancelled only before it is released, while it
+      is awaiting_funds or on_hold; once a credit has been sent it cannot be cancelled, and a failed
+      credit is refunded under wallet_evt_refunds instead. A fee is refunded in full on cancellation
+      only when the customer confirms the cancellation within cancel_full_refund_window_hours
+      elapsed hours after the transfer was booked. The window is measured in elapsed hours from
+      booked_at to cancelled_at, and a cancellation at exactly the end of the window is inside it.
+      Inside the window every fee collected is refunded with fee_refund_reason
+      cancellation_in_window. After the window each booking fee collected is refunded at
+      late_cancel_fee_refund_pct of its amount, rounded half up to the cent, with fee_refund_reason
+      cancellation_post_window. The principal is always refunded in full under wallet_evt_refunds.
+      Each fee charge is refunded at most once.
+    eligibility:
+      - id: full_refund_window
+        applies_to: [wallet_fee_refunded]
+        kind: time
+        condition: "A fee is refunded in full on cancellation only when the customer confirms the cancellation within cancel_full_refund_window_hours elapsed hours after the transfer was booked."
+        evidence_fields: [wallet_transfers.wallet_transfer_id, wallet_transfers.booked_at, wallet_transfers.cancelled_at]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [wallet_transfers.wallet_transfer_id]
+          action_bindings:
+            wallet_transfers.wallet_transfer_id: wallet_transfer_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the transfer was booked"
+          anchor_source: wallet_transfers.booked_at
+          relation: not_after
+          duration_source: variants.cancel_full_refund_window_hours
+          unit: elapsed_hours
+          counting_rule: "The window is measured in elapsed hours from booked_at to cancelled_at, and a cancellation at exactly the end of the window is inside it."
+          boundary: inclusive
+      - id: fee_refunded_once
+        applies_to: [wallet_fee_refunded]
+        kind: dedup
+        condition: "Each fee charge is refunded at most once."
+        evidence_fields: [wallet_ledger.related_entry_id, wallet_ledger.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [wallet_ledger.related_entry_id]
+          action_bindings:
+            wallet_ledger.related_entry_id: related_entry_id
+        dedup_contract:
+          table: wallet_ledger
+          mode: separate_record
+          object_bindings: {related_entry_id: related_entry_id}
+          duplicate_filters: {event_type: [wallet_fee_refunded]}
+          distinct_fields: []
+    params:
+      per_tier:
+        Mobile Wallet Micro: {cancel_full_refund_window_hours: "=cancel_full_refund_window_hours", late_cancel_fee_refund_pct: "=late_cancel_fee_refund_pct"}
+        Mobile Wallet Economy: {cancel_full_refund_window_hours: "=cancel_full_refund_window_hours", late_cancel_fee_refund_pct: "=late_cancel_fee_refund_pct"}
+        Mobile Wallet Express: {cancel_full_refund_window_hours: "=cancel_full_refund_window_hours", late_cancel_fee_refund_pct: "=late_cancel_fee_refund_pct"}
+        Mobile Wallet Express Plus: {cancel_full_refund_window_hours: "=cancel_full_refund_window_hours", late_cancel_fee_refund_pct: "=late_cancel_fee_refund_pct"}
+        Mobile Wallet Priority: {cancel_full_refund_window_hours: "=cancel_full_refund_window_hours", late_cancel_fee_refund_pct: "=late_cancel_fee_refund_pct"}
+        Mobile Wallet Large Amount: {cancel_full_refund_window_hours: "=cancel_full_refund_window_hours", late_cancel_fee_refund_pct: "=late_cancel_fee_refund_pct"}
+    formula:
+      late_fee_refund: "round(amount_usd * late_cancel_fee_refund_pct / 100, 2)"
+
+  - id: wallet_evt_refunds
+    subject: [wallet_refund_issued, wallet_transfer_refunded, wallet_fee_refunded]
+    rule: >-
+      Principal is refunded only on a transfer whose status is cancelled, credit_failed or credited,
+      and on a credited transfer only as an error-resolution remedy. The amount follows the refund
+      basis: cancellation refunds the principal collected; failed_credit refunds the principal
+      collected in full, because a failed credit comes back in full; rfi_expiry and
+      compliance_rejection refund the principal collected and each booking fee at
+      rfi_expiry_fee_refund_pct with fee_refund_reason compliance_cancellation; error_resolution
+      and error_shortfall refund what wallet_evt_error_resolution sets. On a failed_credit refund the transfer fee is
+      refunded in full with fee_refund_reason failure_paloma_side when the last failure was on
+      Paloma's side, and at sender_side_failure_fee_refund_pct with fee_refund_reason
+      failure_sender_side when it was on the recipient's side; card funding, retry and redirect fees
+      are not refunded after a sender-side failure. Each refund basis is paid once against its source
+      entry. A refund is issued within refund_business_days Paloma business days of the day it became
+      owed (the cancellation, the customer's choice, or the end of failed_credit_hold_days), to the
+      original funding method; a wire is refunded by ACH credit to the account it came from. Once the
+      principal refund is booked the transfer moves to refunded, except that a shortfall refund
+      (error_shortfall) leaves a credited transfer credited.
+    eligibility:
+      - id: refundable_status
+        applies_to: [wallet_refund_issued]
+        kind: state
+        condition: "Principal is refunded only on a transfer whose status is cancelled, credit_failed or credited, and on a credited transfer only as an error-resolution remedy."
+        evidence_fields: [wallet_transfers.wallet_transfer_id, wallet_transfers.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [wallet_transfers.wallet_transfer_id]
+          action_bindings:
+            wallet_transfers.wallet_transfer_id: wallet_transfer_id
+        state_contract:
+          field: wallet_transfers.status
+          allowed: [cancelled, credit_failed, credited]
+      - id: refund_once_per_basis
+        applies_to: [wallet_refund_issued]
+        kind: dedup
+        condition: "Each refund basis is paid once against its source entry."
+        evidence_fields: [wallet_ledger.wallet_transfer_id, wallet_ledger.refund_basis, wallet_ledger.related_entry_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [wallet_ledger.wallet_transfer_id, wallet_ledger.related_entry_id]
+          action_bindings:
+            wallet_ledger.wallet_transfer_id: wallet_transfer_id
+            wallet_ledger.related_entry_id: related_entry_id
+        dedup_contract:
+          table: wallet_ledger
+          mode: separate_record
+          object_bindings: {wallet_transfer_id: wallet_transfer_id, related_entry_id: related_entry_id}
+          duplicate_filters: {event_type: [wallet_refund_issued]}
+          distinct_fields: [refund_basis]
+    params:
+      per_tier:
+        Mobile Wallet Micro: {refund_business_days: "=refund_business_days", rfi_expiry_fee_refund_pct: "=rfi_expiry_fee_refund_pct", sender_side_failure_fee_refund_pct: "=sender_side_failure_fee_refund_pct", failure_reason_attribution: "=failure_reason_attribution"}
+        Mobile Wallet Economy: {refund_business_days: "=refund_business_days", rfi_expiry_fee_refund_pct: "=rfi_expiry_fee_refund_pct", sender_side_failure_fee_refund_pct: "=sender_side_failure_fee_refund_pct", failure_reason_attribution: "=failure_reason_attribution"}
+        Mobile Wallet Express: {refund_business_days: "=refund_business_days", rfi_expiry_fee_refund_pct: "=rfi_expiry_fee_refund_pct", sender_side_failure_fee_refund_pct: "=sender_side_failure_fee_refund_pct", failure_reason_attribution: "=failure_reason_attribution"}
+        Mobile Wallet Express Plus: {refund_business_days: "=refund_business_days", rfi_expiry_fee_refund_pct: "=rfi_expiry_fee_refund_pct", sender_side_failure_fee_refund_pct: "=sender_side_failure_fee_refund_pct", failure_reason_attribution: "=failure_reason_attribution"}
+        Mobile Wallet Priority: {refund_business_days: "=refund_business_days", rfi_expiry_fee_refund_pct: "=rfi_expiry_fee_refund_pct", sender_side_failure_fee_refund_pct: "=sender_side_failure_fee_refund_pct", failure_reason_attribution: "=failure_reason_attribution"}
+        Mobile Wallet Large Amount: {refund_business_days: "=refund_business_days", rfi_expiry_fee_refund_pct: "=rfi_expiry_fee_refund_pct", sender_side_failure_fee_refund_pct: "=sender_side_failure_fee_refund_pct", failure_reason_attribution: "=failure_reason_attribution"}
+
+  - id: wallet_evt_error_resolution
+    subject: [wallet_error_notice_filed, wallet_error_decided, wallet_remedy_chosen, wallet_paloma_credit, wallet_fee_refunded]
+    rule: >-
+      Under the Remittance Transfer Rule the customer may give notice of an error: the money was not
+      in the wallet by date_available (not_received_by_date), it was credited to a wallet other than
+      the one on the transfer (wrong_wallet_credited), or less than the disclosed receive_amount was
+      credited (incorrect_amount). The notice is the customer's own assertion and the customer gives
+      it. A notice can be given only within error_notice_window_days calendar days after the
+      disclosed date of availability. The window is counted in calendar days from date_available,
+      and a notice on date_available plus the window days is on time. Only one notice of each
+      case_type may be open on a transfer at a time. resolution_due_date is the notice date plus
+      error_investigation_days calendar days. The team decides no_error when the cause lies with the
+      customer (a wallet number the customer supplied belonged to someone else) and error_found
+      otherwise. On error_found every fee collected is refunded with fee_refund_reason paloma_error
+      unless already refunded under the on-time promise. A remedy can be chosen only after a
+      decision of error_found on that notice. For wrong_wallet_credited the customer chooses a refund
+      of the principal or a re-credit to the correct wallet at no cost, funded by Paloma
+      (wallet_paloma_credit, credit_reason error_refund or error_recredit); for incorrect_amount
+      Paloma credits the shortfall (credit_reason incorrect_amount_shortfall) and the customer
+      chooses to have the shortfall re-credited (recredit_shortfall) or refunded (refund_shortfall,
+      booked with refund_basis error_shortfall); for not_received_by_date the remedy is the fee
+      refund once the credit lands. The choice is the customer's own; a refund is issued within
+      refund_business_days and a re-credit within recredit_business_days Paloma business days.
+    eligibility:
+      - id: notice_window
+        applies_to: [wallet_error_notice_filed]
+        kind: time
+        condition: "A notice can be given only within error_notice_window_days calendar days after the disclosed date of availability."
+        evidence_fields: [wallet_transfers.wallet_transfer_id, wallet_transfers.date_available]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [wallet_transfers.wallet_transfer_id]
+          action_bindings:
+            wallet_transfers.wallet_transfer_id: wallet_transfer_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the disclosed date of availability"
+          anchor_source: wallet_transfers.date_available
+          relation: not_after
+          duration_source: variants.error_notice_window_days
+          unit: calendar_days
+          counting_rule: "The window is counted in calendar days from date_available, and a notice on date_available plus the window days is on time."
+          boundary: inclusive
+      - id: one_open_notice_per_type
+        applies_to: [wallet_error_notice_filed]
+        kind: dedup
+        condition: "Only one notice of each case_type may be open on a transfer at a time."
+        evidence_fields: [wallet_cases.wallet_transfer_id, wallet_cases.case_type, wallet_cases.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [wallet_cases.wallet_transfer_id]
+          action_bindings:
+            wallet_cases.wallet_transfer_id: wallet_transfer_id
+        dedup_contract:
+          table: wallet_cases
+          mode: separate_record
+          object_bindings: {wallet_transfer_id: wallet_transfer_id, case_type: case_type}
+          duplicate_filters: {event_type: [wallet_error_notice_filed]}
+          distinct_fields: [case_date]
+      - id: error_found_first
+        applies_to: [wallet_remedy_chosen]
+        kind: authorization
+        condition: "A remedy can be chosen only after a decision of error_found on that notice."
+        evidence_fields: [wallet_cases.related_case_id, wallet_cases.case_outcome]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [wallet_cases.related_case_id]
+          action_bindings:
+            wallet_cases.related_case_id: related_case_id
+    params:
+      per_tier:
+        Mobile Wallet Micro: {error_notice_window_days: "=error_notice_window_days", error_investigation_days: "=error_investigation_days", refund_business_days: "=refund_business_days", recredit_business_days: "=recredit_business_days"}
+        Mobile Wallet Economy: {error_notice_window_days: "=error_notice_window_days", error_investigation_days: "=error_investigation_days", refund_business_days: "=refund_business_days", recredit_business_days: "=recredit_business_days"}
+        Mobile Wallet Express: {error_notice_window_days: "=error_notice_window_days", error_investigation_days: "=error_investigation_days", refund_business_days: "=refund_business_days", recredit_business_days: "=recredit_business_days"}
+        Mobile Wallet Express Plus: {error_notice_window_days: "=error_notice_window_days", error_investigation_days: "=error_investigation_days", refund_business_days: "=refund_business_days", recredit_business_days: "=recredit_business_days"}
+        Mobile Wallet Priority: {error_notice_window_days: "=error_notice_window_days", error_investigation_days: "=error_investigation_days", refund_business_days: "=refund_business_days", recredit_business_days: "=recredit_business_days"}
+        Mobile Wallet Large Amount: {error_notice_window_days: "=error_notice_window_days", error_investigation_days: "=error_investigation_days", refund_business_days: "=refund_business_days", recredit_business_days: "=recredit_business_days"}
+
+  - id: wallet_evt_on_time_promise
+    subject: [wallet_fee_refunded]
+    rule: >-
+      On a tier whose on_time_promise is true, Paloma refunds the transfer fee in full, with
+      fee_refund_reason late_delivery, when the credit landed late for a reason on Paloma's or the
+      provider's side: on a tier whose credit_promise_minutes is above 0, when credited_at is more
+      than credit_promise_minutes after the latest released_at; on any other tier, when the date of
+      credited_at is after date_available as last disclosed. Lateness caused by the recipient's
+      wallet (a sender-side failure and its retry) or by a request for information answered late is
+      not covered. The promise covers the transfer fee only, can be claimed from an agent without an
+      error notice, and never stacks with an error-resolution fee refund.
+    eligibility:
+      - id: credited_late
+        applies_to: [wallet_fee_refunded]
+        kind: authorization
+        condition: "On a tier whose on_time_promise is true, Paloma refunds the transfer fee in full, with fee_refund_reason late_delivery, when the credit landed late for a reason on Paloma's or the provider's side"
+        evidence_fields: [wallet_transfers.wallet_transfer_id, wallet_transfers.released_at, wallet_transfers.credited_at, wallet_transfers.date_available, wallet_transfers.variant_name]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [wallet_transfers.wallet_transfer_id]
+          action_bindings:
+            wallet_transfers.wallet_transfer_id: wallet_transfer_id
+    params:
+      per_tier:
+        Mobile Wallet Micro: {on_time_promise: "=on_time_promise", credit_promise_minutes: "=credit_promise_minutes"}
+        Mobile Wallet Economy: {on_time_promise: "=on_time_promise", credit_promise_minutes: "=credit_promise_minutes"}
+        Mobile Wallet Express: {on_time_promise: "=on_time_promise", credit_promise_minutes: "=credit_promise_minutes"}
+        Mobile Wallet Express Plus: {on_time_promise: "=on_time_promise", credit_promise_minutes: "=credit_promise_minutes"}
+        Mobile Wallet Priority: {on_time_promise: "=on_time_promise", credit_promise_minutes: "=credit_promise_minutes"}
+        Mobile Wallet Large Amount: {on_time_promise: "=on_time_promise", credit_promise_minutes: "=credit_promise_minutes"}
+
+extended_policies:
+  # ------------------------------------------------------------------ task 0
+  - id: wallet_ext_resend_charge
+    base_policy_refs: [wallet_evt_pricing, wallet_evt_failed_credit]
+    overwrite:
+      - base_policy: wallet_evt_failed_credit
+        superseded_clause: >-
+          After a failure on the sender's side, each retry beyond free_retries carries retry_fee_usd (fee_type retry_fee, fee_seq the retry number)
+        replaced_by: >-
+          The charge form is taken first; it is multiplied once by the customer's share, by one minus the account-standing relief, by one minus the Bank Deposit relief and by the bounce taper, all acting on that same figure, and the product is rounded half up to the cent.
+    trigger: on_request
+    subject: [wallet_fee_charged]
+    computes: amount_usd
+    target_tool: charge_resend_fee_8300b1da
+    params:
+      mid_band_usd: 1000.00
+      large_band_usd: 1500.00
+      mid_band_pct: 0.10
+      large_band_pct: 0.25
+      transient_cause_share: 0.80
+      enhanced_level_number: 4
+      verified_plus_level_number: 3
+      tenure_relief_months: 24
+      enhanced_relief_share: 1.00
+      verified_plus_relief_share: 0.50
+      bank_volume_window_months: 6
+      bank_volume_high_usd: 3000.00
+      bank_volume_low_usd: 1000.00
+      bank_volume_high_relief: 0.30
+      bank_volume_low_relief: 0.15
+      three_bounce_count: 3
+      two_bounce_count: 2
+      taper_three_bounces: 0.70
+      taper_two_bounces: 0.85
+    rule: >-
+      A resend charge is booked when the customer instructs Paloma to send a bounced credit again to the
+      same wallet: one wallet_fee_charged entry with fee_type retry_fee, dated the day of the instruction and
+      collected from the customer's original funding method, whose fee_seq is the resend's number.
+      The resend's number is the number of credits already sent on the transfer (its wallet_credit_sent entries), so the opening resend of a transfer is number 1.
+      A resend whose number is not above the tier's free_retries carries no charge.
+      A resend whose number is above the tier's free_retries is booked even when its charge comes to 0.00.
+      For a resend above the tier's free_retries the resend charge is the tier's retry_fee_usd.
+      The form of the resend charge follows the principal collected on the transfer (its wallet_funds_received entries): at or above large_band_usd the charge is large_band_pct percent of that principal, rounded half up to the cent; at or above mid_band_usd and below large_band_usd it is the tier's retry_fee_usd plus mid_band_pct percent of that principal, the percentage part rounded half up to the cent; below mid_band_usd it is the tier's retry_fee_usd.
+      The cause of the latest bounce on the transfer (the failure_reason of its most recent wallet_credit_reversed entry) sets the share of the resend charge the customer bears: none when the cause is on Paloma's or the provider's side (provider_unavailable); transient_cause_share when the recipient's wallet was over its limit or suspended (wallet_limit_exceeded or wallet_suspended); the whole charge for any other recipient-side cause.
+      The account-standing relief on a resend charge follows the customer's Personal Sender Account: a level of Paloma Enhanced or higher (level_number of at least enhanced_level_number) on an account open at least tenure_relief_months whole calendar months relieves enhanced_relief_share of the charge; the level Paloma Verified Plus (level_number equal to verified_plus_level_number) on an account open at least tenure_relief_months whole calendar months relieves verified_plus_relief_share; any other account, including one open fewer than tenure_relief_months whole calendar months, receives no relief.
+      Whole calendar months are counted from the account's opened_date to today.
+      The Bank Deposit relief on a resend charge follows the principal of the customer's Bank Deposit payments collected in the last bank_volume_window_months calendar months (their bank_funds_received entries), a rolling window that holds the entries whose entry_date lies fewer than bank_volume_window_months whole calendar months before today, the whole calendar months from a date to today being the difference between the two calendar months, less one when today's day of the month is lower than that date's: bank_volume_high_usd or more relieves bank_volume_high_relief of the charge; at least bank_volume_low_usd and below bank_volume_high_usd relieves bank_volume_low_relief; less relieves nothing.
+      The bounce taper on a resend charge follows the number of bounces on the transfer (its wallet_credit_reversed entries): three_bounce_count or more multiplies the charge by taper_three_bounces; exactly two_bounce_count multiplies it by taper_two_bounces; a single bounce leaves it whole.
+      The charge form is taken first; it is multiplied once by the customer's share, by one minus the account-standing relief, by one minus the Bank Deposit relief and by the bounce taper, all acting on that same figure, and the product is rounded half up to the cent.
+      How the transfer was paid sets how that rounded figure is collected: for a transfer paid by credit card (a card_funding_fee entry stands on its ledger) it is raised by the tier's credit_card_fee_pct percent and rounded half up to the cent; for a transfer paid by pay-by-bank (funding_method pay_by_bank) the tier's pay_by_bank_fee_discount_usd is taken off, never below 0.00; for a transfer paid by debit card, ACH debit or wire it is collected as it stands.
+      The figure so collected is the resend charge booked.
+    prerequisite: []
+    cross_category:
+      - category: account
+        as: branch
+        reads: [variant_name, opened_date]
+        note: The account-standing relief reads the level (level_number of the account's tier) and the opened_date of the customer's Personal Sender Account.
+      - category: bank
+        as: history
+        reads: [bank_ledger.amount_usd]
+        note: The Bank Deposit relief sums the customer's bank_funds_received entries of the last months.
+    compute:
+      - principal: "SUM('wallet_ledger', 'amount_usd', event_type='wallet_funds_received')"
+      - resend_no: "COUNT('wallet_ledger', event_type='wallet_credit_sent')"
+      - charge_applies: "1 if resend_no > P('free_retries') else 0"
+      - charge_form: "RND(principal * K('large_band_pct') / 100, 2) if principal >= K('large_band_usd') else (P('retry_fee_usd') + RND(principal * K('mid_band_pct') / 100, 2) if principal >= K('mid_band_usd') else P('retry_fee_usd'))"
+      - last_cause: "LATEST('wallet_ledger', 'failure_reason', date_field='entry_date', event_type='wallet_credit_reversed')"
+      - cause_share: "0 if last_cause == 'provider_unavailable' else (K('transient_cause_share') if (last_cause == 'wallet_limit_exceeded' or last_cause == 'wallet_suspended') else 1)"
+      - level_number: "CPARAM('account', 'level_number')"
+      - tenure_months: "MONTHS(CFIELD('account', 'opened_date'), NOW)"
+      - standing_relief: "K('enhanced_relief_share') if (level_number >= K('enhanced_level_number') and tenure_months >= K('tenure_relief_months')) else (K('verified_plus_relief_share') if (level_number == K('verified_plus_level_number') and tenure_months >= K('tenure_relief_months')) else 0)"
+      - bank_volume: "XSUM('bank', 'bank_ledger', 'amount_usd', within_months=K('bank_volume_window_months'), date_field='entry_date', event_type='bank_funds_received')"
+      - bank_relief: "K('bank_volume_high_relief') if bank_volume >= K('bank_volume_high_usd') else (K('bank_volume_low_relief') if bank_volume >= K('bank_volume_low_usd') else 0)"
+      - bounces: "COUNT('wallet_ledger', event_type='wallet_credit_reversed')"
+      - bounce_taper: "K('taper_three_bounces') if bounces >= K('three_bounce_count') else (K('taper_two_bounces') if bounces == K('two_bounce_count') else 1)"
+      - shaped_charge: "RND(charge_form * cause_share * (1 - standing_relief) * (1 - bank_relief) * bounce_taper, 2)"
+      - card_fee_entries: "COUNT('wallet_ledger', event_type='wallet_fee_charged', fee_type='card_funding_fee')"
+      - collected_charge: "RND(shaped_charge * (1 + P('credit_card_fee_pct') / 100), 2) if card_fee_entries >= 1 else (MX(0, RND(shaped_charge - P('pay_by_bank_fee_discount_usd'), 2)) if F('funding_method') == 'pay_by_bank' else shaped_charge)"
+      - result: "collected_charge if charge_applies == 1 else 0"
+    compute_basis:
+      principal: "The form of the resend charge follows the principal collected on the transfer (its wallet_funds_received entries)"
+      resend_no: "The resend's number is the number of credits already sent on the transfer (its wallet_credit_sent entries), so the opening resend of a transfer is number 1."
+      charge_applies: "A resend whose number is not above the tier's free_retries carries no charge."
+      charge_form: "at or above large_band_usd the charge is large_band_pct percent of that principal, rounded half up to the cent; at or above mid_band_usd and below large_band_usd it is the tier's retry_fee_usd plus mid_band_pct percent of that principal, the percentage part rounded half up to the cent; below mid_band_usd it is the tier's retry_fee_usd."
+      last_cause: "The cause of the latest bounce on the transfer (the failure_reason of its most recent wallet_credit_reversed entry) sets the share of the resend charge the customer bears"
+      cause_share: "none when the cause is on Paloma's or the provider's side (provider_unavailable); transient_cause_share when the recipient's wallet was over its limit or suspended (wallet_limit_exceeded or wallet_suspended); the whole charge for any other recipient-side cause."
+      level_number: "The account-standing relief on a resend charge follows the customer's Personal Sender Account"
+      tenure_months: "Whole calendar months are counted from the account's opened_date to today."
+      standing_relief: "a level of Paloma Enhanced or higher (level_number of at least enhanced_level_number) on an account open at least tenure_relief_months whole calendar months relieves enhanced_relief_share of the charge; the level Paloma Verified Plus (level_number equal to verified_plus_level_number) on an account open at least tenure_relief_months whole calendar months relieves verified_plus_relief_share; any other account, including one open fewer than tenure_relief_months whole calendar months, receives no relief."
+      bank_volume: "The Bank Deposit relief on a resend charge follows the principal of the customer's Bank Deposit payments collected in the last bank_volume_window_months calendar months (their bank_funds_received entries), a rolling window that holds the entries whose entry_date lies fewer than bank_volume_window_months whole calendar months before today, the whole calendar months from a date to today being the difference between the two calendar months, less one when today's day of the month is lower than that date's"
+      bank_relief: "bank_volume_high_usd or more relieves bank_volume_high_relief of the charge; at least bank_volume_low_usd and below bank_volume_high_usd relieves bank_volume_low_relief; less relieves nothing."
+      bounces: "The bounce taper on a resend charge follows the number of bounces on the transfer (its wallet_credit_reversed entries)"
+      bounce_taper: "three_bounce_count or more multiplies the charge by taper_three_bounces; exactly two_bounce_count multiplies it by taper_two_bounces; a single bounce leaves it whole."
+      shaped_charge: "The charge form is taken first; it is multiplied once by the customer's share, by one minus the account-standing relief, by one minus the Bank Deposit relief and by the bounce taper, all acting on that same figure, and the product is rounded half up to the cent."
+      card_fee_entries: "for a transfer paid by credit card (a card_funding_fee entry stands on its ledger)"
+      collected_charge: "How the transfer was paid sets how that rounded figure is collected: for a transfer paid by credit card (a card_funding_fee entry stands on its ledger) it is raised by the tier's credit_card_fee_pct percent and rounded half up to the cent; for a transfer paid by pay-by-bank (funding_method pay_by_bank) the tier's pay_by_bank_fee_discount_usd is taken off, never below 0.00; for a transfer paid by debit card, ACH debit or wire it is collected as it stands."
+      result: "The figure so collected is the resend charge booked."
+    factors:
+      - id: charge_form
+        effect: method
+        decides: charge_form
+        bindings: [principal, charge_form]
+        ladder:
+          - when: "the principal collected on the transfer is at or above large_band_usd"
+            method: "the charge is large_band_pct percent of that principal, rounded half up to the cent"
+          - when: "the principal collected is at or above mid_band_usd and below large_band_usd"
+            method: "the charge is the tier's retry_fee_usd plus mid_band_pct percent of that principal, the percentage part rounded half up to the cent"
+          - when: "otherwise (principal below mid_band_usd)"
+            method: "the charge is the tier's retry_fee_usd, flat"
+        baseline:
+          charge_form: "P('retry_fee_usd')"
+        evidence: [history]
+        cross_difficulty: null
+      - id: cause_share
+        effect: parameter
+        decides: cause_share
+        bindings: [last_cause, cause_share]
+        ladder:
+          - when: "the latest bounce's failure_reason is provider_unavailable (Paloma's or the provider's side)"
+            value: "0"
+          - when: "the latest bounce's failure_reason is wallet_limit_exceeded or wallet_suspended"
+            value: "K('transient_cause_share')"
+          - when: "otherwise (any other recipient-side cause)"
+            value: "1"
+        baseline:
+          cause_share: "1"
+        evidence: [history]
+        cross_difficulty: null
+      - id: account_standing_relief
+        effect: parameter
+        decides: standing_relief
+        bindings: [level_number, tenure_months, standing_relief]
+        ladder:
+          - when: "Personal Sender Account at Paloma Enhanced or higher AND open at least tenure_relief_months whole calendar months"
+            value: "K('enhanced_relief_share')"
+          - when: "Personal Sender Account at Paloma Verified Plus AND open at least tenure_relief_months whole calendar months"
+            value: "K('verified_plus_relief_share')"
+          - when: "otherwise (a lower level, or an account open fewer than tenure_relief_months whole calendar months)"
+            value: "0"
+        baseline:
+          standing_relief: "0"
+        evidence: [cross_category, date]
+        cross_difficulty: account
+      - id: bank_deposit_relief
+        effect: parameter
+        decides: bank_relief
+        bindings: [bank_volume, bank_relief]
+        ladder:
+          - when: "Bank Deposit principal collected in the last bank_volume_window_months calendar months (rolling, counted in whole calendar months back from today) is bank_volume_high_usd or more"
+            value: "K('bank_volume_high_relief')"
+          - when: "that principal is at least bank_volume_low_usd and below bank_volume_high_usd"
+            value: "K('bank_volume_low_relief')"
+          - when: "otherwise (below bank_volume_low_usd)"
+            value: "0"
+        baseline:
+          bank_relief: "0"
+        evidence: [cross_category, history]
+        cross_difficulty: bank
+      - id: bounce_taper
+        effect: parameter
+        decides: bounce_taper
+        bindings: [bounces, bounce_taper]
+        ladder:
+          - when: "the transfer has three_bounce_count or more wallet_credit_reversed entries"
+            value: "K('taper_three_bounces')"
+          - when: "the transfer has exactly two_bounce_count wallet_credit_reversed entries"
+            value: "K('taper_two_bounces')"
+          - when: "otherwise (a single bounce)"
+            value: "1"
+        baseline:
+          bounce_taper: "1"
+        evidence: [history]
+        cross_difficulty: null
+      - id: collection_route
+        effect: method
+        decides: collected_charge
+        bindings: [card_fee_entries, collected_charge]
+        ladder:
+          - when: "the transfer was paid by credit card (a card_funding_fee entry stands on its ledger)"
+            method: "the rounded figure is raised by the tier's credit_card_fee_pct percent and rounded half up to the cent"
+          - when: "the transfer was paid by pay-by-bank (funding_method pay_by_bank)"
+            method: "the tier's pay_by_bank_fee_discount_usd is taken off the rounded figure, never below 0.00"
+          - when: "otherwise (paid by debit card, ACH debit or wire)"
+            method: "the rounded figure is collected as it stands"
+        baseline:
+          collected_charge: "shaped_charge"
+        evidence: [history]
+        cross_difficulty: null
+    baseline:
+      rule: >-
+        The resend's number is the number of credits already sent on the transfer (its wallet_credit_sent entries), so the opening resend of a transfer is number 1.
+        A resend whose number is not above the tier's free_retries carries no charge.
+        For a resend above the tier's free_retries the resend charge is the tier's retry_fee_usd.
+      params: [retry_fee_usd, free_retries]
+    inputs:
+      history:
+        - {table: wallet_ledger, aggregate: sum, field: amount_usd, filters: {event_type: wallet_funds_received}}
+        - {table: wallet_ledger, aggregate: count, field: ledger_entry_id, filters: {event_type: wallet_credit_sent}}
+        - {table: wallet_ledger, aggregate: latest, field: failure_reason, filters: {event_type: wallet_credit_reversed}}
+        - {table: wallet_ledger, aggregate: count, field: ledger_entry_id, filters: {event_type: wallet_credit_reversed}}
+        - {table: wallet_ledger, aggregate: count, field: ledger_entry_id, filters: {event_type: wallet_fee_charged, fee_type: card_funding_fee}}
+        - {category: bank, table: bank_ledger, aggregate: sum, field: amount_usd, within_months: 6, filters: {event_type: bank_funds_received}}
+      cross_category: [account, bank]
+
+  - id: wallet_ext_resend_credit
+    base_policy_refs: [wallet_evt_failed_credit, wallet_evt_release_holds_and_credit]
+    overwrite:
+      - base_policy: wallet_evt_failed_credit
+        superseded_clause: >-
+          A retried or redirected credit uses the transfer's original fx_rate and receive_amount, and date_available is re-disclosed as the retry day.
+        replaced_by: >-
+          Uplift points raise the locked rate for a resend: the uplifts are added together, the locked rate is multiplied once by one plus their sum over 100 and rounded half up to 4 decimals to give the resend rate, and the amount credited is the principal held times the resend rate, rounded half up to 2 decimals.
+    trigger: on_request
+    subject: [wallet_credit_retried, wallet_credit_sent]
+    computes: receive_amount
+    target_tool: resend_failed_credit_8d2e2e1a
+    params:
+      paid_full_points: 0.20
+      paid_partial_points: 0.10
+      multi_bounce_count: 2
+      held_long_days: 14
+      held_mid_days: 7
+      held_long_points: 0.30
+      held_mid_points: 0.15
+      principal_high_usd: 1500.00
+      principal_low_usd: 1000.00
+      principal_high_points: 0.10
+      principal_low_points: 0.05
+      cash_window_months: 6
+      cash_high_usd: 1000.00
+      cash_low_usd: 300.00
+      cash_high_points: 0.10
+      cash_low_points: 0.05
+    rule: >-
+      When a bounced credit is sent again to the same wallet at the customer's instruction, the resend carries the whole principal Paloma holds for the transfer, that is its wallet_funds_received, wallet_credit_reversed and wallet_paloma_credit entries less its wallet_credit_sent and wallet_refund_issued entries, as one new wallet_credit_sent entry whose credit_attempt is one more than the credits already sent, and the transfer returns to processing with released_at the moment of sending and date_available the resend day.
+      For a resend beyond the tier's free resends, the amount it credits is fixed only after the charge assessed for that resend stands on the transfer's ledger.
+      A resend converts the principal held at the transfer's locked fx_rate, and the amount it credits is that principal times that rate, rounded half up to 2 decimals.
+      Uplift points raise the locked rate for a resend: the uplifts are added together, the locked rate is multiplied once by one plus their sum over 100 and rounded half up to 4 decimals to give the resend rate, and the amount credited is the principal held times the resend rate, rounded half up to 2 decimals.
+      The paid-resend uplift follows the resend charge booked for this resend (the retry_fee entry whose fee_seq is this resend's number, the number of credits already sent): a charge of at least the tier's retry_fee_usd earns paid_full_points; a charge above 0.00 and below the tier's retry_fee_usd earns paid_partial_points; a charge of 0.00, or none, earns nothing.
+      The days a resend has waited are counted from a starting date set by the transfer's bounces: when every bounce on the transfer was on Paloma's or the provider's side (provider_unavailable), from the date the transfer was booked; when the transfer bounced at least multi_bounce_count times and at least one bounce was on the recipient's side, from the date of its first bounce (the wallet_credit_reversed entry of credit attempt 1); otherwise, a single recipient-side bounce, from the date part of failed_at, its latest bounce.
+      The held-days uplift on a resend follows those days, counted in calendar days to today: held_long_days or more earns held_long_points; at least held_mid_days and fewer than held_long_days earns held_mid_points; fewer earns nothing.
+      The principal uplift on a resend follows the principal collected on the transfer (its wallet_funds_received entries): principal_high_usd or more earns principal_high_points; at least principal_low_usd and below principal_high_usd earns principal_low_points; less earns nothing.
+      The Cash Pickup uplift on a resend follows the principal of the customer's Cash Pickup payments collected in the last cash_window_months calendar months (their cash_funds_received entries), a rolling window that holds the entries whose entry_date lies fewer than cash_window_months whole calendar months before today, the whole calendar months from a date to today being the difference between the two calendar months, less one when today's day of the month is lower than that date's: cash_high_usd or more earns cash_high_points; at least cash_low_usd and below cash_high_usd earns cash_low_points; less earns nothing.
+    prerequisite:
+      - problem: wallet_ext_resend_charge
+        kind: value_input
+        gate: paid_charge
+        form: state
+        policy_source: >-
+          For a resend beyond the tier's free resends, the amount it credits is fixed only after the charge assessed for that resend stands on the transfer's ledger.
+        condition: >-
+          for a resend whose number is above free_retries, a wallet_fee_charged entry with fee_type retry_fee and fee_seq equal to that resend's number stands on the transfer's ledger
+        resolved_by: charge_resend_fee_8300b1da
+        effect: >-
+          paid_charge becomes the resend charge booked, which moves the paid-resend uplift from nothing to paid_partial_points (a charge above 0.00 and below retry_fee_usd) or paid_full_points, and with it the resend rate and the amount credited
+    cross_category:
+      - category: cash
+        as: history
+        reads: [cash_ledger.amount_usd]
+        note: The Cash Pickup uplift sums the customer's cash_funds_received entries of the last months.
+    compute:
+      - held_usd: "SUM('wallet_ledger', 'amount_usd', event_type='wallet_funds_received') + SUM('wallet_ledger', 'amount_usd', event_type='wallet_credit_reversed') + SUM('wallet_ledger', 'amount_usd', event_type='wallet_paloma_credit') - SUM('wallet_ledger', 'amount_usd', event_type='wallet_credit_sent') - SUM('wallet_ledger', 'amount_usd', event_type='wallet_refund_issued')"
+      - locked_rate: "F('fx_rate')"
+      - resend_no: "COUNT('wallet_ledger', event_type='wallet_credit_sent')"
+      - paid_charge: "SUM('wallet_ledger', 'amount_usd', event_type='wallet_fee_charged', fee_type='retry_fee', fee_seq=resend_no)"
+      - paid_uplift: "K('paid_full_points') if paid_charge >= P('retry_fee_usd') else (K('paid_partial_points') if paid_charge > 0 else 0)"
+      - bounces: "COUNT('wallet_ledger', event_type='wallet_credit_reversed')"
+      - paloma_bounces: "COUNT('wallet_ledger', event_type='wallet_credit_reversed', failure_reason='provider_unavailable')"
+      - first_bounce: "LATEST('wallet_ledger', 'entry_date', date_field='entry_date', event_type='wallet_credit_reversed', credit_attempt=1)"
+      - held_from: "F('booked_at') if (bounces >= 1 and paloma_bounces == bounces) else (first_bounce if (bounces >= K('multi_bounce_count') and paloma_bounces < bounces) else F('failed_at'))"
+      - held_days: "DAYS(held_from, NOW)"
+      - held_uplift: "K('held_long_points') if held_days >= K('held_long_days') else (K('held_mid_points') if held_days >= K('held_mid_days') else 0)"
+      - principal: "SUM('wallet_ledger', 'amount_usd', event_type='wallet_funds_received')"
+      - principal_uplift: "K('principal_high_points') if principal >= K('principal_high_usd') else (K('principal_low_points') if principal >= K('principal_low_usd') else 0)"
+      - cash_volume: "XSUM('cash', 'cash_ledger', 'amount_usd', within_months=K('cash_window_months'), date_field='entry_date', event_type='cash_funds_received')"
+      - cash_uplift: "K('cash_high_points') if cash_volume >= K('cash_high_usd') else (K('cash_low_points') if cash_volume >= K('cash_low_usd') else 0)"
+      - resend_rate: "RND(locked_rate * (1 + (paid_uplift + held_uplift + principal_uplift + cash_uplift) / 100), 4)"
+      - result: "RND(held_usd * resend_rate, 2)"
+    compute_basis:
+      held_usd: "the resend carries the whole principal Paloma holds for the transfer, that is its wallet_funds_received, wallet_credit_reversed and wallet_paloma_credit entries less its wallet_credit_sent and wallet_refund_issued entries"
+      locked_rate: "A resend converts the principal held at the transfer's locked fx_rate, and the amount it credits is that principal times that rate, rounded half up to 2 decimals."
+      resend_no: "the retry_fee entry whose fee_seq is this resend's number, the number of credits already sent"
+      paid_charge: "The paid-resend uplift follows the resend charge booked for this resend (the retry_fee entry whose fee_seq is this resend's number, the number of credits already sent)"
+      paid_uplift: "a charge of at least the tier's retry_fee_usd earns paid_full_points; a charge above 0.00 and below the tier's retry_fee_usd earns paid_partial_points; a charge of 0.00, or none, earns nothing."
+      bounces: "when the transfer bounced at least multi_bounce_count times and at least one bounce was on the recipient's side"
+      paloma_bounces: "when every bounce on the transfer was on Paloma's or the provider's side (provider_unavailable), from the date the transfer was booked"
+      first_bounce: "from the date of its first bounce (the wallet_credit_reversed entry of credit attempt 1)"
+      held_from: "The days a resend has waited are counted from a starting date set by the transfer's bounces: when every bounce on the transfer was on Paloma's or the provider's side (provider_unavailable), from the date the transfer was booked; when the transfer bounced at least multi_bounce_count times and at least one bounce was on the recipient's side, from the date of its first bounce (the wallet_credit_reversed entry of credit attempt 1); otherwise, a single recipient-side bounce, from the date part of failed_at, its latest bounce."
+      held_days: "The held-days uplift on a resend follows those days, counted in calendar days to today"
+      held_uplift: "held_long_days or more earns held_long_points; at least held_mid_days and fewer than held_long_days earns held_mid_points; fewer earns nothing."
+      principal: "The principal uplift on a resend follows the principal collected on the transfer (its wallet_funds_received entries)"
+      principal_uplift: "principal_high_usd or more earns principal_high_points; at least principal_low_usd and below principal_high_usd earns principal_low_points; less earns nothing."
+      cash_volume: "The Cash Pickup uplift on a resend follows the principal of the customer's Cash Pickup payments collected in the last cash_window_months calendar months (their cash_funds_received entries), a rolling window that holds the entries whose entry_date lies fewer than cash_window_months whole calendar months before today, the whole calendar months from a date to today being the difference between the two calendar months, less one when today's day of the month is lower than that date's"
+      cash_uplift: "cash_high_usd or more earns cash_high_points; at least cash_low_usd and below cash_high_usd earns cash_low_points; less earns nothing."
+      resend_rate: "the uplifts are added together, the locked rate is multiplied once by one plus their sum over 100 and rounded half up to 4 decimals to give the resend rate"
+      result: "the amount credited is the principal held times the resend rate, rounded half up to 2 decimals."
+    factors:
+      - id: paid_resend_uplift
+        effect: parameter
+        decides: paid_uplift
+        bindings: [resend_no, paid_charge, paid_uplift]
+        ladder:
+          - when: "the resend charge booked for this resend is at least the tier's retry_fee_usd"
+            value: "K('paid_full_points')"
+          - when: "that charge is above 0.00 and below the tier's retry_fee_usd"
+            value: "K('paid_partial_points')"
+          - when: "otherwise (a charge of 0.00, or none)"
+            value: "0"
+        baseline:
+          paid_uplift: "0"
+        evidence: [history]
+        cross_difficulty: null
+      - id: held_days_clock
+        effect: method
+        decides: held_from
+        bindings: [bounces, paloma_bounces, first_bounce, held_from]
+        ladder:
+          - when: "every bounce on the transfer was provider_unavailable (Paloma's or the provider's side)"
+            method: "the waiting days are counted from the date the transfer was booked"
+          - when: "the transfer bounced at least multi_bounce_count times and at least one bounce was on the recipient's side"
+            method: "the waiting days are counted from the date of the first bounce (reversal of credit attempt 1)"
+          - when: "otherwise (a single recipient-side bounce)"
+            method: "the waiting days are counted from the date part of failed_at, the latest bounce"
+        baseline:
+          held_from: "F('failed_at')"
+        evidence: [history, date]
+        cross_difficulty: null
+      - id: held_days_uplift
+        effect: parameter
+        decides: held_uplift
+        bindings: [held_days, held_uplift]
+        ladder:
+          - when: "the resend has waited held_long_days calendar days or more"
+            value: "K('held_long_points')"
+          - when: "it has waited at least held_mid_days and fewer than held_long_days calendar days"
+            value: "K('held_mid_points')"
+          - when: "otherwise (fewer than held_mid_days)"
+            value: "0"
+        baseline:
+          held_uplift: "0"
+        evidence: [date]
+        cross_difficulty: null
+      - id: principal_uplift
+        effect: parameter
+        decides: principal_uplift
+        bindings: [principal, principal_uplift]
+        ladder:
+          - when: "the principal collected on the transfer is principal_high_usd or more"
+            value: "K('principal_high_points')"
+          - when: "it is at least principal_low_usd and below principal_high_usd"
+            value: "K('principal_low_points')"
+          - when: "otherwise (below principal_low_usd)"
+            value: "0"
+        baseline:
+          principal_uplift: "0"
+        evidence: [history]
+        cross_difficulty: null
+      - id: cash_pickup_uplift
+        effect: parameter
+        decides: cash_uplift
+        bindings: [cash_volume, cash_uplift]
+        ladder:
+          - when: "Cash Pickup principal collected in the last cash_window_months calendar months (rolling, counted in whole calendar months back from today) is cash_high_usd or more"
+            value: "K('cash_high_points')"
+          - when: "that principal is at least cash_low_usd and below cash_high_usd"
+            value: "K('cash_low_points')"
+          - when: "otherwise (below cash_low_usd)"
+            value: "0"
+        baseline:
+          cash_uplift: "0"
+        evidence: [cross_category, history]
+        cross_difficulty: cash
+    baseline:
+      rule: >-
+        When a bounced credit is sent again to the same wallet at the customer's instruction, the resend carries the whole principal Paloma holds for the transfer, that is its wallet_funds_received, wallet_credit_reversed and wallet_paloma_credit entries less its wallet_credit_sent and wallet_refund_issued entries, as one new wallet_credit_sent entry whose credit_attempt is one more than the credits already sent, and the transfer returns to processing with released_at the moment of sending and date_available the resend day.
+        A resend converts the principal held at the transfer's locked fx_rate, and the amount it credits is that principal times that rate, rounded half up to 2 decimals.
+      params: []
+    inputs:
+      history:
+        - {table: wallet_ledger, aggregate: sum, field: amount_usd, filters: {event_type: wallet_funds_received}}
+        - {table: wallet_ledger, aggregate: sum, field: amount_usd, filters: {event_type: wallet_credit_reversed}}
+        - {table: wallet_ledger, aggregate: sum, field: amount_usd, filters: {event_type: wallet_credit_sent}}
+        - {table: wallet_ledger, aggregate: sum, field: amount_usd, filters: {event_type: wallet_fee_charged, fee_type: retry_fee}}
+        - {table: wallet_ledger, aggregate: latest, field: entry_date, filters: {event_type: wallet_credit_reversed, credit_attempt: 1}}
+        - {category: cash, table: cash_ledger, aggregate: sum, field: amount_usd, within_months: 6, filters: {event_type: cash_funds_received}}
+      cross_category: [cash]
+
+  - id: wallet_ext_shortfall_makegood
+    base_policy_refs: [wallet_evt_error_resolution]
+    overwrite:
+      - base_policy: wallet_evt_error_resolution
+        superseded_clause: >-
+          for incorrect_amount Paloma credits the shortfall (credit_reason incorrect_amount_shortfall)
+        replaced_by: >-
+          Goodwill percentages and goodwill amounts are added to the shortfall make-good: the shortfall divided by the locked rate, unrounded, is multiplied once by one plus the sum of the goodwill percentages over 100, the goodwill amounts are then added, and the total is rounded half up to the cent.
+    trigger: state_due
+    subject: [wallet_paloma_credit]
+    computes: amount_usd
+    target_tool: book_shortfall_makegood_2311834f
+    params:
+      prompt_notice_days: 3
+      late_notice_days: 30
+      delay_long_days: 10
+      delay_mid_days: 5
+      delay_long_pct: 5.0
+      delay_mid_pct: 2.5
+      hardship_share_pct: 2.0
+      hardship_high_pct: 4.0
+      hardship_low_pct: 2.0
+      tenure_long_months: 60
+      tenure_mid_months: 36
+      tenure_long_usd: 3.00
+      tenure_mid_usd: 1.50
+      topup_window_months: 12
+      topup_high_count: 6
+      topup_low_count: 3
+      topup_high_usd: 1.00
+      topup_low_usd: 0.50
+    rule: >-
+      When the error-resolution team decides error_found on an incorrect_amount notice, Paloma owes a make-good for the shortfall: one wallet_paloma_credit entry with credit_reason incorrect_amount_shortfall, related to the wallet_credit_sent entry that arrived short and dated the day it is booked, which adds to the principal Paloma holds for the transfer.
+      The shortfall is the transfer's disclosed receive_amount less the receive_amount its wallet_credit_sent entries delivered, in the payout currency.
+      The shortfall make-good is the shortfall divided by the transfer's locked fx_rate, rounded half up to the cent.
+      Goodwill percentages and goodwill amounts are added to the shortfall make-good: the shortfall divided by the locked rate, unrounded, is multiplied once by one plus the sum of the goodwill percentages over 100, the goodwill amounts are then added, and the total is rounded half up to the cent.
+      The days a shortfall stood are counted in calendar days to the date of the error_found decision, from a starting date set by how soon the customer gave notice, measured in calendar days from date_available to the notice date: within prompt_notice_days, from date_available; more than late_notice_days, from the date of the decision itself; otherwise from the notice date.
+      The delay goodwill on a shortfall make-good follows those days: delay_long_days or more adds delay_long_pct percent; at least delay_mid_days and fewer than delay_long_days adds delay_mid_pct percent; fewer adds nothing.
+      The hardship goodwill on a shortfall make-good follows the stated transfer_purpose together with the shortfall as a percentage of the disclosed receive_amount: a medical or education transfer short by more than hardship_share_pct percent adds hardship_high_pct percent; a family_support transfer short by more than hardship_share_pct percent adds hardship_low_pct percent; any other transfer, or one short by hardship_share_pct percent or less, adds nothing.
+      The tenure goodwill on a shortfall make-good follows the whole calendar months from the Personal Sender Account's opened_date to today: tenure_long_months or more adds tenure_long_usd; at least tenure_mid_months and fewer than tenure_long_months adds tenure_mid_usd; fewer adds nothing.
+      The Top-Up goodwill on a shortfall make-good follows the customer's Top-Up and Bill Pay orders with status delivered that were ordered in the last topup_window_months calendar months, a rolling window that holds the entries whose ordered_at lies fewer than topup_window_months whole calendar months before today, the whole calendar months from a date to today being the difference between the two calendar months, less one when today's day of the month is lower than that date's: topup_high_count or more adds topup_high_usd; at least topup_low_count and fewer than topup_high_count adds topup_low_usd; fewer adds nothing.
+    prerequisite: []
+    cross_category:
+      - category: account
+        as: branch
+        reads: [opened_date]
+        note: The tenure goodwill reads the opened_date of the customer's Personal Sender Account.
+      - category: topup
+        as: history
+        reads: [topup_orders.status, topup_orders.ordered_at]
+        note: The Top-Up goodwill counts the customer's delivered Top-Up and Bill Pay orders of the last months.
+    compute:
+      - disclosed: "F('receive_amount')"
+      - credited_local: "SUM('wallet_ledger', 'receive_amount', event_type='wallet_credit_sent')"
+      - shortfall_local: "disclosed - credited_local"
+      - shortfall_usd: "shortfall_local / F('fx_rate')"
+      - notice_date: "LATEST('wallet_cases', 'case_date', date_field='case_date', event_type='wallet_error_notice_filed', case_type='incorrect_amount')"
+      - finding_date: "LATEST('wallet_cases', 'case_date', date_field='case_date', event_type='wallet_error_decided', case_outcome='error_found')"
+      - notice_lag: "DAYS(F('date_available'), notice_date)"
+      - delay_from: "F('date_available') if notice_lag <= K('prompt_notice_days') else (finding_date if notice_lag > K('late_notice_days') else notice_date)"
+      - delay_days: "DAYS(delay_from, finding_date)"
+      - delay_pct: "K('delay_long_pct') if delay_days >= K('delay_long_days') else (K('delay_mid_pct') if delay_days >= K('delay_mid_days') else 0)"
+      - short_share: "(F('receive_amount') - SUM('wallet_ledger', 'receive_amount', event_type='wallet_credit_sent')) / F('receive_amount') * 100"
+      - hardship_pct: "K('hardship_high_pct') if ((F('transfer_purpose') == 'medical' or F('transfer_purpose') == 'education') and short_share > K('hardship_share_pct')) else (K('hardship_low_pct') if (F('transfer_purpose') == 'family_support' and short_share > K('hardship_share_pct')) else 0)"
+      - tenure_months: "MONTHS(CFIELD('account', 'opened_date'), NOW)"
+      - tenure_goodwill: "K('tenure_long_usd') if tenure_months >= K('tenure_long_months') else (K('tenure_mid_usd') if tenure_months >= K('tenure_mid_months') else 0)"
+      - delivered_topups: "XCOUNT('topup', 'topup_orders', within_months=K('topup_window_months'), date_field='ordered_at', status='delivered')"
+      - topup_goodwill: "K('topup_high_usd') if delivered_topups >= K('topup_high_count') else (K('topup_low_usd') if delivered_topups >= K('topup_low_count') else 0)"
+      - result: "RND(shortfall_usd * (1 + (delay_pct + hardship_pct) / 100) + tenure_goodwill + topup_goodwill, 2)"
+    compute_basis:
+      disclosed: "The shortfall is the transfer's disclosed receive_amount less the receive_amount its wallet_credit_sent entries delivered, in the payout currency."
+      credited_local: "The shortfall is the transfer's disclosed receive_amount less the receive_amount its wallet_credit_sent entries delivered, in the payout currency."
+      shortfall_local: "The shortfall is the transfer's disclosed receive_amount less the receive_amount its wallet_credit_sent entries delivered, in the payout currency."
+      shortfall_usd: "the shortfall divided by the locked rate, unrounded"
+      notice_date: "measured in calendar days from date_available to the notice date"
+      finding_date: "The days a shortfall stood are counted in calendar days to the date of the error_found decision"
+      notice_lag: "measured in calendar days from date_available to the notice date"
+      delay_from: "from a starting date set by how soon the customer gave notice, measured in calendar days from date_available to the notice date: within prompt_notice_days, from date_available; more than late_notice_days, from the date of the decision itself; otherwise from the notice date."
+      delay_days: "The days a shortfall stood are counted in calendar days to the date of the error_found decision"
+      delay_pct: "The delay goodwill on a shortfall make-good follows those days: delay_long_days or more adds delay_long_pct percent; at least delay_mid_days and fewer than delay_long_days adds delay_mid_pct percent; fewer adds nothing."
+      short_share: "together with the shortfall as a percentage of the disclosed receive_amount"
+      hardship_pct: "a medical or education transfer short by more than hardship_share_pct percent adds hardship_high_pct percent; a family_support transfer short by more than hardship_share_pct percent adds hardship_low_pct percent; any other transfer, or one short by hardship_share_pct percent or less, adds nothing."
+      tenure_months: "The tenure goodwill on a shortfall make-good follows the whole calendar months from the Personal Sender Account's opened_date to today"
+      tenure_goodwill: "tenure_long_months or more adds tenure_long_usd; at least tenure_mid_months and fewer than tenure_long_months adds tenure_mid_usd; fewer adds nothing."
+      delivered_topups: "The Top-Up goodwill on a shortfall make-good follows the customer's Top-Up and Bill Pay orders with status delivered that were ordered in the last topup_window_months calendar months, a rolling window that holds the entries whose ordered_at lies fewer than topup_window_months whole calendar months before today, the whole calendar months from a date to today being the difference between the two calendar months, less one when today's day of the month is lower than that date's"
+      topup_goodwill: "topup_high_count or more adds topup_high_usd; at least topup_low_count and fewer than topup_high_count adds topup_low_usd; fewer adds nothing."
+      result: "the shortfall divided by the locked rate, unrounded, is multiplied once by one plus the sum of the goodwill percentages over 100, the goodwill amounts are then added, and the total is rounded half up to the cent."
+    factors:
+      - id: shortfall_clock
+        effect: method
+        decides: delay_from
+        bindings: [notice_lag, delay_from]
+        ladder:
+          - when: "notice given within prompt_notice_days calendar days of date_available"
+            method: "the days the shortfall stood are counted from date_available"
+          - when: "notice given more than late_notice_days calendar days after date_available"
+            method: "the days the shortfall stood are counted from the date of the error_found decision itself"
+          - when: "otherwise (notice given between those bounds)"
+            method: "the days the shortfall stood are counted from the notice date"
+        baseline:
+          delay_from: "notice_date"
+        evidence: [history, date]
+        cross_difficulty: null
+      - id: delay_goodwill
+        effect: parameter
+        decides: delay_pct
+        bindings: [delay_days, delay_pct]
+        ladder:
+          - when: "the shortfall stood delay_long_days calendar days or more"
+            value: "K('delay_long_pct')"
+          - when: "it stood at least delay_mid_days and fewer than delay_long_days calendar days"
+            value: "K('delay_mid_pct')"
+          - when: "otherwise (fewer than delay_mid_days)"
+            value: "0"
+        baseline:
+          delay_pct: "0"
+        evidence: [date, history]
+        cross_difficulty: null
+      - id: hardship_goodwill
+        effect: parameter
+        decides: hardship_pct
+        bindings: [short_share, hardship_pct]
+        ladder:
+          - when: "transfer_purpose medical or education AND the shortfall is more than hardship_share_pct percent of the disclosed receive_amount"
+            value: "K('hardship_high_pct')"
+          - when: "transfer_purpose family_support AND the shortfall is more than hardship_share_pct percent of the disclosed receive_amount"
+            value: "K('hardship_low_pct')"
+          - when: "otherwise (any other purpose, or a shortfall of hardship_share_pct percent or less)"
+            value: "0"
+        baseline:
+          hardship_pct: "0"
+        evidence: [history]
+        cross_difficulty: null
+      - id: tenure_goodwill
+        effect: parameter
+        decides: tenure_goodwill
+        bindings: [tenure_months, tenure_goodwill]
+        ladder:
+          - when: "Personal Sender Account open tenure_long_months whole calendar months or more"
+            value: "K('tenure_long_usd')"
+          - when: "open at least tenure_mid_months and fewer than tenure_long_months whole calendar months"
+            value: "K('tenure_mid_usd')"
+          - when: "otherwise (fewer than tenure_mid_months)"
+            value: "0"
+        baseline:
+          tenure_goodwill: "0"
+        evidence: [cross_category, date]
+        cross_difficulty: account
+      - id: topup_goodwill
+        effect: parameter
+        decides: topup_goodwill
+        bindings: [delivered_topups, topup_goodwill]
+        ladder:
+          - when: "topup_high_count or more delivered Top-Up and Bill Pay orders ordered in the last topup_window_months calendar months (rolling, counted in whole calendar months back from today)"
+            value: "K('topup_high_usd')"
+          - when: "at least topup_low_count and fewer than topup_high_count such orders"
+            value: "K('topup_low_usd')"
+          - when: "otherwise (fewer than topup_low_count)"
+            value: "0"
+        baseline:
+          topup_goodwill: "0"
+        evidence: [cross_category, history]
+        cross_difficulty: null
+    baseline:
+      rule: >-
+        The shortfall is the transfer's disclosed receive_amount less the receive_amount its wallet_credit_sent entries delivered, in the payout currency.
+        The shortfall make-good is the shortfall divided by the transfer's locked fx_rate, rounded half up to the cent.
+      params: []
+    inputs:
+      history:
+        - {table: wallet_ledger, aggregate: sum, field: receive_amount, filters: {event_type: wallet_credit_sent}}
+        - {table: wallet_cases, aggregate: latest, field: case_date, filters: {event_type: wallet_error_notice_filed, case_type: incorrect_amount}}
+        - {table: wallet_cases, aggregate: latest, field: case_date, filters: {event_type: wallet_error_decided, case_outcome: error_found}}
+        - {category: topup, table: topup_orders, aggregate: count, field: topup_order_id, within_months: 12, filters: {status: delivered}}
+      cross_category: [account, topup]
+
+  - id: wallet_ext_shortfall_recredit
+    base_policy_refs: [wallet_evt_error_resolution, wallet_evt_release_holds_and_credit, wallet_evt_failed_credit]
+    overwrite:
+      - base_policy: wallet_evt_failed_credit
+        superseded_clause: >-
+          A retried or redirected credit uses the transfer's original fx_rate and receive_amount, and date_available is re-disclosed as the retry day.
+        replaced_by: >-
+          The rate of a shortfall re-credit starts from a base rate set by how the shortfall arose and is raised by re-credit points: the points are added together, the base rate is multiplied once by one plus their sum over 100 and rounded half up to 4 decimals, and the amount delivered is the principal held times that rate, rounded half up to 2 decimals.
+    trigger: on_request
+    subject: [wallet_remedy_chosen, wallet_credit_sent]
+    computes: receive_amount
+    target_tool: choose_shortfall_recredit_f54302ef
+    params:
+      deduction_margin_share: 0.5
+      enhanced_level_number: 4
+      verified_plus_level_number: 3
+      level_top_points: 0.30
+      level_mid_points: 0.15
+      pickup_window_months: 12
+      pickup_high_count: 4
+      pickup_low_count: 2
+      pickup_high_points: 0.20
+      pickup_low_points: 0.10
+      deposit_window_months: 12
+      deposit_high_count: 6
+      deposit_low_count: 3
+      deposit_high_points: 0.20
+      deposit_low_points: 0.10
+      size_high_usd: 25.00
+      size_low_usd: 10.00
+      size_high_points: 0.20
+      size_low_points: 0.10
+    rule: >-
+      After a decision of error_found on an incorrect_amount notice, the customer may choose to have the shortfall re-credited to the same wallet (remedy_choice recredit_shortfall); the choice is the customer's own and is recorded against the notice, and the re-credit sends at once the whole principal Paloma then holds for the transfer, that is its wallet_funds_received, wallet_credit_reversed and wallet_paloma_credit entries less its wallet_credit_sent and wallet_refund_issued entries, as one new wallet_credit_sent entry whose credit_attempt is one more than the credits already sent, the transfer returning to processing with released_at the moment of sending and date_available that day.
+      The amount a shortfall re-credit delivers is fixed only after Paloma's own shortfall credit stands on the transfer's ledger.
+      A shortfall re-credit is not sent to a wallet until no earlier-booked transfer of the same customer addressed to that wallet number stands with a failed credit.
+      A shortfall re-credit converts the principal held at the transfer's locked fx_rate, and the amount it delivers is that principal times that rate, rounded half up to 2 decimals.
+      The rate of a shortfall re-credit starts from a base rate set by how the shortfall arose and is raised by re-credit points: the points are added together, the base rate is multiplied once by one plus their sum over 100 and rounded half up to 4 decimals, and the amount delivered is the principal held times that rate, rounded half up to 2 decimals.
+      How the shortfall arose is read by comparing the fx_rate_applied of the transfer's latest wallet_credit_sent entry with the locked fx_rate: when that credit was converted below the locked rate, the base rate is the booking-day mid-market rate implied by the locked rate, that is the locked rate divided by one minus the margin the transfer carried over 100, rounded half up to 4 decimals; when it carried the locked rate but delivered less than the disclosed receive_amount, the base rate is the locked rate multiplied by one plus deduction_margin_share times that margin over 100, rounded half up to 4 decimals; otherwise the base rate is the locked rate.
+      The margin the transfer carried is the tier's fx_margin_pct, less margin_reduction_pct_points when the principal collected on the transfer (its wallet_funds_received entries) is at or above margin_reduction_threshold_usd.
+      The level points of a shortfall re-credit follow the Personal Sender Account level: Paloma Enhanced or higher (level_number of at least enhanced_level_number) earns level_top_points; Paloma Verified Plus (level_number equal to verified_plus_level_number) earns level_mid_points; a lower level earns nothing.
+      The Cash Pickup points of a shortfall re-credit follow the customer's Cash Pickup payouts made in the last pickup_window_months calendar months (their cash_payout_made entries), a rolling window that holds the entries whose entry_date lies fewer than pickup_window_months whole calendar months before today, the whole calendar months from a date to today being the difference between the two calendar months, less one when today's day of the month is lower than that date's: pickup_high_count or more earns pickup_high_points; at least pickup_low_count and fewer than pickup_high_count earns pickup_low_points; fewer earn nothing.
+      The Bank Deposit points of a shortfall re-credit follow the customer's Bank Deposit payouts sent in the last deposit_window_months calendar months (their bank_payout_sent entries), a rolling window that holds the entries whose entry_date lies fewer than deposit_window_months whole calendar months before today, the whole calendar months from a date to today being the difference between the two calendar months, less one when today's day of the month is lower than that date's: deposit_high_count or more earns deposit_high_points; at least deposit_low_count and fewer than deposit_high_count earns deposit_low_points; fewer earn nothing.
+      The size points of a shortfall re-credit follow the principal Paloma holds for the transfer when it is sent: size_high_usd or more earns size_high_points; at least size_low_usd and below size_high_usd earns size_low_points; less earns nothing.
+    prerequisite:
+      - problem: wallet_ext_shortfall_makegood
+        kind: value_input
+        gate: held_usd
+        form: state
+        policy_source: >-
+          The amount a shortfall re-credit delivers is fixed only after Paloma's own shortfall credit stands on the transfer's ledger.
+        condition: >-
+          a wallet_paloma_credit entry with credit_reason incorrect_amount_shortfall stands on the transfer's ledger, so the principal Paloma holds for the transfer is the make-good
+        resolved_by: book_shortfall_makegood_2311834f
+        effect: >-
+          held_usd rises by the shortfall make-good booked, which sets the size points and the principal the re-credit converts
+      - problem: wallet_ext_resend_credit
+        kind: state_gate
+        gate: wallet_transfers.status
+        form: state
+        policy_source: >-
+          A shortfall re-credit is not sent to a wallet until no earlier-booked transfer of the same customer addressed to that wallet number stands with a failed credit.
+        condition: >-
+          no other wallet_transfers row of the same customer with an earlier booked_at and the same wallet_number has status credit_failed
+        resolved_by: resend_failed_credit_8d2e2e1a
+        effect: >-
+          the earlier transfer's bounced credit goes out again and its status moves from credit_failed to processing, so the eligibility of the re-credit to that wallet flips from false to true
+    cross_category:
+      - category: account
+        as: branch
+        reads: [variant_name]
+        note: The level points read the level_number of the customer's Personal Sender Account tier.
+      - category: cash
+        as: history
+        reads: [cash_ledger.event_type, cash_ledger.entry_date]
+        note: The Cash Pickup points count the customer's cash_payout_made entries of the last months.
+      - category: bank
+        as: history
+        reads: [bank_ledger.event_type, bank_ledger.entry_date]
+        note: The Bank Deposit points count the customer's bank_payout_sent entries of the last months.
+    compute:
+      - held_usd: "SUM('wallet_ledger', 'amount_usd', event_type='wallet_funds_received') + SUM('wallet_ledger', 'amount_usd', event_type='wallet_credit_reversed') + SUM('wallet_ledger', 'amount_usd', event_type='wallet_paloma_credit') - SUM('wallet_ledger', 'amount_usd', event_type='wallet_credit_sent') - SUM('wallet_ledger', 'amount_usd', event_type='wallet_refund_issued')"
+      - size_points: "K('size_high_points') if held_usd >= K('size_high_usd') else (K('size_low_points') if held_usd >= K('size_low_usd') else 0)"
+      - locked_rate: "F('fx_rate')"
+      - principal: "SUM('wallet_ledger', 'amount_usd', event_type='wallet_funds_received')"
+      - carried_margin: "P('fx_margin_pct') - (P('margin_reduction_pct_points') if principal >= P('margin_reduction_threshold_usd') else 0)"
+      - applied_rate: "LATEST('wallet_ledger', 'fx_rate_applied', date_field='entry_date', event_type='wallet_credit_sent')"
+      - credited_local: "LATEST('wallet_ledger', 'receive_amount', date_field='entry_date', event_type='wallet_credit_sent')"
+      - base_rate: "RND(locked_rate / (1 - carried_margin / 100), 4) if applied_rate < locked_rate else (RND(locked_rate * (1 + K('deduction_margin_share') * carried_margin / 100), 4) if (applied_rate == locked_rate and credited_local < F('receive_amount')) else locked_rate)"
+      - level_number: "CPARAM('account', 'level_number')"
+      - level_points: "K('level_top_points') if level_number >= K('enhanced_level_number') else (K('level_mid_points') if level_number == K('verified_plus_level_number') else 0)"
+      - pickups: "XCOUNT('cash', 'cash_ledger', within_months=K('pickup_window_months'), date_field='entry_date', event_type='cash_payout_made')"
+      - pickup_points: "K('pickup_high_points') if pickups >= K('pickup_high_count') else (K('pickup_low_points') if pickups >= K('pickup_low_count') else 0)"
+      - deposits: "XCOUNT('bank', 'bank_ledger', within_months=K('deposit_window_months'), date_field='entry_date', event_type='bank_payout_sent')"
+      - deposit_points: "K('deposit_high_points') if deposits >= K('deposit_high_count') else (K('deposit_low_points') if deposits >= K('deposit_low_count') else 0)"
+      - recredit_rate: "RND(base_rate * (1 + (level_points + pickup_points + deposit_points + size_points) / 100), 4)"
+      - result: "RND(held_usd * recredit_rate, 2)"
+    compute_basis:
+      held_usd: "the re-credit sends at once the whole principal Paloma then holds for the transfer, that is its wallet_funds_received, wallet_credit_reversed and wallet_paloma_credit entries less its wallet_credit_sent and wallet_refund_issued entries"
+      size_points: "The size points of a shortfall re-credit follow the principal Paloma holds for the transfer when it is sent: size_high_usd or more earns size_high_points; at least size_low_usd and below size_high_usd earns size_low_points; less earns nothing."
+      locked_rate: "A shortfall re-credit converts the principal held at the transfer's locked fx_rate, and the amount it delivers is that principal times that rate, rounded half up to 2 decimals."
+      principal: "less margin_reduction_pct_points when the principal collected on the transfer (its wallet_funds_received entries) is at or above margin_reduction_threshold_usd."
+      carried_margin: "The margin the transfer carried is the tier's fx_margin_pct, less margin_reduction_pct_points when the principal collected on the transfer (its wallet_funds_received entries) is at or above margin_reduction_threshold_usd."
+      applied_rate: "How the shortfall arose is read by comparing the fx_rate_applied of the transfer's latest wallet_credit_sent entry with the locked fx_rate"
+      credited_local: "when it carried the locked rate but delivered less than the disclosed receive_amount"
+      base_rate: "when that credit was converted below the locked rate, the base rate is the booking-day mid-market rate implied by the locked rate, that is the locked rate divided by one minus the margin the transfer carried over 100, rounded half up to 4 decimals; when it carried the locked rate but delivered less than the disclosed receive_amount, the base rate is the locked rate multiplied by one plus deduction_margin_share times that margin over 100, rounded half up to 4 decimals; otherwise the base rate is the locked rate."
+      level_number: "The level points of a shortfall re-credit follow the Personal Sender Account level"
+      level_points: "Paloma Enhanced or higher (level_number of at least enhanced_level_number) earns level_top_points; Paloma Verified Plus (level_number equal to verified_plus_level_number) earns level_mid_points; a lower level earns nothing."
+      pickups: "The Cash Pickup points of a shortfall re-credit follow the customer's Cash Pickup payouts made in the last pickup_window_months calendar months (their cash_payout_made entries), a rolling window that holds the entries whose entry_date lies fewer than pickup_window_months whole calendar months before today, the whole calendar months from a date to today being the difference between the two calendar months, less one when today's day of the month is lower than that date's"
+      pickup_points: "pickup_high_count or more earns pickup_high_points; at least pickup_low_count and fewer than pickup_high_count earns pickup_low_points; fewer earn nothing."
+      deposits: "The Bank Deposit points of a shortfall re-credit follow the customer's Bank Deposit payouts sent in the last deposit_window_months calendar months (their bank_payout_sent entries), a rolling window that holds the entries whose entry_date lies fewer than deposit_window_months whole calendar months before today, the whole calendar months from a date to today being the difference between the two calendar months, less one when today's day of the month is lower than that date's"
+      deposit_points: "deposit_high_count or more earns deposit_high_points; at least deposit_low_count and fewer than deposit_high_count earns deposit_low_points; fewer earn nothing."
+      recredit_rate: "the points are added together, the base rate is multiplied once by one plus their sum over 100 and rounded half up to 4 decimals"
+      result: "the amount delivered is the principal held times that rate, rounded half up to 2 decimals."
+    factors:
+      - id: shortfall_rate_basis
+        effect: method
+        decides: base_rate
+        bindings: [applied_rate, credited_local, base_rate]
+        ladder:
+          - when: "the short credit's fx_rate_applied is below the locked fx_rate (a conversion error)"
+            method: "the base rate is the booking-day mid-market rate implied by the locked rate: locked rate divided by one minus the carried margin over 100, rounded half up to 4 decimals"
+          - when: "the short credit carried the locked rate but delivered less than the disclosed receive_amount (a deduction on the way)"
+            method: "the base rate is the locked rate multiplied by one plus deduction_margin_share times the carried margin over 100, rounded half up to 4 decimals"
+          - when: "otherwise"
+            method: "the base rate is the locked rate"
+        baseline:
+          base_rate: "locked_rate"
+        evidence: [history]
+        cross_difficulty: null
+      - id: level_points
+        effect: parameter
+        decides: level_points
+        bindings: [level_number, level_points]
+        ladder:
+          - when: "Personal Sender Account at Paloma Enhanced or higher"
+            value: "K('level_top_points')"
+          - when: "Personal Sender Account at Paloma Verified Plus"
+            value: "K('level_mid_points')"
+          - when: "otherwise (a lower level)"
+            value: "0"
+        baseline:
+          level_points: "0"
+        evidence: [cross_category]
+        cross_difficulty: account
+      - id: pickup_points
+        effect: parameter
+        decides: pickup_points
+        bindings: [pickups, pickup_points]
+        ladder:
+          - when: "pickup_high_count or more Cash Pickup payouts made in the last pickup_window_months calendar months (rolling, counted in whole calendar months back from today)"
+            value: "K('pickup_high_points')"
+          - when: "at least pickup_low_count and fewer than pickup_high_count such payouts"
+            value: "K('pickup_low_points')"
+          - when: "otherwise (fewer than pickup_low_count)"
+            value: "0"
+        baseline:
+          pickup_points: "0"
+        evidence: [cross_category, history]
+        cross_difficulty: cash
+      - id: deposit_points
+        effect: parameter
+        decides: deposit_points
+        bindings: [deposits, deposit_points]
+        ladder:
+          - when: "deposit_high_count or more Bank Deposit payouts sent in the last deposit_window_months calendar months (rolling, counted in whole calendar months back from today)"
+            value: "K('deposit_high_points')"
+          - when: "at least deposit_low_count and fewer than deposit_high_count such payouts"
+            value: "K('deposit_low_points')"
+          - when: "otherwise (fewer than deposit_low_count)"
+            value: "0"
+        baseline:
+          deposit_points: "0"
+        evidence: [cross_category, history]
+        cross_difficulty: bank
+      - id: size_points
+        effect: parameter
+        decides: size_points
+        bindings: [held_usd, size_points]
+        ladder:
+          - when: "the principal Paloma holds for the transfer is size_high_usd or more"
+            value: "K('size_high_points')"
+          - when: "it is at least size_low_usd and below size_high_usd"
+            value: "K('size_low_points')"
+          - when: "otherwise (below size_low_usd)"
+            value: "0"
+        baseline:
+          size_points: "0"
+        evidence: [history]
+        cross_difficulty: null
+    baseline:
+      rule: >-
+        After a decision of error_found on an incorrect_amount notice, the customer may choose to have the shortfall re-credited to the same wallet (remedy_choice recredit_shortfall); the choice is the customer's own and is recorded against the notice, and the re-credit sends at once the whole principal Paloma then holds for the transfer, that is its wallet_funds_received, wallet_credit_reversed and wallet_paloma_credit entries less its wallet_credit_sent and wallet_refund_issued entries, as one new wallet_credit_sent entry whose credit_attempt is one more than the credits already sent, the transfer returning to processing with released_at the moment of sending and date_available that day.
+        A shortfall re-credit converts the principal held at the transfer's locked fx_rate, and the amount it delivers is that principal times that rate, rounded half up to 2 decimals.
+      params: []
+    inputs:
+      history:
+        - {table: wallet_ledger, aggregate: sum, field: amount_usd, filters: {event_type: wallet_paloma_credit}}
+        - {table: wallet_ledger, aggregate: latest, field: fx_rate_applied, filters: {event_type: wallet_credit_sent}}
+        - {table: wallet_ledger, aggregate: latest, field: receive_amount, filters: {event_type: wallet_credit_sent}}
+        - {category: cash, table: cash_ledger, aggregate: count, field: ledger_entry_id, within_months: 12, filters: {event_type: cash_payout_made}}
+        - {category: bank, table: bank_ledger, aggregate: count, field: ledger_entry_id, within_months: 12, filters: {event_type: bank_payout_sent}}
+      cross_category: [account, cash, bank]
+
+  # ------------------------------------------------------------------ task 1
+  - id: wallet_ext_wrong_wallet_funding
+    base_policy_refs: [wallet_evt_error_resolution]
+    overwrite:
+      - base_policy: wallet_evt_error_resolution
+        superseded_clause: >-
+          or a re-credit to the correct wallet at no cost, funded by Paloma (wallet_paloma_credit, credit_reason error_refund or error_recredit)
+        replaced_by: >-
+          Goodwill is added to the wrong-wallet funding: the misdirected principal is multiplied once by one plus the sum of the goodwill percentages over 100, the standing goodwill amount is then added, and the total is rounded half up to the cent.
+    trigger: on_request
+    subject: [wallet_paloma_credit]
+    computes: amount_usd
+    target_tool: fund_wallet_recredit_aebfda78
+    params:
+      prompt_notice_days: 2
+      misdirect_long_days: 7
+      misdirect_mid_days: 4
+      misdirect_long_pct: 2.0
+      misdirect_mid_pct: 1.0
+      enhanced_level_number: 4
+      verified_plus_level_number: 3
+      standing_months: 36
+      enhanced_standing_usd: 5.00
+      verified_plus_standing_usd: 2.50
+      bank_window_months: 12
+      bank_high_usd: 5000.00
+      bank_low_usd: 2000.00
+      bank_high_pct: 1.5
+      bank_low_pct: 0.75
+    rule: >-
+      When the error-resolution team decides error_found on a wrong_wallet_credited notice and the customer asks for the money to be re-credited to the transfer's own wallet, Paloma funds the re-credit: one wallet_paloma_credit entry with credit_reason error_recredit, related to the wallet_credit_sent entry that reached the wrong wallet and dated the day it is booked, which adds to the principal Paloma holds for the transfer.
+      The misdirected principal is the amount_usd of the transfer's wallet_credit_sent entries.
+      The wrong-wallet funding is the misdirected principal, in USD to the cent.
+      Goodwill is added to the wrong-wallet funding: the misdirected principal is multiplied once by one plus the sum of the goodwill percentages over 100, the standing goodwill amount is then added, and the total is rounded half up to the cent.
+      The days the money was misdirected are counted in calendar days to the date of the error_found decision, from a starting date set by the transfer's promise and the customer's notice: on a tier whose credit_promise_minutes is above 0, from the date part of released_at; on any other tier, when the notice came within prompt_notice_days calendar days of date_available, from date_available; otherwise from the notice date.
+      The misdirection goodwill on a wrong-wallet funding follows those days: misdirect_long_days or more adds misdirect_long_pct percent; at least misdirect_mid_days and fewer than misdirect_long_days adds misdirect_mid_pct percent; fewer adds nothing.
+      The standing goodwill on a wrong-wallet funding follows the customer's Personal Sender Account, with whole calendar months counted from its opened_date to today: a level of Paloma Enhanced or higher (level_number of at least enhanced_level_number) on an account open at least standing_months whole calendar months adds enhanced_standing_usd; the level Paloma Verified Plus (level_number equal to verified_plus_level_number) on an account open at least standing_months whole calendar months adds verified_plus_standing_usd; any other account adds nothing.
+      The Bank Deposit goodwill on a wrong-wallet funding follows the principal of the customer's Bank Deposit payments collected in the last bank_window_months calendar months (their bank_funds_received entries), a rolling window that holds the entries whose entry_date lies fewer than bank_window_months whole calendar months before today, the whole calendar months from a date to today being the difference between the two calendar months, less one when today's day of the month is lower than that date's: bank_high_usd or more adds bank_high_pct percent; at least bank_low_usd and below bank_high_usd adds bank_low_pct percent; less adds nothing.
+    prerequisite: []
+    cross_category:
+      - category: account
+        as: branch
+        reads: [variant_name, opened_date]
+        note: The standing goodwill reads the level (level_number of the tier) and the opened_date of the customer's Personal Sender Account.
+      - category: bank
+        as: history
+        reads: [bank_ledger.amount_usd]
+        note: The Bank Deposit goodwill sums the customer's bank_funds_received entries of the last months.
+    compute:
+      - misdirected_usd: "SUM('wallet_ledger', 'amount_usd', event_type='wallet_credit_sent')"
+      - notice_date: "LATEST('wallet_cases', 'case_date', date_field='case_date', event_type='wallet_error_notice_filed', case_type='wrong_wallet_credited')"
+      - finding_date: "LATEST('wallet_cases', 'case_date', date_field='case_date', event_type='wallet_error_decided', case_outcome='error_found')"
+      - notice_lag: "DAYS(F('date_available'), notice_date)"
+      - misdirect_from: "F('released_at') if P('credit_promise_minutes') > 0 else (F('date_available') if notice_lag <= K('prompt_notice_days') else notice_date)"
+      - misdirect_days: "DAYS(misdirect_from, finding_date)"
+      - misdirect_pct: "K('misdirect_long_pct') if misdirect_days >= K('misdirect_long_days') else (K('misdirect_mid_pct') if misdirect_days >= K('misdirect_mid_days') else 0)"
+      - level_number: "CPARAM('account', 'level_number')"
+      - tenure_months: "MONTHS(CFIELD('account', 'opened_date'), NOW)"
+      - standing_usd: "K('enhanced_standing_usd') if (level_number >= K('enhanced_level_number') and tenure_months >= K('standing_months')) else (K('verified_plus_standing_usd') if (level_number == K('verified_plus_level_number') and tenure_months >= K('standing_months')) else 0)"
+      - bank_volume: "XSUM('bank', 'bank_ledger', 'amount_usd', within_months=K('bank_window_months'), date_field='entry_date', event_type='bank_funds_received')"
+      - bank_pct: "K('bank_high_pct') if bank_volume >= K('bank_high_usd') else (K('bank_low_pct') if bank_volume >= K('bank_low_usd') else 0)"
+      - result: "RND(misdirected_usd * (1 + (misdirect_pct + bank_pct) / 100) + standing_usd, 2)"
+    compute_basis:
+      misdirected_usd: "The misdirected principal is the amount_usd of the transfer's wallet_credit_sent entries."
+      notice_date: "when the notice came within prompt_notice_days calendar days of date_available, from date_available; otherwise from the notice date."
+      finding_date: "The days the money was misdirected are counted in calendar days to the date of the error_found decision"
+      notice_lag: "when the notice came within prompt_notice_days calendar days of date_available"
+      misdirect_from: "from a starting date set by the transfer's promise and the customer's notice: on a tier whose credit_promise_minutes is above 0, from the date part of released_at; on any other tier, when the notice came within prompt_notice_days calendar days of date_available, from date_available; otherwise from the notice date."
+      misdirect_days: "The days the money was misdirected are counted in calendar days to the date of the error_found decision"
+      misdirect_pct: "The misdirection goodwill on a wrong-wallet funding follows those days: misdirect_long_days or more adds misdirect_long_pct percent; at least misdirect_mid_days and fewer than misdirect_long_days adds misdirect_mid_pct percent; fewer adds nothing."
+      level_number: "The standing goodwill on a wrong-wallet funding follows the customer's Personal Sender Account"
+      tenure_months: "with whole calendar months counted from its opened_date to today"
+      standing_usd: "a level of Paloma Enhanced or higher (level_number of at least enhanced_level_number) on an account open at least standing_months whole calendar months adds enhanced_standing_usd; the level Paloma Verified Plus (level_number equal to verified_plus_level_number) on an account open at least standing_months whole calendar months adds verified_plus_standing_usd; any other account adds nothing."
+      bank_volume: "The Bank Deposit goodwill on a wrong-wallet funding follows the principal of the customer's Bank Deposit payments collected in the last bank_window_months calendar months (their bank_funds_received entries), a rolling window that holds the entries whose entry_date lies fewer than bank_window_months whole calendar months before today, the whole calendar months from a date to today being the difference between the two calendar months, less one when today's day of the month is lower than that date's"
+      bank_pct: "bank_high_usd or more adds bank_high_pct percent; at least bank_low_usd and below bank_high_usd adds bank_low_pct percent; less adds nothing."
+      result: "the misdirected principal is multiplied once by one plus the sum of the goodwill percentages over 100, the standing goodwill amount is then added, and the total is rounded half up to the cent."
+    factors:
+      - id: misdirect_clock
+        effect: method
+        decides: misdirect_from
+        bindings: [notice_lag, misdirect_from]
+        ladder:
+          - when: "the transfer's tier has credit_promise_minutes above 0 (a minute promise)"
+            method: "the misdirected days are counted from the date part of released_at"
+          - when: "any other tier AND the notice came within prompt_notice_days calendar days of date_available"
+            method: "the misdirected days are counted from date_available"
+          - when: "otherwise"
+            method: "the misdirected days are counted from the notice date"
+        baseline:
+          misdirect_from: "notice_date"
+        evidence: [history, date, tier_param]
+        cross_difficulty: null
+      - id: misdirection_goodwill
+        effect: parameter
+        decides: misdirect_pct
+        bindings: [misdirect_days, misdirect_pct]
+        ladder:
+          - when: "the money was misdirected misdirect_long_days calendar days or more"
+            value: "K('misdirect_long_pct')"
+          - when: "it was misdirected at least misdirect_mid_days and fewer than misdirect_long_days calendar days"
+            value: "K('misdirect_mid_pct')"
+          - when: "otherwise (fewer than misdirect_mid_days)"
+            value: "0"
+        baseline:
+          misdirect_pct: "0"
+        evidence: [date, history]
+        cross_difficulty: null
+      - id: standing_goodwill
+        effect: parameter
+        decides: standing_usd
+        bindings: [level_number, tenure_months, standing_usd]
+        ladder:
+          - when: "Personal Sender Account at Paloma Enhanced or higher AND open at least standing_months whole calendar months"
+            value: "K('enhanced_standing_usd')"
+          - when: "Personal Sender Account at Paloma Verified Plus AND open at least standing_months whole calendar months"
+            value: "K('verified_plus_standing_usd')"
+          - when: "otherwise (a lower level, or an account open fewer than standing_months whole calendar months)"
+            value: "0"
+        baseline:
+          standing_usd: "0"
+        evidence: [cross_category, date]
+        cross_difficulty: account
+      - id: bank_deposit_goodwill
+        effect: parameter
+        decides: bank_pct
+        bindings: [bank_volume, bank_pct]
+        ladder:
+          - when: "Bank Deposit principal collected in the last bank_window_months calendar months (rolling, counted in whole calendar months back from today) is bank_high_usd or more"
+            value: "K('bank_high_pct')"
+          - when: "that principal is at least bank_low_usd and below bank_high_usd"
+            value: "K('bank_low_pct')"
+          - when: "otherwise (below bank_low_usd)"
+            value: "0"
+        baseline:
+          bank_pct: "0"
+        evidence: [cross_category, history]
+        cross_difficulty: bank
+    baseline:
+      rule: >-
+        The misdirected principal is the amount_usd of the transfer's wallet_credit_sent entries.
+        The wrong-wallet funding is the misdirected principal, in USD to the cent.
+      params: []
+    inputs:
+      history:
+        - {table: wallet_ledger, aggregate: sum, field: amount_usd, filters: {event_type: wallet_credit_sent}}
+        - {table: wallet_cases, aggregate: latest, field: case_date, filters: {event_type: wallet_error_notice_filed, case_type: wrong_wallet_credited}}
+        - {table: wallet_cases, aggregate: latest, field: case_date, filters: {event_type: wallet_error_decided, case_outcome: error_found}}
+        - {category: bank, table: bank_ledger, aggregate: sum, field: amount_usd, within_months: 12, filters: {event_type: bank_funds_received}}
+      cross_category: [account, bank]
+
+  - id: wallet_ext_wrong_wallet_recredit
+    base_policy_refs: [wallet_evt_error_resolution, wallet_evt_release_holds_and_credit, wallet_evt_failed_credit]
+    overwrite:
+      - base_policy: wallet_evt_failed_credit
+        superseded_clause: >-
+          A retried or redirected credit uses the transfer's original fx_rate and receive_amount, and date_available is re-disclosed as the retry day.
+        replaced_by: >-
+          The rate of a wrong-wallet re-credit starts from a base rate set by how long the investigation took and is raised by re-credit points: the points are added together, the base rate is multiplied once by one plus their sum over 100 and rounded half up to 4 decimals, and the amount delivered is the principal held times that rate, rounded half up to 2 decimals.
+    trigger: on_request
+    subject: [wallet_remedy_chosen, wallet_credit_sent]
+    computes: receive_amount
+    target_tool: choose_wallet_recredit_d4ef146e
+    params:
+      long_investigation_days: 5
+      mid_investigation_days: 2
+      half_margin_share: 0.5
+      purpose_floor_usd: 500.00
+      purpose_high_points: 0.25
+      purpose_low_points: 0.10
+      business_top_points: 0.20
+      business_base_points: 0.10
+      topup_window_months: 6
+      topup_high_count: 5
+      topup_low_count: 3
+      topup_high_points: 0.15
+      topup_low_points: 0.08
+      size_high_usd: 500.00
+      size_low_usd: 100.00
+      size_high_points: 0.20
+      size_low_points: 0.10
+    rule: >-
+      After a decision of error_found on a wrong_wallet_credited notice, the customer may choose to have the money re-credited to the transfer's own wallet at no cost (remedy_choice recredit); the choice is the customer's own and is recorded against the notice, and the re-credit sends at once the whole principal Paloma then holds for the transfer, that is its wallet_funds_received, wallet_credit_reversed and wallet_paloma_credit entries less its wallet_credit_sent and wallet_refund_issued entries, as one new wallet_credit_sent entry whose credit_attempt is one more than the credits already sent, the transfer returning to processing with released_at the moment of sending and date_available that day.
+      The amount a wrong-wallet re-credit delivers is not fixed until Paloma's funding for that re-credit stands on the transfer's ledger.
+      A wrong-wallet re-credit converts the principal held at the transfer's locked fx_rate, and the amount it delivers is that principal times that rate, rounded half up to 2 decimals.
+      The rate of a wrong-wallet re-credit starts from a base rate set by how long the investigation took and is raised by re-credit points: the points are added together, the base rate is multiplied once by one plus their sum over 100 and rounded half up to 4 decimals, and the amount delivered is the principal held times that rate, rounded half up to 2 decimals.
+      The investigation runs in calendar days from the notice date to the date of the error_found decision: long_investigation_days or more sets the base rate to the booking-day mid-market rate implied by the locked rate, that is the locked rate divided by one minus the margin the transfer carried over 100, rounded half up to 4 decimals; at least mid_investigation_days and fewer than long_investigation_days sets it to the locked rate multiplied by one plus half_margin_share times that margin over 100, rounded half up to 4 decimals; fewer sets it to the locked rate.
+      The margin a wrongly credited transfer carried is the tier's fx_margin_pct, less margin_reduction_pct_points when the principal collected on the transfer (its wallet_funds_received entries) is at or above margin_reduction_threshold_usd.
+      The purpose points of a wrong-wallet re-credit follow the stated transfer_purpose together with the principal collected: an education or medical transfer of at least purpose_floor_usd earns purpose_high_points; a family_support transfer of at least purpose_floor_usd earns purpose_low_points; any other transfer, or one below purpose_floor_usd, earns nothing.
+      The business points of a wrong-wallet re-credit follow the customer's Paloma Business account: an active account on Paloma Business Growth, Pro, Scale or Enterprise earns business_top_points; an active account on Paloma Business Starter or Essentials earns business_base_points; no account, or one that is not active, earns nothing.
+      The Top-Up points of a wrong-wallet re-credit follow the customer's Top-Up and Bill Pay orders with status delivered that were ordered in the last topup_window_months calendar months, a rolling window that holds the entries whose ordered_at lies fewer than topup_window_months whole calendar months before today, the whole calendar months from a date to today being the difference between the two calendar months, less one when today's day of the month is lower than that date's: topup_high_count or more earns topup_high_points; at least topup_low_count and fewer than topup_high_count earns topup_low_points; fewer earn nothing.
+      The size points of a wrong-wallet re-credit follow the principal Paloma holds for the transfer when it is sent: size_high_usd or more earns size_high_points; at least size_low_usd and below size_high_usd earns size_low_points; less earns nothing.
+    prerequisite:
+      - problem: wallet_ext_wrong_wallet_funding
+        kind: value_input
+        gate: held_usd
+        form: state
+        policy_source: >-
+          The amount a wrong-wallet re-credit delivers is not fixed until Paloma's funding for that re-credit stands on the transfer's ledger.
+        condition: >-
+          a wallet_paloma_credit entry with credit_reason error_recredit stands on the transfer's ledger, so the principal Paloma holds for the transfer is the funding
+        resolved_by: fund_wallet_recredit_aebfda78
+        effect: >-
+          held_usd rises by the wrong-wallet funding booked, which sets the size points and the principal the re-credit converts
+    cross_category:
+      - category: business
+        as: branch
+        reads: [status, variant_name]
+        note: The business points read the status and plan of the customer's Paloma Business account.
+      - category: topup
+        as: history
+        reads: [topup_orders.status, topup_orders.ordered_at]
+        note: The Top-Up points count the customer's delivered Top-Up and Bill Pay orders of the last months.
+    compute:
+      - held_usd: "SUM('wallet_ledger', 'amount_usd', event_type='wallet_funds_received') + SUM('wallet_ledger', 'amount_usd', event_type='wallet_credit_reversed') + SUM('wallet_ledger', 'amount_usd', event_type='wallet_paloma_credit') - SUM('wallet_ledger', 'amount_usd', event_type='wallet_credit_sent') - SUM('wallet_ledger', 'amount_usd', event_type='wallet_refund_issued')"
+      - size_points: "K('size_high_points') if held_usd >= K('size_high_usd') else (K('size_low_points') if held_usd >= K('size_low_usd') else 0)"
+      - locked_rate: "F('fx_rate')"
+      - principal: "SUM('wallet_ledger', 'amount_usd', event_type='wallet_funds_received')"
+      - carried_margin: "P('fx_margin_pct') - (P('margin_reduction_pct_points') if principal >= P('margin_reduction_threshold_usd') else 0)"
+      - inv_notice: "LATEST('wallet_cases', 'case_date', date_field='case_date', event_type='wallet_error_notice_filed', case_type='wrong_wallet_credited')"
+      - inv_finding: "LATEST('wallet_cases', 'case_date', date_field='case_date', event_type='wallet_error_decided', case_outcome='error_found')"
+      - investigation_days: "DAYS(inv_notice, inv_finding)"
+      - base_rate: "RND(locked_rate / (1 - carried_margin / 100), 4) if investigation_days >= K('long_investigation_days') else (RND(locked_rate * (1 + K('half_margin_share') * carried_margin / 100), 4) if investigation_days >= K('mid_investigation_days') else locked_rate)"
+      - purpose_principal: "SUM('wallet_ledger', 'amount_usd', event_type='wallet_funds_received')"
+      - purpose_points: "K('purpose_high_points') if ((F('transfer_purpose') == 'education' or F('transfer_purpose') == 'medical') and purpose_principal >= K('purpose_floor_usd')) else (K('purpose_low_points') if (F('transfer_purpose') == 'family_support' and purpose_principal >= K('purpose_floor_usd')) else 0)"
+      - business_status: "CFIELD('business', 'status')"
+      - business_plan: "CFIELD('business', 'variant_name')"
+      - business_points: "K('business_top_points') if (business_status == 'active' and (business_plan == 'Paloma Business Growth' or business_plan == 'Paloma Business Pro' or business_plan == 'Paloma Business Scale' or business_plan == 'Paloma Business Enterprise')) else (K('business_base_points') if (business_status == 'active' and (business_plan == 'Paloma Business Starter' or business_plan == 'Paloma Business Essentials')) else 0)"
+      - delivered_topups: "XCOUNT('topup', 'topup_orders', within_months=K('topup_window_months'), date_field='ordered_at', status='delivered')"
+      - topup_points: "K('topup_high_points') if delivered_topups >= K('topup_high_count') else (K('topup_low_points') if delivered_topups >= K('topup_low_count') else 0)"
+      - recredit_rate: "RND(base_rate * (1 + (size_points + purpose_points + business_points + topup_points) / 100), 4)"
+      - result: "RND(held_usd * recredit_rate, 2)"
+    compute_basis:
+      held_usd: "the re-credit sends at once the whole principal Paloma then holds for the transfer, that is its wallet_funds_received, wallet_credit_reversed and wallet_paloma_credit entries less its wallet_credit_sent and wallet_refund_issued entries"
+      size_points: "The size points of a wrong-wallet re-credit follow the principal Paloma holds for the transfer when it is sent: size_high_usd or more earns size_high_points; at least size_low_usd and below size_high_usd earns size_low_points; less earns nothing."
+      locked_rate: "A wrong-wallet re-credit converts the principal held at the transfer's locked fx_rate, and the amount it delivers is that principal times that rate, rounded half up to 2 decimals."
+      principal: "less margin_reduction_pct_points when the principal collected on the transfer (its wallet_funds_received entries) is at or above margin_reduction_threshold_usd."
+      carried_margin: "The margin a wrongly credited transfer carried is the tier's fx_margin_pct, less margin_reduction_pct_points when the principal collected on the transfer (its wallet_funds_received entries) is at or above margin_reduction_threshold_usd."
+      inv_notice: "The investigation runs in calendar days from the notice date to the date of the error_found decision"
+      inv_finding: "The investigation runs in calendar days from the notice date to the date of the error_found decision"
+      investigation_days: "The investigation runs in calendar days from the notice date to the date of the error_found decision"
+      base_rate: "long_investigation_days or more sets the base rate to the booking-day mid-market rate implied by the locked rate, that is the locked rate divided by one minus the margin the transfer carried over 100, rounded half up to 4 decimals; at least mid_investigation_days and fewer than long_investigation_days sets it to the locked rate multiplied by one plus half_margin_share times that margin over 100, rounded half up to 4 decimals; fewer sets it to the locked rate."
+      purpose_principal: "The purpose points of a wrong-wallet re-credit follow the stated transfer_purpose together with the principal collected"
+      purpose_points: "an education or medical transfer of at least purpose_floor_usd earns purpose_high_points; a family_support transfer of at least purpose_floor_usd earns purpose_low_points; any other transfer, or one below purpose_floor_usd, earns nothing."
+      business_status: "The business points of a wrong-wallet re-credit follow the customer's Paloma Business account"
+      business_plan: "The business points of a wrong-wallet re-credit follow the customer's Paloma Business account"
+      business_points: "an active account on Paloma Business Growth, Pro, Scale or Enterprise earns business_top_points; an active account on Paloma Business Starter or Essentials earns business_base_points; no account, or one that is not active, earns nothing."
+      delivered_topups: "The Top-Up points of a wrong-wallet re-credit follow the customer's Top-Up and Bill Pay orders with status delivered that were ordered in the last topup_window_months calendar months, a rolling window that holds the entries whose ordered_at lies fewer than topup_window_months whole calendar months before today, the whole calendar months from a date to today being the difference between the two calendar months, less one when today's day of the month is lower than that date's"
+      topup_points: "topup_high_count or more earns topup_high_points; at least topup_low_count and fewer than topup_high_count earns topup_low_points; fewer earn nothing."
+      recredit_rate: "the points are added together, the base rate is multiplied once by one plus their sum over 100 and rounded half up to 4 decimals"
+      result: "the amount delivered is the principal held times that rate, rounded half up to 2 decimals."
+    factors:
+      - id: wrong_wallet_rate_basis
+        effect: method
+        decides: base_rate
+        bindings: [inv_notice, inv_finding, investigation_days, base_rate]
+        ladder:
+          - when: "the investigation (notice date to error_found decision) ran long_investigation_days calendar days or more"
+            method: "the base rate is the booking-day mid-market rate implied by the locked rate: locked rate divided by one minus the carried margin over 100, rounded half up to 4 decimals"
+          - when: "it ran at least mid_investigation_days and fewer than long_investigation_days calendar days"
+            method: "the base rate is the locked rate multiplied by one plus half_margin_share times the carried margin over 100, rounded half up to 4 decimals"
+          - when: "otherwise (fewer than mid_investigation_days)"
+            method: "the base rate is the locked rate"
+        baseline:
+          base_rate: "locked_rate"
+        evidence: [history, date]
+        cross_difficulty: null
+      - id: purpose_points
+        effect: parameter
+        decides: purpose_points
+        bindings: [purpose_principal, purpose_points]
+        ladder:
+          - when: "transfer_purpose education or medical AND principal collected at least purpose_floor_usd"
+            value: "K('purpose_high_points')"
+          - when: "transfer_purpose family_support AND principal collected at least purpose_floor_usd"
+            value: "K('purpose_low_points')"
+          - when: "otherwise (any other purpose, or principal below purpose_floor_usd)"
+            value: "0"
+        baseline:
+          purpose_points: "0"
+        evidence: [history]
+        cross_difficulty: null
+      - id: business_points
+        effect: parameter
+        decides: business_points
+        bindings: [business_status, business_plan, business_points]
+        ladder:
+          - when: "an active Paloma Business account on Growth, Pro, Scale or Enterprise"
+            value: "K('business_top_points')"
+          - when: "an active Paloma Business account on Starter or Essentials"
+            value: "K('business_base_points')"
+          - when: "otherwise (no account, or one that is not active)"
+            value: "0"
+        baseline:
+          business_points: "0"
+        evidence: [cross_category]
+        cross_difficulty: business
+      - id: topup_points
+        effect: parameter
+        decides: topup_points
+        bindings: [delivered_topups, topup_points]
+        ladder:
+          - when: "topup_high_count or more delivered Top-Up and Bill Pay orders ordered in the last topup_window_months calendar months (rolling, counted in whole calendar months back from today)"
+            value: "K('topup_high_points')"
+          - when: "at least topup_low_count and fewer than topup_high_count such orders"
+            value: "K('topup_low_points')"
+          - when: "otherwise (fewer than topup_low_count)"
+            value: "0"
+        baseline:
+          topup_points: "0"
+        evidence: [cross_category, history]
+        cross_difficulty: null
+      - id: size_points
+        effect: parameter
+        decides: size_points
+        bindings: [held_usd, size_points]
+        ladder:
+          - when: "the principal Paloma holds for the transfer is size_high_usd or more"
+            value: "K('size_high_points')"
+          - when: "it is at least size_low_usd and below size_high_usd"
+            value: "K('size_low_points')"
+          - when: "otherwise (below size_low_usd)"
+            value: "0"
+        baseline:
+          size_points: "0"
+        evidence: [history]
+        cross_difficulty: null
+    baseline:
+      rule: >-
+        After a decision of error_found on a wrong_wallet_credited notice, the customer may choose to have the money re-credited to the transfer's own wallet at no cost (remedy_choice recredit); the choice is the customer's own and is recorded against the notice, and the re-credit sends at once the whole principal Paloma then holds for the transfer, that is its wallet_funds_received, wallet_credit_reversed and wallet_paloma_credit entries less its wallet_credit_sent and wallet_refund_issued entries, as one new wallet_credit_sent entry whose credit_attempt is one more than the credits already sent, the transfer returning to processing with released_at the moment of sending and date_available that day.
+        A wrong-wallet re-credit converts the principal held at the transfer's locked fx_rate, and the amount it delivers is that principal times that rate, rounded half up to 2 decimals.
+      params: []
+    inputs:
+      history:
+        - {table: wallet_ledger, aggregate: sum, field: amount_usd, filters: {event_type: wallet_paloma_credit}}
+        - {table: wallet_ledger, aggregate: sum, field: amount_usd, filters: {event_type: wallet_credit_sent}}
+        - {table: wallet_cases, aggregate: latest, field: case_date, filters: {event_type: wallet_error_notice_filed, case_type: wrong_wallet_credited}}
+        - {table: wallet_cases, aggregate: latest, field: case_date, filters: {event_type: wallet_error_decided, case_outcome: error_found}}
+        - {category: topup, table: topup_orders, aggregate: count, field: topup_order_id, within_months: 6, filters: {status: delivered}}
+      cross_category: [business, topup]

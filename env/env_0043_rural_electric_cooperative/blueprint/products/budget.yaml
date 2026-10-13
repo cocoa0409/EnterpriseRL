@@ -1,0 +1,735 @@
+category: budget
+display_name: Budget Billing (Levelized and Equal Payment Plans)
+
+binding:
+  holding_table: budget_plans
+  event_tables: [budget_ledger]
+  intake_tables: [budget_requests]
+  status_field: status
+  variant_field: variant_name
+  quantity_fields: {deferred_balance: deferred_balance}
+
+lifecycle:
+  states: [enrolled, active, exit_pending, removed_nonpay, ended]
+  transitions:
+    - {from: enrolled, to: active, by: system, means: The first budget installment was billed in place of the actual bill amount.}
+    - {from: enrolled, to: ended, by: user, means: The member withdrew the enrollment before the first budget bill.}
+    - {from: active, to: exit_pending, by: user, means: The member confirmed leaving the plan; the deferred balance is settled on the next bill.}
+    - {from: active, to: removed_nonpay, by: system, means: Missed installments reached the removal count and the member was removed from the plan.}
+    - {from: exit_pending, to: ended, by: system, means: The deferred balance was settled on the exit bill.}
+    - {from: removed_nonpay, to: ended, by: system, means: The deferred balance was settled on the removal bill.}
+    - {from: active, to: ended, by: system, means: The service account was final billed and the deferred balance was settled on the final bill.}
+
+accounts:
+  - key: deferred_balance
+    unit: USD
+    meaning: Running difference between the actual charges billed to the plan and the budget installments billed; positive when actual charges exceeded installments (the member owes more), negative when installments exceeded actual charges; in = variance debits and settle-up credits, out = variance credits and settle-up bills.
+
+parameter_schema:
+  eligible_rate_schedules: Entry - official rate schedule names that may enroll in the plan; list.
+  eligible_member_types: Entry - member_type values that may enroll; list.
+  min_service_months: Entry - full calendar months of service at the location in the member's name required before enrollment; integer.
+  history_months_for_estimate: Calculation - billing periods of history averaged for the first installment; integer.
+  new_location_estimate_source: Calculation - location_history means a location with short history uses its own prior billing under other members, then the class average.
+  class_average_monthly_bill: Calculation - average monthly bill of the rate class used when the location has no history, USD.
+  max_past_due_at_enrollment: Entry - largest past-due amount allowed on the service account at enrollment, USD.
+  enrollment_months_allowed: Entry - calendar months (1-12) in which enrollment is accepted; list.
+  recalculation_method: Calculation - rolling_average, fixed_annual, quarterly_review or semiannual_review.
+  recalc_frequency_months: Calculation - months between scheduled recalculations; integer.
+  variance_trigger_pct: Calculation - percent by which the recalculated installment must differ from the current one for a scheduled review to change it; 0 = always changes.
+  deferred_spread_months: Calculation - months over which the deferred balance is spread when an installment is computed; integer.
+  installment_months_per_year: Calculation - months of the year billed at the installment amount; integer.
+  installment_rounding: Calculation - up_to_whole_dollar means every computed installment is rounded up to the next whole dollar.
+  min_installment: Calculation - smallest installment, USD.
+  settle_up_rule: Settle-up - when the deferred balance is settled; continuous_no_settle_up, anniversary_month or july_bill.
+  settle_up_credit_handling: Settle-up - apply_to_next_bill, or refund_check_over_minimum (a check when the credit is at least settle_up_refund_check_min).
+  settle_up_refund_check_min: Settle-up - smallest settle-up credit refunded by check where checks apply, USD.
+  settle_up_debit_spread_allowed: Settle-up - whether an anniversary settle-up debit may be spread over later bills at the member's request; boolean.
+  settle_up_debit_spread_months: Settle-up - bills over which a spread settle-up debit is billed; integer.
+  settle_up_due_days: Settle-up - calendar days from the settle-up bill date to its due date; integer.
+  anniversary_notice_days: Settle-up - calendar days before the anniversary bill that the member is notified of the coming settle-up and new installment; integer.
+  max_deferred_debit_before_review: Review - deferred debit at which an unscheduled recalculation is made, USD; 0.00 where the method recalculates monthly.
+  max_deferred_credit_before_review: Review - deferred credit (absolute value) at which an unscheduled recalculation is made, USD; 0.00 where the method recalculates monthly.
+  rate_change_recalculation: Review - whether a board-approved rate change triggers a recalculation on the next bill; boolean.
+  pca_included: Coverage - whether the power cost adjustment is part of the leveled charges; boolean.
+  sales_tax_included: Coverage - whether sales tax is part of the leveled charges; boolean.
+  program_charges_included: Coverage - whether program charges (arrangement installments, light rentals) are leveled; boolean.
+  fees_included: Coverage - whether fees and late charges are leveled; boolean.
+  missed_installments_before_removal: Removal - missed installments within the lookback that remove the member from the plan; integer.
+  missed_installment_lookback_months: Removal - months over which missed installments are counted; integer.
+  removal_reenroll_wait_months: Removal - months after a removal before any account of the member may enroll again; integer.
+  late_charge_on_installment: Collections - whether an unpaid installment bears the ordinary late charge; boolean.
+  disconnect_on_unpaid_installment: Collections - whether an unpaid installment is subject to ordinary disconnect rules; boolean.
+  autopay_required: Entry - whether automatic bank draft is required; boolean.
+  prepay_compatible: Combination - whether the plan may coexist with PrePay Power on the account; boolean.
+  arrangement_compatible: Combination - whether the plan may coexist with an active payment arrangement on the account; boolean.
+  enrollment_fee: Entry - fee to enroll, USD.
+  member_consent_required: Entry - whether the member's own confirmation of the plan terms is required; boolean.
+  enrollment_channels: Entry - channels through which enrollment is taken; list.
+  exit_effective: Exit - next_bill means the plan ends on the next bill after the member's confirmed exit.
+  exit_settle_up_required: Exit - whether the deferred balance is settled in full on the exit bill; boolean (false = rolling plans spread nothing further and bill it on the exit bill as well).
+  exit_reenroll_wait_months: Exit - months after a voluntary exit before the same account may enroll again; integer.
+  final_bill_settle_up: Exit - whether the deferred balance is settled on the final bill when service ends; boolean.
+  budget_amount_change_by_member: Change - whether the member may set the installment amount; boolean.
+  max_installment_change_pct_per_review: Review - largest percent change of the installment at one scheduled review; 0 = no limit.
+  deferred_balance_interest_pct: Charges - interest on the deferred balance, percent per year.
+  statement_shows_actual: Service - whether each bill shows the actual charges and the deferred balance; boolean.
+  tier_switch_allowed: Change - whether the member may switch to another Budget Billing tier without leaving the program; boolean.
+
+variants:
+- name: Levelized Billing Rolling Average
+  rank: 1
+  entry_gate: {rate_schedules: Schedule R or Schedule FH, account: 'current, no past due'}
+  parameters:
+    eligible_rate_schedules: [Schedule R Residential Service, Schedule FH Farm and Home Service]
+    eligible_member_types: &id001 [individual, joint]
+    min_service_months: 0
+    history_months_for_estimate: 12
+    new_location_estimate_source: location_history
+    class_average_monthly_bill: 142.0
+    max_past_due_at_enrollment: 0.0
+    enrollment_months_allowed: &id002 [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    recalculation_method: rolling_average
+    recalc_frequency_months: 1
+    variance_trigger_pct: 0
+    deferred_spread_months: 12
+    installment_months_per_year: 12
+    installment_rounding: up_to_whole_dollar
+    min_installment: 25.0
+    settle_up_rule: continuous_no_settle_up
+    settle_up_credit_handling: apply_to_next_bill
+    settle_up_refund_check_min: 50.0
+    settle_up_debit_spread_allowed: false
+    settle_up_debit_spread_months: 0
+    settle_up_due_days: 20
+    anniversary_notice_days: 0
+    max_deferred_debit_before_review: 0.0
+    max_deferred_credit_before_review: 0.0
+    rate_change_recalculation: true
+    pca_included: true
+    sales_tax_included: true
+    program_charges_included: false
+    fees_included: false
+    missed_installments_before_removal: 2
+    missed_installment_lookback_months: 12
+    removal_reenroll_wait_months: 12
+    late_charge_on_installment: true
+    disconnect_on_unpaid_installment: true
+    autopay_required: false
+    prepay_compatible: false
+    arrangement_compatible: false
+    enrollment_fee: 0.0
+    member_consent_required: true
+    enrollment_channels: &id003 [phone, smarthub, office]
+    exit_effective: next_bill
+    exit_settle_up_required: false
+    exit_reenroll_wait_months: 3
+    final_bill_settle_up: true
+    budget_amount_change_by_member: false
+    max_installment_change_pct_per_review: 0
+    deferred_balance_interest_pct: 0.0
+    statement_shows_actual: true
+    tier_switch_allowed: true
+- name: Budget Billing Annual Settle-Up
+  rank: 2
+  entry_gate: {rate_schedules: Schedule R or Schedule FH, service_months: 12, account: current}
+  parameters:
+    eligible_rate_schedules: [Schedule R Residential Service, Schedule FH Farm and Home Service]
+    eligible_member_types: *id001
+    min_service_months: 12
+    history_months_for_estimate: 12
+    new_location_estimate_source: location_history
+    class_average_monthly_bill: 142.0
+    max_past_due_at_enrollment: 0.0
+    enrollment_months_allowed: *id002
+    recalculation_method: fixed_annual
+    recalc_frequency_months: 12
+    variance_trigger_pct: 0
+    deferred_spread_months: 12
+    installment_months_per_year: 12
+    installment_rounding: up_to_whole_dollar
+    min_installment: 25.0
+    settle_up_rule: anniversary_month
+    settle_up_credit_handling: apply_to_next_bill
+    settle_up_refund_check_min: 50.0
+    settle_up_debit_spread_allowed: true
+    settle_up_debit_spread_months: 3
+    settle_up_due_days: 20
+    anniversary_notice_days: 30
+    max_deferred_debit_before_review: 250.0
+    max_deferred_credit_before_review: 250.0
+    rate_change_recalculation: true
+    pca_included: true
+    sales_tax_included: true
+    program_charges_included: false
+    fees_included: false
+    missed_installments_before_removal: 2
+    missed_installment_lookback_months: 12
+    removal_reenroll_wait_months: 12
+    late_charge_on_installment: true
+    disconnect_on_unpaid_installment: true
+    autopay_required: false
+    prepay_compatible: false
+    arrangement_compatible: false
+    enrollment_fee: 0.0
+    member_consent_required: true
+    enrollment_channels: *id003
+    exit_effective: next_bill
+    exit_settle_up_required: true
+    exit_reenroll_wait_months: 12
+    final_bill_settle_up: true
+    budget_amount_change_by_member: false
+    max_installment_change_pct_per_review: 0
+    deferred_balance_interest_pct: 0.0
+    statement_shows_actual: true
+    tier_switch_allowed: true
+- name: Budget Billing Quarterly Review
+  rank: 3
+  entry_gate: {rate_schedules: Schedule R, service_months: 12, account: current}
+  parameters:
+    eligible_rate_schedules: [Schedule R Residential Service]
+    eligible_member_types: *id001
+    min_service_months: 12
+    history_months_for_estimate: 12
+    new_location_estimate_source: location_history
+    class_average_monthly_bill: 142.0
+    max_past_due_at_enrollment: 0.0
+    enrollment_months_allowed: *id002
+    recalculation_method: quarterly_review
+    recalc_frequency_months: 3
+    variance_trigger_pct: 10
+    deferred_spread_months: 12
+    installment_months_per_year: 12
+    installment_rounding: up_to_whole_dollar
+    min_installment: 25.0
+    settle_up_rule: anniversary_month
+    settle_up_credit_handling: apply_to_next_bill
+    settle_up_refund_check_min: 50.0
+    settle_up_debit_spread_allowed: true
+    settle_up_debit_spread_months: 3
+    settle_up_due_days: 20
+    anniversary_notice_days: 30
+    max_deferred_debit_before_review: 200.0
+    max_deferred_credit_before_review: 200.0
+    rate_change_recalculation: true
+    pca_included: true
+    sales_tax_included: true
+    program_charges_included: false
+    fees_included: false
+    missed_installments_before_removal: 2
+    missed_installment_lookback_months: 12
+    removal_reenroll_wait_months: 12
+    late_charge_on_installment: true
+    disconnect_on_unpaid_installment: true
+    autopay_required: false
+    prepay_compatible: false
+    arrangement_compatible: false
+    enrollment_fee: 0.0
+    member_consent_required: true
+    enrollment_channels: *id003
+    exit_effective: next_bill
+    exit_settle_up_required: true
+    exit_reenroll_wait_months: 12
+    final_bill_settle_up: true
+    budget_amount_change_by_member: false
+    max_installment_change_pct_per_review: 25
+    deferred_balance_interest_pct: 0.0
+    statement_shows_actual: true
+    tier_switch_allowed: true
+- name: Farm Budget Billing
+  rank: 4
+  entry_gate: {rate_schedules: Schedule FH, service_months: 12, account: current}
+  parameters:
+    eligible_rate_schedules: [Schedule FH Farm and Home Service]
+    eligible_member_types: *id001
+    min_service_months: 12
+    history_months_for_estimate: 12
+    new_location_estimate_source: location_history
+    class_average_monthly_bill: 198.0
+    max_past_due_at_enrollment: 0.0
+    enrollment_months_allowed: *id002
+    recalculation_method: semiannual_review
+    recalc_frequency_months: 6
+    variance_trigger_pct: 15
+    deferred_spread_months: 12
+    installment_months_per_year: 12
+    installment_rounding: up_to_whole_dollar
+    min_installment: 40.0
+    settle_up_rule: anniversary_month
+    settle_up_credit_handling: apply_to_next_bill
+    settle_up_refund_check_min: 50.0
+    settle_up_debit_spread_allowed: true
+    settle_up_debit_spread_months: 3
+    settle_up_due_days: 20
+    anniversary_notice_days: 30
+    max_deferred_debit_before_review: 400.0
+    max_deferred_credit_before_review: 400.0
+    rate_change_recalculation: true
+    pca_included: true
+    sales_tax_included: true
+    program_charges_included: false
+    fees_included: false
+    missed_installments_before_removal: 2
+    missed_installment_lookback_months: 12
+    removal_reenroll_wait_months: 12
+    late_charge_on_installment: true
+    disconnect_on_unpaid_installment: true
+    autopay_required: false
+    prepay_compatible: false
+    arrangement_compatible: false
+    enrollment_fee: 0.0
+    member_consent_required: true
+    enrollment_channels: *id003
+    exit_effective: next_bill
+    exit_settle_up_required: true
+    exit_reenroll_wait_months: 12
+    final_bill_settle_up: true
+    budget_amount_change_by_member: false
+    max_installment_change_pct_per_review: 25
+    deferred_balance_interest_pct: 0.0
+    statement_shows_actual: true
+    tier_switch_allowed: false
+- name: Small Business Budget Billing
+  rank: 5
+  entry_gate: {rate_schedules: Schedule GS-1, service_months: 12, account: current}
+  parameters:
+    eligible_rate_schedules: [Schedule GS-1 Single-Phase General Service]
+    eligible_member_types: [individual, joint, business, nonprofit]
+    min_service_months: 12
+    history_months_for_estimate: 12
+    new_location_estimate_source: location_history
+    class_average_monthly_bill: 236.0
+    max_past_due_at_enrollment: 0.0
+    enrollment_months_allowed: *id002
+    recalculation_method: quarterly_review
+    recalc_frequency_months: 3
+    variance_trigger_pct: 10
+    deferred_spread_months: 12
+    installment_months_per_year: 12
+    installment_rounding: up_to_whole_dollar
+    min_installment: 50.0
+    settle_up_rule: anniversary_month
+    settle_up_credit_handling: apply_to_next_bill
+    settle_up_refund_check_min: 50.0
+    settle_up_debit_spread_allowed: false
+    settle_up_debit_spread_months: 0
+    settle_up_due_days: 20
+    anniversary_notice_days: 30
+    max_deferred_debit_before_review: 500.0
+    max_deferred_credit_before_review: 500.0
+    rate_change_recalculation: true
+    pca_included: true
+    sales_tax_included: true
+    program_charges_included: false
+    fees_included: false
+    missed_installments_before_removal: 1
+    missed_installment_lookback_months: 12
+    removal_reenroll_wait_months: 12
+    late_charge_on_installment: true
+    disconnect_on_unpaid_installment: true
+    autopay_required: false
+    prepay_compatible: false
+    arrangement_compatible: false
+    enrollment_fee: 0.0
+    member_consent_required: true
+    enrollment_channels: *id003
+    exit_effective: next_bill
+    exit_settle_up_required: true
+    exit_reenroll_wait_months: 12
+    final_bill_settle_up: true
+    budget_amount_change_by_member: false
+    max_installment_change_pct_per_review: 25
+    deferred_balance_interest_pct: 0.0
+    statement_shows_actual: true
+    tier_switch_allowed: false
+- name: Ten-Month Equal Payment Plan
+  rank: 6
+  entry_gate: {rate_schedules: Schedule R, service_months: 12, enrollment_month: August, autopay: required}
+  parameters:
+    eligible_rate_schedules: [Schedule R Residential Service]
+    eligible_member_types: [individual, joint]
+    min_service_months: 12
+    history_months_for_estimate: 12
+    new_location_estimate_source: location_history
+    class_average_monthly_bill: 142.0
+    max_past_due_at_enrollment: 0.0
+    enrollment_months_allowed: [8]
+    recalculation_method: fixed_annual
+    recalc_frequency_months: 12
+    variance_trigger_pct: 0
+    deferred_spread_months: 10
+    installment_months_per_year: 10
+    installment_rounding: up_to_whole_dollar
+    min_installment: 40.0
+    settle_up_rule: july_bill
+    settle_up_credit_handling: refund_check_over_minimum
+    settle_up_refund_check_min: 50.0
+    settle_up_debit_spread_allowed: false
+    settle_up_debit_spread_months: 0
+    settle_up_due_days: 20
+    anniversary_notice_days: 30
+    max_deferred_debit_before_review: 250.0
+    max_deferred_credit_before_review: 250.0
+    rate_change_recalculation: true
+    pca_included: true
+    sales_tax_included: true
+    program_charges_included: false
+    fees_included: false
+    missed_installments_before_removal: 2
+    missed_installment_lookback_months: 12
+    removal_reenroll_wait_months: 12
+    late_charge_on_installment: true
+    disconnect_on_unpaid_installment: true
+    autopay_required: true
+    prepay_compatible: false
+    arrangement_compatible: false
+    enrollment_fee: 0.0
+    member_consent_required: true
+    enrollment_channels: *id003
+    exit_effective: next_bill
+    exit_settle_up_required: true
+    exit_reenroll_wait_months: 12
+    final_bill_settle_up: true
+    budget_amount_change_by_member: false
+    max_installment_change_pct_per_review: 0
+    deferred_balance_interest_pct: 0.0
+    statement_shows_actual: true
+    tier_switch_allowed: false
+
+events:
+  - type: budget_enroll
+    target: budget_plans
+    mutation: create
+    meaning: A service account is enrolled in a Budget Billing plan with a first installment amount.
+    grain: One row per enrollment of one service account.
+    fields:
+      customer_id: Member enrolling.
+      service_account_id: Service account billed on the plan.
+      variant_name: Official plan tier.
+      enrolled_date: Date of enrollment.
+      installment_amount: First installment amount.
+      anniversary_month: Calendar month of the annual settle-up and review, 1-12.
+    triggers: []
+  - type: budget_activate
+    target: budget_plans
+    mutation: {transition: {from: enrolled, to: active}}
+    meaning: The first budget installment is billed.
+    grain: One row per transaction on the plan.
+    fields:
+      first_budget_period: Billing period of the first budget bill, YYYY-MM.
+    triggers: []
+  - type: budget_installment_bill
+    target: budget_ledger
+    meaning: The installment billed as the amount due for one billing period, alongside the actual charges of that period.
+    grain: One row per billing period on the plan.
+    distinguish_by: [billing_period]
+    fields:
+      entry_date: Bill date.
+      billing_period: Billing period, YYYY-MM.
+      actual_charges: Actual leveled charges of the period.
+      amount: Installment billed as due, positive.
+    triggers: []
+  - type: budget_variance_debit
+    target: budget_ledger
+    meaning: Actual leveled charges of a period exceeded the installment and the excess is deferred.
+    grain: One row per billing period with a positive variance.
+    distinguish_by: [billing_period]
+    fields:
+      entry_date: Bill date.
+      billing_period: Billing period.
+      amount: Excess of actual charges over the installment, positive.
+    account: deferred_balance
+    direction: in
+    triggers: []
+  - type: budget_variance_credit
+    target: budget_ledger
+    meaning: The installment exceeded the actual leveled charges of a period and the difference is deferred as a credit.
+    grain: One row per billing period with a negative variance.
+    distinguish_by: [billing_period]
+    fields:
+      entry_date: Bill date.
+      billing_period: Billing period.
+      amount: Excess of the installment over actual charges, positive.
+    account: deferred_balance
+    direction: out
+    triggers: []
+  - type: budget_installment_missed
+    target: budget_ledger
+    meaning: A billed installment was not paid by its due date.
+    grain: One row per installment missed.
+    distinguish_by: [billing_period]
+    fields:
+      entry_date: Due date passed unpaid.
+      billing_period: Billing period of the installment.
+      amount: Unpaid part of the installment, positive.
+    triggers: []
+  - type: budget_recalculation
+    target: budget_plans
+    mutation: update
+    meaning: The installment amount is recalculated at a scheduled review, an unscheduled review or a rate change.
+    grain: One row per transaction on the plan.
+    fields:
+      installment_amount: New installment amount.
+      last_recalc_date: Date of the recalculation.
+    triggers: []
+  - type: budget_settle_up_debit
+    target: budget_ledger
+    meaning: A positive deferred balance is made due on the bill at the anniversary, exit, removal or final bill.
+    grain: One row per settle-up.
+    distinguish_by: [entry_date, settle_reason]
+    fields:
+      entry_date: Bill date of the settle-up.
+      settle_reason: Why the balance was settled.
+      spread_months: Bills the debit is spread over at the member's request (1 = due at once).
+      amount: Deferred debit made due, positive.
+    account: deferred_balance
+    direction: out
+    triggers: []
+  - type: budget_settle_up_credit
+    target: budget_ledger
+    meaning: A negative deferred balance is released at settle-up, applied to the next bill or refunded by check.
+    grain: One row per settle-up.
+    distinguish_by: [entry_date, settle_reason]
+    fields:
+      entry_date: Bill date of the settle-up.
+      settle_reason: Why the balance was settled.
+      disbursement: Applied to the next bill or refunded by check.
+      amount: Deferred credit released, positive.
+    account: deferred_balance
+    direction: in
+    triggers: []
+  - type: budget_exit
+    target: budget_plans
+    mutation: {transition: {from: active, to: exit_pending}}
+    meaning: The member's confirmed request to leave the plan.
+    grain: One row per transaction on the plan.
+    fields:
+      exit_requested_date: Date the member confirmed the exit.
+    triggers: []
+  - type: budget_remove
+    target: budget_plans
+    mutation: {transition: {from: active, to: removed_nonpay}}
+    meaning: The member is removed from the plan for missed installments.
+    grain: One row per transaction on the plan.
+    fields:
+      ended_date: Date of the removal.
+    triggers: []
+  - type: budget_end
+    target: budget_plans
+    mutation:
+      transition:
+        - {from: enrolled, to: ended}
+        - {from: exit_pending, to: ended}
+        - {from: removed_nonpay, to: ended}
+        - {from: active, to: ended}
+    meaning: The plan ends after settle-up, a withdrawal before the first budget bill, or the final bill of the service account.
+    grain: One row per transaction on the plan.
+    fields:
+      ended_date: Date the plan ended.
+    triggers: []
+
+measures:
+  - id: budget_msr_avg_bill
+    window: The history_months_for_estimate billing periods ending with the latest billed period, on the service account.
+    measure: Average per billing period of the sum of service_usage_charge amounts of the period, power cost adjustment and sales tax included where the tier includes them.
+  - id: budget_msr_missed_lookback
+    window: The missed_installment_lookback_months calendar months ending on the current date, on the plan.
+    measure: Count of budget_installment_missed rows whose entry_date falls in the window.
+  - id: budget_msr_member_removals
+    window: The removal_reenroll_wait_months calendar months ending on the enrollment date, across every service account of the member.
+    measure: Count of budget plans of the member that moved to removed_nonpay with ended_date in the window.
+
+policies:
+  - id: budget_agg_multi_holding
+    subject: [budget_enroll]
+    rule: >-
+      A member may have Budget Billing on several service accounts, each plan leveling one account's charges only. A service
+      account carries at most one plan in enrolled, active, exit_pending or removed_nonpay status at a time.
+    eligibility:
+      - id: one_open_plan
+        applies_to: [budget_enroll]
+        kind: dedup
+        condition: A service account carries at most one plan in enrolled, active, exit_pending or removed_nonpay status at a time.
+        evidence_fields: [budget_plans.service_account_id, budget_plans.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [budget_plans.service_account_id]
+          action_bindings:
+            budget_plans.service_account_id: service_account_id
+        dedup_contract:
+          table: budget_plans
+          mode: separate_record
+          object_bindings: {service_account_id: service_account_id}
+          duplicate_filters: {status: [enrolled, active, exit_pending, removed_nonpay]}
+          distinct_fields: []
+    params:
+      max_per_customer: null
+  - id: budget_agg_member_removals
+    subject: [budget_enroll]
+    rule: >-
+      Removal history is read across the member's portfolio. No account of a member may enroll while
+      budget_msr_member_removals is above zero, so a removal on one account blocks every account of the member for
+      removal_reenroll_wait_months; a voluntary exit blocks only the account that exited, for exit_reenroll_wait_months.
+    eligibility:
+      - id: no_recent_removal
+        applies_to: [budget_enroll]
+        kind: authorization
+        condition: No account of a member may enroll while budget_msr_member_removals is above zero, so a removal on one account blocks every account of the member for removal_reenroll_wait_months; a voluntary exit blocks only the account that exited, for exit_reenroll_wait_months.
+        evidence_fields: [budget_plans.customer_id, budget_plans.status, budget_plans.ended_date]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [budget_plans.customer_id]
+          action_bindings:
+            budget_plans.customer_id: customer_id
+    measures: [budget_msr_member_removals]
+  - id: budget_enrollment_eligibility
+    subject: [budget_enroll]
+    rule: >-
+      Budget Billing is offered only on a service account whose rate schedule's budget_billing_eligible switch is true and is in
+      the tier's eligible_rate_schedules, held by a member whose member_type is in eligible_member_types. The service account
+      must be active and its past-due amount at most max_past_due_at_enrollment. The location must have been in the member's
+      name for min_service_months full calendar months, and the enrollment month must be in enrollment_months_allowed. Because
+      prepay_compatible and arrangement_compatible are false, an account on PrePay Power or with an active payment arrangement
+      cannot enroll. Where autopay_required is true the account must be on automatic bank draft. Where member_consent_required
+      is true the plan is enrolled only on the member's confirmation of the terms (a budget request of request_type enrollment in
+      member_confirmed status). The anniversary_month is the month of the first budget bill.
+      Enrollment is taken through one of enrollment_channels and bills enrollment_fee where it is above zero.
+    eligibility:
+      - id: service_active
+        applies_to: [budget_enroll]
+        kind: state
+        condition: The service account must be active and its past-due amount at most max_past_due_at_enrollment.
+        evidence_fields: [service_accounts.status, service_accounts.service_account_id, service_accounts.account_balance]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [service_accounts.service_account_id]
+          action_bindings:
+            service_accounts.service_account_id: service_account_id
+        state_contract:
+          field: service_accounts.status
+          allowed: [active]
+    params:
+      per_tier:
+        Levelized Billing Rolling Average: {min_service_months: "=min_service_months", enrollment_months_allowed: "=enrollment_months_allowed", autopay_required: "=autopay_required"}
+        Budget Billing Annual Settle-Up: {min_service_months: "=min_service_months", enrollment_months_allowed: "=enrollment_months_allowed", autopay_required: "=autopay_required"}
+        Budget Billing Quarterly Review: {min_service_months: "=min_service_months", enrollment_months_allowed: "=enrollment_months_allowed", autopay_required: "=autopay_required"}
+        Farm Budget Billing: {min_service_months: "=min_service_months", enrollment_months_allowed: "=enrollment_months_allowed", autopay_required: "=autopay_required"}
+        Small Business Budget Billing: {min_service_months: "=min_service_months", enrollment_months_allowed: "=enrollment_months_allowed", autopay_required: "=autopay_required"}
+        Ten-Month Equal Payment Plan: {min_service_months: "=min_service_months", enrollment_months_allowed: "=enrollment_months_allowed", autopay_required: "=autopay_required"}
+  - id: budget_evt_installment_calc
+    subject: [budget_enroll, budget_activate, budget_recalculation, budget_installment_bill]
+    rule: >-
+      An installment is the average monthly bill (budget_msr_avg_bill, using the location's own history and, when the location
+      has no history, class_average_monthly_bill) plus the deferred balance divided by deferred_spread_months, rounded up to the
+      next whole dollar under installment_rounding, and never less than min_installment. Charges leveled are the usage lines
+      of the service bill, with the power cost adjustment where pca_included and sales tax where sales_tax_included; fees, late
+      charges and program charges are billed in addition to the installment where fees_included and program_charges_included
+      are false. On the Ten-Month Equal Payment Plan the installment is billed for installment_months_per_year bills and the
+      remaining bills carry the actual charges. The plan becomes active on its first budget bill, the first billing period
+      that closes after the enrollment date. The installment is never set by the member. Installments are billed only while
+      the plan is active.
+      When the location has fewer billing periods than history_months_for_estimate, the average follows
+      new_location_estimate_source. Because budget_amount_change_by_member is false the member never chooses the
+      installment, and where statement_shows_actual is true every bill shows the actual charges and the deferred balance.
+    eligibility:
+      - id: plan_active_for_installment
+        applies_to: [budget_installment_bill]
+        kind: state
+        condition: Installments are billed only while the plan is active.
+        evidence_fields: [budget_plans.status, budget_plans.budget_plan_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [budget_plans.budget_plan_id]
+          action_bindings:
+            budget_plans.budget_plan_id: budget_plan_id
+        state_contract:
+          field: budget_plans.status
+          allowed: [active]
+    formula:
+      base_installment: max(min_installment, round(budget_msr_avg_bill + deferred_balance / deferred_spread_months, 2))
+    measures: [budget_msr_avg_bill]
+  - id: budget_evt_variance
+    subject: [budget_variance_debit, budget_variance_credit, budget_installment_bill]
+    rule: >-
+      Each budget bill compares the period's actual leveled charges with the installment: an excess of actual charges is
+      booked as a variance debit and an excess of the installment as a variance credit, for the difference to the cent. The
+      actual charges stay on the service account; only the installment, plus any charges not leveled, is billed as due, so a
+      member who pays the installment is current. A period whose actual charges equal the installment books no variance.
+      Where deferred_balance_interest_pct is 0.00 no interest is charged or paid on the deferred balance.
+    eligibility: []
+  - id: budget_evt_recalculation
+    subject: [budget_recalculation]
+    rule: >-
+      The installment is recalculated every recalc_frequency_months under the tier's recalculation_method. On a rolling_average
+      plan it is recalculated every bill. On a review plan a scheduled recalculation changes the installment only when the new
+      amount differs from the current one by more than variance_trigger_pct percent, and by no more than
+      max_installment_change_pct_per_review percent where that is above zero. An unscheduled recalculation is made whenever the
+      deferred balance reaches max_deferred_debit_before_review or its credit reaches max_deferred_credit_before_review (where
+      those are above zero), and on the next bill after a board-approved rate change where rate_change_recalculation is true. On
+      a fixed_annual plan the installment changes only at the anniversary settle-up, apart from rate changes.
+    eligibility: []
+    params:
+      per_tier:
+        Levelized Billing Rolling Average: {recalculation_method: "=recalculation_method", recalc_frequency_months: "=recalc_frequency_months", variance_trigger_pct: "=variance_trigger_pct", max_installment_change_pct_per_review: "=max_installment_change_pct_per_review"}
+        Budget Billing Annual Settle-Up: {recalculation_method: "=recalculation_method", recalc_frequency_months: "=recalc_frequency_months", variance_trigger_pct: "=variance_trigger_pct", max_installment_change_pct_per_review: "=max_installment_change_pct_per_review"}
+        Budget Billing Quarterly Review: {recalculation_method: "=recalculation_method", recalc_frequency_months: "=recalc_frequency_months", variance_trigger_pct: "=variance_trigger_pct", max_installment_change_pct_per_review: "=max_installment_change_pct_per_review"}
+        Farm Budget Billing: {recalculation_method: "=recalculation_method", recalc_frequency_months: "=recalc_frequency_months", variance_trigger_pct: "=variance_trigger_pct", max_installment_change_pct_per_review: "=max_installment_change_pct_per_review"}
+        Small Business Budget Billing: {recalculation_method: "=recalculation_method", recalc_frequency_months: "=recalc_frequency_months", variance_trigger_pct: "=variance_trigger_pct", max_installment_change_pct_per_review: "=max_installment_change_pct_per_review"}
+        Ten-Month Equal Payment Plan: {recalculation_method: "=recalculation_method", recalc_frequency_months: "=recalc_frequency_months", variance_trigger_pct: "=variance_trigger_pct", max_installment_change_pct_per_review: "=max_installment_change_pct_per_review"}
+  - id: budget_evt_settle_up
+    subject: [budget_settle_up_debit, budget_settle_up_credit, budget_end]
+    rule: >-
+      Under settle_up_rule the deferred balance is settled on the anniversary bill (anniversary_month), on the July bill for the
+      Ten-Month Equal Payment Plan, or never on a continuous rolling plan, whose deferred balance is spread through the
+      installment instead. It is also settled on the exit bill where exit_settle_up_required is true or the plan is rolling, on
+      the removal bill, and on the final bill where final_bill_settle_up is true. A positive balance is made due on that bill,
+      due settle_up_due_days after the bill date, unless settle_up_debit_spread_allowed is true and the member asks to spread an
+      anniversary debit over settle_up_debit_spread_months bills. A negative balance is released under settle_up_credit_handling,
+      by check only when it is at least settle_up_refund_check_min where checks apply. The member is notified
+      anniversary_notice_days before an anniversary settle-up. A plan ends once its exit, removal or final settle-up is booked.
+    eligibility: []
+    params:
+      per_tier:
+        Levelized Billing Rolling Average: {settle_up_rule: "=settle_up_rule", settle_up_debit_spread_allowed: "=settle_up_debit_spread_allowed", settle_up_debit_spread_months: "=settle_up_debit_spread_months", settle_up_credit_handling: "=settle_up_credit_handling"}
+        Budget Billing Annual Settle-Up: {settle_up_rule: "=settle_up_rule", settle_up_debit_spread_allowed: "=settle_up_debit_spread_allowed", settle_up_debit_spread_months: "=settle_up_debit_spread_months", settle_up_credit_handling: "=settle_up_credit_handling"}
+        Budget Billing Quarterly Review: {settle_up_rule: "=settle_up_rule", settle_up_debit_spread_allowed: "=settle_up_debit_spread_allowed", settle_up_debit_spread_months: "=settle_up_debit_spread_months", settle_up_credit_handling: "=settle_up_credit_handling"}
+        Farm Budget Billing: {settle_up_rule: "=settle_up_rule", settle_up_debit_spread_allowed: "=settle_up_debit_spread_allowed", settle_up_debit_spread_months: "=settle_up_debit_spread_months", settle_up_credit_handling: "=settle_up_credit_handling"}
+        Small Business Budget Billing: {settle_up_rule: "=settle_up_rule", settle_up_debit_spread_allowed: "=settle_up_debit_spread_allowed", settle_up_debit_spread_months: "=settle_up_debit_spread_months", settle_up_credit_handling: "=settle_up_credit_handling"}
+        Ten-Month Equal Payment Plan: {settle_up_rule: "=settle_up_rule", settle_up_debit_spread_allowed: "=settle_up_debit_spread_allowed", settle_up_debit_spread_months: "=settle_up_debit_spread_months", settle_up_credit_handling: "=settle_up_credit_handling"}
+  - id: budget_evt_missed_removal
+    subject: [budget_installment_missed, budget_remove]
+    rule: >-
+      An installment counts as missed when it is not paid in full by its due date. When budget_msr_missed_lookback reaches
+      missed_installments_before_removal the member is removed from the plan and the deferred balance is settled on the next
+      bill. An unpaid installment also bears the ordinary late charge where late_charge_on_installment is true and is subject to
+      ordinary disconnect rules where disconnect_on_unpaid_installment is true; the deferred balance itself is never past due
+      until it is settled.
+    eligibility: []
+    params:
+      per_tier:
+        Levelized Billing Rolling Average: {missed_installments_before_removal: "=missed_installments_before_removal"}
+        Budget Billing Annual Settle-Up: {missed_installments_before_removal: "=missed_installments_before_removal"}
+        Budget Billing Quarterly Review: {missed_installments_before_removal: "=missed_installments_before_removal"}
+        Farm Budget Billing: {missed_installments_before_removal: "=missed_installments_before_removal"}
+        Small Business Budget Billing: {missed_installments_before_removal: "=missed_installments_before_removal"}
+        Ten-Month Equal Payment Plan: {missed_installments_before_removal: "=missed_installments_before_removal"}
+    measures: [budget_msr_missed_lookback]
+  - id: budget_evt_exit
+    subject: [budget_exit, budget_end]
+    rule: >-
+      Leaving Budget Billing is the member's own decision and is taken only on the member's confirmed exit request; it takes
+      effect on the next bill (exit_effective). A plan still in enrolled status may be withdrawn by the member before the first
+      budget bill and simply ends. Where tier_switch_allowed is true the member may move to another tier of the program
+      without settling, the deferred balance carrying over; otherwise a change of tier is an exit and a new enrollment. A
+      voluntary exit blocks re-enrollment of the same account for exit_reenroll_wait_months. Enrolling the account in PrePay
+      Power requires the plan to be ended and settled first.
+    eligibility: []
+

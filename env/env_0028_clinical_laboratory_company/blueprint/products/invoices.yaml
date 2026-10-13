@@ -1,0 +1,919 @@
+category: invoices
+display_name: Patient Invoices & Statements
+
+# One holding = one patient invoice: what the patient owes for one order (one accession and date
+# of service), classed by the billing class that produced the balance. The balance is the running
+# sum of patient-responsibility postings, payments, adjustments, reversals and refunds.
+binding:
+  holding_table: invoices
+  event_tables: [invoice_transactions]
+  intake_tables: [billing_disputes]
+  status_field: status
+  variant_field: variant_name
+  quantity_fields: {balance_due: patient_balance}
+
+lifecycle:
+  states: [open, on_hold, payment_plan, collections, paid, closed]
+  transitions:
+    - {from: open, to: on_hold, by: agent, means: Statements stop while a billing dispute, a financial-assistance application or an insurance reprocessing is reviewed.}
+    - {from: on_hold, to: open, by: agent, means: The hold is resolved (or reaches its limit) with a balance still due; statements resume.}
+    - {from: on_hold, to: closed, by: system, means: The hold is resolved with adjustments that bring the balance to zero.}
+    - {from: open, to: payment_plan, by: system, means: The invoice is enrolled in a payment plan the patient accepted.}
+    - {from: payment_plan, to: open, by: system, means: The payment plan was cancelled or defaulted and the remaining balance returns to the invoice.}
+    - {from: payment_plan, to: paid, by: system, means: The balance is paid off through the payment plan.}
+    - {from: open, to: collections, by: system, means: After the final notice the unpaid balance is placed with the collection agency.}
+    - {from: collections, to: open, by: agent, means: The account is recalled from the agency (assistance approved, billing error, insurance reprocessing).}
+    - {from: collections, to: paid, by: system, means: The agency collects the balance in full.}
+    - {from: open, to: paid, by: system, means: Patient payments bring the balance to zero.}
+    - {from: open, to: closed, by: system, means: Adjustments or a small-balance write-off bring the balance to zero.}
+    - {from: paid, to: open, by: system, means: A payment that settled the invoice is returned or charged back and the balance is due again.}
+
+accounts:
+  - key: patient_balance
+    unit: USD
+    meaning: What the patient owes on the invoice; patient responsibility, reversed payments, returned-payment fees and refunds of credit balances post in, payments and adjustments post out, and balance_due is the running sum (negative = credit balance owed to the patient).
+
+parameter_schema:
+  first_statement_business_days: "Business days after the first patient-responsibility posting (or after secondary_payer_wait_days, when that applies) on which the first statement is issued (0 = no statement unless a balance remains after purchase)."
+  statement_cycle_days: "Calendar days between consecutive statements."
+  statements_before_final_notice: "Integer; regular statements issued before the final notice."
+  final_notice_to_collections_days: "Calendar days after the final notice after which an unpaid balance may be placed in collections (0 = never placed)."
+  min_days_first_statement_to_collections: "Calendar days after the first statement date before which no invoice is ever placed in collections (0 = never placed)."
+  collections_allowed: "Boolean; whether invoices of the class may be placed with the collection agency."
+  collections_min_balance: "USD; smallest balance placed in collections (0.00 = never placed)."
+  collections_recall_allowed: "Boolean; whether a placed invoice can be recalled from the agency."
+  collection_agency_fee_passed_to_patient: "Boolean; whether the agency's fee is added to the patient's balance."
+  credit_reporting_allowed: "Boolean; whether the agency may report the debt to consumer credit bureaus."
+  credit_reporting_min_balance: "USD; smallest placed balance the agency may report (0.00 = never reported)."
+  credit_reporting_wait_days: "Calendar days after collections placement before any credit reporting."
+  statement_due_days: "Calendar days after a statement date by which the amount shown is due."
+  statement_minimum_balance: "USD; balances below this amount are not sent a statement."
+  small_balance_writeoff_threshold: "USD; a balance below this amount still unpaid after the final notice is written off."
+  prompt_pay_discount_pct: "Percent of the balance due taken off when the whole balance is paid within the prompt-pay window (0 = no discount)."
+  prompt_pay_window_days: "Calendar days after the first statement date during which payment in full earns the prompt-pay discount (0 = no window)."
+  prompt_pay_requires_full_payment: "Boolean; whether only a single payment of the full discounted balance earns the discount."
+  courtesy_adjustment_max: "USD; largest courtesy adjustment per invoice for a documented laboratory service failure (0.00 = none allowed)."
+  waiver_of_cost_share_prohibited: "Boolean; whether cost share may not be waived or discounted except through approved financial assistance."
+  payment_methods_accepted: "List of payment methods accepted on the invoice."
+  card_convenience_fee: "USD; fee for paying by card (0.00 = none)."
+  returned_payment_fee: "USD; fee posted when a check or bank payment is returned unpaid (0.00 = none)."
+  partial_payments_accepted: "Boolean; whether a payment of less than the balance due is accepted outside a payment plan."
+  payment_posting_business_days: "Business days after receipt within which a payment posts to the invoice."
+  interest_rate_pct: "Annual percent interest charged on unpaid balances (0 = none)."
+  late_fee: "USD; fee for a statement not paid by its due date (0.00 = none)."
+  refund_threshold: "USD; credit balances at or above this amount are refunded or transferred; below it they are held."
+  refund_processing_days: "Calendar days after a credit balance arises within which it is refunded."
+  credit_balance_applied_to_open_invoices_first: "Boolean; whether a credit balance is first transferred to the patient's other open invoices before any refund."
+  dispute_filing_window_days: "Calendar days after the first statement date within which a billing dispute is accepted."
+  dispute_hold_days: "Calendar days an invoice stays on hold for one dispute or one review cause."
+  billing_error_review_business_days: "Business days within which a billing dispute is decided."
+  gfe_dispute_threshold: "USD; amount by which billed self-pay charges must exceed the good faith estimate for an estimate-variance dispute (0.00 = not applicable)."
+  gfe_variance_settlement: "Enum (adjust_to_estimate, not_applicable); how an eligible estimate-variance dispute is settled."
+  assistance_eligible: "Boolean; whether the invoice can receive a financial-assistance discount."
+  assistance_review_hold_days: "Calendar days an invoice stays on hold while a financial-assistance application is pending (0 = no hold)."
+  payment_plan_eligible: "Boolean; whether the invoice can be enrolled in a payment plan."
+  insurance_reprocessing_hold_days: "Calendar days an invoice stays on hold while a claim for it is corrected, appealed or reprocessed (0 = no hold)."
+  abn_required_for_liability: "Boolean; whether a signed ABN option 1 must be on the order for a Medicare denial to appear on this invoice."
+  itemized_statement_business_days: "Business days within which an itemized statement is sent on request."
+  itemized_statement_fee: "USD; fee for an itemized statement (0.00 = free)."
+  paperless_statements_available: "Boolean; whether statements can be delivered by email to a portal-enrolled patient."
+  statement_cycle_paused_on_plan: "Boolean; whether statements stop while the invoice is on a payment plan."
+  auto_close_zero_balance_days: "Calendar days after the balance reaches zero on which the invoice closes."
+  prepaid_at_purchase: "Boolean; whether the class is paid in full at purchase before testing."
+  hold_max_extensions: "Integer; times a hold of the same cause may be extended by one more dispute_hold_days period."
+  collections_placement_requires_final_notice: "Boolean; whether a final notice must have been issued before collections placement."
+  secondary_payer_wait_days: "Calendar days after the primary payer's patient-responsibility posting that the first statement waits for a secondary payer's crossover (0 = no wait)."
+
+variants:
+  - name: Self-Pay Patient Invoice
+    rank: 1
+    entry_gate: {order_billing_method: self_pay}
+    parameters:
+      first_statement_business_days: 2
+      statement_cycle_days: 30
+      statements_before_final_notice: 3
+      final_notice_to_collections_days: 30
+      min_days_first_statement_to_collections: 120
+      collections_allowed: true
+      collections_min_balance: 50.00
+      collections_recall_allowed: true
+      collection_agency_fee_passed_to_patient: false
+      credit_reporting_allowed: true
+      credit_reporting_min_balance: 500.00
+      credit_reporting_wait_days: 365
+      statement_due_days: 21
+      statement_minimum_balance: 5.00
+      small_balance_writeoff_threshold: 5.00
+      prompt_pay_discount_pct: 15
+      prompt_pay_window_days: 30
+      prompt_pay_requires_full_payment: true
+      courtesy_adjustment_max: 25.00
+      waiver_of_cost_share_prohibited: false
+      payment_methods_accepted: [credit_card, debit_card, ach_bank_transfer, check, hsa_fsa_card]
+      card_convenience_fee: 0.00
+      returned_payment_fee: 25.00
+      partial_payments_accepted: true
+      payment_posting_business_days: 2
+      interest_rate_pct: 0
+      late_fee: 0.00
+      refund_threshold: 1.00
+      refund_processing_days: 30
+      credit_balance_applied_to_open_invoices_first: true
+      dispute_filing_window_days: 120
+      dispute_hold_days: 30
+      billing_error_review_business_days: 10
+      gfe_dispute_threshold: 400.00
+      gfe_variance_settlement: adjust_to_estimate
+      assistance_eligible: true
+      assistance_review_hold_days: 60
+      payment_plan_eligible: true
+      insurance_reprocessing_hold_days: 45
+      abn_required_for_liability: false
+      itemized_statement_business_days: 5
+      itemized_statement_fee: 0.00
+      paperless_statements_available: true
+      statement_cycle_paused_on_plan: true
+      auto_close_zero_balance_days: 0
+      prepaid_at_purchase: false
+      hold_max_extensions: 1
+      collections_placement_requires_final_notice: true
+      secondary_payer_wait_days: 0
+  - name: Consumer Test Purchase Invoice
+    rank: 2
+    entry_gate: {order_channel: consumer_initiated, prepaid: true}
+    parameters:
+      first_statement_business_days: 0
+      statement_cycle_days: 30
+      statements_before_final_notice: 1
+      final_notice_to_collections_days: 0
+      min_days_first_statement_to_collections: 0
+      collections_allowed: false
+      collections_min_balance: 0.00
+      collections_recall_allowed: false
+      collection_agency_fee_passed_to_patient: false
+      credit_reporting_allowed: false
+      credit_reporting_min_balance: 0.00
+      credit_reporting_wait_days: 0
+      statement_due_days: 21
+      statement_minimum_balance: 5.00
+      small_balance_writeoff_threshold: 5.00
+      prompt_pay_discount_pct: 0
+      prompt_pay_window_days: 0
+      prompt_pay_requires_full_payment: true
+      courtesy_adjustment_max: 0.00
+      waiver_of_cost_share_prohibited: false
+      payment_methods_accepted: [credit_card, debit_card, hsa_fsa_card]
+      card_convenience_fee: 0.00
+      returned_payment_fee: 0.00
+      partial_payments_accepted: false
+      payment_posting_business_days: 1
+      interest_rate_pct: 0
+      late_fee: 0.00
+      refund_threshold: 1.00
+      refund_processing_days: 10
+      credit_balance_applied_to_open_invoices_first: false
+      dispute_filing_window_days: 120
+      dispute_hold_days: 30
+      billing_error_review_business_days: 10
+      gfe_dispute_threshold: 400.00
+      gfe_variance_settlement: adjust_to_estimate
+      assistance_eligible: false
+      assistance_review_hold_days: 0
+      payment_plan_eligible: false
+      insurance_reprocessing_hold_days: 0
+      abn_required_for_liability: false
+      itemized_statement_business_days: 5
+      itemized_statement_fee: 0.00
+      paperless_statements_available: true
+      statement_cycle_paused_on_plan: false
+      auto_close_zero_balance_days: 0
+      prepaid_at_purchase: true
+      hold_max_extensions: 1
+      collections_placement_requires_final_notice: true
+      secondary_payer_wait_days: 0
+  - name: Insured Patient Responsibility Invoice
+    rank: 3
+    entry_gate: {order_billing_method: insurance, payer_classes: [Medicare Advantage Plan, TRICARE Prime and Select, Commercial In-Network Plan]}
+    parameters:
+      first_statement_business_days: 3
+      statement_cycle_days: 30
+      statements_before_final_notice: 3
+      final_notice_to_collections_days: 30
+      min_days_first_statement_to_collections: 120
+      collections_allowed: true
+      collections_min_balance: 50.00
+      collections_recall_allowed: true
+      collection_agency_fee_passed_to_patient: false
+      credit_reporting_allowed: true
+      credit_reporting_min_balance: 500.00
+      credit_reporting_wait_days: 365
+      statement_due_days: 21
+      statement_minimum_balance: 5.00
+      small_balance_writeoff_threshold: 5.00
+      prompt_pay_discount_pct: 0
+      prompt_pay_window_days: 0
+      prompt_pay_requires_full_payment: true
+      courtesy_adjustment_max: 0.00
+      waiver_of_cost_share_prohibited: true
+      payment_methods_accepted: [credit_card, debit_card, ach_bank_transfer, check, hsa_fsa_card]
+      card_convenience_fee: 0.00
+      returned_payment_fee: 25.00
+      partial_payments_accepted: true
+      payment_posting_business_days: 2
+      interest_rate_pct: 0
+      late_fee: 0.00
+      refund_threshold: 1.00
+      refund_processing_days: 30
+      credit_balance_applied_to_open_invoices_first: true
+      dispute_filing_window_days: 180
+      dispute_hold_days: 30
+      billing_error_review_business_days: 10
+      gfe_dispute_threshold: 0.00
+      gfe_variance_settlement: not_applicable
+      assistance_eligible: true
+      assistance_review_hold_days: 60
+      payment_plan_eligible: true
+      insurance_reprocessing_hold_days: 45
+      abn_required_for_liability: false
+      itemized_statement_business_days: 5
+      itemized_statement_fee: 0.00
+      paperless_statements_available: true
+      statement_cycle_paused_on_plan: true
+      auto_close_zero_balance_days: 0
+      prepaid_at_purchase: false
+      hold_max_extensions: 1
+      collections_placement_requires_final_notice: true
+      secondary_payer_wait_days: 30
+  - name: Out-of-Network Balance Invoice
+    rank: 4
+    entry_gate: {order_billing_method: insurance, payer_classes: [Commercial Out-of-Network Plan]}
+    parameters:
+      first_statement_business_days: 3
+      statement_cycle_days: 30
+      statements_before_final_notice: 3
+      final_notice_to_collections_days: 30
+      min_days_first_statement_to_collections: 120
+      collections_allowed: true
+      collections_min_balance: 50.00
+      collections_recall_allowed: true
+      collection_agency_fee_passed_to_patient: false
+      credit_reporting_allowed: true
+      credit_reporting_min_balance: 500.00
+      credit_reporting_wait_days: 365
+      statement_due_days: 21
+      statement_minimum_balance: 5.00
+      small_balance_writeoff_threshold: 5.00
+      prompt_pay_discount_pct: 10
+      prompt_pay_window_days: 30
+      prompt_pay_requires_full_payment: true
+      courtesy_adjustment_max: 25.00
+      waiver_of_cost_share_prohibited: false
+      payment_methods_accepted: [credit_card, debit_card, ach_bank_transfer, check, hsa_fsa_card]
+      card_convenience_fee: 0.00
+      returned_payment_fee: 25.00
+      partial_payments_accepted: true
+      payment_posting_business_days: 2
+      interest_rate_pct: 0
+      late_fee: 0.00
+      refund_threshold: 1.00
+      refund_processing_days: 30
+      credit_balance_applied_to_open_invoices_first: true
+      dispute_filing_window_days: 180
+      dispute_hold_days: 30
+      billing_error_review_business_days: 10
+      gfe_dispute_threshold: 0.00
+      gfe_variance_settlement: not_applicable
+      assistance_eligible: true
+      assistance_review_hold_days: 60
+      payment_plan_eligible: true
+      insurance_reprocessing_hold_days: 60
+      abn_required_for_liability: false
+      itemized_statement_business_days: 5
+      itemized_statement_fee: 0.00
+      paperless_statements_available: true
+      statement_cycle_paused_on_plan: true
+      auto_close_zero_balance_days: 0
+      prepaid_at_purchase: false
+      hold_max_extensions: 1
+      collections_placement_requires_final_notice: true
+      secondary_payer_wait_days: 30
+  - name: Medicare Beneficiary Liability Invoice
+    rank: 5
+    entry_gate: {order_billing_method: insurance, payer_classes: [Original Medicare Part B, Medicare Supplement Plan]}
+    parameters:
+      first_statement_business_days: 3
+      statement_cycle_days: 30
+      statements_before_final_notice: 3
+      final_notice_to_collections_days: 30
+      min_days_first_statement_to_collections: 120
+      collections_allowed: true
+      collections_min_balance: 50.00
+      collections_recall_allowed: true
+      collection_agency_fee_passed_to_patient: false
+      credit_reporting_allowed: true
+      credit_reporting_min_balance: 500.00
+      credit_reporting_wait_days: 365
+      statement_due_days: 21
+      statement_minimum_balance: 5.00
+      small_balance_writeoff_threshold: 5.00
+      prompt_pay_discount_pct: 0
+      prompt_pay_window_days: 0
+      prompt_pay_requires_full_payment: true
+      courtesy_adjustment_max: 0.00
+      waiver_of_cost_share_prohibited: true
+      payment_methods_accepted: [credit_card, debit_card, ach_bank_transfer, check, hsa_fsa_card]
+      card_convenience_fee: 0.00
+      returned_payment_fee: 25.00
+      partial_payments_accepted: true
+      payment_posting_business_days: 2
+      interest_rate_pct: 0
+      late_fee: 0.00
+      refund_threshold: 1.00
+      refund_processing_days: 30
+      credit_balance_applied_to_open_invoices_first: true
+      dispute_filing_window_days: 180
+      dispute_hold_days: 30
+      billing_error_review_business_days: 10
+      gfe_dispute_threshold: 0.00
+      gfe_variance_settlement: not_applicable
+      assistance_eligible: true
+      assistance_review_hold_days: 60
+      payment_plan_eligible: true
+      insurance_reprocessing_hold_days: 45
+      abn_required_for_liability: true
+      itemized_statement_business_days: 5
+      itemized_statement_fee: 0.00
+      paperless_statements_available: true
+      statement_cycle_paused_on_plan: true
+      auto_close_zero_balance_days: 0
+      prepaid_at_purchase: false
+      hold_max_extensions: 1
+      collections_placement_requires_final_notice: true
+      secondary_payer_wait_days: 30
+  - name: Medicaid Copay Invoice
+    rank: 6
+    entry_gate: {order_billing_method: insurance, payer_classes: [Medicaid Managed Care Plan]}
+    parameters:
+      first_statement_business_days: 3
+      statement_cycle_days: 45
+      statements_before_final_notice: 2
+      final_notice_to_collections_days: 0
+      min_days_first_statement_to_collections: 0
+      collections_allowed: false
+      collections_min_balance: 0.00
+      collections_recall_allowed: false
+      collection_agency_fee_passed_to_patient: false
+      credit_reporting_allowed: false
+      credit_reporting_min_balance: 0.00
+      credit_reporting_wait_days: 0
+      statement_due_days: 30
+      statement_minimum_balance: 5.00
+      small_balance_writeoff_threshold: 5.00
+      prompt_pay_discount_pct: 0
+      prompt_pay_window_days: 0
+      prompt_pay_requires_full_payment: true
+      courtesy_adjustment_max: 0.00
+      waiver_of_cost_share_prohibited: true
+      payment_methods_accepted: [credit_card, debit_card, ach_bank_transfer, check]
+      card_convenience_fee: 0.00
+      returned_payment_fee: 0.00
+      partial_payments_accepted: true
+      payment_posting_business_days: 2
+      interest_rate_pct: 0
+      late_fee: 0.00
+      refund_threshold: 1.00
+      refund_processing_days: 30
+      credit_balance_applied_to_open_invoices_first: true
+      dispute_filing_window_days: 180
+      dispute_hold_days: 30
+      billing_error_review_business_days: 10
+      gfe_dispute_threshold: 0.00
+      gfe_variance_settlement: not_applicable
+      assistance_eligible: true
+      assistance_review_hold_days: 60
+      payment_plan_eligible: false
+      insurance_reprocessing_hold_days: 45
+      abn_required_for_liability: false
+      itemized_statement_business_days: 5
+      itemized_statement_fee: 0.00
+      paperless_statements_available: true
+      statement_cycle_paused_on_plan: false
+      auto_close_zero_balance_days: 0
+      prepaid_at_purchase: false
+      hold_max_extensions: 1
+      collections_placement_requires_final_notice: true
+      secondary_payer_wait_days: 0
+
+events:
+  - type: invoices_invoice_opened
+    target: invoices
+    mutation: create
+    meaning: A patient invoice is opened for one order when the first amount the patient owes for it is known (self-pay or consumer purchase at placement, insured balances at the first patient-responsibility posting).
+    grain: one row per invoice (one per order)
+    fields:
+      customer_id: The patient responsible.
+      variant_name: The billing class of the balance.
+      invoice_number: Invoice number printed on statements.
+      order_id: The order billed.
+      coverage_id: The coverage that adjudicated, for insured classes.
+      date_of_service: The order's collection date (the order date for a prepaid consumer purchase).
+      opened_date: Date the invoice was opened.
+    triggers: []
+  - type: invoices_responsibility_posted
+    target: invoice_transactions
+    meaning: An amount the patient owes is posted to the invoice (self-pay price, consumer purchase price, or patient responsibility assigned from a claim).
+    grain: one row per posting
+    distinguish_by: [claim_event_id, event_date]
+    fields:
+      event_date: Date posted.
+      amount: Amount posted; positive.
+      claim_event_id: The claim line that assigned the responsibility; empty for self-pay and consumer postings.
+    account: patient_balance
+    direction: in
+    triggers: []
+  - type: invoices_statement_issued
+    target: invoice_transactions
+    meaning: A statement or the final notice is sent for the invoice.
+    grain: one row per statement in the cycle
+    distinguish_by: [statement_sequence]
+    fields:
+      event_date: Statement date.
+      amount: Balance shown on the statement.
+      statement_sequence: Position of the statement in the cycle.
+    triggers: []
+  - type: invoices_payment_received
+    target: invoice_transactions
+    meaning: A payment (or a credit transferred from another invoice) is applied to the invoice.
+    grain: one row per payment
+    distinguish_by: [event_date, amount, payment_method, payment_channel, related_transaction_id]
+    fields:
+      event_date: Date the payment posted.
+      amount: Amount applied; positive.
+      payment_method: How the patient paid.
+      payment_channel: Where the payment was taken.
+      related_transaction_id: For a credit transfer, the refund line on the source invoice; otherwise empty.
+    account: patient_balance
+    direction: out
+    triggers: []
+  - type: invoices_adjustment_posted
+    target: invoice_transactions
+    meaning: A non-cash reduction of the balance is posted (prompt-pay discount, financial assistance, estimate-dispute settlement, billing-error correction, small-balance write-off, courtesy adjustment).
+    grain: one row per adjustment
+    distinguish_by: [adjustment_type, assistance_case_id, dispute_id, event_date]
+    fields:
+      event_date: Date of the adjustment.
+      amount: Amount taken off; positive.
+      adjustment_type: Kind of adjustment.
+      assistance_case_id: The assistance case funding a financial-assistance adjustment; otherwise empty.
+      dispute_id: The dispute an estimate-dispute or billing-error adjustment settles; otherwise empty.
+    account: patient_balance
+    direction: out
+    triggers: []
+  - type: invoices_payment_reversed
+    target: invoice_transactions
+    meaning: A posted payment is returned unpaid or charged back.
+    grain: one row per reversed payment
+    distinguish_by: [related_transaction_id]
+    fields:
+      event_date: Date of the reversal.
+      amount: Amount reversed; equals the payment; positive.
+      related_transaction_id: The payment reversed.
+      reversal_reason: Why it was reversed.
+    account: patient_balance
+    direction: in
+    triggers:
+      - event: invoices:invoices_returned_payment_fee
+        when: {reversal_reason: [returned_check, ach_return]}
+        map: {related_transaction_id: related_transaction_id, event_date: event_date}
+  - type: invoices_returned_payment_fee
+    target: invoice_transactions
+    meaning: The returned-payment fee is posted for a check or bank payment returned unpaid.
+    grain: one row per returned payment
+    distinguish_by: [related_transaction_id]
+    fields:
+      event_date: Date posted.
+      amount: The class's returned_payment_fee; positive.
+      related_transaction_id: The payment that was returned.
+    account: patient_balance
+    direction: in
+    triggers: []
+  - type: invoices_refund_issued
+    target: invoice_transactions
+    meaning: A credit balance is refunded to the patient or transferred to another open invoice of the patient.
+    grain: one row per disbursement of a credit balance
+    distinguish_by: [related_transaction_id, refund_destination]
+    fields:
+      event_date: Date of the disbursement.
+      amount: Amount disbursed; positive.
+      related_transaction_id: The payment or adjustment that created the credit.
+      refund_destination: Where the credit went.
+      target_invoice_id: For a transfer, the invoice that receives the credit; otherwise empty.
+    account: patient_balance
+    direction: in
+    triggers:
+      - event: invoices:invoices_payment_received
+        when: {refund_destination: transferred_to_open_invoice}
+        map: {amount: amount, payment_method: credit_balance_transfer, payment_channel: internal_transfer, related_transaction_id: invoice_transaction_id, event_date: event_date}
+  - type: invoices_hold_placed
+    target: invoices
+    mutation: {transition: {from: open, to: on_hold}}
+    meaning: Statements stop while the invoice is reviewed.
+    grain: one row per transaction
+    fields:
+      hold_reason: Why the invoice is held.
+      hold_placed_date: Date the hold started.
+    triggers: []
+  - type: invoices_hold_released
+    target: invoices
+    mutation: {transition: {from: on_hold, to: open}}
+    meaning: The hold ends with a balance still due.
+    grain: one row per transaction
+    fields:
+      hold_reason: Cleared to empty.
+    triggers: []
+  - type: invoices_enrolled_in_plan
+    target: invoices
+    mutation: {transition: {from: open, to: payment_plan}}
+    meaning: The invoice joins a payment plan the patient accepted.
+    grain: one row per transaction
+    fields:
+      plan_id: The payment plan carrying the balance.
+    triggers: []
+  - type: invoices_released_from_plan
+    target: invoices
+    mutation: {transition: {from: payment_plan, to: open}}
+    meaning: The plan ended without paying the invoice off and the remaining balance is billed again.
+    grain: one row per transaction
+    fields:
+      plan_id: Cleared to empty.
+    triggers: []
+  - type: invoices_placed_in_collections
+    target: invoices
+    mutation: {transition: {from: open, to: collections}}
+    meaning: The unpaid balance is placed with the collection agency.
+    grain: one row per transaction
+    fields:
+      collections_placed_date: Date of placement.
+    triggers: []
+  - type: invoices_recalled_from_collections
+    target: invoices
+    mutation: {transition: {from: collections, to: open}}
+    meaning: The account is withdrawn from the collection agency.
+    grain: one row per transaction
+    fields:
+      collections_placed_date: Kept as history of the placement.
+    triggers: []
+  - type: invoices_paid_in_full
+    target: invoices
+    mutation: {transition: [{from: open, to: paid}, {from: payment_plan, to: paid}, {from: collections, to: paid}]}
+    meaning: Payments bring the balance to zero.
+    grain: one row per transaction
+    fields:
+      closed_date: Date the balance reached zero.
+    triggers: []
+  - type: invoices_closed_zero_balance
+    target: invoices
+    mutation: {transition: [{from: open, to: closed}, {from: on_hold, to: closed}]}
+    meaning: Adjustments or a small-balance write-off bring the balance to zero.
+    grain: one row per transaction
+    fields:
+      closed_date: Date the balance reached zero.
+    triggers: []
+  - type: invoices_reopened
+    target: invoices
+    mutation: {transition: {from: paid, to: open}}
+    meaning: A reversed payment makes a paid invoice due again.
+    grain: one row per transaction
+    fields:
+      closed_date: Cleared to empty.
+    triggers: []
+
+measures:
+  - id: invoices_msr_statements_issued
+    window: the life of the invoice
+    measure: count of invoices_statement_issued rows on the invoice_id
+  - id: invoices_msr_patient_open_balance
+    window: current state
+    measure: sum of balance_due over the customer's invoices whose status is open, on_hold, payment_plan or collections
+
+policies:
+  - id: invoices_agg_multi_holding
+    subject: [invoices_invoice_opened]
+    rule: >-
+      A patient holds one invoice per order and any number of invoices overall; the total is not capped. An order never has a second invoice: every later posting for the same order is booked on its existing invoice.
+      Statements are addressed per invoice, while the patient's open balance across invoices
+      (invoices_msr_patient_open_balance) is what payment plans and financial assistance read.
+    eligibility:
+      - id: one_invoice_per_order
+        applies_to: [invoices_invoice_opened]
+        kind: dedup
+        condition: "An order never has a second invoice: every later posting for the same order is booked on its existing invoice."
+        evidence_fields: [invoices.order_id, invoices.invoice_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[invoices.order_id]]
+          action_bindings: {invoices.order_id: order_id}
+        dedup_contract:
+          table: invoices
+          mode: separate_record
+          object_bindings: {order_id: order_id}
+          duplicate_filters: {status: [open, on_hold, payment_plan, collections, paid, closed]}
+          distinct_fields: []
+    measures: [invoices_msr_patient_open_balance]
+    params: {max_per_customer: null}
+
+  - id: invoices_agg_credit_balance
+    subject: [invoices_refund_issued, invoices_payment_received]
+    rule: >-
+      A credit balance (balance_due below zero) arises from an overpayment, a payment followed by an adjustment, or
+      an insurance payment received after the patient paid. A credit balance below refund_threshold is held on
+      the invoice. When credit_balance_applied_to_open_invoices_first is true, a credit at or above the threshold
+      is first transferred to the patient's other invoices whose status is open, oldest date of service first,
+      each up to its balance due, and only the remainder is refunded to the original payment method; a credit is
+      never transferred to an invoice in collections, on hold or on a payment plan. Refunds are issued within
+      refund_processing_days calendar days of the credit arising; a consumer purchase refunded after an order
+      cancellation follows the orders refund timing instead.
+    eligibility: []
+    params:
+      per_tier:
+        Self-Pay Patient Invoice: {refund_threshold: "=refund_threshold", refund_processing_days: "=refund_processing_days", credit_balance_applied_to_open_invoices_first: "=credit_balance_applied_to_open_invoices_first"}
+        Consumer Test Purchase Invoice: {refund_threshold: "=refund_threshold", refund_processing_days: "=refund_processing_days", credit_balance_applied_to_open_invoices_first: "=credit_balance_applied_to_open_invoices_first"}
+        Insured Patient Responsibility Invoice: {refund_threshold: "=refund_threshold", refund_processing_days: "=refund_processing_days", credit_balance_applied_to_open_invoices_first: "=credit_balance_applied_to_open_invoices_first"}
+        Out-of-Network Balance Invoice: {refund_threshold: "=refund_threshold", refund_processing_days: "=refund_processing_days", credit_balance_applied_to_open_invoices_first: "=credit_balance_applied_to_open_invoices_first"}
+        Medicare Beneficiary Liability Invoice: {refund_threshold: "=refund_threshold", refund_processing_days: "=refund_processing_days", credit_balance_applied_to_open_invoices_first: "=credit_balance_applied_to_open_invoices_first"}
+        Medicaid Copay Invoice: {refund_threshold: "=refund_threshold", refund_processing_days: "=refund_processing_days", credit_balance_applied_to_open_invoices_first: "=credit_balance_applied_to_open_invoices_first"}
+
+  - id: invoices_opening_and_posting
+    subject: [invoices_invoice_opened, invoices_responsibility_posted]
+    rule: >-
+      A self-pay invoice is opened when the order is placed or switched to self-pay and is posted the sum of the
+      self_pay_price of the order's uncredited tests; a consumer purchase invoice is opened and paid in full at
+      purchase. An insured invoice is opened at the first patient-responsibility assignment from a claim and
+      every later assignment for the same order posts to it. The billing class is chosen from the order's billing
+      method and the payer class that adjudicated: Commercial Out-of-Network Plan -> Out-of-Network Balance
+      Invoice; Original Medicare Part B or Medicare Supplement Plan -> Medicare Beneficiary Liability Invoice;
+      Medicaid Managed Care Plan -> Medicaid Copay Invoice; every other payer class -> Insured Patient
+      Responsibility Invoice. A Medicare medical-necessity or frequency denial may be posted to a Medicare Beneficiary Liability Invoice only when a signed ABN option 1 is on the order.
+      The first statement is issued first_statement_business_days business days after the first posting, after
+      waiting secondary_payer_wait_days calendar days when the patient has a live secondary coverage that can
+      still pay.
+    eligibility:
+      - id: abn_on_file
+        applies_to: [invoices_responsibility_posted]
+        kind: authorization
+        condition: A Medicare medical-necessity or frequency denial may be posted to a Medicare Beneficiary Liability Invoice only when a signed ABN option 1 is on the order.
+        evidence_fields: [orders.abn_status, orders.order_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[orders.order_id]]
+          action_bindings: {orders.order_id: order_id}
+    params:
+      per_tier:
+        Self-Pay Patient Invoice: {first_statement_business_days: "=first_statement_business_days", secondary_payer_wait_days: "=secondary_payer_wait_days"}
+        Consumer Test Purchase Invoice: {first_statement_business_days: "=first_statement_business_days", secondary_payer_wait_days: "=secondary_payer_wait_days"}
+        Insured Patient Responsibility Invoice: {first_statement_business_days: "=first_statement_business_days", secondary_payer_wait_days: "=secondary_payer_wait_days"}
+        Out-of-Network Balance Invoice: {first_statement_business_days: "=first_statement_business_days", secondary_payer_wait_days: "=secondary_payer_wait_days"}
+        Medicare Beneficiary Liability Invoice: {first_statement_business_days: "=first_statement_business_days", secondary_payer_wait_days: "=secondary_payer_wait_days"}
+        Medicaid Copay Invoice: {first_statement_business_days: "=first_statement_business_days", secondary_payer_wait_days: "=secondary_payer_wait_days"}
+
+  - id: invoices_statement_cycle
+    subject: [invoices_statement_issued, invoices_placed_in_collections]
+    rule: >-
+      Statements are issued every statement_cycle_days calendar days while the invoice is open and its balance is at
+      least statement_minimum_balance: first_statement, then second_statement and third_statement as
+      statements_before_final_notice allows, then final_notice; each is due statement_due_days after its date. No
+      statement is issued while the invoice is on hold, in collections, or on a payment plan when
+      statement_cycle_paused_on_plan is true; the cycle resumes at the next unused position. No interest
+      (interest_rate_pct) and no late fee (late_fee) is ever charged. An unpaid invoice may be placed in collections only when
+      collections_allowed is true, the final notice has been issued, final_notice_to_collections_days have passed
+      since it, and the balance is at least collections_min_balance. An invoice may be placed with a collection agency only on or after min_days_first_statement_to_collections calendar days after the first statement date.
+      The waiting period counts calendar days with the first statement date as day 0, and placement on the last day of the period is allowed.
+      The agency may report a placed balance to credit bureaus only when credit_reporting_allowed is true, the
+      balance is at least credit_reporting_min_balance and credit_reporting_wait_days have passed since placement;
+      the agency's fee is never added to the patient's balance. A balance below small_balance_writeoff_threshold
+      still unpaid after the final notice is written off instead of placed.
+    eligibility:
+      - id: collections_wait
+        applies_to: [invoices_placed_in_collections]
+        kind: time
+        condition: An invoice may be placed with a collection agency only on or after min_days_first_statement_to_collections calendar days after the first statement date.
+        evidence_fields: [invoices.first_statement_date, invoices.invoice_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[invoices.invoice_id]]
+          action_bindings: {invoices.invoice_id: invoice_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the first statement date
+          anchor_source: invoices.first_statement_date
+          relation: not_before
+          duration_source: variants.min_days_first_statement_to_collections
+          unit: calendar_days
+          counting_rule: The waiting period counts calendar days with the first statement date as day 0, and placement on the last day of the period is allowed.
+          boundary: inclusive
+    measures: [invoices_msr_statements_issued]
+    params:
+      per_tier:
+        Self-Pay Patient Invoice: {statements_before_final_notice: "=statements_before_final_notice", collections_allowed: "=collections_allowed", collections_min_balance: "=collections_min_balance"}
+        Consumer Test Purchase Invoice: {statements_before_final_notice: "=statements_before_final_notice", collections_allowed: "=collections_allowed", collections_min_balance: "=collections_min_balance"}
+        Insured Patient Responsibility Invoice: {statements_before_final_notice: "=statements_before_final_notice", collections_allowed: "=collections_allowed", collections_min_balance: "=collections_min_balance"}
+        Out-of-Network Balance Invoice: {statements_before_final_notice: "=statements_before_final_notice", collections_allowed: "=collections_allowed", collections_min_balance: "=collections_min_balance"}
+        Medicare Beneficiary Liability Invoice: {statements_before_final_notice: "=statements_before_final_notice", collections_allowed: "=collections_allowed", collections_min_balance: "=collections_min_balance"}
+        Medicaid Copay Invoice: {statements_before_final_notice: "=statements_before_final_notice", collections_allowed: "=collections_allowed", collections_min_balance: "=collections_min_balance"}
+
+  - id: invoices_prompt_pay_discount
+    subject: [invoices_adjustment_posted]
+    rule: >-
+      The prompt-pay discount applies only to billing classes whose prompt_pay_discount_pct is above 0. It is taken
+      when the patient pays the whole remaining balance, less the discount, in one payment made no later than
+      prompt_pay_window_days calendar days after the first statement date (statement date = day 0, the last day
+      included). The discount equals prompt_pay_discount_pct percent of the balance due at the moment of payment,
+      rounded to the cent, and is posted as an adjustment of type prompt_pay_discount together with the payment.
+      It is not given on a balance carried on a payment plan, on an invoice in collections, or on a part payment,
+      and it is applied after any financial-assistance adjustment already posted, never before, and only when the
+      assistance tier's prompt_pay_stacks_after_discount is true. Classes that carry payer cost share never
+      receive it.
+    eligibility: []
+    params:
+      per_tier:
+        Self-Pay Patient Invoice: {prompt_pay_discount_pct: "=prompt_pay_discount_pct", prompt_pay_window_days: "=prompt_pay_window_days"}
+        Consumer Test Purchase Invoice: {prompt_pay_discount_pct: "=prompt_pay_discount_pct", prompt_pay_window_days: "=prompt_pay_window_days"}
+        Insured Patient Responsibility Invoice: {prompt_pay_discount_pct: "=prompt_pay_discount_pct", prompt_pay_window_days: "=prompt_pay_window_days"}
+        Out-of-Network Balance Invoice: {prompt_pay_discount_pct: "=prompt_pay_discount_pct", prompt_pay_window_days: "=prompt_pay_window_days"}
+        Medicare Beneficiary Liability Invoice: {prompt_pay_discount_pct: "=prompt_pay_discount_pct", prompt_pay_window_days: "=prompt_pay_window_days"}
+        Medicaid Copay Invoice: {prompt_pay_discount_pct: "=prompt_pay_discount_pct", prompt_pay_window_days: "=prompt_pay_window_days"}
+    formula:
+      when_not: prompt_pay_discount_pct == 0
+      amount: round(balance_due * prompt_pay_discount_pct / 100, 2)
+
+  - id: invoices_payments_and_reversals
+    subject: [invoices_payment_received, invoices_payment_reversed, invoices_returned_payment_fee]
+    rule: >-
+      Payments are accepted only by a method in payment_methods_accepted, with no card_convenience_fee charged,
+      and post within payment_posting_business_days business days of receipt. A part payment is accepted only
+      where partial_payments_accepted is true; it does not stop the statement cycle. A payment can be applied only to an invoice whose status is open, on_hold, payment_plan or collections.
+      A payment returned unpaid or charged back is reversed in full; for a returned check or ACH return the
+      class's returned_payment_fee is posted when above 0.00, and a paid invoice becomes due again.
+    eligibility:
+      - id: payable_states
+        applies_to: [invoices_payment_received]
+        kind: state
+        condition: A payment can be applied only to an invoice whose status is open, on_hold, payment_plan or collections.
+        evidence_fields: [invoices.status, invoices.invoice_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[invoices.invoice_id]]
+          action_bindings: {invoices.invoice_id: invoice_id}
+        state_contract:
+          field: invoices.status
+          allowed: [open, on_hold, payment_plan, collections]
+    params:
+      per_tier:
+        Self-Pay Patient Invoice: {payment_methods_accepted: "=payment_methods_accepted", returned_payment_fee: "=returned_payment_fee", partial_payments_accepted: "=partial_payments_accepted"}
+        Consumer Test Purchase Invoice: {payment_methods_accepted: "=payment_methods_accepted", returned_payment_fee: "=returned_payment_fee", partial_payments_accepted: "=partial_payments_accepted"}
+        Insured Patient Responsibility Invoice: {payment_methods_accepted: "=payment_methods_accepted", returned_payment_fee: "=returned_payment_fee", partial_payments_accepted: "=partial_payments_accepted"}
+        Out-of-Network Balance Invoice: {payment_methods_accepted: "=payment_methods_accepted", returned_payment_fee: "=returned_payment_fee", partial_payments_accepted: "=partial_payments_accepted"}
+        Medicare Beneficiary Liability Invoice: {payment_methods_accepted: "=payment_methods_accepted", returned_payment_fee: "=returned_payment_fee", partial_payments_accepted: "=partial_payments_accepted"}
+        Medicaid Copay Invoice: {payment_methods_accepted: "=payment_methods_accepted", returned_payment_fee: "=returned_payment_fee", partial_payments_accepted: "=partial_payments_accepted"}
+
+  - id: invoices_disputes_and_holds
+    subject: [invoices_hold_placed, invoices_hold_released, invoices_closed_zero_balance]
+    rule: >-
+      An invoice is put on hold for exactly one cause: billing_dispute when the patient files a dispute,
+      assistance_review while a financial-assistance application covering it is pending (only where
+      assistance_eligible is true), or insurance_reprocessing while a claim for its order is corrected, appealed
+      or reprocessed. A billing dispute is accepted only within dispute_filing_window_days calendar days after the first statement date.
+      The filing window counts calendar days with the first statement date as day 0, the last day included.
+      A hold lasts dispute_hold_days, assistance_review_hold_days or insurance_reprocessing_hold_days calendar
+      days according to its cause and may be extended at most hold_max_extensions times by the same length; it
+      is released when its cause is decided, or at its limit. A dispute is decided within
+      billing_error_review_business_days business days. For a self-pay or consumer invoice whose billed amount
+      exceeds the good faith estimate on the order by at least gfe_dispute_threshold, an estimate_variance dispute
+      is settled under gfe_variance_settlement by adjusting the balance down to the estimate; a smaller variance is
+      not an estimate dispute. A billing error confirmed by the review is corrected by an adjustment of type
+      billing_error_correction; a dispute that only disagrees with a payer's decision is referred to the claim
+      process, not adjusted. A hold resolved with the balance at zero closes the invoice.
+    eligibility:
+      - id: dispute_window
+        applies_to: [invoices_hold_placed]
+        kind: time
+        condition: A billing dispute is accepted only within dispute_filing_window_days calendar days after the first statement date.
+        evidence_fields: [invoices.first_statement_date, invoices.invoice_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[invoices.invoice_id]]
+          action_bindings: {invoices.invoice_id: invoice_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the first statement date
+          anchor_source: invoices.first_statement_date
+          relation: not_after
+          duration_source: variants.dispute_filing_window_days
+          unit: calendar_days
+          counting_rule: The filing window counts calendar days with the first statement date as day 0, the last day included.
+          boundary: inclusive
+    params:
+      per_tier:
+        Self-Pay Patient Invoice: {dispute_hold_days: "=dispute_hold_days", gfe_dispute_threshold: "=gfe_dispute_threshold", assistance_review_hold_days: "=assistance_review_hold_days", insurance_reprocessing_hold_days: "=insurance_reprocessing_hold_days"}
+        Consumer Test Purchase Invoice: {dispute_hold_days: "=dispute_hold_days", gfe_dispute_threshold: "=gfe_dispute_threshold", assistance_review_hold_days: "=assistance_review_hold_days", insurance_reprocessing_hold_days: "=insurance_reprocessing_hold_days"}
+        Insured Patient Responsibility Invoice: {dispute_hold_days: "=dispute_hold_days", gfe_dispute_threshold: "=gfe_dispute_threshold", assistance_review_hold_days: "=assistance_review_hold_days", insurance_reprocessing_hold_days: "=insurance_reprocessing_hold_days"}
+        Out-of-Network Balance Invoice: {dispute_hold_days: "=dispute_hold_days", gfe_dispute_threshold: "=gfe_dispute_threshold", assistance_review_hold_days: "=assistance_review_hold_days", insurance_reprocessing_hold_days: "=insurance_reprocessing_hold_days"}
+        Medicare Beneficiary Liability Invoice: {dispute_hold_days: "=dispute_hold_days", gfe_dispute_threshold: "=gfe_dispute_threshold", assistance_review_hold_days: "=assistance_review_hold_days", insurance_reprocessing_hold_days: "=insurance_reprocessing_hold_days"}
+        Medicaid Copay Invoice: {dispute_hold_days: "=dispute_hold_days", gfe_dispute_threshold: "=gfe_dispute_threshold", assistance_review_hold_days: "=assistance_review_hold_days", insurance_reprocessing_hold_days: "=insurance_reprocessing_hold_days"}
+
+  - id: invoices_adjustments
+    subject: [invoices_adjustment_posted]
+    rule: >-
+      Every adjustment has exactly one type. financial_assistance adjustments are posted only from an approved
+      assistance award and carry its assistance_case_id; an invoice receives at most one financial-assistance adjustment per assistance case.
+      estimate_dispute_resolution and billing_error_correction adjustments carry the dispute_id they settle.
+      small_balance_writeoff applies only under the statement rule. courtesy_adjustment is allowed only for a
+      documented laboratory service failure, never above courtesy_adjustment_max per invoice, and never on a class
+      whose waiver_of_cost_share_prohibited is true, where cost share may be reduced only through financial
+      assistance. An adjustment never takes the balance below zero except a billing-error correction of an
+      amount already paid, which creates a credit balance handled under the credit-balance rule.
+    eligibility:
+      - id: one_fa_adjustment_per_case
+        applies_to: [invoices_adjustment_posted]
+        kind: dedup
+        condition: an invoice receives at most one financial-assistance adjustment per assistance case
+        evidence_fields: [invoice_transactions.invoice_id, invoice_transactions.assistance_case_id, invoice_transactions.adjustment_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[invoice_transactions.invoice_id, invoice_transactions.assistance_case_id]]
+          action_bindings: {invoice_transactions.invoice_id: invoice_id, invoice_transactions.assistance_case_id: assistance_case_id}
+        dedup_contract:
+          table: invoice_transactions
+          mode: separate_record
+          object_bindings: {invoice_id: invoice_id, assistance_case_id: assistance_case_id}
+          duplicate_filters: {adjustment_type: [financial_assistance]}
+          distinct_fields: []
+    params:
+      per_tier:
+        Self-Pay Patient Invoice: {courtesy_adjustment_max: "=courtesy_adjustment_max", waiver_of_cost_share_prohibited: "=waiver_of_cost_share_prohibited"}
+        Consumer Test Purchase Invoice: {courtesy_adjustment_max: "=courtesy_adjustment_max", waiver_of_cost_share_prohibited: "=waiver_of_cost_share_prohibited"}
+        Insured Patient Responsibility Invoice: {courtesy_adjustment_max: "=courtesy_adjustment_max", waiver_of_cost_share_prohibited: "=waiver_of_cost_share_prohibited"}
+        Out-of-Network Balance Invoice: {courtesy_adjustment_max: "=courtesy_adjustment_max", waiver_of_cost_share_prohibited: "=waiver_of_cost_share_prohibited"}
+        Medicare Beneficiary Liability Invoice: {courtesy_adjustment_max: "=courtesy_adjustment_max", waiver_of_cost_share_prohibited: "=waiver_of_cost_share_prohibited"}
+        Medicaid Copay Invoice: {courtesy_adjustment_max: "=courtesy_adjustment_max", waiver_of_cost_share_prohibited: "=waiver_of_cost_share_prohibited"}
+
+  - id: invoices_plan_interplay
+    subject: [invoices_enrolled_in_plan, invoices_released_from_plan]
+    rule: >-
+      An invoice joins a payment plan only when its class's payment_plan_eligible is true and the plan was
+      accepted by the patient under the payment-plan rules; while on the plan its statements stop when
+      statement_cycle_paused_on_plan is true and installments are booked on the plan, not on the invoice. When the
+      plan is cancelled or defaults, the plan's remaining share of the invoice returns to it and the statement
+      cycle resumes at the next unused position.
+    eligibility: []
+    params:
+      per_tier:
+        Self-Pay Patient Invoice: {payment_plan_eligible: "=payment_plan_eligible", statement_cycle_paused_on_plan: "=statement_cycle_paused_on_plan"}
+        Consumer Test Purchase Invoice: {payment_plan_eligible: "=payment_plan_eligible", statement_cycle_paused_on_plan: "=statement_cycle_paused_on_plan"}
+        Insured Patient Responsibility Invoice: {payment_plan_eligible: "=payment_plan_eligible", statement_cycle_paused_on_plan: "=statement_cycle_paused_on_plan"}
+        Out-of-Network Balance Invoice: {payment_plan_eligible: "=payment_plan_eligible", statement_cycle_paused_on_plan: "=statement_cycle_paused_on_plan"}
+        Medicare Beneficiary Liability Invoice: {payment_plan_eligible: "=payment_plan_eligible", statement_cycle_paused_on_plan: "=statement_cycle_paused_on_plan"}
+        Medicaid Copay Invoice: {payment_plan_eligible: "=payment_plan_eligible", statement_cycle_paused_on_plan: "=statement_cycle_paused_on_plan"}
+
+  - id: invoices_collections_recall
+    subject: [invoices_recalled_from_collections]
+    rule: >-
+      A placed invoice is recalled from the agency only where collections_recall_allowed is true and only for one
+      of these reasons: a financial-assistance award covering it was approved, a billing error was confirmed on it,
+      or a claim for its order is being reprocessed. A patient's promise to pay or a request to stop collection
+      calls is not a recall reason; the patient pays the agency or the laboratory directly, and any payment
+      received by the laboratory is applied to the placed invoice.
+    eligibility: []
+    params:
+      per_tier:
+        Self-Pay Patient Invoice: {collections_recall_allowed: "=collections_recall_allowed"}
+        Consumer Test Purchase Invoice: {collections_recall_allowed: "=collections_recall_allowed"}
+        Insured Patient Responsibility Invoice: {collections_recall_allowed: "=collections_recall_allowed"}
+        Out-of-Network Balance Invoice: {collections_recall_allowed: "=collections_recall_allowed"}
+        Medicare Beneficiary Liability Invoice: {collections_recall_allowed: "=collections_recall_allowed"}
+        Medicaid Copay Invoice: {collections_recall_allowed: "=collections_recall_allowed"}
+
+  - id: invoices_closing
+    subject: [invoices_paid_in_full, invoices_closed_zero_balance, invoices_reopened]
+    rule: >-
+      An invoice whose balance reaches zero through payments is paid, and through adjustments or a write-off is
+      closed, auto_close_zero_balance_days after the balance reached zero. A paid invoice becomes open again only
+      when a payment that settled it is reversed. An itemized statement is sent on request within
+      itemized_statement_business_days business days at itemized_statement_fee, and statements go by email instead
+      of paper only to portal-enrolled patients where paperless_statements_available is true. A consumer purchase
+      (prepaid_at_purchase true) is paid at purchase and only reopens through a reversal.
+    eligibility: []
+    params:
+      per_tier:
+        Self-Pay Patient Invoice: {auto_close_zero_balance_days: "=auto_close_zero_balance_days", prepaid_at_purchase: "=prepaid_at_purchase"}
+        Consumer Test Purchase Invoice: {auto_close_zero_balance_days: "=auto_close_zero_balance_days", prepaid_at_purchase: "=prepaid_at_purchase"}
+        Insured Patient Responsibility Invoice: {auto_close_zero_balance_days: "=auto_close_zero_balance_days", prepaid_at_purchase: "=prepaid_at_purchase"}
+        Out-of-Network Balance Invoice: {auto_close_zero_balance_days: "=auto_close_zero_balance_days", prepaid_at_purchase: "=prepaid_at_purchase"}
+        Medicare Beneficiary Liability Invoice: {auto_close_zero_balance_days: "=auto_close_zero_balance_days", prepaid_at_purchase: "=prepaid_at_purchase"}
+        Medicaid Copay Invoice: {auto_close_zero_balance_days: "=auto_close_zero_balance_days", prepaid_at_purchase: "=prepaid_at_purchase"}

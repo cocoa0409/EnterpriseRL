@@ -1,0 +1,657 @@
+# Self-Pay Visit Package — prepaid bundles of physical therapy visits bought by cash-pay patients.
+# One holding = one purchased package with a visit count, a price and an expiry date. Visits are
+# credited as the package is paid for and drawn as the patient attends appointments funded by it.
+# The tier is the package size, as cash-pay physical therapy practices sell them.
+
+category: package
+display_name: Self-Pay Visit Package
+
+binding:
+  holding_table: visit_packages
+  event_tables: [package_events]
+  intake_tables: [package_refund_requests]
+  status_field: status
+  variant_field: variant_name
+  quantity_fields:
+    visits_remaining: package_visits
+    amount_paid_total: package_payments
+
+lifecycle:
+  states: [pending_payment, active, frozen, exhausted, expired, cancelled]
+  transitions:
+    - {from: pending_payment, to: active, by: agent, means: "The package is activated when its first (or only) payment is received."}
+    - {from: pending_payment, to: cancelled, by: user, means: "The patient withdraws the purchase before paying."}
+    - {from: active, to: frozen, by: agent, means: "The package is frozen for a documented medical reason and its expiry clock stops."}
+    - {from: frozen, to: active, by: agent, means: "A frozen package is unfrozen and its expiry date is pushed out by the days frozen."}
+    - {from: active, to: exhausted, by: system, means: "The last visit of the package has been used."}
+    - {from: active, to: expired, by: system, means: "The expiry date has passed with visits unused."}
+    - {from: frozen, to: expired, by: system, means: "A frozen package reaches the end of its maximum freeze and its expiry date has passed."}
+    - {from: expired, to: active, by: agent, means: "An expired package is reinstated within the reinstatement window after the fee is paid."}
+    - {from: active, to: cancelled, by: user, means: "The patient confirms cancellation of the package for a refund of unused visits."}
+
+accounts:
+  - key: package_visits
+    unit: visits
+    meaning: Visits credited to the package that have not yet been redeemed, forfeited, expired, transferred or refunded.
+  - key: package_payments
+    unit: USD
+    meaning: Money the patient has paid toward the package (price installments and reinstatement fees) net of refunds.
+
+parameter_schema:
+  visits_included: "Visits included in the package (integer, visits)."
+  package_price: "List price of the package before any discount (USD, 2 decimals)."
+  single_visit_cash_rate: "Standard single-visit cash rate used to value visits already used when a package is refunded and to price visits beyond the package (USD, 2 decimals)."
+  validity_days: "Calendar days after activation until the package expires (integer, calendar days)."
+  freeze_allowed: "Whether the package may be frozen for a documented medical reason (boolean)."
+  freeze_max_days: "Maximum calendar days of one freeze; 0 where freezing is not allowed (integer, calendar days)."
+  freezes_per_package: "Maximum freezes on one package (integer)."
+  freeze_requires_medical_note: "Whether a freeze needs a note from a physician or the treating therapist (boolean)."
+  freeze_extends_expiry: "Whether unfreezing pushes the expiry date out by the calendar days the package was frozen (boolean)."
+  full_refund_days: "Calendar days after the purchase date within which a package with no visits used is refunded in full (integer, calendar days)."
+  prorated_refund_allowed: "Whether unused visits are refunded on a prorated basis after the full-refund window (boolean)."
+  refund_admin_fee: "Administrative fee deducted from a prorated refund; never deducted from a full refund (USD, 2 decimals)."
+  refund_used_visit_valuation: "How visits already used are valued in a prorated refund: single_visit_rate (single_visit_cash_rate) or package_rate (purchase price divided by visits included) (enum)."
+  refund_processing_days: "Calendar days after a refund request is approved within which the refund is issued (integer, calendar days)."
+  package_card_refund_days: "Calendar days after the card payment within which a refund goes back to that card; later refunds are paid by check (integer, calendar days)."
+  refund_requires_written_request: "Whether a refund needs the patient's signed cancellation request (boolean)."
+  transfer_allowed: "Whether unused visits may be transferred to another patient (boolean)."
+  transfer_relationship: "Who may receive transferred visits: immediate_family, household or none (enum)."
+  transfer_min_visits: "Minimum unused visits for a transfer to be allowed; 0 where transfers are not allowed (integer, visits)."
+  transfers_per_package: "Maximum transfers out of one package (integer)."
+  missed_visit_forfeits_visit: "Whether a late cancellation or no-show on an appointment funded by the package forfeits one package visit instead of a fee (boolean)."
+  forfeit_grace_per_package: "Missed appointments per package that are not forfeited (integer)."
+  forfeited_visit_restore_on_waiver: "Whether a forfeited visit is restored when the missed appointment qualifies for a clinic closure, telehealth failure or documented-emergency waiver (boolean)."
+  installments_allowed: "Whether the package may be paid in installments (boolean)."
+  installment_count: "Number of equal installments when paid in installments; 1 where installments are not allowed (integer)."
+  installment_interval_days: "Calendar days between installment due dates; 0 where installments are not allowed (integer, calendar days)."
+  installment_late_days: "Calendar days after an installment due date after which an unpaid installment freezes visit crediting; 0 where installments are not allowed (integer, calendar days)."
+  installment_card_on_file_required: "Whether a card must be kept on file to draft later installments automatically on their due dates (boolean)."
+  hsa_fsa_accepted: "Whether HSA or FSA cards are accepted for package payments (boolean)."
+  gfe_required: "Whether a written Good Faith Estimate is given before the purchase (boolean)."
+  gfe_lead_business_days: "Business days before the first scheduled visit by which the Good Faith Estimate must be given (integer, business days)."
+  gfe_dispute_threshold: "Amount by which total billed charges must exceed the Good Faith Estimate for the patient to be eligible for the federal patient-provider dispute process (USD, 2 decimals)."
+  gfe_dispute_window_days: "Calendar days after the date of the bill within which the patient may start the dispute process (integer, calendar days)."
+  medicare_beneficiary_eligible: "Whether a patient covered by Medicare may buy the package (boolean)."
+  in_network_same_diagnosis_allowed: "Whether the package may fund visits for a diagnosis also treated under an active in-network Insured Plan of Care (boolean)."
+  benefit_exhausted_exception: "Whether a patient whose insurance visit limit for the calendar year is used up may buy the package for the same diagnosis (boolean)."
+  guardian_signature_under_age: "Age in whole years below which a parent or legal guardian must sign the purchase (integer, years)."
+  post_surgical_protocol_required: "Whether the surgeon's post-operative protocol must be on file before purchase (boolean)."
+  surgery_window_days: "Calendar days after the surgery date within which the package must be purchased; 0 where not post-surgical (integer, calendar days)."
+  telehealth_redeemable: "Whether telehealth visits may be paid from the package (boolean)."
+  aquatic_redeemable: "Whether aquatic therapy visits may be paid from the package (boolean)."
+  specialty_redeemable: "Whether specialty one-on-one visits may be paid from the package (boolean)."
+  extended_visit_draw: "Package visits drawn by one extended 60-minute or specialty visit (integer, visits)."
+  renewal_discount_percent: "Discount on a new package of any size bought within renewal_window_days after this package was exhausted (integer, percent)."
+  renewal_window_days: "Calendar days after exhaustion within which the renewal discount applies; 0 where no renewal discount applies (integer, calendar days)."
+  reinstatement_window_days: "Calendar days after expiry within which an expired package may be reinstated; 0 where reinstatement is not offered (integer, calendar days)."
+  reinstatement_fee: "Fee to reinstate an expired package; 0.00 where reinstatement is not offered (USD, 2 decimals)."
+  reinstatement_extension_days: "Calendar days added to the expiry date, counted from the reinstatement date, when a package is reinstated; 0 where reinstatement is not offered (integer, calendar days)."
+
+variants:
+  - name: Starter 4-Visit Package
+    rank: 1
+    entry_gate: {self_pay: true, medicare_coverage: false}
+    parameters: {visits_included: 4, package_price: 460.00, single_visit_cash_rate: 125.00, validity_days: 90, freeze_allowed: false,
+      freeze_max_days: 0, freezes_per_package: 0, freeze_requires_medical_note: true, freeze_extends_expiry: true, full_refund_days: 14,
+      prorated_refund_allowed: false, refund_admin_fee: 0.00, refund_used_visit_valuation: single_visit_rate, refund_processing_days: 14, package_card_refund_days: 120,
+      refund_requires_written_request: true, transfer_allowed: false, transfer_relationship: none, transfer_min_visits: 0, transfers_per_package: 0,
+      missed_visit_forfeits_visit: true, forfeit_grace_per_package: 0, forfeited_visit_restore_on_waiver: true, installments_allowed: false, installment_count: 1,
+      installment_interval_days: 0, installment_late_days: 0, installment_card_on_file_required: false, hsa_fsa_accepted: true, gfe_required: true, gfe_lead_business_days: 1,
+      gfe_dispute_threshold: 400.00, gfe_dispute_window_days: 120, medicare_beneficiary_eligible: false, in_network_same_diagnosis_allowed: false, benefit_exhausted_exception: true,
+      guardian_signature_under_age: 18, post_surgical_protocol_required: false, surgery_window_days: 0, telehealth_redeemable: true, aquatic_redeemable: false,
+      specialty_redeemable: false, extended_visit_draw: 2, renewal_discount_percent: 0, renewal_window_days: 0, reinstatement_window_days: 0,
+      reinstatement_fee: 0.00, reinstatement_extension_days: 0}
+  - name: Recovery 6-Visit Package
+    rank: 2
+    entry_gate: {self_pay: true, medicare_coverage: false}
+    parameters: {visits_included: 6, package_price: 666.00, single_visit_cash_rate: 125.00, validity_days: 120, freeze_allowed: true,
+      freeze_max_days: 30, freezes_per_package: 1, freeze_requires_medical_note: true, freeze_extends_expiry: true, full_refund_days: 14,
+      prorated_refund_allowed: true, refund_admin_fee: 25.00, refund_used_visit_valuation: single_visit_rate, refund_processing_days: 14, package_card_refund_days: 120,
+      refund_requires_written_request: true, transfer_allowed: false, transfer_relationship: none, transfer_min_visits: 0, transfers_per_package: 0,
+      missed_visit_forfeits_visit: true, forfeit_grace_per_package: 1, forfeited_visit_restore_on_waiver: true, installments_allowed: false, installment_count: 1,
+      installment_interval_days: 0, installment_late_days: 0, installment_card_on_file_required: false, hsa_fsa_accepted: true, gfe_required: true, gfe_lead_business_days: 1,
+      gfe_dispute_threshold: 400.00, gfe_dispute_window_days: 120, medicare_beneficiary_eligible: false, in_network_same_diagnosis_allowed: false, benefit_exhausted_exception: true,
+      guardian_signature_under_age: 18, post_surgical_protocol_required: false, surgery_window_days: 0, telehealth_redeemable: true, aquatic_redeemable: false,
+      specialty_redeemable: false, extended_visit_draw: 2, renewal_discount_percent: 5, renewal_window_days: 30, reinstatement_window_days: 0,
+      reinstatement_fee: 0.00, reinstatement_extension_days: 0}
+  - name: Core 8-Visit Package
+    rank: 3
+    entry_gate: {self_pay: true, medicare_coverage: false}
+    parameters: {visits_included: 8, package_price: 856.00, single_visit_cash_rate: 125.00, validity_days: 150, freeze_allowed: true,
+      freeze_max_days: 30, freezes_per_package: 1, freeze_requires_medical_note: true, freeze_extends_expiry: true, full_refund_days: 14,
+      prorated_refund_allowed: true, refund_admin_fee: 25.00, refund_used_visit_valuation: single_visit_rate, refund_processing_days: 14, package_card_refund_days: 120,
+      refund_requires_written_request: true, transfer_allowed: true, transfer_relationship: immediate_family, transfer_min_visits: 2, transfers_per_package: 1,
+      missed_visit_forfeits_visit: true, forfeit_grace_per_package: 1, forfeited_visit_restore_on_waiver: true, installments_allowed: false, installment_count: 1,
+      installment_interval_days: 0, installment_late_days: 0, installment_card_on_file_required: false, hsa_fsa_accepted: true, gfe_required: true, gfe_lead_business_days: 1,
+      gfe_dispute_threshold: 400.00, gfe_dispute_window_days: 120, medicare_beneficiary_eligible: false, in_network_same_diagnosis_allowed: false, benefit_exhausted_exception: true,
+      guardian_signature_under_age: 18, post_surgical_protocol_required: false, surgery_window_days: 0, telehealth_redeemable: true, aquatic_redeemable: true,
+      specialty_redeemable: false, extended_visit_draw: 1, renewal_discount_percent: 5, renewal_window_days: 30, reinstatement_window_days: 30,
+      reinstatement_fee: 35.00, reinstatement_extension_days: 30}
+  - name: Complete 12-Visit Package
+    rank: 4
+    entry_gate: {self_pay: true, medicare_coverage: false}
+    parameters: {visits_included: 12, package_price: 1236.00, single_visit_cash_rate: 125.00, validity_days: 180, freeze_allowed: true,
+      freeze_max_days: 45, freezes_per_package: 1, freeze_requires_medical_note: true, freeze_extends_expiry: true, full_refund_days: 14,
+      prorated_refund_allowed: true, refund_admin_fee: 35.00, refund_used_visit_valuation: single_visit_rate, refund_processing_days: 14, package_card_refund_days: 120,
+      refund_requires_written_request: true, transfer_allowed: true, transfer_relationship: immediate_family, transfer_min_visits: 2, transfers_per_package: 1,
+      missed_visit_forfeits_visit: true, forfeit_grace_per_package: 1, forfeited_visit_restore_on_waiver: true, installments_allowed: true, installment_count: 2,
+      installment_interval_days: 30, installment_late_days: 10, installment_card_on_file_required: true, hsa_fsa_accepted: true, gfe_required: true, gfe_lead_business_days: 1,
+      gfe_dispute_threshold: 400.00, gfe_dispute_window_days: 120, medicare_beneficiary_eligible: false, in_network_same_diagnosis_allowed: false, benefit_exhausted_exception: true,
+      guardian_signature_under_age: 18, post_surgical_protocol_required: false, surgery_window_days: 0, telehealth_redeemable: true, aquatic_redeemable: true,
+      specialty_redeemable: true, extended_visit_draw: 1, renewal_discount_percent: 5, renewal_window_days: 30, reinstatement_window_days: 30,
+      reinstatement_fee: 35.00, reinstatement_extension_days: 30}
+  - name: Post-Surgical 18-Visit Package
+    rank: 5
+    entry_gate: {self_pay: true, medicare_coverage: false, surgery_date_on_file: true, surgical_protocol_on_file: true}
+    parameters: {visits_included: 18, package_price: 1764.00, single_visit_cash_rate: 125.00, validity_days: 240, freeze_allowed: true,
+      freeze_max_days: 60, freezes_per_package: 2, freeze_requires_medical_note: true, freeze_extends_expiry: true, full_refund_days: 14,
+      prorated_refund_allowed: true, refund_admin_fee: 35.00, refund_used_visit_valuation: package_rate, refund_processing_days: 14, package_card_refund_days: 120,
+      refund_requires_written_request: true, transfer_allowed: false, transfer_relationship: none, transfer_min_visits: 0, transfers_per_package: 0,
+      missed_visit_forfeits_visit: false, forfeit_grace_per_package: 0, forfeited_visit_restore_on_waiver: true, installments_allowed: true, installment_count: 3,
+      installment_interval_days: 30, installment_late_days: 10, installment_card_on_file_required: true, hsa_fsa_accepted: true, gfe_required: true, gfe_lead_business_days: 1,
+      gfe_dispute_threshold: 400.00, gfe_dispute_window_days: 120, medicare_beneficiary_eligible: false, in_network_same_diagnosis_allowed: false, benefit_exhausted_exception: true,
+      guardian_signature_under_age: 18, post_surgical_protocol_required: true, surgery_window_days: 30, telehealth_redeemable: false, aquatic_redeemable: true,
+      specialty_redeemable: false, extended_visit_draw: 1, renewal_discount_percent: 0, renewal_window_days: 0, reinstatement_window_days: 30,
+      reinstatement_fee: 35.00, reinstatement_extension_days: 30}
+  - name: Comprehensive 24-Visit Package
+    rank: 6
+    entry_gate: {self_pay: true, medicare_coverage: false}
+    parameters: {visits_included: 24, package_price: 2256.00, single_visit_cash_rate: 125.00, validity_days: 365, freeze_allowed: true,
+      freeze_max_days: 60, freezes_per_package: 2, freeze_requires_medical_note: true, freeze_extends_expiry: true, full_refund_days: 14,
+      prorated_refund_allowed: true, refund_admin_fee: 50.00, refund_used_visit_valuation: single_visit_rate, refund_processing_days: 14, package_card_refund_days: 120,
+      refund_requires_written_request: true, transfer_allowed: true, transfer_relationship: household, transfer_min_visits: 4, transfers_per_package: 1,
+      missed_visit_forfeits_visit: true, forfeit_grace_per_package: 2, forfeited_visit_restore_on_waiver: true, installments_allowed: true, installment_count: 3,
+      installment_interval_days: 30, installment_late_days: 10, installment_card_on_file_required: true, hsa_fsa_accepted: true, gfe_required: true, gfe_lead_business_days: 1,
+      gfe_dispute_threshold: 400.00, gfe_dispute_window_days: 120, medicare_beneficiary_eligible: false, in_network_same_diagnosis_allowed: false, benefit_exhausted_exception: true,
+      guardian_signature_under_age: 18, post_surgical_protocol_required: false, surgery_window_days: 0, telehealth_redeemable: true, aquatic_redeemable: true,
+      specialty_redeemable: true, extended_visit_draw: 1, renewal_discount_percent: 10, renewal_window_days: 30, reinstatement_window_days: 30,
+      reinstatement_fee: 50.00, reinstatement_extension_days: 45}
+
+events:
+  - type: package_purchased
+    target: visit_packages
+    mutation: create
+    meaning: A patient buys a visit package; the Good Faith Estimate, price after any discount and expiry terms are recorded, awaiting the first payment.
+    grain: one row per package purchase
+    fields:
+      package_id: reference number of the package
+      customer_id: the patient
+      variant_name: package tier
+      opened_date: purchase date
+      clinic_name: clinic where the package was sold
+      list_price: list price of the tier
+      discount_kind: discount applied, if any
+      discount_percent: discount percentage applied
+      purchase_price: price after discount
+      visits_purchased: visits included
+      installments_total: number of installments the price is paid in
+      gfe_date: date the Good Faith Estimate was given
+      gfe_amount: total on the Good Faith Estimate
+      diagnosis_code: condition the package is bought for
+      surgery_date: surgery date for a post-surgical package; empty otherwise
+    triggers: []
+  - type: package_activated
+    target: visit_packages
+    mutation: {transition: {from: pending_payment, to: active}}
+    meaning: The package becomes usable when its first payment is received; its expiry date is set.
+    grain: one row per transaction
+    fields:
+      status: becomes active
+      activated_date: activation date
+      expiry_date: activation date plus validity_days
+    triggers: []
+  - type: package_withdrawn
+    target: visit_packages
+    mutation: {transition: {from: pending_payment, to: cancelled}}
+    meaning: The patient withdraws an unpaid purchase.
+    grain: one row per transaction
+    fields:
+      status: becomes cancelled
+      closed_date: date withdrawn
+      close_reason: purchase_withdrawn
+    triggers: []
+  - type: package_frozen
+    target: visit_packages
+    mutation: {transition: {from: active, to: frozen}}
+    meaning: The package is frozen for a documented medical reason.
+    grain: one row per transaction
+    fields:
+      status: becomes frozen
+      freeze_reason: documented reason
+      freeze_start_date: date the freeze began
+      freezes_used: freezes taken including this one
+    triggers: []
+  - type: package_unfrozen
+    target: visit_packages
+    mutation: {transition: {from: frozen, to: active}}
+    meaning: A frozen package is unfrozen and its expiry date pushed out by the days frozen.
+    grain: one row per transaction
+    fields:
+      status: becomes active
+      expiry_date: new expiry date
+      freeze_reason: cleared to none
+    triggers: []
+  - type: package_exhausted
+    target: visit_packages
+    mutation: {transition: {from: active, to: exhausted}}
+    meaning: The package's last visit has been used.
+    grain: one row per transaction
+    fields:
+      status: becomes exhausted
+      closed_date: date of the last visit
+      close_reason: visits_used
+    triggers: []
+  - type: package_expired
+    target: visit_packages
+    mutation: {transition: [{from: active, to: expired}, {from: frozen, to: expired}]}
+    meaning: The package passes its expiry date with visits unused.
+    grain: one row per transaction
+    fields:
+      status: becomes expired
+      closed_date: day after the expiry date
+      close_reason: expired
+    triggers:
+      - event: package:package_visits_expired
+        map: {}
+  - type: package_reinstated
+    target: visit_packages
+    mutation: {transition: {from: expired, to: active}}
+    meaning: An expired package is reinstated after the reinstatement fee is paid.
+    grain: one row per transaction
+    fields:
+      status: becomes active
+      expiry_date: reinstatement date plus reinstatement_extension_days
+      closed_date: cleared
+      close_reason: cleared to none
+    triggers:
+      - event: package:package_visits_credited
+        map: {credit_kind: reinstatement}
+  - type: package_cancelled
+    target: visit_packages
+    mutation: {transition: {from: active, to: cancelled}}
+    meaning: The patient confirms cancellation of an active package for a refund of its unused visits.
+    grain: one row per transaction
+    fields:
+      status: becomes cancelled
+      closed_date: date cancelled
+      close_reason: refunded
+    triggers:
+      - event: package:package_visits_refunded
+        map: {}
+  - type: package_payment_received
+    target: package_events
+    meaning: A payment toward the package price (one installment or payment in full) or a reinstatement fee is received.
+    grain: one row per payment
+    distinguish_by: [payment_kind, installment_number]
+    fields:
+      event_date: date paid
+      payment_kind: what the payment is for
+      installment_number: installment ordinal (1 for payment in full or the first installment; 0 for a reinstatement fee)
+      amount: amount paid (positive)
+      payment_method: how it was paid
+    account: package_payments
+    direction: in
+    triggers:
+      - event: package:package_visits_credited
+        when: {payment_kind: installment}
+        map: {installment_number: installment_number, credit_kind: installment}
+  - type: package_visits_credited
+    target: package_events
+    meaning: Visits are added to the package (on an installment payment, a transfer in, a restored forfeit or a reinstatement).
+    grain: one row per credit
+    distinguish_by: [credit_kind, installment_number, source_event_id, event_date]
+    fields:
+      event_date: date credited
+      credit_kind: why visits were credited
+      installment_number: installment ordinal for an installment credit; 0 otherwise
+      visits: visits credited
+      source_event_id: reference of the forfeit restored or the transfer received; empty otherwise
+    account: package_visits
+    direction: in
+    triggers: []
+  - type: package_visit_redeemed
+    target: package_events
+    meaning: An attended appointment is paid from the package.
+    grain: one row per attended appointment paid from the package
+    distinguish_by: [appointment_date]
+    fields:
+      event_date: date recorded
+      appointment_date: date of the attended appointment
+      visit_format: format of the attended visit
+      visits: package visits drawn
+    account: package_visits
+    direction: out
+    triggers: []
+  - type: package_visit_forfeited
+    target: package_events
+    meaning: A package visit is forfeited for a late cancellation or no-show on an appointment funded by the package.
+    grain: one row per missed appointment
+    distinguish_by: [appointment_date]
+    fields:
+      event_date: date recorded
+      appointment_date: date of the missed appointment
+      forfeit_reason: late cancellation or no-show
+      visits: visits forfeited (always 1)
+    account: package_visits
+    direction: out
+    triggers: []
+  - type: package_visits_expired
+    target: package_events
+    meaning: Visits still unused when the package expires are removed.
+    grain: one row per expiry
+    distinguish_by: [event_date]
+    fields:
+      event_date: date of expiry
+      visits: visits removed
+    account: package_visits
+    direction: out
+    triggers: []
+  - type: package_visits_refunded
+    target: package_events
+    meaning: Unused visits are removed from a package cancelled for a refund.
+    grain: one row per cancellation
+    distinguish_by: [event_date]
+    fields:
+      event_date: date of cancellation
+      visits: visits removed
+    account: package_visits
+    direction: out
+    triggers: []
+  - type: package_visits_transferred
+    target: package_events
+    meaning: Unused visits are transferred out to an eligible family or household member.
+    grain: one row per transfer
+    distinguish_by: [recipient_customer_id, event_date]
+    fields:
+      event_date: date of transfer
+      visits: visits transferred
+      recipient_customer_id: patient receiving the visits
+    account: package_visits
+    direction: out
+    triggers: []
+  - type: package_refund_issued
+    target: package_events
+    meaning: Money is refunded to the patient for a cancelled package or a withdrawn overpayment.
+    grain: one row per refund of one payment
+    distinguish_by: [source_event_id]
+    fields:
+      event_date: date refunded
+      amount: amount refunded (positive)
+      refund_method: how it is returned
+      source_event_id: reference of the payment refunded
+    account: package_payments
+    direction: out
+    triggers: []
+  - type: package_billing_dispute_filed
+    target: package_events
+    meaning: The patient starts the federal patient-provider dispute process because billed charges exceeded the Good Faith Estimate.
+    grain: one row per dispute
+    distinguish_by: [event_date]
+    fields:
+      event_date: date the dispute was started
+      amount: amount by which billed charges exceed the Good Faith Estimate
+    triggers: []
+
+measures:
+  - id: package_msr_visits_used
+    window: the whole life of the package
+    measure: sum of visits on package_visit_redeemed rows of this package
+  - id: package_msr_misses
+    window: the whole life of the package
+    measure: count of late cancellations and no-shows on appointments funded by this package (series_visit_cancelled with notice below the series' late_cancel_notice_hours and cancel_reason not clinic_cancelled, plus series_no_show rows, whose funding_source is self_pay_package on a series linked to this package)
+
+policies:
+  - id: package_agg_multi_holding
+    subject: [package_purchased]
+    rule: >-
+      A patient may hold at most max_per_customer packages that are pending_payment, active or frozen at the same time,
+      so that a new package can be bought ahead of the current one running out.
+    eligibility: []
+    params:
+      max_per_customer: 2
+
+  - id: package_agg_redemption_order
+    subject: [package_visit_redeemed, package_visit_forfeited]
+    rule: >-
+      When a patient holds two active packages, an attended or forfeited visit is drawn from the package with the
+      earlier expiry date; when both expire the same day, from the one purchased first. A package visit is never split
+      across two packages: a visit drawing more visits than remain on the first package is drawn in full from the
+      second.
+    eligibility: []
+
+  - id: package_purchase_eligibility
+    subject: [package_purchased, package_activated]
+    rule: >-
+      A package is not sold to a patient who holds a Medicare Part B Plan of Care or a Medicare Advantage Plan of Care that is not closed while medicare_beneficiary_eligible is false,
+      because the clinic is enrolled in Medicare and must bill Medicare for covered therapy. A package does not fund a
+      diagnosis also treated under an in-network Insured Plan of Care that is not closed while
+      in_network_same_diagnosis_allowed is false, except where benefit_exhausted_exception is true and that plan's
+      calendar-year visit limit is used up. A patient younger than guardian_signature_under_age on the purchase date
+      needs a parent or guardian to buy. Where gfe_required is true a Good Faith Estimate is given on or before the
+      purchase date and no later than gfe_lead_business_days business days before the first scheduled visit. Where post_surgical_protocol_required is true the package is purchased no later than surgery_window_days calendar days after the surgery date on file.
+      Days are counted as calendar days from the surgery date, the surgery date itself being day zero. The package is
+      activated by its first payment, and its expiry date is the activation date plus validity_days.
+    eligibility:
+      - id: no_medicare_plan
+        applies_to: [package_purchased]
+        kind: authorization
+        condition: "A package is not sold to a patient who holds a Medicare Part B Plan of Care or a Medicare Advantage Plan of Care that is not closed while medicare_beneficiary_eligible is false,"
+        evidence_fields: [care_plans.customer_id, care_plans.variant_name, care_plans.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [care_plans.customer_id]
+          action_bindings:
+            care_plans.customer_id: customer_id
+      - id: surgery_window
+        applies_to: [package_purchased]
+        kind: time
+        condition: "Where post_surgical_protocol_required is true the package is purchased no later than surgery_window_days calendar days after the surgery date on file."
+        evidence_fields: [visit_packages.surgery_date]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [visit_packages.surgery_date]
+          action_bindings:
+            visit_packages.surgery_date: surgery_date
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the surgery date on file
+          anchor_source: visit_packages.surgery_date
+          relation: not_after
+          duration_source: variants.surgery_window_days
+          unit: calendar_days
+          counting_rule: "Days are counted as calendar days from the surgery date, the surgery date itself being day zero."
+          boundary: inclusive
+
+  - id: package_renewal_pricing
+    subject: [package_purchased]
+    rule: >-
+      The purchase price is the list price of the new tier less one discount. A renewal discount of the exhausted
+      package's renewal_discount_percent applies when the new package is bought no later than that package's
+      renewal_window_days calendar days after it was exhausted; a member discount of the patient's active Wellness
+      Membership member_package_discount_percent applies while that membership is active. The two never stack: the
+      higher percentage applies, and on a tie the renewal discount is recorded. The price is rounded to the cent.
+    eligibility: []
+    formula:
+      purchase_price: round(package_price * (100 - discount_percent) / 100, 2)
+
+  - id: package_evt_payments_and_crediting
+    subject: [package_payment_received, package_visits_credited]
+    rule: >-
+      Payments are taken by card, cash, check, or an HSA or FSA card where hsa_fsa_accepted is true. Where
+      installments_allowed is true and the patient chose installments, the purchase price is split into
+      installment_count equal installments (the last absorbing any cent of rounding), the first due on the purchase date
+      and each later one installment_interval_days calendar days after the previous due date; each installment paid
+      credits visits_included divided by installment_count visits. Where installments are not used, the payment in full
+      credits all visits. Where installment_card_on_file_required is true, installments after the first are drafted
+      automatically from a card kept on file on their due dates. An installment unpaid installment_late_days calendar days after its due date stops further
+      crediting until it is paid. A reinstatement fee credits back the visits that expired. Payments never exceed the
+      purchase price plus any reinstatement fee.
+    eligibility: []
+    formula:
+      visits_per_installment: visits_included / installment_count
+      installment_amount: round(purchase_price / installment_count, 2)
+
+  - id: package_evt_redemption
+    subject: [package_visit_redeemed]
+    rule: >-
+      Visits are drawn only from a package in active status. A standard 45-minute, aquatic or post-operative visit draws
+      one package visit; an extended 60-minute or specialty one-on-one visit draws extended_visit_draw visits. Telehealth
+      visits are paid from the package only where telehealth_redeemable is true, aquatic visits only where
+      aquatic_redeemable is true, and specialty visits only where specialty_redeemable is true; a visit the package
+      cannot pay is charged single_visit_cash_rate. When the last visit is drawn the package is exhausted.
+    eligibility:
+      - id: package_active_for_redemption
+        applies_to: [package_visit_redeemed]
+        kind: state
+        condition: "Visits are drawn only from a package in active status."
+        evidence_fields: [visit_packages.status, visit_packages.package_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [visit_packages.package_id]
+          action_bindings:
+            visit_packages.package_id: package_id
+        state_contract:
+          field: visit_packages.status
+          allowed: [active]
+
+  - id: package_evt_missed_visit_forfeit
+    subject: [package_visit_forfeited, package_exhausted]
+    rule: >-
+      Where missed_visit_forfeits_visit is true, a late cancellation or no-show on an appointment funded by the package
+      forfeits one package visit once package_msr_misses exceeds forfeit_grace_per_package; the misses within the grace
+      forfeit nothing. Where missed_visit_forfeits_visit is false the appointment's series fee rules apply instead. A
+      forfeited visit is restored where forfeited_visit_restore_on_waiver is true and the missed appointment qualifies
+      for a clinic_weather_closure, telehealth_connection_failure or documented_emergency waiver; a first-occurrence
+      courtesy never restores a forfeited visit. A forfeit that uses the last visit exhausts the package.
+    eligibility: []
+    measures: [package_msr_misses]
+
+  - id: package_freeze_rules
+    subject: [package_frozen, package_unfrozen]
+    rule: >-
+      Only an active package is frozen, only where freeze_allowed is true, at most freezes_per_package times, and only
+      with a physician or therapist note where freeze_requires_medical_note is true. A freeze lasts at most
+      freeze_max_days calendar days; on unfreezing, where freeze_extends_expiry is true, the expiry date moves out by the
+      calendar days between the freeze start date and the unfreeze date. A frozen package not unfrozen within
+      freeze_max_days whose original expiry date has passed expires.
+    eligibility: []
+
+  - id: package_expiry_and_reinstatement
+    subject: [package_expired, package_visits_expired, package_reinstated]
+    rule: >-
+      A package expires on the day after its expiry date, and any visits still unused are removed. An expired package is reinstated only no later than reinstatement_window_days calendar days after the expiry date on file.
+      Days are counted as calendar days from the expiry date, the expiry date itself being day zero. Reinstatement needs
+      the reinstatement_fee paid first; it restores the visits removed at expiry and sets a new expiry date
+      reinstatement_extension_days calendar days after the reinstatement date. A tier with reinstatement_window_days 0
+      cannot be reinstated, and a package is reinstated at most once.
+    eligibility:
+      - id: reinstatement_window
+        applies_to: [package_reinstated]
+        kind: time
+        condition: "An expired package is reinstated only no later than reinstatement_window_days calendar days after the expiry date on file."
+        evidence_fields: [visit_packages.expiry_date, visit_packages.package_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [visit_packages.package_id]
+          action_bindings:
+            visit_packages.package_id: package_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the expiry date on file
+          anchor_source: visit_packages.expiry_date
+          relation: not_after
+          duration_source: variants.reinstatement_window_days
+          unit: calendar_days
+          counting_rule: "Days are counted as calendar days from the expiry date, the expiry date itself being day zero."
+          boundary: inclusive
+
+  - id: package_evt_refunds
+    subject: [package_cancelled, package_withdrawn, package_visits_refunded, package_refund_issued]
+    rule: >-
+      A refund needs the patient's own confirmation of the cancellation where refund_requires_written_request is true; the
+      request is registered first and the package is cancelled once the patient confirms. A package with no visits used is refunded in full only when the cancellation is requested no later than full_refund_days calendar days after the purchase date.
+      Days are counted as calendar days from the purchase date, the purchase date itself being day zero. Otherwise, where
+      prorated_refund_allowed is true, the refund is the amount paid less the visits used valued by
+      refund_used_visit_valuation and less refund_admin_fee, and never below 0.00; where it is false nothing is refunded
+      after the full-refund window. Reinstatement fees are never refunded. The refund is issued within
+      refund_processing_days calendar days after approval, back to the original card when issued within
+      package_card_refund_days of that card payment, otherwise by check. An unpaid purchase may be withdrawn at any time
+      with nothing to refund.
+    eligibility:
+      - id: full_refund_window
+        applies_to: [package_refund_issued]
+        kind: time
+        condition: "A package with no visits used is refunded in full only when the cancellation is requested no later than full_refund_days calendar days after the purchase date."
+        evidence_fields: [visit_packages.opened_date, visit_packages.package_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [visit_packages.package_id]
+          action_bindings:
+            visit_packages.package_id: package_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the purchase date
+          anchor_source: visit_packages.opened_date
+          relation: not_after
+          duration_source: variants.full_refund_days
+          unit: calendar_days
+          counting_rule: "Days are counted as calendar days from the purchase date, the purchase date itself being day zero."
+          boundary: inclusive
+    params:
+      per_tier:
+        Starter 4-Visit Package: {full_refund_days: "=full_refund_days", prorated_refund_allowed: "=prorated_refund_allowed", refund_admin_fee: "=refund_admin_fee", refund_used_visit_valuation: "=refund_used_visit_valuation"}
+        Recovery 6-Visit Package: {full_refund_days: "=full_refund_days", prorated_refund_allowed: "=prorated_refund_allowed", refund_admin_fee: "=refund_admin_fee", refund_used_visit_valuation: "=refund_used_visit_valuation"}
+        Core 8-Visit Package: {full_refund_days: "=full_refund_days", prorated_refund_allowed: "=prorated_refund_allowed", refund_admin_fee: "=refund_admin_fee", refund_used_visit_valuation: "=refund_used_visit_valuation"}
+        Complete 12-Visit Package: {full_refund_days: "=full_refund_days", prorated_refund_allowed: "=prorated_refund_allowed", refund_admin_fee: "=refund_admin_fee", refund_used_visit_valuation: "=refund_used_visit_valuation"}
+        Post-Surgical 18-Visit Package: {full_refund_days: "=full_refund_days", prorated_refund_allowed: "=prorated_refund_allowed", refund_admin_fee: "=refund_admin_fee", refund_used_visit_valuation: "=refund_used_visit_valuation"}
+        Comprehensive 24-Visit Package: {full_refund_days: "=full_refund_days", prorated_refund_allowed: "=prorated_refund_allowed", refund_admin_fee: "=refund_admin_fee", refund_used_visit_valuation: "=refund_used_visit_valuation"}
+    formula:
+      used_visit_value: package_msr_visits_used * (single_visit_cash_rate if refund_used_visit_valuation == "single_visit_rate" else purchase_price / visits_included)
+      prorated_refund: max(0, amount_paid_total - used_visit_value - refund_admin_fee)
+    measures: [package_msr_visits_used]
+
+  - id: package_evt_transfers
+    subject: [package_visits_transferred]
+    rule: >-
+      Unused visits are transferred only from an active package where transfer_allowed is true, only to a patient who is
+      the holder's transfer_relationship (immediate family: spouse, parent, child or sibling; household: anyone at the
+      same mailing address on file), only when at least transfer_min_visits visits remain, and at most
+      transfers_per_package times. All remaining visits move together; they are credited to an active package the
+      recipient holds and keep the giving package's expiry date. The transfer is the holder's own decision.
+    eligibility:
+      - id: transfer_from_active
+        applies_to: [package_visits_transferred]
+        kind: state
+        condition: "Unused visits are transferred only from an active package where transfer_allowed is true,"
+        evidence_fields: [visit_packages.status, visit_packages.package_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [visit_packages.package_id]
+          action_bindings:
+            visit_packages.package_id: package_id
+        state_contract:
+          field: visit_packages.status
+          allowed: [active]
+
+  - id: package_gfe_disputes
+    subject: [package_billing_dispute_filed]
+    rule: >-
+      A patient whose total billed charges for the package's services exceed the Good Faith Estimate amount by
+      gfe_dispute_threshold or more may start the federal patient-provider dispute process no later than
+      gfe_dispute_window_days calendar days after the date of the bill. While a dispute is open the disputed amount is
+      not sent to collections. A smaller difference is not eligible for the process.
+    eligibility: []
+    formula:
+      dispute_eligible: amount >= gfe_dispute_threshold

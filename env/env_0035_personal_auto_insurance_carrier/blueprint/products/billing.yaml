@@ -1,0 +1,1134 @@
+# Product charter: Cardinal Billing Account (pay plan of one auto policy).
+# Path: env/env_0035_personal_auto_insurance_carrier/blueprint/products/billing.yaml
+#
+# Capability matrix (functional closure audit):
+#   open        account opened with the policy; pay plan chosen; down payment and policy fee billed
+#   in term     installment invoices, installment fees, premium changes from endorsements (AP spread or billed now,
+#               RP credited), payments by channel, payment application order, autopay drafts and retries
+#   money       late fee (grace, cap, courtesy waiver), returned-payment (NSF) fee and reversal, certified-funds
+#               restriction, phone-representative payment fee, credits, refunds, small-balance write-off
+#   suspend     notice of cancellation for nonpayment with state notice period and mailing allowance; rescission
+#   exit        cancellation for nonpayment, final earned-premium bill, collections referral, account close
+#   reinstate   reinstatement window, without-lapse window, signed no-loss statement, reinstatement fee, per-term cap
+#   changes     pay plan change, payment method / autopay change, due-day change, SR-22 plan restriction
+#   exceptions  payment after the window, repeated NSF, underpayment within tolerance, overpayment, credit transfer
+
+category: billing
+display_name: Cardinal Billing Account
+
+binding:
+  holding_table: billing_accounts
+  event_tables: [billing_ledger]
+  intake_tables: [billing_reinstatement_requests]
+  status_field: status
+  variant_field: variant_name
+  quantity_fields: {account_balance: account_balance}
+
+lifecycle:
+  states: [current, notice_pending, cancelled_nonpay, collections, closed]
+  transitions:
+    - {from: current, to: notice_pending, by: system, means: A notice of cancellation for nonpayment is mailed and the account waits for the cure or the cancellation effective date.}
+    - {from: notice_pending, to: current, by: system, means: The amount required to rescind is received on or before the cancellation effective date and the notice is rescinded.}
+    - {from: notice_pending, to: cancelled_nonpay, by: system, means: The cancellation effective date passes without the cure and the policy is cancelled for nonpayment.}
+    - {from: cancelled_nonpay, to: current, by: agent, means: The account is reinstated after the reinstatement payment (and, where required, the signed no-loss statement) is received within the window.}
+    - {from: cancelled_nonpay, to: collections, by: system, means: An earned-premium balance left unpaid after cancellation is referred to collections.}
+    - {from: cancelled_nonpay, to: closed, by: system, means: After the reinstatement window, the final balance is zero, refunded or written off and the account closes.}
+    - {from: current, to: closed, by: system, means: The policy ended (insured cancellation, nonrenewal, expiration) and the final balance is settled.}
+    - {from: collections, to: closed, by: system, means: The collections balance is paid or written off and the account closes.}
+
+accounts:
+  - key: account_balance
+    unit: USD
+    meaning: Amount billed and not yet paid on the account; positive means the customer owes, negative means a credit balance owed to the customer.
+
+parameter_schema:
+  down_payment_pct: Percent of the full-term premium billed as the down payment at issue or renewal, percent.
+  min_down_payment_amount: Floor on the down payment; the down payment is the larger of the percentage amount and this floor, capped at the full-term premium, USD.
+  installment_interval_months: Months between installment due dates after the down payment (0 = no installments; the plan is paid in full).
+  installment_fee: Fee added to every installment invoice after the down payment, USD.
+  min_installment_amount: Smallest installment the plan will bill; a remaining balance below it is billed with the previous installment, USD.
+  autopay_required: Boolean switch; whether the plan requires automatic payments.
+  eligible_payment_methods: List of payment methods the plan accepts (check_or_money_order, credit_card, debit_card, bank_eft).
+  pay_plan_discount_pct: Premium discount for the pay plan, entered into the auto rating discount sum, percent.
+  financial_responsibility_plan_allowed: Boolean switch; whether a policy carrying an SR-22 or FR-44 filing may use this plan.
+  invoice_lead_days: Calendar days before each due date on which the invoice (or the autopay draft notice) is issued, integer.
+  autopay_draft_offset_days: Calendar days before the due date on which the automatic payment is drafted (0 = on the due date), integer.
+  autopay_retry_days: Calendar days after a failed draft on which the draft is presented once more, integer (0 = no retry).
+  autopay_retries: Number of re-presentments after a failed draft, integer.
+  autopay_failures_before_plan_change: Failed drafts in the nsf lookback after which autopay is removed and the account moves to the fallback plan, integer (0 = not applicable).
+  autopay_failure_fallback_rank: Rank of the plan the account moves to after too many failed drafts, integer (0 = not applicable).
+  late_fee: Fee charged when an installment remains unpaid after the late-fee grace days, USD.
+  late_fee_grace_days: Calendar days after the due date before the late fee is charged, integer.
+  late_fee_max_per_term: Maximum late fees charged in one policy term, integer.
+  courtesy_late_fee_waivers_per_12_months: Late fees that may be waived on request in a rolling 12 months, integer.
+  nsf_fee: Fee charged for each returned payment, USD.
+  nsf_limit_before_certified_funds: Returned payments in the lookback after which only certified funds are accepted, integer.
+  nsf_lookback_months: Rolling months over which returned payments are counted, integer.
+  certified_funds_months: Months the certified-funds restriction lasts after it is imposed, integer.
+  phone_representative_payment_fee: Fee for a one-time payment taken by a customer service representative by phone, USD (self-service channels are free).
+  payment_posting_cutoff: Local Eastern time after which a same-day payment posts the next calendar day, HH:MM.
+  underpayment_tolerance: Shortfall up to which an installment is treated as paid for late-fee and notice purposes; the shortfall stays on the balance, USD.
+  overpayment_applied_to_next_installment: Boolean switch; whether an overpayment is held as a credit against the next installment rather than refunded.
+  noc_trigger_days_past_due: Calendar days after an installment due date on which a notice of cancellation is issued if the installment is still unpaid, integer.
+  noc_min_past_due: Smallest past-due amount for which a notice of cancellation is issued, USD.
+  cancellation_notice_days_by_state: Mapping state -> minimum calendar days between the notice mail date and the cancellation effective date for nonpayment.
+  mailing_allowance_days: Calendar days added to the state notice period for mailing, integer.
+  cancellation_effective_time: Clock time at which a cancellation or reinstatement takes effect on its date.
+  rescission_cutoff_days: Calendar days after the cancellation effective date by which the rescission payment must be received (0 = on or before the effective date), integer.
+  reinstatement_window_days: Calendar days after the cancellation effective date within which reinstatement is available, integer.
+  reinstatement_without_lapse_days: Calendar days after the cancellation effective date within which a reinstatement payment restores coverage with no lapse, integer (0 = never without lapse).
+  no_loss_statement_required: Boolean switch; whether a reinstatement with a lapse requires the named insured's signed statement of no loss during the lapse.
+  reinstatement_fee: Fee charged on each reinstatement, USD.
+  max_reinstatements_per_term: Maximum reinstatements in one policy term, integer.
+  earned_premium_due_days: Calendar days after cancellation within which the final earned-premium bill is due, integer.
+  collections_referral_days: Calendar days after cancellation after which an unpaid final balance is referred to collections, integer.
+  collections_min_balance: Smallest unpaid final balance that is referred to collections, USD.
+  small_balance_writeoff_max: Largest final balance written off instead of billed or refunded, USD.
+  refund_min_amount: Smallest credit balance refunded at account close; smaller credits are written off, USD.
+  refund_issue_days: Calendar days after the credit arises within which a refund is issued, integer.
+  refund_check_clearing_days: Business days a payment made by check or EFT must clear before it can be refunded, integer.
+  refund_to_original_method: Boolean switch; whether refunds go back to the electronic method that paid (otherwise by check to the mailing address).
+  ap_billing_method: How additional premium is billed (spread_over_remaining_installments or bill_immediately).
+  ap_immediate_due_days: Calendar days after the endorsement on which additional premium billed immediately is due, integer.
+  rp_billing_method: How return premium is applied (reduce_remaining_installments or credit_balance).
+  due_day_change_max_per_term: Due-day changes allowed in one term, integer.
+  due_day_shift_max_days: Maximum calendar days a due day may move in one change, integer.
+  plan_change_allowed_midterm: Boolean switch; whether the account may leave this plan during the term.
+  renewal_bill_lead_days: Calendar days before term expiration on which the renewal down payment is billed, integer.
+
+variants:
+  - name: Cardinal Direct Bill Monthly Plan
+    rank: 1
+    entry_gate:
+      eligible_payment_methods: "=eligible_payment_methods"
+    parameters:
+      down_payment_pct: 20.00
+      min_down_payment_amount: 60.00
+      installment_interval_months: 1
+      installment_fee: 8.00
+      min_installment_amount: 15.00
+      autopay_required: false
+      eligible_payment_methods: [check_or_money_order, credit_card, debit_card, bank_eft]
+      pay_plan_discount_pct: 0
+      financial_responsibility_plan_allowed: false
+      invoice_lead_days: 20
+      autopay_draft_offset_days: 0
+      autopay_retry_days: 0
+      autopay_retries: 0
+      autopay_failures_before_plan_change: 0
+      autopay_failure_fallback_rank: 0
+      late_fee: 15.00
+      late_fee_grace_days: 3
+      late_fee_max_per_term: 3
+      courtesy_late_fee_waivers_per_12_months: 0
+      nsf_fee: 25.00
+      nsf_limit_before_certified_funds: 2
+      nsf_lookback_months: 12
+      certified_funds_months: 12
+      phone_representative_payment_fee: 5.00
+      payment_posting_cutoff: "20:00"
+      underpayment_tolerance: 2.00
+      overpayment_applied_to_next_installment: true
+      noc_trigger_days_past_due: 10
+      noc_min_past_due: 10.00
+      cancellation_notice_days_by_state: {OH: 10, IN: 10, KY: 14, VA: 15, WV: 15}
+      mailing_allowance_days: 5
+      cancellation_effective_time: "12:01 a.m. local time"
+      rescission_cutoff_days: 0
+      reinstatement_window_days: 15
+      reinstatement_without_lapse_days: 0
+      no_loss_statement_required: true
+      reinstatement_fee: 30.00
+      max_reinstatements_per_term: 1
+      earned_premium_due_days: 20
+      collections_referral_days: 45
+      collections_min_balance: 25.00
+      small_balance_writeoff_max: 4.99
+      refund_min_amount: 5.00
+      refund_issue_days: 30
+      refund_check_clearing_days: 10
+      refund_to_original_method: true
+      ap_billing_method: spread_over_remaining_installments
+      ap_immediate_due_days: 20
+      rp_billing_method: reduce_remaining_installments
+      due_day_change_max_per_term: 1
+      due_day_shift_max_days: 10
+      plan_change_allowed_midterm: true
+      renewal_bill_lead_days: 20
+  - name: Cardinal Card Autopay Monthly Plan
+    rank: 2
+    entry_gate:
+      eligible_payment_methods: "=eligible_payment_methods"
+      autopay_required: "=autopay_required"
+    parameters:
+      down_payment_pct: 16.67
+      min_down_payment_amount: 60.00
+      installment_interval_months: 1
+      installment_fee: 5.00
+      min_installment_amount: 15.00
+      autopay_required: true
+      eligible_payment_methods: [credit_card, debit_card]
+      pay_plan_discount_pct: 0
+      financial_responsibility_plan_allowed: true
+      invoice_lead_days: 15
+      autopay_draft_offset_days: 0
+      autopay_retry_days: 3
+      autopay_retries: 1
+      autopay_failures_before_plan_change: 2
+      autopay_failure_fallback_rank: 1
+      late_fee: 10.00
+      late_fee_grace_days: 5
+      late_fee_max_per_term: 3
+      courtesy_late_fee_waivers_per_12_months: 1
+      nsf_fee: 25.00
+      nsf_limit_before_certified_funds: 2
+      nsf_lookback_months: 12
+      certified_funds_months: 12
+      phone_representative_payment_fee: 0.00
+      payment_posting_cutoff: "20:00"
+      underpayment_tolerance: 2.00
+      overpayment_applied_to_next_installment: true
+      noc_trigger_days_past_due: 10
+      noc_min_past_due: 10.00
+      cancellation_notice_days_by_state: {OH: 10, IN: 10, KY: 14, VA: 15, WV: 15}
+      mailing_allowance_days: 5
+      cancellation_effective_time: "12:01 a.m. local time"
+      rescission_cutoff_days: 0
+      reinstatement_window_days: 20
+      reinstatement_without_lapse_days: 3
+      no_loss_statement_required: true
+      reinstatement_fee: 25.00
+      max_reinstatements_per_term: 1
+      earned_premium_due_days: 20
+      collections_referral_days: 45
+      collections_min_balance: 25.00
+      small_balance_writeoff_max: 4.99
+      refund_min_amount: 5.00
+      refund_issue_days: 30
+      refund_check_clearing_days: 10
+      refund_to_original_method: true
+      ap_billing_method: spread_over_remaining_installments
+      ap_immediate_due_days: 20
+      rp_billing_method: reduce_remaining_installments
+      due_day_change_max_per_term: 1
+      due_day_shift_max_days: 10
+      plan_change_allowed_midterm: true
+      renewal_bill_lead_days: 20
+  - name: Cardinal EFT Autopay Monthly Plan
+    rank: 3
+    entry_gate:
+      eligible_payment_methods: "=eligible_payment_methods"
+      autopay_required: "=autopay_required"
+    parameters:
+      down_payment_pct: 16.67
+      min_down_payment_amount: 60.00
+      installment_interval_months: 1
+      installment_fee: 2.00
+      min_installment_amount: 15.00
+      autopay_required: true
+      eligible_payment_methods: [bank_eft]
+      pay_plan_discount_pct: 3
+      financial_responsibility_plan_allowed: true
+      invoice_lead_days: 10
+      autopay_draft_offset_days: 0
+      autopay_retry_days: 3
+      autopay_retries: 1
+      autopay_failures_before_plan_change: 2
+      autopay_failure_fallback_rank: 1
+      late_fee: 10.00
+      late_fee_grace_days: 5
+      late_fee_max_per_term: 3
+      courtesy_late_fee_waivers_per_12_months: 1
+      nsf_fee: 25.00
+      nsf_limit_before_certified_funds: 2
+      nsf_lookback_months: 12
+      certified_funds_months: 12
+      phone_representative_payment_fee: 0.00
+      payment_posting_cutoff: "20:00"
+      underpayment_tolerance: 0.00
+      overpayment_applied_to_next_installment: true
+      noc_trigger_days_past_due: 10
+      noc_min_past_due: 10.00
+      cancellation_notice_days_by_state: {OH: 10, IN: 10, KY: 14, VA: 15, WV: 15}
+      mailing_allowance_days: 5
+      cancellation_effective_time: "12:01 a.m. local time"
+      rescission_cutoff_days: 0
+      reinstatement_window_days: 20
+      reinstatement_without_lapse_days: 3
+      no_loss_statement_required: true
+      reinstatement_fee: 25.00
+      max_reinstatements_per_term: 1
+      earned_premium_due_days: 20
+      collections_referral_days: 45
+      collections_min_balance: 25.00
+      small_balance_writeoff_max: 4.99
+      refund_min_amount: 5.00
+      refund_issue_days: 15
+      refund_check_clearing_days: 10
+      refund_to_original_method: true
+      ap_billing_method: spread_over_remaining_installments
+      ap_immediate_due_days: 20
+      rp_billing_method: reduce_remaining_installments
+      due_day_change_max_per_term: 2
+      due_day_shift_max_days: 15
+      plan_change_allowed_midterm: true
+      renewal_bill_lead_days: 20
+  - name: Cardinal Three-Pay Plan
+    rank: 4
+    entry_gate:
+      eligible_payment_methods: "=eligible_payment_methods"
+    parameters:
+      down_payment_pct: 33.34
+      min_down_payment_amount: 0.00
+      installment_interval_months: 2
+      installment_fee: 5.00
+      min_installment_amount: 15.00
+      autopay_required: false
+      eligible_payment_methods: [check_or_money_order, credit_card, debit_card, bank_eft]
+      pay_plan_discount_pct: 0
+      financial_responsibility_plan_allowed: true
+      invoice_lead_days: 20
+      autopay_draft_offset_days: 0
+      autopay_retry_days: 0
+      autopay_retries: 0
+      autopay_failures_before_plan_change: 0
+      autopay_failure_fallback_rank: 0
+      late_fee: 15.00
+      late_fee_grace_days: 5
+      late_fee_max_per_term: 2
+      courtesy_late_fee_waivers_per_12_months: 1
+      nsf_fee: 25.00
+      nsf_limit_before_certified_funds: 2
+      nsf_lookback_months: 12
+      certified_funds_months: 12
+      phone_representative_payment_fee: 5.00
+      payment_posting_cutoff: "20:00"
+      underpayment_tolerance: 2.00
+      overpayment_applied_to_next_installment: true
+      noc_trigger_days_past_due: 12
+      noc_min_past_due: 10.00
+      cancellation_notice_days_by_state: {OH: 10, IN: 10, KY: 14, VA: 15, WV: 15}
+      mailing_allowance_days: 5
+      cancellation_effective_time: "12:01 a.m. local time"
+      rescission_cutoff_days: 0
+      reinstatement_window_days: 30
+      reinstatement_without_lapse_days: 5
+      no_loss_statement_required: true
+      reinstatement_fee: 25.00
+      max_reinstatements_per_term: 2
+      earned_premium_due_days: 20
+      collections_referral_days: 45
+      collections_min_balance: 25.00
+      small_balance_writeoff_max: 4.99
+      refund_min_amount: 5.00
+      refund_issue_days: 30
+      refund_check_clearing_days: 10
+      refund_to_original_method: true
+      ap_billing_method: spread_over_remaining_installments
+      ap_immediate_due_days: 20
+      rp_billing_method: reduce_remaining_installments
+      due_day_change_max_per_term: 1
+      due_day_shift_max_days: 10
+      plan_change_allowed_midterm: true
+      renewal_bill_lead_days: 25
+  - name: Cardinal Two-Pay Plan
+    rank: 5
+    entry_gate:
+      eligible_payment_methods: "=eligible_payment_methods"
+    parameters:
+      down_payment_pct: 50.00
+      min_down_payment_amount: 0.00
+      installment_interval_months: 3
+      installment_fee: 5.00
+      min_installment_amount: 15.00
+      autopay_required: false
+      eligible_payment_methods: [check_or_money_order, credit_card, debit_card, bank_eft]
+      pay_plan_discount_pct: 4
+      financial_responsibility_plan_allowed: true
+      invoice_lead_days: 20
+      autopay_draft_offset_days: 0
+      autopay_retry_days: 0
+      autopay_retries: 0
+      autopay_failures_before_plan_change: 0
+      autopay_failure_fallback_rank: 0
+      late_fee: 15.00
+      late_fee_grace_days: 7
+      late_fee_max_per_term: 1
+      courtesy_late_fee_waivers_per_12_months: 1
+      nsf_fee: 25.00
+      nsf_limit_before_certified_funds: 2
+      nsf_lookback_months: 12
+      certified_funds_months: 12
+      phone_representative_payment_fee: 5.00
+      payment_posting_cutoff: "20:00"
+      underpayment_tolerance: 2.00
+      overpayment_applied_to_next_installment: true
+      noc_trigger_days_past_due: 15
+      noc_min_past_due: 10.00
+      cancellation_notice_days_by_state: {OH: 10, IN: 10, KY: 14, VA: 15, WV: 15}
+      mailing_allowance_days: 5
+      cancellation_effective_time: "12:01 a.m. local time"
+      rescission_cutoff_days: 0
+      reinstatement_window_days: 30
+      reinstatement_without_lapse_days: 5
+      no_loss_statement_required: true
+      reinstatement_fee: 20.00
+      max_reinstatements_per_term: 2
+      earned_premium_due_days: 20
+      collections_referral_days: 45
+      collections_min_balance: 25.00
+      small_balance_writeoff_max: 4.99
+      refund_min_amount: 5.00
+      refund_issue_days: 30
+      refund_check_clearing_days: 10
+      refund_to_original_method: true
+      ap_billing_method: spread_over_remaining_installments
+      ap_immediate_due_days: 20
+      rp_billing_method: reduce_remaining_installments
+      due_day_change_max_per_term: 1
+      due_day_shift_max_days: 10
+      plan_change_allowed_midterm: true
+      renewal_bill_lead_days: 25
+  - name: Cardinal Paid-in-Full Plan
+    rank: 6
+    entry_gate:
+      eligible_payment_methods: "=eligible_payment_methods"
+    parameters:
+      down_payment_pct: 100.00
+      min_down_payment_amount: 0.00
+      installment_interval_months: 0
+      installment_fee: 0.00
+      min_installment_amount: 15.00
+      autopay_required: false
+      eligible_payment_methods: [check_or_money_order, credit_card, debit_card, bank_eft]
+      pay_plan_discount_pct: 8
+      financial_responsibility_plan_allowed: true
+      invoice_lead_days: 20
+      autopay_draft_offset_days: 0
+      autopay_retry_days: 0
+      autopay_retries: 0
+      autopay_failures_before_plan_change: 0
+      autopay_failure_fallback_rank: 0
+      late_fee: 10.00
+      late_fee_grace_days: 7
+      late_fee_max_per_term: 1
+      courtesy_late_fee_waivers_per_12_months: 1
+      nsf_fee: 25.00
+      nsf_limit_before_certified_funds: 2
+      nsf_lookback_months: 12
+      certified_funds_months: 12
+      phone_representative_payment_fee: 5.00
+      payment_posting_cutoff: "20:00"
+      underpayment_tolerance: 2.00
+      overpayment_applied_to_next_installment: false
+      noc_trigger_days_past_due: 15
+      noc_min_past_due: 10.00
+      cancellation_notice_days_by_state: {OH: 10, IN: 10, KY: 14, VA: 15, WV: 15}
+      mailing_allowance_days: 5
+      cancellation_effective_time: "12:01 a.m. local time"
+      rescission_cutoff_days: 0
+      reinstatement_window_days: 30
+      reinstatement_without_lapse_days: 5
+      no_loss_statement_required: true
+      reinstatement_fee: 20.00
+      max_reinstatements_per_term: 2
+      earned_premium_due_days: 20
+      collections_referral_days: 45
+      collections_min_balance: 25.00
+      small_balance_writeoff_max: 4.99
+      refund_min_amount: 5.00
+      refund_issue_days: 15
+      refund_check_clearing_days: 10
+      refund_to_original_method: true
+      ap_billing_method: bill_immediately
+      ap_immediate_due_days: 20
+      rp_billing_method: credit_balance
+      due_day_change_max_per_term: 0
+      due_day_shift_max_days: 0
+      plan_change_allowed_midterm: false
+      renewal_bill_lead_days: 30
+
+events:
+  # ---- holding writes (billing_accounts) ----------------------------------------------------
+  - type: billing_account_open
+    target: billing_accounts
+    mutation: create
+    meaning: The billing account for a newly bound policy is opened on the pay plan chosen at bind.
+    grain: One row per policy.
+    fields:
+      billing_account_id: Billing account reference.
+      customer_id: Named insured.
+      policy_id: Policy billed.
+      variant_name: Pay plan chosen.
+      opened_date: Date opened.
+      term_effective_date: Term the account currently bills.
+      payment_method: Method on file.
+      autopay_enrolled: Whether automatic payments are on.
+      installment_due_day: Day of month installments fall due.
+    triggers:
+      - event: billing:billing_fee_charged
+        map: {billing_account_id: billing_account_id, customer_id: customer_id, policy_id: policy_id, term_effective_date: term_effective_date, fee_type: policy_fee}
+  - type: billing_notice_issue
+    target: billing_accounts
+    mutation: {transition: {from: current, to: notice_pending}}
+    meaning: The account moves to notice pending when a notice of cancellation for nonpayment is mailed.
+    grain: One row per transaction.
+    fields:
+      status: Set to notice_pending.
+      policy_id: Policy whose cancellation is now pending.
+    triggers:
+      - event: auto:auto_cancel_pending
+        map: {policy_id: policy_id, end_reason: nonpayment}
+  - type: billing_rescind
+    target: billing_accounts
+    mutation: {transition: {from: notice_pending, to: current}}
+    meaning: The notice of cancellation is rescinded because the amount required to rescind was received in time.
+    grain: One row per transaction.
+    fields:
+      status: Set to current.
+      policy_id: Policy whose pending cancellation is withdrawn.
+    triggers:
+      - event: auto:auto_cancel_rescind
+        map: {policy_id: policy_id}
+  - type: billing_cancel_nonpay
+    target: billing_accounts
+    mutation: {transition: {from: notice_pending, to: cancelled_nonpay}}
+    meaning: The cancellation effective date passes without the cure; the account is cancelled for nonpayment.
+    grain: One row per transaction.
+    fields:
+      status: Set to cancelled_nonpay.
+      policy_id: Policy cancelled.
+    triggers:
+      - event: auto:auto_cancel_effective
+        map: {policy_id: policy_id, end_reason: nonpayment}
+  - type: billing_reinstate
+    target: billing_accounts
+    mutation: {transition: {from: cancelled_nonpay, to: current}}
+    meaning: The account is reinstated within the reinstatement window and the policy is put back in force.
+    grain: One row per transaction.
+    fields:
+      status: Set to current.
+      policy_id: Policy reinstated.
+      billing_account_id: Account reinstated.
+      customer_id: Named insured.
+    triggers:
+      - event: auto:auto_reinstate
+        map: {policy_id: policy_id}
+      - event: billing:billing_fee_charged
+        map: {billing_account_id: billing_account_id, customer_id: customer_id, policy_id: policy_id, fee_type: reinstatement_fee}
+  - type: billing_refer_collections
+    target: billing_accounts
+    mutation: {transition: {from: cancelled_nonpay, to: collections}}
+    meaning: An unpaid earned-premium balance after cancellation is referred to collections.
+    grain: One row per transaction.
+    fields:
+      status: Set to collections.
+    triggers: []
+  - type: billing_close
+    target: billing_accounts
+    mutation:
+      transition:
+        - {from: current, to: closed}
+        - {from: cancelled_nonpay, to: closed}
+        - {from: collections, to: closed}
+    meaning: The account closes once the policy has ended and the final balance is zero, refunded or written off.
+    grain: One row per transaction.
+    fields:
+      status: Set to closed.
+      closed_date: Date closed.
+    triggers: []
+  - type: billing_plan_change
+    target: billing_accounts
+    mutation: update
+    meaning: The pay plan of the account is changed during the term or at renewal.
+    grain: One row per transaction.
+    fields:
+      variant_name: New pay plan.
+      payment_method: Method on file under the new plan.
+      autopay_enrolled: Autopay setting under the new plan.
+    triggers: []
+  - type: billing_payment_setup_update
+    target: billing_accounts
+    mutation: update
+    meaning: The payment method, autopay enrollment or installment due day on file is changed, or a certified-funds restriction is set.
+    grain: One row per transaction.
+    fields:
+      payment_method: Method on file.
+      autopay_enrolled: Whether automatic payments are on.
+      installment_due_day: Day of month installments fall due.
+      certified_funds_until: Last day of a certified-funds restriction, or empty.
+    triggers: []
+  # ---- event-table writes (billing_ledger) ---------------------------------------------------
+  - type: billing_premium_change
+    target: billing_ledger
+    meaning: A premium amount written on the policy (term premium, additional premium or return premium) is received by billing for scheduling.
+    grain: One row per premium transaction of the policy.
+    distinguish_by: [source_transaction_id, premium_change_type]
+    fields:
+      entry_id: Ledger entry reference.
+      billing_account_id: Account.
+      customer_id: Named insured.
+      policy_id: Policy.
+      source_transaction_id: The auto premium transaction received.
+      premium_change_type: term_premium, additional or return.
+      amount: Premium amount, USD, positive.
+      term_effective_date: Term the premium belongs to.
+      posted_date: Date received.
+    triggers: []
+  - type: billing_installment_billed
+    target: billing_ledger
+    meaning: One installment (the down payment counts as installment 1) is invoiced and becomes due.
+    grain: One row per installment of a term.
+    distinguish_by: [term_effective_date, installment_number]
+    fields:
+      entry_id: Ledger entry reference.
+      billing_account_id: Account.
+      customer_id: Named insured.
+      policy_id: Policy.
+      term_effective_date: Term billed.
+      installment_number: 1 for the down payment, then 2, 3, ...
+      invoice_date: Date the invoice was issued.
+      due_date: Due date.
+      amount: Premium portion of the installment, USD.
+      posted_date: Date posted.
+    account: account_balance
+    direction: in
+    triggers:
+      - event: billing:billing_fee_charged
+        when: {installment_number: {not: 1}}
+        map: {billing_account_id: billing_account_id, customer_id: customer_id, policy_id: policy_id, term_effective_date: term_effective_date, installment_number: installment_number, fee_type: installment_fee}
+  - type: billing_fee_charged
+    target: billing_ledger
+    meaning: A fee is charged to the account (policy fee, installment fee, late fee, returned-payment fee, reinstatement fee, endorsement fee, filing fee, device fee or phone payment fee).
+    grain: One row per fee occurrence.
+    distinguish_by: [fee_type, term_effective_date, installment_number, source_transaction_id, original_entry_id, posted_date]
+    fields:
+      entry_id: Ledger entry reference.
+      billing_account_id: Account.
+      customer_id: Named insured.
+      policy_id: Policy.
+      fee_type: Which fee.
+      amount: Fee amount, USD.
+      term_effective_date: Term the fee belongs to.
+      installment_number: Installment a fee is tied to (installment fee, late fee); empty otherwise.
+      source_transaction_id: Endorsement, filing or device transaction the fee is tied to; empty otherwise.
+      original_entry_id: Returned payment or phone payment the fee is tied to; empty otherwise.
+      posted_date: Date charged.
+    account: account_balance
+    direction: in
+    triggers: []
+  - type: billing_payment_received
+    target: billing_ledger
+    meaning: A payment from the customer is posted to the account.
+    grain: One row per payment.
+    distinguish_by: [payment_reference]
+    fields:
+      entry_id: Ledger entry reference.
+      billing_account_id: Account.
+      customer_id: Named insured.
+      policy_id: Policy.
+      payment_reference: Confirmation number of the payment.
+      payment_method: Method used.
+      payment_channel: Channel used.
+      amount: Amount paid, USD.
+      posted_date: Posting date (after the posting cutoff, the next day).
+    account: account_balance
+    direction: out
+    triggers:
+      - event: billing:billing_fee_charged
+        when: {payment_channel: phone_representative}
+        map: {billing_account_id: billing_account_id, customer_id: customer_id, policy_id: policy_id, original_entry_id: entry_id, fee_type: phone_payment_fee}
+  - type: billing_payment_returned
+    target: billing_ledger
+    meaning: A posted payment is returned unpaid by the bank or card issuer and its credit is reversed.
+    grain: One row per returned payment.
+    distinguish_by: [original_entry_id]
+    fields:
+      entry_id: Ledger entry reference.
+      billing_account_id: Account.
+      customer_id: Named insured.
+      policy_id: Policy.
+      original_entry_id: The payment entry returned.
+      return_reason: Bank or issuer reason.
+      amount: Amount reversed, USD.
+      posted_date: Date the return was posted.
+    account: account_balance
+    direction: in
+    triggers:
+      - event: billing:billing_fee_charged
+        map: {billing_account_id: billing_account_id, customer_id: customer_id, policy_id: policy_id, original_entry_id: entry_id, fee_type: nsf_fee}
+  - type: billing_endorsement_charge
+    target: billing_ledger
+    meaning: Additional premium billed at once (paid-in-full plan, or no installment left in the term) rather than spread.
+    grain: One row per additional-premium transaction billed at once.
+    distinguish_by: [source_transaction_id]
+    fields:
+      entry_id: Ledger entry reference.
+      billing_account_id: Account.
+      customer_id: Named insured.
+      policy_id: Policy.
+      source_transaction_id: The auto additional-premium transaction billed.
+      amount: Amount billed, USD.
+      due_date: Due date.
+      posted_date: Date billed.
+    account: account_balance
+    direction: in
+    triggers: []
+  - type: billing_credit_applied
+    target: billing_ledger
+    meaning: Return premium that exceeds what is left unbilled for the term (or any return premium on a paid-in-full plan) is credited against the balance.
+    grain: One row per return-premium transaction credited.
+    distinguish_by: [source_transaction_id]
+    fields:
+      entry_id: Ledger entry reference.
+      billing_account_id: Account.
+      customer_id: Named insured.
+      policy_id: Policy.
+      source_transaction_id: The auto return-premium transaction credited.
+      amount: Amount credited, USD.
+      posted_date: Date credited.
+    account: account_balance
+    direction: out
+    triggers: []
+  - type: billing_fee_waived
+    target: billing_ledger
+    meaning: A charged fee is waived and its amount reversed.
+    grain: One row per waived fee.
+    distinguish_by: [original_entry_id]
+    fields:
+      entry_id: Ledger entry reference.
+      billing_account_id: Account.
+      customer_id: Named insured.
+      policy_id: Policy.
+      original_entry_id: The fee entry waived.
+      fee_type: Type of the fee waived.
+      waiver_reason: Why the fee was waived.
+      amount: Amount reversed, USD.
+      posted_date: Date waived.
+    account: account_balance
+    direction: out
+    triggers: []
+  - type: billing_refund_issued
+    target: billing_ledger
+    meaning: A credit balance is refunded to the customer.
+    grain: One row per refund.
+    distinguish_by: [refund_reference]
+    fields:
+      entry_id: Ledger entry reference.
+      billing_account_id: Account.
+      customer_id: Named insured.
+      policy_id: Policy.
+      refund_reference: Refund reference.
+      payment_method: Method refunded to.
+      amount: Amount refunded, USD.
+      posted_date: Date issued.
+    account: account_balance
+    direction: in
+    triggers: []
+  - type: billing_writeoff
+    target: billing_ledger
+    meaning: A small final balance (owed by or to the customer) is written off at account close, or a collections balance is written off.
+    grain: One row per write-off.
+    distinguish_by: [writeoff_reason, posted_date]
+    fields:
+      entry_id: Ledger entry reference.
+      billing_account_id: Account.
+      customer_id: Named insured.
+      policy_id: Policy.
+      writeoff_reason: small_balance or collections_uncollectible.
+      amount: Amount written off, USD (positive when a debit balance is written off).
+      posted_date: Date written off.
+    account: account_balance
+    direction: out
+    triggers: []
+  - type: billing_notice_of_cancellation
+    target: billing_ledger
+    meaning: A notice of cancellation for nonpayment is mailed for an unpaid installment, stating the cancellation effective date and the amount required to rescind.
+    grain: One row per notice (one per unpaid installment noticed).
+    distinguish_by: [term_effective_date, installment_number]
+    fields:
+      entry_id: Ledger entry reference.
+      billing_account_id: Account.
+      customer_id: Named insured.
+      policy_id: Policy.
+      term_effective_date: Term of the unpaid installment.
+      installment_number: Unpaid installment noticed.
+      notice_mail_date: Date mailed.
+      cancellation_effective_date: Cancellation effective date printed on the notice.
+      minimum_due_to_rescind: Amount required to rescind, USD.
+      posted_date: Date recorded.
+    triggers:
+      - event: billing:billing_notice_issue
+        map: {policy_id: policy_id}
+
+measures:
+  - id: billing_msr_returned_payments
+    window: Rolling nsf_lookback_months calendar months ending on the date of the latest return.
+    measure: Count of billing_payment_returned rows on the account.
+  - id: billing_msr_late_fees_term
+    window: The current policy term (term_effective_date of the account).
+    measure: Count of billing_fee_charged rows with fee_type late_fee for the term.
+  - id: billing_msr_courtesy_waivers
+    window: Rolling 12 calendar months ending on the waiver date.
+    measure: Count of billing_fee_waived rows with waiver_reason courtesy on the account.
+  - id: billing_msr_reinstatements_term
+    window: The current policy term.
+    measure: Count of billing_reinstate transitions on the account during the term.
+  - id: billing_msr_past_due
+    window: As of the evaluation date.
+    measure: Sum of installment premium and fees whose due date has passed less payments and credits posted, on the account.
+  - id: billing_msr_remaining_installments
+    window: The current policy term as of the premium change date.
+    measure: Count of installments of the term not yet billed.
+  - id: billing_msr_failed_drafts
+    window: Rolling nsf_lookback_months calendar months.
+    measure: Count of billing_payment_returned rows on the account whose original payment had payment_channel autopay.
+
+policies:
+  - id: billing_agg_multi_holding
+    subject: [billing_account_open]
+    rule: >-
+      Every auto policy is billed through exactly one billing account, opened when the policy is bound; a customer
+      therefore holds as many billing accounts as auto policies, with no cap of its own. A billing account is opened only
+      for a policy that has no billing account yet. Accounts are never merged.
+    eligibility:
+      - id: one_account_per_policy
+        applies_to: [billing_account_open]
+        kind: dedup
+        condition: "A billing account is opened only for a policy that has no billing account yet."
+        evidence_fields: [billing_accounts.policy_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [billing_accounts.policy_id]
+          action_bindings:
+            billing_accounts.policy_id: policy_id
+        dedup_contract:
+          table: billing_accounts
+          mode: separate_record
+          object_bindings: {policy_id: policy_id}
+          duplicate_filters: {status: [current, notice_pending, cancelled_nonpay, collections, closed]}
+          distinct_fields: []
+    params:
+      max_per_customer: null
+
+  - id: billing_agg_cross_account_payments
+    subject: [billing_payment_received, billing_refund_issued, billing_credit_applied]
+    rule: >-
+      Money is never moved between a customer's billing accounts automatically. A payment is posted to the one account
+      the customer names; a payment that cannot be tied to an account is not posted. A credit balance on one account can
+      be applied to another account of the same customer only when the customer asks for it, and only after the credit
+      has arisen from a posted credit (return premium or overpayment) whose payment has cleared; the transfer is recorded
+      as a refund from the first account and a payment to the second account with the same amount. A credit balance is
+      never used to cure a notice of cancellation on another account unless the customer asks before the cancellation
+      effective date of that notice. A credit can be transferred only when the credit on the giving account is at least
+      the amount transferred on the date of the transfer.
+    eligibility:
+      - id: credit_covers_transfer
+        applies_to: [billing_refund_issued]
+        kind: caller_fact
+        condition: "A credit can be transferred only when the credit on the giving account is at least the amount transferred on the date of the transfer."
+        evidence_fields: [billing_accounts.account_balance, billing_accounts.billing_account_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [billing_accounts.billing_account_id]
+          action_bindings:
+            billing_accounts.billing_account_id: billing_account_id
+
+  - id: billing_evt_installment_schedule
+    subject: [billing_installment_billed, billing_fee_charged, billing_premium_change, billing_endorsement_charge, billing_credit_applied]
+    rule: >-
+      Each term is billed on the account's pay plan. The down payment is installment 1, due on the term effective date:
+      the larger of down_payment_pct of the full-term premium and min_down_payment_amount, never more than the full-term
+      premium, rounded to the cent. The remainder is split evenly over the remaining installments, which fall due every
+      installment_interval_months on the installment_due_day; the number of installments in a term is 1 plus
+      (policy_term_months / installment_interval_months - 1), and a paid-in-full plan has the down payment only. Any cent
+      left by rounding goes on the last installment. A remaining installment smaller than min_installment_amount is
+      combined with the one before it. Invoices are issued invoice_lead_days before each due date. The installment_fee is
+      added to every installment after the down payment and to no other bill. The policy fee of the auto package is billed
+      once per term with the down payment. Additional premium is handled by ap_billing_method: spread_over_remaining_installments
+      divides it evenly over the installments of the term not yet billed, and when none remain it is billed at once due in
+      ap_immediate_due_days; bill_immediately bills it at once due in ap_immediate_due_days. Return premium is handled by
+      rp_billing_method: reduce_remaining_installments lowers the installments not yet billed evenly, and any part above
+      what remains unbilled is credited to the balance at once; credit_balance credits it all at once. The renewal down
+      payment is billed renewal_bill_lead_days before the term expiration date.
+    eligibility: []
+    formula:
+      down_payment: min(max(round(amount * down_payment_pct / 100, 2), min_down_payment_amount), amount)
+    measures: [billing_msr_remaining_installments]
+
+  - id: billing_evt_late_fee
+    subject: [billing_fee_charged, billing_fee_waived]
+    rule: >-
+      A late fee of the plan's late_fee is charged once on an installment that is still unpaid, beyond the
+      underpayment_tolerance, at the end of late_fee_grace_days calendar days after its due date. No late fee is charged
+      on the down payment of a new-business term, on a final earned-premium bill, on an account in notice_pending,
+      cancelled_nonpay, collections or closed status, or once late_fee_max_per_term late fees have been charged in the term
+      (billing_msr_late_fees_term). A late fee is charged only when the installment is still unpaid after
+      late_fee_grace_days calendar days past its due date. The count starts the day after the due_date of the installment
+      invoice, so the fee can post on the first day after the last grace day and never on a grace day. A late fee may
+      be waived as a courtesy on the customer's request when the account has used fewer than
+      courtesy_late_fee_waivers_per_12_months courtesy waivers in the rolling 12 months (billing_msr_courtesy_waivers)
+      and the installment it was charged on has since been paid in full; a late fee charged in error (the payment had
+      posted on or before the end of the grace days) is always reversed with waiver_reason posting_error.
+    eligibility:
+      - id: grace_elapsed
+        applies_to: [billing_fee_charged]
+        kind: time
+        condition: "A late fee is charged only when the installment is still unpaid after late_fee_grace_days calendar days past its due date."
+        evidence_fields: [billing_ledger.due_date, billing_ledger.installment_number]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [billing_ledger.installment_number]
+          action_bindings:
+            billing_ledger.installment_number: installment_number
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: its due date
+          anchor_source: billing_ledger.due_date
+          relation: not_before
+          duration_source: variants.late_fee_grace_days
+          unit: calendar_days
+          counting_rule: "The count starts the day after the due_date of the installment invoice, so the fee can post on the first day after the last grace day and never on a grace day."
+          boundary: exclusive
+      - id: courtesy_waiver_dedup
+        applies_to: [billing_fee_waived]
+        kind: dedup
+        condition: "A late fee may be waived as a courtesy on the customer's request when the account has used fewer than courtesy_late_fee_waivers_per_12_months courtesy waivers in the rolling 12 months (billing_msr_courtesy_waivers) and the installment it was charged on has since been paid in full"
+        evidence_fields: [billing_ledger.original_entry_id, billing_ledger.waiver_reason, billing_ledger.posted_date]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [billing_ledger.original_entry_id]
+          action_bindings:
+            billing_ledger.original_entry_id: original_entry_id
+        dedup_contract:
+          table: billing_ledger
+          mode: separate_record
+          object_bindings: {original_entry_id: original_entry_id}
+          duplicate_filters: {event_type: [billing_fee_waived]}
+          distinct_fields: [posted_date]
+    measures: [billing_msr_late_fees_term, billing_msr_courtesy_waivers]
+    params:
+      per_tier:
+        Cardinal Direct Bill Monthly Plan: {late_fee: "=late_fee", grace_days: "=late_fee_grace_days", cap: "=late_fee_max_per_term"}
+        Cardinal Card Autopay Monthly Plan: {late_fee: "=late_fee", grace_days: "=late_fee_grace_days", cap: "=late_fee_max_per_term"}
+        Cardinal EFT Autopay Monthly Plan: {late_fee: "=late_fee", grace_days: "=late_fee_grace_days", cap: "=late_fee_max_per_term"}
+        Cardinal Three-Pay Plan: {late_fee: "=late_fee", grace_days: "=late_fee_grace_days", cap: "=late_fee_max_per_term"}
+        Cardinal Two-Pay Plan: {late_fee: "=late_fee", grace_days: "=late_fee_grace_days", cap: "=late_fee_max_per_term"}
+        Cardinal Paid-in-Full Plan: {late_fee: "=late_fee", grace_days: "=late_fee_grace_days", cap: "=late_fee_max_per_term"}
+
+  - id: billing_evt_returned_payment
+    subject: [billing_payment_returned, billing_fee_charged, billing_payment_setup_update, billing_plan_change]
+    rule: >-
+      When a posted payment is returned unpaid, its credit is reversed in full and the plan's nsf_fee is charged, tied to
+      the returned payment; each returned payment carries exactly one fee, including a re-presented autopay draft that
+      fails again. A returned payment counts as never received, so a notice rescission or reinstatement that relied on it
+      is undone by the system. When the account reaches nsf_limit_before_certified_funds returned payments within
+      nsf_lookback_months (billing_msr_returned_payments), only certified funds (cashier's check, money order or debit
+      card) are accepted for certified_funds_months from the latest return, recorded as certified_funds_until. On an
+      autopay plan a failed draft is re-presented after autopay_retry_days, autopay_retries times; when failed drafts in
+      the lookback reach autopay_failures_before_plan_change (billing_msr_failed_drafts), autopay is removed and the
+      account moves to the plan of rank autopay_failure_fallback_rank. A returned payment of a payment made by a
+      representative over the phone is handled the same way.
+    eligibility: []
+    measures: [billing_msr_returned_payments, billing_msr_failed_drafts]
+
+  - id: billing_nonpayment_cancellation
+    subject: [billing_notice_of_cancellation, billing_notice_issue, billing_rescind, billing_cancel_nonpay]
+    rule: >-
+      A notice of cancellation for nonpayment is mailed when an installment remains unpaid noc_trigger_days_past_due
+      calendar days after its due date and the past-due amount (billing_msr_past_due) is at least noc_min_past_due; an
+      unpaid amount within the underpayment_tolerance never triggers a notice. A notice is mailed only while the account
+      status is current. The cancellation effective date printed on the notice is the mail date plus the state notice
+      days for the policy_state from cancellation_notice_days_by_state plus mailing_allowance_days, at
+      cancellation_effective_time. The amount required to rescind is the full past-due amount on the mail date,
+      including fees; amounts falling due after the mail date are not part of it. The notice is rescinded only when the
+      amount required to rescind is received no later than rescission_cutoff_days calendar days after the cancellation
+      effective date printed on the notice. Payments are counted by posting date, the cancellation effective date being
+      day 0, so a payment posted on the cancellation effective date itself rescinds the notice. A partial payment
+      does not rescind and leaves the cancellation effective date unchanged. When the cancellation effective date passes
+      without the cure, the policy is cancelled for nonpayment; earned premium is computed pro rata to the cancellation
+      effective date and the return premium is credited to the account, and a final bill for any remaining earned balance
+      is issued due in earned_premium_due_days.
+    eligibility:
+      - id: account_current_for_notice
+        applies_to: [billing_notice_of_cancellation]
+        kind: state
+        condition: "A notice is mailed only while the account status is current."
+        evidence_fields: [billing_accounts.status, billing_accounts.billing_account_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [billing_accounts.billing_account_id]
+          action_bindings:
+            billing_accounts.billing_account_id: billing_account_id
+        state_contract:
+          field: billing_accounts.status
+          allowed: [current]
+      - id: rescission_in_time
+        applies_to: [billing_rescind]
+        kind: time
+        condition: "The notice is rescinded only when the amount required to rescind is received no later than rescission_cutoff_days calendar days after the cancellation effective date printed on the notice."
+        evidence_fields: [billing_ledger.cancellation_effective_date, billing_ledger.entry_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [billing_ledger.entry_id]
+          action_bindings:
+            billing_ledger.entry_id: notice_entry_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the cancellation effective date printed on the notice
+          anchor_source: billing_ledger.cancellation_effective_date
+          relation: not_after
+          duration_source: variants.rescission_cutoff_days
+          unit: calendar_days
+          counting_rule: "Payments are counted by posting date, the cancellation effective date being day 0, so a payment posted on the cancellation effective date itself rescinds the notice."
+          boundary: inclusive
+    measures: [billing_msr_past_due]
+    params:
+      per_tier:
+        Cardinal Direct Bill Monthly Plan: {noc_trigger_days_past_due: "=noc_trigger_days_past_due"}
+        Cardinal Card Autopay Monthly Plan: {noc_trigger_days_past_due: "=noc_trigger_days_past_due"}
+        Cardinal EFT Autopay Monthly Plan: {noc_trigger_days_past_due: "=noc_trigger_days_past_due"}
+        Cardinal Three-Pay Plan: {noc_trigger_days_past_due: "=noc_trigger_days_past_due"}
+        Cardinal Two-Pay Plan: {noc_trigger_days_past_due: "=noc_trigger_days_past_due"}
+        Cardinal Paid-in-Full Plan: {noc_trigger_days_past_due: "=noc_trigger_days_past_due"}
+
+  - id: billing_reinstatement
+    subject: [billing_reinstate, billing_fee_charged, billing_payment_received]
+    rule: >-
+      A policy cancelled for nonpayment can be reinstated through its billing account. Reinstatement is available only
+      when the reinstatement payment is received no later than reinstatement_window_days calendar days after the
+      cancellation effective date of the policy. The window is counted in calendar days from the cancellation effective
+      date, that date being day 0, and a payment posted on the last day of the window is in time. The reinstatement
+      payment is the full past-due amount at cancellation plus the reinstatement_fee; the return premium credited at
+      cancellation is reversed by the reinstatement. When the payment posts no later than reinstatement_without_lapse_days
+      after the cancellation effective date, coverage is restored with no lapse. Otherwise coverage is restored from the
+      reinstatement date with a lapse from the cancellation effective date, and where no_loss_statement_required is true
+      the named insured must first sign a statement that no accident or loss occurred during the lapse; a reinstatement
+      with a lapse is processed only when the signed no-loss statement is on file. A named insured who reports a loss
+      during the lapse cannot sign the statement, and the account is not reinstated. No reinstatement is processed once
+      the term has had max_reinstatements_per_term reinstatements (billing_msr_reinstatements_term), nor after the term
+      expiration date, nor for an account whose cancellation followed a returned reinstatement payment in the same term.
+    eligibility:
+      - id: reinstatement_window
+        applies_to: [billing_reinstate]
+        kind: time
+        condition: "Reinstatement is available only when the reinstatement payment is received no later than reinstatement_window_days calendar days after the cancellation effective date of the policy."
+        evidence_fields: [auto_policies.cancellation_effective_date, auto_policies.policy_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [auto_policies.policy_id]
+          action_bindings:
+            auto_policies.policy_id: policy_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the cancellation effective date of the policy
+          anchor_source: auto_policies.cancellation_effective_date
+          relation: not_after
+          duration_source: variants.reinstatement_window_days
+          unit: calendar_days
+          counting_rule: "The window is counted in calendar days from the cancellation effective date, that date being day 0, and a payment posted on the last day of the window is in time."
+          boundary: inclusive
+      - id: no_loss_statement_signed
+        applies_to: [billing_reinstate]
+        kind: state
+        condition: "a reinstatement with a lapse is processed only when the signed no-loss statement is on file"
+        evidence_fields: [billing_reinstatement_requests.request_status, billing_reinstatement_requests.request_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [billing_reinstatement_requests.request_id]
+          action_bindings:
+            billing_reinstatement_requests.request_id: request_id
+        state_contract:
+          field: billing_reinstatement_requests.request_status
+          allowed: [statement_signed]
+    measures: [billing_msr_reinstatements_term]
+    formula:
+      reinstatement_payment: billing_msr_past_due + reinstatement_fee
+
+  - id: billing_evt_payment_application
+    subject: [billing_payment_received, billing_fee_charged]
+    rule: >-
+      A payment is applied in a fixed order: returned-payment fees, then late fees, then reinstatement fees, then other
+      fees, then the oldest past-due installment premium, then the current installment, then future installments in due
+      order. A payment of a method the plan does not accept is not taken, and while certified_funds_until is on or after
+      today only certified funds are taken. A payment made after payment_posting_cutoff Eastern time posts the next
+      calendar day. A one-time payment taken by a representative over the phone carries the plan's
+      phone_representative_payment_fee, charged once per payment and tied to it; payments made online, by the automated
+      phone line, by mail or by autopay carry no fee, and no fee is charged when the payment cures a notice of cancellation
+      or reinstates the account. An overpayment stays on the account as a credit applied to the next installment where
+      overpayment_applied_to_next_installment is true; otherwise it is refunded under billing_refunds_and_writeoffs. A
+      shortfall up to underpayment_tolerance does not make the installment late but stays on the balance.
+    eligibility: []
+    params:
+      application_order: [nsf_fee, late_fee, reinstatement_fee, other_fees, oldest_past_due_premium, current_installment, future_installments]
+
+  - id: billing_refunds_and_writeoffs
+    subject: [billing_refund_issued, billing_writeoff, billing_refer_collections, billing_close]
+    rule: >-
+      A credit balance is refunded within refund_issue_days after it arises when the policy has ended or when the plan
+      does not hold overpayments; credits of payments by check or EFT are refunded only after refund_check_clearing_days
+      business days from the payment. A refund goes to the electronic method that paid where refund_to_original_method is
+      true and that method is a card or bank account, otherwise by check to the mailing address. At account close a credit
+      below refund_min_amount and a debit up to small_balance_writeoff_max are written off. A final earned-premium balance
+      at or above collections_min_balance that is still unpaid collections_referral_days after the cancellation effective
+      date is referred to collections. A balance in collections that is paid closes the account. An account closes only
+      after the policy has ended and the balance is zero.
+    eligibility: []
+
+  - id: billing_plan_and_method_changes
+    subject: [billing_plan_change, billing_payment_setup_update]
+    rule: >-
+      The pay plan may be changed during the term only where the current plan's plan_change_allowed_midterm is true, and
+      only while the account status is current; a pay plan or due-day change is processed only while the account status is
+      current. On a midterm change, the unbilled premium of the term is re-spread over the new plan's remaining
+      installments from the change date; amounts already billed stay due as billed and no fee is charged for the change.
+      The new plan's autopay_required and eligible_payment_methods must be satisfied by the method on file. A policy
+      carrying a financial-responsibility filing may use a plan only where financial_responsibility_plan_allowed is
+      true. The installment due day may move to any day inside due_day_range, by no more than due_day_shift_max_days in one
+      change and no more than due_day_change_max_per_term times in a term. A change of payment method or autopay
+      enrollment takes effect from the next invoice not yet issued. Plan, method and due-day changes are not available
+      while a certified-funds restriction would be broken by the new method.
+    eligibility:
+      - id: account_current_for_change
+        applies_to: [billing_plan_change, billing_payment_setup_update]
+        kind: state
+        condition: "a pay plan or due-day change is processed only while the account status is current"
+        evidence_fields: [billing_accounts.status, billing_accounts.billing_account_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [billing_accounts.billing_account_id]
+          action_bindings:
+            billing_accounts.billing_account_id: billing_account_id
+        state_contract:
+          field: billing_accounts.status
+          allowed: [current]
+    params:
+      due_day_range: {first: 1, last: 28}
+
+  - id: billing_account_lifecycle
+    subject: [billing_account_open, billing_close, billing_refer_collections]
+    rule: >-
+      The billing account opens with the policy on the pay plan chosen at bind, and the plan's entry gates (accepted
+      payment methods, autopay where required, and the financial-responsibility restriction) must hold on the method on
+      file. The account stays open through renewals of the same policy; each renewal term is billed on the plan on file.
+      The account moves to closed only after the policy has ended and the final balance is settled under
+      billing_refunds_and_writeoffs; an account in collections closes when the collections balance is paid or written off.
+    eligibility: []

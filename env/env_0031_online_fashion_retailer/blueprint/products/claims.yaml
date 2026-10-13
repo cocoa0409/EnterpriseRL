@@ -1,0 +1,934 @@
+# Delivery Claims — every case a customer opens because a parcel arrived late, never arrived,
+# arrived damaged, arrived short or arrived with the wrong item. The claim type is the tier; it fixes
+# the reporting window, the evidence, whether a carrier trace is needed and how the customer is made
+# whole. Marlowe & Finch, not the customer, deals with the carrier.
+
+category: claims
+display_name: Delivery Claims
+
+binding:
+  holding_table: delivery_claims
+  event_tables: [claim_events]
+  status_field: status
+  variant_field: variant_name
+
+lifecycle:
+  states: [opened, carrier_trace, under_review, approved, denied, resolved, withdrawn]
+  transitions:
+    - {from: opened, to: carrier_trace, by: agent, means: "A trace is opened with the carrier and the claim waits for its result."}
+    - {from: carrier_trace, to: under_review, by: system, means: "The carrier answers the trace or the trace period ends."}
+    - {from: opened, to: under_review, by: agent, means: "All required evidence is on the claim and no trace is needed; the claim goes to decision."}
+    - {from: under_review, to: approved, by: agent, means: "The claim is approved with a resolution type."}
+    - {from: under_review, to: denied, by: agent, means: "The claim is denied with a reason."}
+    - {from: denied, to: under_review, by: agent, means: "A denied claim is appealed with new evidence within the appeal window."}
+    - {from: approved, to: resolved, by: agent, means: "The compensation of an approved claim has been booked."}
+    - {from: opened, to: withdrawn, by: user, means: "The customer withdraws the claim — typically because the parcel turned up — before a trace or decision."}
+    - {from: carrier_trace, to: withdrawn, by: user, means: "The customer withdraws the claim while the carrier trace is running."}
+
+accounts:
+  - key: compensation
+    unit: USD
+    meaning: "Value given to the customer on the claim — refunds, reshipped merchandise at its paid value and Goodwill Credit — net of value recovered when a parcel turns up or a wrong item is kept."
+
+parameter_schema:
+  claim_scope: "What one claim covers (enum string: parcel | line)."
+  reporting_window_days: "Calendar days after the anchor date within which the claim must be opened (integer)."
+  reporting_window_anchor: "Order date the reporting window counts from (enum string: delivered_date | shipped_date)."
+  min_wait_days_after_delivery_scan: "Calendar days after the delivered date before a claim may be opened (integer; 0 = none)."
+  ground_lost_threshold_business_days: "Business days without carrier movement after which a ground or economy parcel can be claimed lost (integer; 0 when not a lost claim)."
+  express_lost_threshold_business_days: "Same for Expedited 2-Day, Next Business Day and Same-Day Courier parcels (integer; 0 when not a lost claim)."
+  carrier_trace_required: "Whether a carrier trace must run before decision (boolean)."
+  carrier_trace_business_days: "Business days a carrier trace runs before the claim goes to decision without an answer (integer; 0 when no trace)."
+  required_evidence: "Evidence types that must be on the claim before decision (list)."
+  evidence_submission_deadline_days: "Calendar days after opening by which the required evidence must be on the claim (integer)."
+  affidavit_threshold_usd: "Claimed value (USD, 2 dp) at or above which the customer's signed non-receipt declaration is required (0.00 = never)."
+  police_report_threshold_usd: "Claimed value (USD, 2 dp) at or above which a police report reference is required (0.00 = never)."
+  signature_on_file_denies_claim: "Whether a carrier-captured signature at delivery leads to denial unless a police report is on the claim (boolean)."
+  default_resolution: "How the customer is made whole by default (enum string: reship | shipping_fee_refund)."
+  customer_may_choose_refund: "Whether the customer may take a refund instead of a reshipment (boolean)."
+  out_of_stock_resolution: "Resolution when the same SKU and size cannot be reshipped (enum string: merchandise_refund | not_applicable)."
+  refund_includes_shipping_fee: "Whether a merchandise refund also refunds the order's shipping fee and surcharge (boolean)."
+  refund_tender: "Where refunds go (enum string: original_tenders)."
+  refund_timing_business_days: "Business days from approval to refund (integer)."
+  reship_delivery_service: "Delivery service of a reshipment (official service name, or not_applicable)."
+  reship_shipping_fee_usd: "Shipping fee charged on a reshipment (USD, 2 dp)."
+  reship_stock_rule: "What may be reshipped (enum string: same_sku_same_size | not_applicable)."
+  item_return_required: "Whether the item received must be sent back with a prepaid label (boolean)."
+  item_return_window_days: "Calendar days after approval to send that item back (integer; 0 when not required)."
+  unreturned_item_charge_basis: "What is charged when a required item is not sent back (enum string: net_price_of_item_kept | not_applicable)."
+  damaged_item_retention_days: "Calendar days the customer keeps a damaged item and its packaging for possible carrier inspection (integer; 0 when not applicable)."
+  late_threshold_calendar_days: "Calendar days after the promised delivery date from which a guaranteed delivery counts as late (integer; 0 when not a late claim)."
+  guarantee_suspension_start: "First day (MM-DD) of the yearly peak period when carrier delivery guarantees are suspended, or not_applicable."
+  guarantee_suspension_end: "Last day (MM-DD) of that peak period, or not_applicable."
+  late_delivery_goodwill_usd: "Goodwill Credit given for a late guaranteed delivery whose shipping fee was waived (USD, 2 dp; 0.00 when not a late claim)."
+  goodwill_cap_fallback: "What applies when the credit charter's Goodwill Credit caps are reached (enum string: no_compensation | not_applicable)."
+  max_approved_claims_12m: "Most claims of this type a customer can have approved in a trailing 12 months before further ones are denied for repeat_claim_limit (integer; 0 = no limit)."
+  repeat_limit_override_evidence: "Evidence that lets a claim over the repeat limit be decided normally (enum string: police_report | not_applicable)."
+  appeal_window_days: "Calendar days after the decision date within which a denial can be appealed (integer)."
+  appeal_requires_new_evidence: "Whether an appeal needs evidence logged after the denial (boolean)."
+  max_appeals: "Most appeals per claim (integer)."
+  compensation_cap_usd: "Highest compensation an agent may approve on one claim (USD, 2 dp); above it the claim is handed to a human representative."
+  found_after_compensation_handling: "What happens when a parcel compensated as undelivered turns up (enum string: return_with_prepaid_label_or_charge | not_applicable)."
+  found_item_return_window_days: "Calendar days after the parcel turns up to send it back before being charged (integer; 0 when not applicable)."
+  compensation_recovery_method: "How value is recovered when an item is kept (enum string: charge_original_card)."
+  customer_address_error_excluded: "Whether a parcel misdelivered because of an address error the customer made is excluded (boolean)."
+  uncollected_pickup_excluded: "Whether a parcel returned from a pickup point because it was not collected is excluded (boolean)."
+  customer_files_with_carrier: "Whether the customer must file anything with the carrier (boolean)."
+  parcel_value_basis: "How the claimed value is measured (enum string: net_merchandise_paid_plus_tax)."
+  decision_sla_business_days: "Business days from under_review to decision (integer)."
+  claims_per_order_per_type: "Most claims of one type per order that are not withdrawn (integer)."
+  withdrawal_before_decision: "Whether the customer can withdraw only before a decision (boolean)."
+  lost_declaration_basis: "When a parcel is treated as lost (enum string: carrier_lost_confirmation_or_trace_period_elapsed | not_applicable)."
+  delivered_trace_denies_claim: "Whether a trace result of delivered_confirmed leads to denial unless the claim is converted to a non-receipt claim (boolean)."
+
+variants:
+  - name: Late Delivery Claim
+    rank: 1
+    entry_gate: {order_status: [delivered, closed], service: "a service with delivery_date_guaranteed"}
+    parameters:
+      claim_scope: parcel
+      reporting_window_days: 30
+      reporting_window_anchor: delivered_date
+      min_wait_days_after_delivery_scan: 0
+      ground_lost_threshold_business_days: 0
+      express_lost_threshold_business_days: 0
+      carrier_trace_required: false
+      carrier_trace_business_days: 0
+      required_evidence: []
+      evidence_submission_deadline_days: 7
+      affidavit_threshold_usd: 0.00
+      police_report_threshold_usd: 0.00
+      signature_on_file_denies_claim: false
+      default_resolution: shipping_fee_refund
+      customer_may_choose_refund: false
+      out_of_stock_resolution: not_applicable
+      refund_includes_shipping_fee: true
+      refund_tender: original_tenders
+      refund_timing_business_days: 3
+      reship_delivery_service: not_applicable
+      reship_shipping_fee_usd: 0.00
+      reship_stock_rule: not_applicable
+      item_return_required: false
+      item_return_window_days: 0
+      unreturned_item_charge_basis: not_applicable
+      damaged_item_retention_days: 0
+      late_threshold_calendar_days: 1
+      guarantee_suspension_start: "11-27"
+      guarantee_suspension_end: "12-24"
+      late_delivery_goodwill_usd: 10.00
+      goodwill_cap_fallback: no_compensation
+      max_approved_claims_12m: 0
+      repeat_limit_override_evidence: not_applicable
+      appeal_window_days: 30
+      appeal_requires_new_evidence: true
+      max_appeals: 1
+      compensation_cap_usd: 1500.00
+      found_after_compensation_handling: not_applicable
+      found_item_return_window_days: 0
+      compensation_recovery_method: charge_original_card
+      customer_address_error_excluded: true
+      uncollected_pickup_excluded: true
+      customer_files_with_carrier: false
+      parcel_value_basis: net_merchandise_paid_plus_tax
+      decision_sla_business_days: 2
+      claims_per_order_per_type: 1
+      withdrawal_before_decision: true
+      lost_declaration_basis: not_applicable
+      delivered_trace_denies_claim: false
+  - name: Delivered Not Received Claim
+    rank: 2
+    entry_gate: {order_status: [delivered], tracking: "carrier delivered scan on record"}
+    parameters:
+      claim_scope: parcel
+      reporting_window_days: 30
+      reporting_window_anchor: delivered_date
+      min_wait_days_after_delivery_scan: 2
+      ground_lost_threshold_business_days: 0
+      express_lost_threshold_business_days: 0
+      carrier_trace_required: true
+      carrier_trace_business_days: 5
+      required_evidence: [neighbour_check_confirmation]
+      evidence_submission_deadline_days: 7
+      affidavit_threshold_usd: 200.00
+      police_report_threshold_usd: 1000.00
+      signature_on_file_denies_claim: true
+      default_resolution: reship
+      customer_may_choose_refund: true
+      out_of_stock_resolution: merchandise_refund
+      refund_includes_shipping_fee: true
+      refund_tender: original_tenders
+      refund_timing_business_days: 3
+      reship_delivery_service: Expedited 2-Day
+      reship_shipping_fee_usd: 0.00
+      reship_stock_rule: same_sku_same_size
+      item_return_required: false
+      item_return_window_days: 0
+      unreturned_item_charge_basis: not_applicable
+      damaged_item_retention_days: 0
+      late_threshold_calendar_days: 0
+      guarantee_suspension_start: not_applicable
+      guarantee_suspension_end: not_applicable
+      late_delivery_goodwill_usd: 0.00
+      goodwill_cap_fallback: not_applicable
+      max_approved_claims_12m: 2
+      repeat_limit_override_evidence: police_report
+      appeal_window_days: 30
+      appeal_requires_new_evidence: true
+      max_appeals: 1
+      compensation_cap_usd: 1500.00
+      found_after_compensation_handling: return_with_prepaid_label_or_charge
+      found_item_return_window_days: 14
+      compensation_recovery_method: charge_original_card
+      customer_address_error_excluded: true
+      uncollected_pickup_excluded: true
+      customer_files_with_carrier: false
+      parcel_value_basis: net_merchandise_paid_plus_tax
+      decision_sla_business_days: 2
+      claims_per_order_per_type: 1
+      withdrawal_before_decision: true
+      lost_declaration_basis: not_applicable
+      delivered_trace_denies_claim: false
+  - name: Lost in Transit Claim
+    rank: 3
+    entry_gate: {order_status: [shipped], tracking: "no carrier movement for the lost threshold"}
+    parameters:
+      claim_scope: parcel
+      reporting_window_days: 60
+      reporting_window_anchor: shipped_date
+      min_wait_days_after_delivery_scan: 0
+      ground_lost_threshold_business_days: 5
+      express_lost_threshold_business_days: 2
+      carrier_trace_required: true
+      carrier_trace_business_days: 8
+      required_evidence: []
+      evidence_submission_deadline_days: 7
+      affidavit_threshold_usd: 0.00
+      police_report_threshold_usd: 0.00
+      signature_on_file_denies_claim: false
+      default_resolution: reship
+      customer_may_choose_refund: true
+      out_of_stock_resolution: merchandise_refund
+      refund_includes_shipping_fee: true
+      refund_tender: original_tenders
+      refund_timing_business_days: 3
+      reship_delivery_service: Expedited 2-Day
+      reship_shipping_fee_usd: 0.00
+      reship_stock_rule: same_sku_same_size
+      item_return_required: false
+      item_return_window_days: 0
+      unreturned_item_charge_basis: not_applicable
+      damaged_item_retention_days: 0
+      late_threshold_calendar_days: 0
+      guarantee_suspension_start: not_applicable
+      guarantee_suspension_end: not_applicable
+      late_delivery_goodwill_usd: 0.00
+      goodwill_cap_fallback: not_applicable
+      max_approved_claims_12m: 0
+      repeat_limit_override_evidence: not_applicable
+      appeal_window_days: 30
+      appeal_requires_new_evidence: true
+      max_appeals: 1
+      compensation_cap_usd: 1500.00
+      found_after_compensation_handling: return_with_prepaid_label_or_charge
+      found_item_return_window_days: 14
+      compensation_recovery_method: charge_original_card
+      customer_address_error_excluded: true
+      uncollected_pickup_excluded: true
+      customer_files_with_carrier: false
+      parcel_value_basis: net_merchandise_paid_plus_tax
+      decision_sla_business_days: 1
+      claims_per_order_per_type: 1
+      withdrawal_before_decision: true
+      lost_declaration_basis: carrier_lost_confirmation_or_trace_period_elapsed
+      delivered_trace_denies_claim: true
+  - name: Damaged in Transit Claim
+    rank: 4
+    entry_gate: {order_status: [delivered, closed], evidence: "photos of the damaged item and its packaging"}
+    parameters:
+      claim_scope: line
+      reporting_window_days: 7
+      reporting_window_anchor: delivered_date
+      min_wait_days_after_delivery_scan: 0
+      ground_lost_threshold_business_days: 0
+      express_lost_threshold_business_days: 0
+      carrier_trace_required: false
+      carrier_trace_business_days: 0
+      required_evidence: [damage_photos, packaging_photos]
+      evidence_submission_deadline_days: 7
+      affidavit_threshold_usd: 0.00
+      police_report_threshold_usd: 0.00
+      signature_on_file_denies_claim: false
+      default_resolution: reship
+      customer_may_choose_refund: true
+      out_of_stock_resolution: merchandise_refund
+      refund_includes_shipping_fee: false
+      refund_tender: original_tenders
+      refund_timing_business_days: 3
+      reship_delivery_service: Expedited 2-Day
+      reship_shipping_fee_usd: 0.00
+      reship_stock_rule: same_sku_same_size
+      item_return_required: false
+      item_return_window_days: 0
+      unreturned_item_charge_basis: not_applicable
+      damaged_item_retention_days: 14
+      late_threshold_calendar_days: 0
+      guarantee_suspension_start: not_applicable
+      guarantee_suspension_end: not_applicable
+      late_delivery_goodwill_usd: 0.00
+      goodwill_cap_fallback: not_applicable
+      max_approved_claims_12m: 0
+      repeat_limit_override_evidence: not_applicable
+      appeal_window_days: 30
+      appeal_requires_new_evidence: true
+      max_appeals: 1
+      compensation_cap_usd: 1500.00
+      found_after_compensation_handling: not_applicable
+      found_item_return_window_days: 0
+      compensation_recovery_method: charge_original_card
+      customer_address_error_excluded: true
+      uncollected_pickup_excluded: true
+      customer_files_with_carrier: false
+      parcel_value_basis: net_merchandise_paid_plus_tax
+      decision_sla_business_days: 2
+      claims_per_order_per_type: 1
+      withdrawal_before_decision: true
+      lost_declaration_basis: not_applicable
+      delivered_trace_denies_claim: false
+  - name: Missing Item Claim
+    rank: 5
+    entry_gate: {order_status: [delivered, closed], evidence: "photo of the opened parcel and its contents"}
+    parameters:
+      claim_scope: line
+      reporting_window_days: 14
+      reporting_window_anchor: delivered_date
+      min_wait_days_after_delivery_scan: 0
+      ground_lost_threshold_business_days: 0
+      express_lost_threshold_business_days: 0
+      carrier_trace_required: false
+      carrier_trace_business_days: 0
+      required_evidence: [packaging_photos]
+      evidence_submission_deadline_days: 7
+      affidavit_threshold_usd: 0.00
+      police_report_threshold_usd: 0.00
+      signature_on_file_denies_claim: false
+      default_resolution: reship
+      customer_may_choose_refund: true
+      out_of_stock_resolution: merchandise_refund
+      refund_includes_shipping_fee: false
+      refund_tender: original_tenders
+      refund_timing_business_days: 3
+      reship_delivery_service: Expedited 2-Day
+      reship_shipping_fee_usd: 0.00
+      reship_stock_rule: same_sku_same_size
+      item_return_required: false
+      item_return_window_days: 0
+      unreturned_item_charge_basis: not_applicable
+      damaged_item_retention_days: 0
+      late_threshold_calendar_days: 0
+      guarantee_suspension_start: not_applicable
+      guarantee_suspension_end: not_applicable
+      late_delivery_goodwill_usd: 0.00
+      goodwill_cap_fallback: not_applicable
+      max_approved_claims_12m: 2
+      repeat_limit_override_evidence: police_report
+      appeal_window_days: 30
+      appeal_requires_new_evidence: true
+      max_appeals: 1
+      compensation_cap_usd: 1500.00
+      found_after_compensation_handling: not_applicable
+      found_item_return_window_days: 0
+      compensation_recovery_method: charge_original_card
+      customer_address_error_excluded: true
+      uncollected_pickup_excluded: true
+      customer_files_with_carrier: false
+      parcel_value_basis: net_merchandise_paid_plus_tax
+      decision_sla_business_days: 2
+      claims_per_order_per_type: 1
+      withdrawal_before_decision: true
+      lost_declaration_basis: not_applicable
+      delivered_trace_denies_claim: false
+  - name: Wrong Item Claim
+    rank: 6
+    entry_gate: {order_status: [delivered, closed], evidence: "photo of the item received with its label"}
+    parameters:
+      claim_scope: line
+      reporting_window_days: 30
+      reporting_window_anchor: delivered_date
+      min_wait_days_after_delivery_scan: 0
+      ground_lost_threshold_business_days: 0
+      express_lost_threshold_business_days: 0
+      carrier_trace_required: false
+      carrier_trace_business_days: 0
+      required_evidence: [wrong_item_photo]
+      evidence_submission_deadline_days: 7
+      affidavit_threshold_usd: 0.00
+      police_report_threshold_usd: 0.00
+      signature_on_file_denies_claim: false
+      default_resolution: reship
+      customer_may_choose_refund: true
+      out_of_stock_resolution: merchandise_refund
+      refund_includes_shipping_fee: false
+      refund_tender: original_tenders
+      refund_timing_business_days: 3
+      reship_delivery_service: Expedited 2-Day
+      reship_shipping_fee_usd: 0.00
+      reship_stock_rule: same_sku_same_size
+      item_return_required: true
+      item_return_window_days: 14
+      unreturned_item_charge_basis: net_price_of_item_kept
+      damaged_item_retention_days: 0
+      late_threshold_calendar_days: 0
+      guarantee_suspension_start: not_applicable
+      guarantee_suspension_end: not_applicable
+      late_delivery_goodwill_usd: 0.00
+      goodwill_cap_fallback: not_applicable
+      max_approved_claims_12m: 0
+      repeat_limit_override_evidence: not_applicable
+      appeal_window_days: 30
+      appeal_requires_new_evidence: true
+      max_appeals: 1
+      compensation_cap_usd: 1500.00
+      found_after_compensation_handling: not_applicable
+      found_item_return_window_days: 0
+      compensation_recovery_method: charge_original_card
+      customer_address_error_excluded: true
+      uncollected_pickup_excluded: true
+      customer_files_with_carrier: false
+      parcel_value_basis: net_merchandise_paid_plus_tax
+      decision_sla_business_days: 2
+      claims_per_order_per_type: 1
+      withdrawal_before_decision: true
+      lost_declaration_basis: not_applicable
+      delivered_trace_denies_claim: false
+
+events:
+  - type: claims_opened
+    target: delivery_claims
+    mutation: create
+    meaning: "A customer reports a delivery problem with an order and a claim of the matching type opens in status opened."
+    grain: "One row per claim."
+    fields:
+      claim_id: "Reference of the claim."
+      customer_id: "Customer who placed the order."
+      order_id: "Order concerned."
+      variant_name: "Claim type."
+      status: "Always opened at creation."
+      opened_date: "Date the claim was opened."
+      claimed_value_usd: "Value claimed under parcel_value_basis: the whole order for parcel-scope claims, the claimed lines for line-scope claims."
+      appeal_count: "0 at creation."
+    triggers: []
+
+  - type: claims_evidence_logged
+    target: claim_events
+    meaning: "A piece of evidence is recorded on the claim: photos, the customer's signed declaration, a police report reference, a neighbour check or a carrier trace result."
+    grain: "One row per evidence item."
+    distinguish_by: [evidence_type, evidence_reference]
+    fields:
+      event_date: "Date the evidence was recorded."
+      evidence_type: "damage_photos, packaging_photos, wrong_item_photo, neighbour_check_confirmation, signed_affidavit, police_report or carrier_trace_result."
+      evidence_reference: "Upload, declaration, report or trace reference exactly as given."
+      booked_line_id: "Order line the evidence concerns for line-scope claims; empty otherwise."
+    triggers: []
+
+  - type: claims_compensation_issued
+    target: claim_events
+    meaning: "Compensation is booked on an approved claim: a reshipment, a merchandise refund, a shipping fee refund or a Goodwill Credit."
+    grain: "One row per compensation type per order line (line empty for parcel-level shipping fee refunds and goodwill)."
+    distinguish_by: [compensation_type, booked_line_id]
+    fields:
+      event_date: "Booking date."
+      compensation_type: "reship, merchandise_refund, shipping_fee_refund or goodwill_credit."
+      booked_line_id: "Order line reshipped or refunded; empty for shipping_fee_refund and goodwill_credit."
+      quantity: "Units reshipped or refunded; 0 for parcel-level rows."
+      amount_usd: "Value given, positive: net merchandise paid plus tax for reshipments and refunds, the fee for shipping refunds, the credit value for goodwill."
+      replacement_order_id: "No-charge order carrying a reshipment; empty otherwise."
+    account: compensation
+    direction: in
+    triggers:
+      - event: credit:credit_issued
+        when: {compensation_type: goodwill_credit}
+        map: {variant_name: "Goodwill Credit", source_reference: claim_id, initial_value_usd: amount_usd, issued_date: event_date}
+      - event: orders:orders_placed
+        when: {compensation_type: reship}
+        map: {placed_date: event_date}
+      - event: orders:orders_payment_refunded
+        when: {compensation_type: [merchandise_refund, shipping_fee_refund]}
+        map: {refund_component: delivery_claim, booked_line_id: booked_line_id, event_date: event_date}
+
+  - type: claims_compensation_recovered
+    target: claim_events
+    meaning: "Value is charged back because a compensated parcel turned up and was kept, or a wrong item was not sent back."
+    grain: "One row per recovery reason per order line."
+    distinguish_by: [recovery_reason, booked_line_id]
+    fields:
+      event_date: "Charge date."
+      recovery_reason: "found_parcel_kept or wrong_item_not_returned."
+      booked_line_id: "Order line charged for."
+      quantity: "Units charged for."
+      amount_usd: "Value recovered, negative."
+    account: compensation
+    direction: out
+    triggers: []
+
+  - type: claims_trace_opened
+    target: delivery_claims
+    mutation: {transition: {from: opened, to: carrier_trace}}
+    meaning: "A carrier trace is opened."
+    grain: "One row per transaction."
+    fields:
+      status: "carrier_trace."
+      trace_opened_date: "Date the trace was opened."
+      trace_reference: "Carrier's trace reference."
+    triggers: []
+
+  - type: claims_trace_concluded
+    target: delivery_claims
+    mutation: {transition: {from: carrier_trace, to: under_review}}
+    meaning: "The carrier answers the trace, or the trace period ends without an answer."
+    grain: "One row per transaction."
+    fields:
+      status: "under_review."
+      trace_result: "lost_confirmed, delivered_confirmed, found_in_network or no_response."
+    triggers: []
+
+  - type: claims_submitted_for_review
+    target: delivery_claims
+    mutation: {transition: {from: opened, to: under_review}}
+    meaning: "A claim that needs no trace goes to decision with its evidence complete."
+    grain: "One row per transaction."
+    fields:
+      status: "under_review."
+    triggers: []
+
+  - type: claims_approved
+    target: delivery_claims
+    mutation: {transition: {from: under_review, to: approved}}
+    meaning: "The claim is approved with a resolution type."
+    grain: "One row per transaction."
+    fields:
+      status: "approved."
+      decision_date: "Decision date."
+      resolution_type: "reship, merchandise_refund, shipping_fee_refund or goodwill_credit."
+    triggers:
+      - event: claims:claims_compensation_issued
+        map: {compensation_type: resolution_type, event_date: decision_date}
+
+  - type: claims_denied
+    target: delivery_claims
+    mutation: {transition: {from: under_review, to: denied}}
+    meaning: "The claim is denied with a reason."
+    grain: "One row per transaction."
+    fields:
+      status: "denied."
+      decision_date: "Decision date."
+      denial_reason: "outside_reporting_window, evidence_missing, signature_on_file, delivered_confirmed, not_late, guarantee_suspended, repeat_claim_limit or excluded_cause."
+    triggers: []
+
+  - type: claims_appealed
+    target: delivery_claims
+    mutation: {transition: {from: denied, to: under_review}}
+    meaning: "A denied claim is appealed with new evidence."
+    grain: "One row per transaction."
+    fields:
+      status: "under_review."
+      appeal_count: "Incremented by one."
+    triggers: []
+
+  - type: claims_resolved
+    target: delivery_claims
+    mutation: {transition: {from: approved, to: resolved}}
+    meaning: "The compensation of an approved claim is booked and the claim is resolved."
+    grain: "One row per transaction."
+    fields:
+      status: "resolved."
+      variant_name: "Claim type, unchanged; read to route the consequences."
+      resolved_date: "Resolution date."
+    triggers:
+      - event: orders:orders_closed_undelivered
+        when: {variant_name: Lost in Transit Claim}
+        map: {close_reason: lost_in_transit, closed_date: resolved_date}
+
+  - type: claims_withdrawn
+    target: delivery_claims
+    mutation: {transition: [{from: opened, to: withdrawn}, {from: carrier_trace, to: withdrawn}]}
+    meaning: "The customer withdraws the claim before a decision."
+    grain: "One row per transaction."
+    fields:
+      status: "withdrawn."
+      withdrawn_date: "Withdrawal date."
+    triggers: []
+
+measures:
+  - id: claims_msr_approved_same_type_12m
+    window: "Trailing 12 calendar months ending on the frozen date, by decision_date."
+    measure: "Count of the customer's claims of the same claim type whose status is approved or resolved."
+  - id: claims_msr_days_late
+    window: "The claimed order."
+    measure: "Calendar days from orders.promised_delivery_date to orders.delivered_date (0 or negative when on time)."
+  - id: claims_msr_no_movement_business_days
+    window: "From the last carrier scan of the parcel to the frozen date."
+    measure: "Business days (Monday-Friday, excluding US federal holidays) without a new carrier scan."
+  - id: claims_msr_claimed_value
+    window: "The claimed order lines (line scope) or the whole order (parcel scope)."
+    measure: "Net merchandise paid on those lines (order_lines amount_usd net of price adjustments and late promotions) plus their share of the order's sales tax."
+
+policies:
+  - id: claims_opening
+    subject: [claims_opened]
+    rule: >-
+      A claim is opened only by the customer who placed the order and only for the claim type that
+      matches what the records show: a Lost in Transit Claim needs the order in status shipped, every
+      other type needs it in status delivered or closed. A claim is opened only for an order in status
+      shipped, delivered or closed. A Lost in Transit Claim is opened only once the parcel has shown no
+      carrier movement for `ground_lost_threshold_business_days` business days on Economy Ground,
+      Pickup Point Delivery or Standard Ground, or `express_lost_threshold_business_days` on faster
+      services (claims_msr_no_movement_business_days). A claim is opened only if it is reported no later
+      than `reporting_window_days` calendar days after the order is delivered, or for a Lost in Transit
+      Claim after the order is dispatched (`reporting_window_anchor`). Window days are counted as
+      calendar days after the anchor date, the anchor date being day zero, and the last day still
+      qualifies. A Delivered Not Received Claim is opened only once
+      `min_wait_days_after_delivery_scan` calendar days have passed since the order is delivered, since
+      carriers often scan before the parcel arrives. Only one claim of each type that is not withdrawn
+      may exist per order (`claims_per_order_per_type`). A parcel misdelivered because of an address
+      the customer entered wrongly (`customer_address_error_excluded`), or returned from a pickup point
+      because it was not collected (`uncollected_pickup_excluded`), is not a claim: the order closes as
+      returned to sender under the orders charter. The customer never files with the carrier
+      (`customer_files_with_carrier`). A defect that appears in use is a Quality Issue Return under the
+      returns charter, not a damage claim.
+      The claimed value is measured per `parcel_value_basis`: over the whole order when the type's `claim_scope` is parcel, and over the claimed order lines when it is line.
+    eligibility:
+      - id: order_shipped
+        applies_to: [claims_opened]
+        kind: state
+        condition: "A claim is opened only for an order in status shipped, delivered or closed."
+        evidence_fields: [orders.status, orders.order_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [orders.order_id]
+          action_bindings:
+            orders.order_id: order_id
+        state_contract:
+          field: orders.status
+          allowed: [shipped, delivered, closed]
+      - id: reporting_window
+        applies_to: [claims_opened]
+        kind: time
+        condition: "A claim is opened only if it is reported no later than `reporting_window_days` calendar days after the order is delivered, or for a Lost in Transit Claim after the order is dispatched (`reporting_window_anchor`)."
+        evidence_fields: [orders.delivered_date, orders.shipped_date, orders.order_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [orders.order_id]
+          action_bindings:
+            orders.order_id: order_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the order is delivered"
+          anchor_source: orders.delivered_date
+          relation: not_after
+          duration_source: variants.reporting_window_days
+          unit: calendar_days
+          counting_rule: "Window days are counted as calendar days after the anchor date, the anchor date being day zero, and the last day still qualifies."
+          boundary: inclusive
+      - id: dnr_wait
+        applies_to: [claims_opened]
+        kind: time
+        condition: "A Delivered Not Received Claim is opened only once `min_wait_days_after_delivery_scan` calendar days have passed since the order is delivered, since carriers often scan before the parcel arrives."
+        evidence_fields: [orders.delivered_date, orders.order_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [orders.order_id]
+          action_bindings:
+            orders.order_id: order_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the order is delivered"
+          anchor_source: orders.delivered_date
+          relation: not_before
+          duration_source: variants.min_wait_days_after_delivery_scan
+          unit: calendar_days
+          counting_rule: "Window days are counted as calendar days after the anchor date, the anchor date being day zero, and the last day still qualifies."
+          boundary: inclusive
+      - id: own_order
+        applies_to: [claims_opened]
+        kind: authorization
+        condition: "A claim is opened only by the customer who placed the order and only for the claim type that matches what the records show: a Lost in Transit Claim needs the order in status shipped, every other type needs it in status delivered or closed."
+        evidence_fields: [orders.customer_id, orders.order_id, orders.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [orders.order_id]
+          action_bindings:
+            orders.order_id: order_id
+      - id: one_per_type
+        applies_to: [claims_opened]
+        kind: dedup
+        condition: "Only one claim of each type that is not withdrawn may exist per order (`claims_per_order_per_type`)."
+        evidence_fields: [delivery_claims.order_id, delivery_claims.variant_name, delivery_claims.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [delivery_claims.order_id, delivery_claims.variant_name]
+          action_bindings:
+            delivery_claims.order_id: order_id
+            delivery_claims.variant_name: variant_name
+        dedup_contract:
+          table: delivery_claims
+          mode: separate_record
+          object_bindings: {order_id: order_id, variant_name: variant_name}
+          duplicate_filters: {status: [opened, carrier_trace, under_review, approved, denied, resolved]}
+          distinct_fields: []
+    params:
+      per_tier:
+        Late Delivery Claim: {reporting_window_days: "=reporting_window_days", min_wait_days_after_delivery_scan: "=min_wait_days_after_delivery_scan"}
+        Delivered Not Received Claim: {reporting_window_days: "=reporting_window_days", min_wait_days_after_delivery_scan: "=min_wait_days_after_delivery_scan"}
+        Lost in Transit Claim: {reporting_window_days: "=reporting_window_days", min_wait_days_after_delivery_scan: "=min_wait_days_after_delivery_scan"}
+        Damaged in Transit Claim: {reporting_window_days: "=reporting_window_days", min_wait_days_after_delivery_scan: "=min_wait_days_after_delivery_scan"}
+        Missing Item Claim: {reporting_window_days: "=reporting_window_days", min_wait_days_after_delivery_scan: "=min_wait_days_after_delivery_scan"}
+        Wrong Item Claim: {reporting_window_days: "=reporting_window_days", min_wait_days_after_delivery_scan: "=min_wait_days_after_delivery_scan"}
+    measures: [claims_msr_no_movement_business_days]
+
+  - id: claims_agg_multi_holding
+    subject: [claims_opened]
+    rule: >-
+      A customer may hold any number of claims across orders, and one order may carry claims of
+      different types (for example a Missing Item Claim and a Damaged in Transit Claim on different
+      lines); there is no cap per customer. A unit compensated on one claim is never compensated again
+      on another claim or through a return.
+    eligibility: []
+    params: {max_per_customer: null}
+
+  - id: claims_agg_repeat_claims
+    subject: [claims_approved, claims_denied]
+    rule: >-
+      Claims are read across all of the customer's orders. Where `max_approved_claims_12m` is above
+      zero, a claim of that type is denied with reason repeat_claim_limit when the customer already has
+      that many claims of the same type approved or resolved in the trailing 12 months
+      (claims_msr_approved_same_type_12m), unless the `repeat_limit_override_evidence` — a police report
+      reference — is logged on the claim, in which case it is decided normally. The limit counts
+      approvals only; denied and withdrawn claims never count.
+    eligibility: []
+    measures: [claims_msr_approved_same_type_12m]
+
+  - id: claims_evt_evidence
+    subject: [claims_evidence_logged, claims_submitted_for_review]
+    rule: >-
+      Every type in `required_evidence` must be logged on the claim before it goes to decision, and the
+      evidence must be on the claim no later than `evidence_submission_deadline_days` calendar days after
+      opening, otherwise the claim is denied with reason evidence_missing. On a Delivered Not Received
+      Claim whose claimed value (claims_msr_claimed_value) is at or above `affidavit_threshold_usd`, the
+      customer's signed non-receipt declaration (signed_affidavit) is also required; the customer signs
+      it personally and the agent cannot sign or attest on their behalf. At or above
+      `police_report_threshold_usd` a police report reference is required as well. A Damaged in Transit
+      claimant keeps the item and packaging for `damaged_item_retention_days` days. Evidence references
+      are recorded exactly as given. Evidence is logged only while the claim is in status opened,
+      carrier_trace, under_review or denied.
+    eligibility:
+      - id: claim_open_for_evidence
+        applies_to: [claims_evidence_logged]
+        kind: state
+        condition: "Evidence is logged only while the claim is in status opened, carrier_trace, under_review or denied."
+        evidence_fields: [delivery_claims.status, delivery_claims.claim_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [delivery_claims.claim_id]
+          action_bindings:
+            delivery_claims.claim_id: claim_id
+        state_contract:
+          field: delivery_claims.status
+          allowed: [opened, carrier_trace, under_review, denied]
+    params:
+      per_tier:
+        Late Delivery Claim: {affidavit_threshold_usd: "=affidavit_threshold_usd", police_report_threshold_usd: "=police_report_threshold_usd"}
+        Delivered Not Received Claim: {affidavit_threshold_usd: "=affidavit_threshold_usd", police_report_threshold_usd: "=police_report_threshold_usd"}
+        Lost in Transit Claim: {affidavit_threshold_usd: "=affidavit_threshold_usd", police_report_threshold_usd: "=police_report_threshold_usd"}
+        Damaged in Transit Claim: {affidavit_threshold_usd: "=affidavit_threshold_usd", police_report_threshold_usd: "=police_report_threshold_usd"}
+        Missing Item Claim: {affidavit_threshold_usd: "=affidavit_threshold_usd", police_report_threshold_usd: "=police_report_threshold_usd"}
+        Wrong Item Claim: {affidavit_threshold_usd: "=affidavit_threshold_usd", police_report_threshold_usd: "=police_report_threshold_usd"}
+    measures: [claims_msr_claimed_value]
+
+  - id: claims_evt_carrier_trace
+    subject: [claims_trace_opened, claims_trace_concluded]
+    rule: >-
+      Where `carrier_trace_required`, the agent opens a carrier trace before the claim can be decided;
+      it runs `carrier_trace_business_days` business days. The trace concludes with the carrier's answer
+      or, when the period ends without one, with trace_result no_response. A Lost in Transit parcel is
+      treated as lost on lost_confirmed or no_response (`lost_declaration_basis`); found_in_network
+      means the parcel is moving again and the claim is denied as not lost once it is delivered; a
+      delivered_confirmed result denies a Lost in Transit Claim with reason delivered_confirmed
+      (`delivered_trace_denies_claim`), and the customer may then open a Delivered Not Received Claim.
+    eligibility: []
+    params:
+      per_tier:
+        Late Delivery Claim: {carrier_trace_business_days: "=carrier_trace_business_days"}
+        Delivered Not Received Claim: {carrier_trace_business_days: "=carrier_trace_business_days"}
+        Lost in Transit Claim: {carrier_trace_business_days: "=carrier_trace_business_days"}
+        Damaged in Transit Claim: {carrier_trace_business_days: "=carrier_trace_business_days"}
+        Missing Item Claim: {carrier_trace_business_days: "=carrier_trace_business_days"}
+        Wrong Item Claim: {carrier_trace_business_days: "=carrier_trace_business_days"}
+
+  - id: claims_evt_decision
+    subject: [claims_approved, claims_denied]
+    rule: >-
+      A claim is decided within `decision_sla_business_days` business days of reaching under_review. A
+      Late Delivery Claim is approved only for a service whose `delivery_date_guaranteed` is true
+      (orders charter) when claims_msr_days_late is at least `late_threshold_calendar_days`; it is
+      denied with not_late otherwise, and with guarantee_suspended when the promised delivery date falls
+      from `guarantee_suspension_start` through `guarantee_suspension_end`. A Delivered Not Received
+      Claim is denied with signature_on_file when the carrier captured a signature at delivery
+      (`signature_on_file_denies_claim`) unless a police report is logged. A claim whose compensation
+      would exceed `compensation_cap_usd` is not decided by the agent; it is handed to a human
+      representative. Missing evidence, a window missed or an excluded cause leads to denial with the
+      matching reason; every other complete claim of the right type is approved with its resolution.
+    eligibility: []
+    measures: [claims_msr_days_late]
+
+  - id: claims_evt_compensation
+    subject: [claims_compensation_issued, claims_resolved]
+    rule: >-
+      An approved claim is made whole by its `default_resolution`. A reshipment sends the same SKU and
+      size (`reship_stock_rule`) by `reship_delivery_service` at `reship_shipping_fee_usd` on a
+      no-charge order; where `customer_may_choose_refund` the customer may take a merchandise refund
+      instead, and when the item cannot be reshipped the claim is refunded (`out_of_stock_resolution`).
+      A merchandise refund pays the claimed value (claims_msr_claimed_value) to the original tenders in
+      the orders charter's `tender_refund_priority` within `refund_timing_business_days` business days,
+      plus the order's shipping fee and surcharge where `refund_includes_shipping_fee`. A Late Delivery
+      Claim refunds the effective shipping fee and surcharge paid on the order; when that fee was 0.00
+      because of an Unlimited plan, a Marlowe Rewards threshold or a code, it gives a Goodwill Credit of
+      `late_delivery_goodwill_usd` instead, within the credit charter's Goodwill Credit caps, and when
+      the caps are reached nothing further is owed (`goodwill_cap_fallback`). Compensation is booked
+      only while the claim is in status approved. A Lost in Transit Claim resolved by refund or
+      reshipment closes the original order as lost_in_transit. Points earned on compensated merchandise
+      are not reversed.
+    eligibility:
+      - id: approved_only
+        applies_to: [claims_compensation_issued]
+        kind: state
+        condition: "Compensation is booked only while the claim is in status approved."
+        evidence_fields: [delivery_claims.status, delivery_claims.claim_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [delivery_claims.claim_id]
+          action_bindings:
+            delivery_claims.claim_id: claim_id
+        state_contract:
+          field: delivery_claims.status
+          allowed: [approved]
+    params:
+      per_tier:
+        Late Delivery Claim: {default_resolution: "=default_resolution", late_delivery_goodwill_usd: "=late_delivery_goodwill_usd", refund_includes_shipping_fee: "=refund_includes_shipping_fee"}
+        Delivered Not Received Claim: {default_resolution: "=default_resolution", late_delivery_goodwill_usd: "=late_delivery_goodwill_usd", refund_includes_shipping_fee: "=refund_includes_shipping_fee"}
+        Lost in Transit Claim: {default_resolution: "=default_resolution", late_delivery_goodwill_usd: "=late_delivery_goodwill_usd", refund_includes_shipping_fee: "=refund_includes_shipping_fee"}
+        Damaged in Transit Claim: {default_resolution: "=default_resolution", late_delivery_goodwill_usd: "=late_delivery_goodwill_usd", refund_includes_shipping_fee: "=refund_includes_shipping_fee"}
+        Missing Item Claim: {default_resolution: "=default_resolution", late_delivery_goodwill_usd: "=late_delivery_goodwill_usd", refund_includes_shipping_fee: "=refund_includes_shipping_fee"}
+        Wrong Item Claim: {default_resolution: "=default_resolution", late_delivery_goodwill_usd: "=late_delivery_goodwill_usd", refund_includes_shipping_fee: "=refund_includes_shipping_fee"}
+    measures: [claims_msr_claimed_value]
+
+  - id: claims_evt_appeal
+    subject: [claims_appealed]
+    rule: >-
+      A denied claim can be appealed at most `max_appeals` time. An appeal is accepted only if it is
+      made no later than `appeal_window_days` calendar days after the claim is decided. The decision date
+      is day zero and the last day of the window still counts. Where `appeal_requires_new_evidence`, at
+      least one evidence item must have been logged after the decision date; repeating the original
+      account is not an appeal.
+    eligibility:
+      - id: appeal_window
+        applies_to: [claims_appealed]
+        kind: time
+        condition: "An appeal is accepted only if it is made no later than `appeal_window_days` calendar days after the claim is decided."
+        evidence_fields: [delivery_claims.decision_date, delivery_claims.claim_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [delivery_claims.claim_id]
+          action_bindings:
+            delivery_claims.claim_id: claim_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the claim is decided"
+          anchor_source: delivery_claims.decision_date
+          relation: not_after
+          duration_source: variants.appeal_window_days
+          unit: calendar_days
+          counting_rule: "The decision date is day zero and the last day of the window still counts."
+          boundary: inclusive
+      - id: one_appeal
+        applies_to: [claims_appealed]
+        kind: dedup
+        condition: "A denied claim can be appealed at most `max_appeals` time."
+        evidence_fields: [delivery_claims.appeal_count, delivery_claims.claim_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [delivery_claims.claim_id]
+          action_bindings:
+            delivery_claims.claim_id: claim_id
+        dedup_contract:
+          table: delivery_claims
+          mode: same_record
+          object_bindings: {claim_id: claim_id}
+          duplicate_filters: {appeal_count: [1]}
+          distinct_fields: []
+
+  - id: claims_evt_recovery
+    subject: [claims_compensation_recovered]
+    rule: >-
+      When a parcel compensated on a Delivered Not Received or Lost in Transit Claim turns up, the
+      customer either sends it back with a prepaid label within `found_item_return_window_days` calendar
+      days or is charged for the units kept (`found_after_compensation_handling`, reason
+      found_parcel_kept). On a Wrong Item Claim the wrong item must be sent back with a prepaid label
+      within `item_return_window_days` calendar days of approval (`item_return_required`), otherwise its
+      net price is charged (`unreturned_item_charge_basis`, reason wrong_item_not_returned). Charges go
+      to the original card (`compensation_recovery_method`). A recovery is booked only while the claim is
+      in status resolved. Goodwill Credit and shipping fee refunds are never recovered.
+    eligibility:
+      - id: resolved_only
+        applies_to: [claims_compensation_recovered]
+        kind: state
+        condition: "A recovery is booked only while the claim is in status resolved."
+        evidence_fields: [delivery_claims.status, delivery_claims.claim_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [delivery_claims.claim_id]
+          action_bindings:
+            delivery_claims.claim_id: claim_id
+        state_contract:
+          field: delivery_claims.status
+          allowed: [resolved]
+
+  - id: claims_evt_withdrawal
+    subject: [claims_withdrawn]
+    rule: >-
+      Withdrawing a claim is the customer's own decision and is possible only before a decision
+      (`withdrawal_before_decision`), while the claim is opened or in carrier trace. A claim is
+      withdrawn only on the customer's own confirmation. A withdrawn claim does not count toward the
+      repeat limit and frees the order for a new claim of the same type within the reporting window.
+    eligibility:
+      - id: customer_confirms
+        applies_to: [claims_withdrawn]
+        kind: caller_fact
+        condition: "A claim is withdrawn only on the customer's own confirmation."
+        evidence_fields: [delivery_claims.claim_id, delivery_claims.status]
+        evidence_contract:
+          authority: caller_statement
+          timing: pre_action
+          correlation_keys:
+            - [delivery_claims.claim_id]
+          action_bindings:
+            delivery_claims.claim_id: claim_id

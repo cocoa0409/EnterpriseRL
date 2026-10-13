@@ -1,0 +1,790 @@
+# Product charter: Cardinal DriveSense (usage-based insurance program on one scheduled vehicle).
+# Path: env/env_0035_personal_auto_insurance_carrier/blueprint/products/telematics.yaml
+#
+# Capability matrix (functional closure audit):
+#   open        enroll a scheduled vehicle on a package that allows DriveSense; data source by program (mobile app,
+#               plug-in device, connected car); device shipment; participation discount
+#   in term     activation window, monthly score posting, observation period with minimum active days and trips,
+#               device unplugged or app inactive, pay-per-mile monthly mileage charges and adjustments
+#   money       earned discount or surcharge by score ladder (surcharge only in permitted states), participation
+#               discount, per-mile charges with a daily mile cap, device non-return fee (billed through billing)
+#   exit        opt-out (discount treatment), termination (vehicle removed, never activated, device disconnected)
+#   exceptions  odometer corrections, device outage estimates, re-enrollment waiting period, data privacy limits
+
+category: telematics
+display_name: Cardinal DriveSense
+
+binding:
+  holding_table: telematics_enrollments
+  event_tables: [telematics_events]
+  status_field: status
+  variant_field: variant_name
+
+lifecycle:
+  states: [enrolled, observing, scored, opted_out, terminated]
+  transitions:
+    - {from: enrolled, to: observing, by: system, means: The app or device reports its first trip and the observation period begins.}
+    - {from: enrolled, to: terminated, by: system, means: Nothing was activated within the activation window and the enrollment ends.}
+    - {from: observing, to: scored, by: system, means: The observation period completes with enough active days and trips and the earned discount or surcharge is fixed.}
+    - {from: observing, to: opted_out, by: agent, means: The customer opts out during observation.}
+    - {from: scored, to: opted_out, by: agent, means: The customer opts out after scoring.}
+    - {from: observing, to: terminated, by: system, means: The vehicle leaves the policy, or the device stays disconnected too long.}
+    - {from: scored, to: terminated, by: system, means: The vehicle leaves the policy.}
+
+accounts:
+  - key: mileage_charges
+    unit: USD
+    meaning: Per-mile premium charged under a pay-per-mile program; monthly mileage charges raise it, mileage adjustments lower it.
+
+parameter_schema:
+  program_type: Kind of program (safe_driving, teen_coaching or pay_per_mile).
+  data_source: Where driving data comes from (mobile_app, plug_in_device or connected_car).
+  participation_discount_pct: Discount applied from enrollment until the earned discount is fixed, percent.
+  max_earned_discount_pct: Largest discount a score can earn, percent.
+  max_surcharge_pct: Largest surcharge a score can bring where surcharges are permitted, percent.
+  surcharge_permitted_states: List of policy states where a score may bring a surcharge.
+  score_discount_ladder: Threshold ladder score band -> earned discount percent (scores 0-100; higher is safer).
+  score_surcharge_ladder: Threshold ladder score band -> surcharge percent applied below the lowest discount band.
+  observation_days: Calendar days of the observation period from the first trip, integer.
+  min_active_days: Days with at least one trip needed in the observation period for a score, integer.
+  min_trips: Trips needed in the observation period for a score, integer.
+  activation_days: Calendar days after enrollment within which the app or device must report a first trip, integer.
+  device_shipping_business_days: Business days within which a plug-in device is shipped after enrollment, integer (0 = no device).
+  device_return_days: Calendar days after the enrollment ends within which a plug-in device must be returned, integer (0 = no device).
+  device_non_return_fee: Fee charged when a plug-in device is not returned in time, USD.
+  device_disconnect_termination_days: Consecutive days of no data from a device or app after which observation is terminated, integer.
+  hard_brake_threshold_mph_per_sec: Deceleration counted as a hard brake, miles per hour per second.
+  rapid_acceleration_threshold_mph_per_sec: Acceleration counted as rapid, miles per hour per second.
+  speeding_threshold_mph_over: Speed above the posted limit counted as speeding, miles per hour.
+  night_driving_window: Clock hours counted as late-night driving, local time.
+  phone_handling_tracked: Boolean switch; whether handheld phone use while moving lowers the score.
+  score_weights: Mapping behavior -> weight percent in the score.
+  score_posting_frequency: How often a running score is posted (monthly).
+  discount_applies_from: When the earned discount starts to apply (next_renewal_term).
+  participation_discount_applies_from: When the participation discount starts to apply (next_renewal_term_or_new_business).
+  discount_retained_after_opt_out: Boolean switch; whether a fixed earned discount is kept after opting out.
+  rescored_each_term: Boolean switch; whether driving keeps being scored and the discount is reset every term.
+  max_enrollments_per_vehicle: Active enrollments allowed per vehicle, integer.
+  reenrollment_wait_days: Calendar days after an opt-out or termination before the vehicle may enroll again, integer.
+  connected_car_min_model_year: Oldest model year supported for connected-car data, YYYY (0 = not applicable).
+  connected_car_supported_makes: List of makes whose connected-car data is supported (empty when not applicable).
+  teen_driver_max_age: Oldest driver age the teen coaching program accepts, years (0 = not applicable).
+  parent_alerts_included: Boolean switch; whether the named insured receives speeding and curfew alerts for the teen driver.
+  crash_detection_included: Boolean switch; whether crash detection with an emergency call is included.
+  per_mile_rate_cents: Per-mile rate under a pay-per-mile program, cents per mile (0 = not pay-per-mile).
+  pay_per_mile_daily_cap_miles: Most miles charged for one calendar day, miles (0 = not pay-per-mile).
+  pay_per_mile_base_rate_pct: Share of the vehicle's rated premium kept as the fixed base rate under pay-per-mile, percent (100 = not pay-per-mile).
+  mileage_billing_cycle: Period over which miles are billed (calendar_month).
+  odometer_photo_required: Boolean switch; whether an odometer photo is required at enrollment and on request.
+  outage_mileage_estimate_basis: How miles are estimated for days without data (average_daily_miles_last_30_days).
+  odometer_correction_window_days: Calendar days after a mileage charge within which an odometer correction is accepted, integer.
+  data_retention_days: Days trip-level data is kept, integer.
+  data_shared_with_third_parties: Boolean switch; whether driving data is shared outside Cardinal for marketing.
+  score_used_for_claims: Boolean switch; whether driving data is used to decide claims.
+  telematics_eligible_packages_rule: Which auto packages allow enrollment (auto package telematics_eligible true).
+  vehicle_must_be_scheduled: Boolean switch; whether only a vehicle scheduled on the policy may enroll.
+  max_drivers_tracked: Drivers whose trips are scored for the vehicle, integer.
+  app_driver_identification: How mobile trips are attributed to a driver (driver_profile_in_app).
+  surcharge_cap_by_term: Most a surcharge may change between consecutive terms, percent.
+
+variants:
+  - name: Cardinal DriveSense Mobile
+    rank: 1
+    entry_gate:
+      data_source: mobile_app
+    parameters:
+      program_type: safe_driving
+      data_source: mobile_app
+      participation_discount_pct: 5
+      max_earned_discount_pct: 25
+      max_surcharge_pct: 10
+      surcharge_permitted_states: [OH, IN, KY, WV]
+      score_discount_ladder: {"90-100": 25, "80-89": 15, "70-79": 8, "60-69": 3}
+      score_surcharge_ladder: {"40-59": 5, "0-39": 10}
+      observation_days: 90
+      min_active_days: 45
+      min_trips: 60
+      activation_days: 14
+      device_shipping_business_days: 0
+      device_return_days: 0
+      device_non_return_fee: 0.00
+      device_disconnect_termination_days: 21
+      hard_brake_threshold_mph_per_sec: 7
+      rapid_acceleration_threshold_mph_per_sec: 8
+      speeding_threshold_mph_over: 15
+      night_driving_window: "00:00-04:00"
+      phone_handling_tracked: true
+      score_weights: {hard_braking: 30, rapid_acceleration: 15, speeding: 20, phone_handling: 25, night_driving: 10}
+      score_posting_frequency: monthly
+      discount_applies_from: next_renewal_term
+      participation_discount_applies_from: next_renewal_term_or_new_business
+      discount_retained_after_opt_out: true
+      rescored_each_term: false
+      max_enrollments_per_vehicle: 1
+      reenrollment_wait_days: 90
+      connected_car_min_model_year: 0
+      connected_car_supported_makes: []
+      teen_driver_max_age: 0
+      parent_alerts_included: false
+      crash_detection_included: true
+      per_mile_rate_cents: 0
+      pay_per_mile_daily_cap_miles: 0
+      pay_per_mile_base_rate_pct: 100
+      mileage_billing_cycle: calendar_month
+      odometer_photo_required: false
+      outage_mileage_estimate_basis: average_daily_miles_last_30_days
+      odometer_correction_window_days: 30
+      data_retention_days: 365
+      data_shared_with_third_parties: false
+      score_used_for_claims: false
+      telematics_eligible_packages_rule: auto_package_telematics_eligible_true
+      vehicle_must_be_scheduled: true
+      max_drivers_tracked: 1
+      app_driver_identification: driver_profile_in_app
+      surcharge_cap_by_term: 10
+  - name: Cardinal DriveSense Plug-In
+    rank: 2
+    entry_gate:
+      data_source: plug_in_device
+    parameters:
+      program_type: safe_driving
+      data_source: plug_in_device
+      participation_discount_pct: 5
+      max_earned_discount_pct: 30
+      max_surcharge_pct: 10
+      surcharge_permitted_states: [OH, IN, KY, WV]
+      score_discount_ladder: {"90-100": 30, "80-89": 18, "70-79": 10, "60-69": 4}
+      score_surcharge_ladder: {"40-59": 5, "0-39": 10}
+      observation_days: 120
+      min_active_days: 60
+      min_trips: 80
+      activation_days: 21
+      device_shipping_business_days: 5
+      device_return_days: 30
+      device_non_return_fee: 49.00
+      device_disconnect_termination_days: 14
+      hard_brake_threshold_mph_per_sec: 7
+      rapid_acceleration_threshold_mph_per_sec: 8
+      speeding_threshold_mph_over: 15
+      night_driving_window: "00:00-04:00"
+      phone_handling_tracked: false
+      score_weights: {hard_braking: 40, rapid_acceleration: 20, speeding: 25, phone_handling: 0, night_driving: 15}
+      score_posting_frequency: monthly
+      discount_applies_from: next_renewal_term
+      participation_discount_applies_from: next_renewal_term_or_new_business
+      discount_retained_after_opt_out: true
+      rescored_each_term: false
+      max_enrollments_per_vehicle: 1
+      reenrollment_wait_days: 90
+      connected_car_min_model_year: 0
+      connected_car_supported_makes: []
+      teen_driver_max_age: 0
+      parent_alerts_included: false
+      crash_detection_included: false
+      per_mile_rate_cents: 0
+      pay_per_mile_daily_cap_miles: 0
+      pay_per_mile_base_rate_pct: 100
+      mileage_billing_cycle: calendar_month
+      odometer_photo_required: false
+      outage_mileage_estimate_basis: average_daily_miles_last_30_days
+      odometer_correction_window_days: 30
+      data_retention_days: 365
+      data_shared_with_third_parties: false
+      score_used_for_claims: false
+      telematics_eligible_packages_rule: auto_package_telematics_eligible_true
+      vehicle_must_be_scheduled: true
+      max_drivers_tracked: 4
+      app_driver_identification: not_applicable_vehicle_level
+      surcharge_cap_by_term: 10
+  - name: Cardinal DriveSense Connected Car
+    rank: 3
+    entry_gate:
+      data_source: connected_car
+      min_model_year: "=connected_car_min_model_year"
+    parameters:
+      program_type: safe_driving
+      data_source: connected_car
+      participation_discount_pct: 7
+      max_earned_discount_pct: 30
+      max_surcharge_pct: 0
+      surcharge_permitted_states: []
+      score_discount_ladder: {"90-100": 30, "80-89": 18, "70-79": 10, "60-69": 4}
+      score_surcharge_ladder: {}
+      observation_days: 120
+      min_active_days: 60
+      min_trips: 80
+      activation_days: 14
+      device_shipping_business_days: 0
+      device_return_days: 0
+      device_non_return_fee: 0.00
+      device_disconnect_termination_days: 30
+      hard_brake_threshold_mph_per_sec: 7
+      rapid_acceleration_threshold_mph_per_sec: 8
+      speeding_threshold_mph_over: 15
+      night_driving_window: "00:00-04:00"
+      phone_handling_tracked: false
+      score_weights: {hard_braking: 40, rapid_acceleration: 20, speeding: 25, phone_handling: 0, night_driving: 15}
+      score_posting_frequency: monthly
+      discount_applies_from: next_renewal_term
+      participation_discount_applies_from: next_renewal_term_or_new_business
+      discount_retained_after_opt_out: true
+      rescored_each_term: false
+      max_enrollments_per_vehicle: 1
+      reenrollment_wait_days: 90
+      connected_car_min_model_year: 2019
+      connected_car_supported_makes: [Ford, General Motors brands, Honda, Toyota, Hyundai, Kia, Subaru]
+      teen_driver_max_age: 0
+      parent_alerts_included: false
+      crash_detection_included: true
+      per_mile_rate_cents: 0
+      pay_per_mile_daily_cap_miles: 0
+      pay_per_mile_base_rate_pct: 100
+      mileage_billing_cycle: calendar_month
+      odometer_photo_required: false
+      outage_mileage_estimate_basis: average_daily_miles_last_30_days
+      odometer_correction_window_days: 30
+      data_retention_days: 365
+      data_shared_with_third_parties: false
+      score_used_for_claims: false
+      telematics_eligible_packages_rule: auto_package_telematics_eligible_true
+      vehicle_must_be_scheduled: true
+      max_drivers_tracked: 4
+      app_driver_identification: not_applicable_vehicle_level
+      surcharge_cap_by_term: 0
+  - name: Cardinal DriveSense Teen Coach
+    rank: 4
+    entry_gate:
+      teen_driver_max_age: "=teen_driver_max_age"
+    parameters:
+      program_type: teen_coaching
+      data_source: mobile_app
+      participation_discount_pct: 10
+      max_earned_discount_pct: 20
+      max_surcharge_pct: 0
+      surcharge_permitted_states: []
+      score_discount_ladder: {"90-100": 20, "80-89": 12, "70-79": 6}
+      score_surcharge_ladder: {}
+      observation_days: 180
+      min_active_days: 75
+      min_trips: 100
+      activation_days: 14
+      device_shipping_business_days: 0
+      device_return_days: 0
+      device_non_return_fee: 0.00
+      device_disconnect_termination_days: 21
+      hard_brake_threshold_mph_per_sec: 7
+      rapid_acceleration_threshold_mph_per_sec: 8
+      speeding_threshold_mph_over: 10
+      night_driving_window: "23:00-05:00"
+      phone_handling_tracked: true
+      score_weights: {hard_braking: 25, rapid_acceleration: 10, speeding: 25, phone_handling: 30, night_driving: 10}
+      score_posting_frequency: monthly
+      discount_applies_from: next_renewal_term
+      participation_discount_applies_from: next_renewal_term_or_new_business
+      discount_retained_after_opt_out: false
+      rescored_each_term: true
+      max_enrollments_per_vehicle: 1
+      reenrollment_wait_days: 90
+      connected_car_min_model_year: 0
+      connected_car_supported_makes: []
+      teen_driver_max_age: 19
+      parent_alerts_included: true
+      crash_detection_included: true
+      per_mile_rate_cents: 0
+      pay_per_mile_daily_cap_miles: 0
+      pay_per_mile_base_rate_pct: 100
+      mileage_billing_cycle: calendar_month
+      odometer_photo_required: false
+      outage_mileage_estimate_basis: average_daily_miles_last_30_days
+      odometer_correction_window_days: 30
+      data_retention_days: 365
+      data_shared_with_third_parties: false
+      score_used_for_claims: false
+      telematics_eligible_packages_rule: auto_package_telematics_eligible_true
+      vehicle_must_be_scheduled: true
+      max_drivers_tracked: 1
+      app_driver_identification: driver_profile_in_app
+      surcharge_cap_by_term: 0
+  - name: Cardinal DriveSense Miles Mobile
+    rank: 5
+    entry_gate:
+      data_source: mobile_app
+      odometer_photo_required: "=odometer_photo_required"
+    parameters:
+      program_type: pay_per_mile
+      data_source: mobile_app
+      participation_discount_pct: 0
+      max_earned_discount_pct: 0
+      max_surcharge_pct: 0
+      surcharge_permitted_states: []
+      score_discount_ladder: {}
+      score_surcharge_ladder: {}
+      observation_days: 0
+      min_active_days: 0
+      min_trips: 0
+      activation_days: 14
+      device_shipping_business_days: 0
+      device_return_days: 0
+      device_non_return_fee: 0.00
+      device_disconnect_termination_days: 30
+      hard_brake_threshold_mph_per_sec: 7
+      rapid_acceleration_threshold_mph_per_sec: 8
+      speeding_threshold_mph_over: 15
+      night_driving_window: "00:00-04:00"
+      phone_handling_tracked: false
+      score_weights: {hard_braking: 0, rapid_acceleration: 0, speeding: 0, phone_handling: 0, night_driving: 0}
+      score_posting_frequency: monthly
+      discount_applies_from: not_applicable
+      participation_discount_applies_from: not_applicable
+      discount_retained_after_opt_out: false
+      rescored_each_term: false
+      max_enrollments_per_vehicle: 1
+      reenrollment_wait_days: 180
+      connected_car_min_model_year: 0
+      connected_car_supported_makes: []
+      teen_driver_max_age: 0
+      parent_alerts_included: false
+      crash_detection_included: true
+      per_mile_rate_cents: 6.4
+      pay_per_mile_daily_cap_miles: 250
+      pay_per_mile_base_rate_pct: 45
+      mileage_billing_cycle: calendar_month
+      odometer_photo_required: true
+      outage_mileage_estimate_basis: average_daily_miles_last_30_days
+      odometer_correction_window_days: 30
+      data_retention_days: 365
+      data_shared_with_third_parties: false
+      score_used_for_claims: false
+      telematics_eligible_packages_rule: auto_package_telematics_eligible_true
+      vehicle_must_be_scheduled: true
+      max_drivers_tracked: 1
+      app_driver_identification: driver_profile_in_app
+      surcharge_cap_by_term: 0
+  - name: Cardinal DriveSense Miles Plug-In
+    rank: 6
+    entry_gate:
+      data_source: plug_in_device
+      odometer_photo_required: "=odometer_photo_required"
+    parameters:
+      program_type: pay_per_mile
+      data_source: plug_in_device
+      participation_discount_pct: 0
+      max_earned_discount_pct: 0
+      max_surcharge_pct: 0
+      surcharge_permitted_states: []
+      score_discount_ladder: {}
+      score_surcharge_ladder: {}
+      observation_days: 0
+      min_active_days: 0
+      min_trips: 0
+      activation_days: 21
+      device_shipping_business_days: 5
+      device_return_days: 30
+      device_non_return_fee: 49.00
+      device_disconnect_termination_days: 14
+      hard_brake_threshold_mph_per_sec: 7
+      rapid_acceleration_threshold_mph_per_sec: 8
+      speeding_threshold_mph_over: 15
+      night_driving_window: "00:00-04:00"
+      phone_handling_tracked: false
+      score_weights: {hard_braking: 0, rapid_acceleration: 0, speeding: 0, phone_handling: 0, night_driving: 0}
+      score_posting_frequency: monthly
+      discount_applies_from: not_applicable
+      participation_discount_applies_from: not_applicable
+      discount_retained_after_opt_out: false
+      rescored_each_term: false
+      max_enrollments_per_vehicle: 1
+      reenrollment_wait_days: 180
+      connected_car_min_model_year: 0
+      connected_car_supported_makes: []
+      teen_driver_max_age: 0
+      parent_alerts_included: false
+      crash_detection_included: false
+      per_mile_rate_cents: 5.9
+      pay_per_mile_daily_cap_miles: 250
+      pay_per_mile_base_rate_pct: 42
+      mileage_billing_cycle: calendar_month
+      odometer_photo_required: true
+      outage_mileage_estimate_basis: average_daily_miles_last_30_days
+      odometer_correction_window_days: 30
+      data_retention_days: 365
+      data_shared_with_third_parties: false
+      score_used_for_claims: false
+      telematics_eligible_packages_rule: auto_package_telematics_eligible_true
+      vehicle_must_be_scheduled: true
+      max_drivers_tracked: 4
+      app_driver_identification: not_applicable_vehicle_level
+      surcharge_cap_by_term: 0
+
+events:
+  # ---- holding writes (telematics_enrollments) ----------------------------------------------
+  - type: telematics_enroll
+    target: telematics_enrollments
+    mutation: create
+    meaning: A scheduled vehicle is enrolled in a DriveSense program.
+    grain: One row per enrollment.
+    fields:
+      enrollment_id: Enrollment reference.
+      customer_id: Named insured.
+      policy_id: Policy the vehicle is scheduled on.
+      vehicle_id: Vehicle enrolled.
+      driver_id: Driver scored (mobile and teen programs); empty for vehicle-level programs.
+      variant_name: Program chosen.
+      enrolled_date: Date enrolled.
+      device_serial: Serial number of the plug-in device assigned (empty when no device).
+    triggers:
+      - event: telematics:telematics_device_shipped
+        when: {variant_name: [Cardinal DriveSense Plug-In, Cardinal DriveSense Miles Plug-In]}
+        map: {enrollment_id: enrollment_id, customer_id: customer_id, device_serial: device_serial}
+  - type: telematics_activate
+    target: telematics_enrollments
+    mutation: {transition: {from: enrolled, to: observing}}
+    meaning: The first trip is received and the observation period (or mileage tracking) begins.
+    grain: One row per transaction.
+    fields:
+      status: Set to observing.
+      observation_start_date: Date of the first trip.
+    triggers: []
+  - type: telematics_activation_lapse
+    target: telematics_enrollments
+    mutation: {transition: {from: enrolled, to: terminated}}
+    meaning: Nothing was activated within the activation window and the enrollment ends.
+    grain: One row per transaction.
+    fields:
+      status: Set to terminated.
+      end_date: Day after the activation window closed.
+      end_reason: Set to never_activated.
+    triggers: []
+  - type: telematics_observation_complete
+    target: telematics_enrollments
+    mutation: {transition: {from: observing, to: scored}}
+    meaning: The observation period completes and the earned discount or surcharge is fixed.
+    grain: One row per transaction.
+    fields:
+      status: Set to scored.
+      final_score: Score at the end of the observation period.
+      earned_adjustment_pct: Earned discount (positive) or surcharge (negative) percent fixed for the next renewal.
+    triggers: []
+  - type: telematics_opt_out
+    target: telematics_enrollments
+    mutation:
+      transition:
+        - {from: observing, to: opted_out}
+        - {from: scored, to: opted_out}
+    meaning: The customer opts out of the program.
+    grain: One row per transaction.
+    fields:
+      status: Set to opted_out.
+      end_date: Date of the opt-out.
+      end_reason: Set to customer_opt_out.
+      enrollment_id: Enrollment ended.
+      customer_id: Named insured.
+      device_serial: Device to be returned, if any.
+      variant_name: Program of the enrollment.
+    triggers:
+      - event: telematics:telematics_device_return_due
+        when: {variant_name: [Cardinal DriveSense Plug-In, Cardinal DriveSense Miles Plug-In]}
+        map: {enrollment_id: enrollment_id, customer_id: customer_id, device_serial: device_serial}
+  - type: telematics_terminate
+    target: telematics_enrollments
+    mutation:
+      transition:
+        - {from: observing, to: terminated}
+        - {from: scored, to: terminated}
+    meaning: The enrollment ends because the vehicle left the policy or the device stayed disconnected too long.
+    grain: One row per transaction.
+    fields:
+      status: Set to terminated.
+      end_date: Date ended.
+      end_reason: vehicle_removed or device_disconnected.
+      vehicle_id: Vehicle of the enrollment.
+      enrollment_id: Enrollment ended.
+      customer_id: Named insured.
+      device_serial: Device to be returned, if any.
+      variant_name: Program of the enrollment.
+    triggers:
+      - event: telematics:telematics_device_return_due
+        when: {variant_name: [Cardinal DriveSense Plug-In, Cardinal DriveSense Miles Plug-In]}
+        map: {enrollment_id: enrollment_id, customer_id: customer_id, device_serial: device_serial}
+  # ---- event-table writes (telematics_events) -----------------------------------------------
+  - type: telematics_device_shipped
+    target: telematics_events
+    meaning: A plug-in device is shipped to the customer.
+    grain: One row per device shipment.
+    distinguish_by: [device_serial]
+    fields:
+      telematics_event_id: Event reference.
+      enrollment_id: Enrollment.
+      customer_id: Named insured.
+      device_serial: Device shipped.
+      event_date: Ship date.
+    triggers: []
+  - type: telematics_score_posted
+    target: telematics_events
+    meaning: The running driving score and miles for one month are posted.
+    grain: One row per enrollment per scoring month.
+    distinguish_by: [period_start]
+    fields:
+      telematics_event_id: Event reference.
+      enrollment_id: Enrollment.
+      customer_id: Named insured.
+      period_start: First day of the month scored.
+      period_end: Last day of the month scored.
+      score: Running score at the end of the month (0-100).
+      active_days: Days with at least one trip so far in the observation period.
+      trips: Trips so far in the observation period.
+      miles: Miles driven in the month.
+      event_date: Date posted.
+    triggers: []
+  - type: telematics_device_return_due
+    target: telematics_events
+    meaning: A device return is requested after the enrollment ended.
+    grain: One row per device return request.
+    distinguish_by: [device_serial]
+    fields:
+      telematics_event_id: Event reference.
+      enrollment_id: Enrollment.
+      customer_id: Named insured.
+      device_serial: Device to return.
+      return_due_date: Last day the return is accepted without a fee.
+      event_date: Date requested.
+    triggers: []
+  - type: telematics_device_returned
+    target: telematics_events
+    meaning: A returned device is received.
+    grain: One row per device received.
+    distinguish_by: [device_serial]
+    fields:
+      telematics_event_id: Event reference.
+      enrollment_id: Enrollment.
+      customer_id: Named insured.
+      device_serial: Device received.
+      event_date: Date received.
+    triggers: []
+  - type: telematics_device_fee
+    target: telematics_events
+    meaning: The device non-return fee is assessed and sent to billing.
+    grain: One row per unreturned device.
+    distinguish_by: [device_serial]
+    fields:
+      telematics_event_id: Event reference.
+      enrollment_id: Enrollment.
+      customer_id: Named insured.
+      device_serial: Device not returned.
+      amount: Fee, USD.
+      event_date: Date assessed.
+    triggers:
+      - event: billing:billing_fee_charged
+        map: {customer_id: customer_id, source_transaction_id: telematics_event_id, amount: amount, fee_type: device_non_return_fee}
+  - type: telematics_mileage_charge
+    target: telematics_events
+    meaning: The per-mile charge for one billing month of a pay-per-mile program is posted.
+    grain: One row per enrollment per billing month.
+    distinguish_by: [period_start]
+    fields:
+      telematics_event_id: Event reference.
+      enrollment_id: Enrollment.
+      customer_id: Named insured.
+      period_start: First day of the month billed.
+      period_end: Last day of the month billed.
+      miles: Chargeable miles after the daily cap.
+      amount: Mileage charge, USD.
+      event_date: Date posted.
+    account: mileage_charges
+    direction: in
+    triggers: []
+  - type: telematics_mileage_adjustment
+    target: telematics_events
+    meaning: A posted mileage charge is reduced (odometer correction, daily-cap correction, or an outage estimate replaced by actual data).
+    grain: One row per adjustment of one mileage charge.
+    distinguish_by: [source_event_id, adjustment_reason]
+    fields:
+      telematics_event_id: Event reference.
+      enrollment_id: Enrollment.
+      customer_id: Named insured.
+      source_event_id: Mileage charge adjusted.
+      adjustment_reason: Why adjusted.
+      miles: Miles removed.
+      amount: Amount credited, USD.
+      event_date: Date posted.
+    account: mileage_charges
+    direction: out
+    triggers: []
+
+measures:
+  - id: telematics_msr_active_days
+    window: The observation period (observation_start_date plus observation_days).
+    measure: Distinct days with at least one recorded trip, from the latest telematics_score_posted row of the period.
+  - id: telematics_msr_monthly_miles
+    window: One calendar billing month.
+    measure: Sum over the month's days of min(miles driven that day, pay_per_mile_daily_cap_miles).
+
+policies:
+  - id: telematics_agg_multi_holding
+    subject: [telematics_enroll]
+    rule: >-
+      DriveSense is held per vehicle: a vehicle may have only max_enrollments_per_vehicle enrollment that is enrolled,
+      observing or scored, and a customer may enroll every scheduled vehicle, with no cap of its own. A vehicle can be
+      enrolled only when it has no enrollment that is enrolled, observing or scored, and not within reenrollment_wait_days
+      after its last opt-out or termination.
+    eligibility:
+      - id: one_enrollment_per_vehicle
+        applies_to: [telematics_enroll]
+        kind: dedup
+        condition: "A vehicle can be enrolled only when it has no enrollment that is enrolled, observing or scored, and not within reenrollment_wait_days after its last opt-out or termination."
+        evidence_fields: [telematics_enrollments.vehicle_id, telematics_enrollments.status, telematics_enrollments.end_date]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [telematics_enrollments.vehicle_id]
+          action_bindings:
+            telematics_enrollments.vehicle_id: vehicle_id
+        dedup_contract:
+          table: telematics_enrollments
+          mode: separate_record
+          object_bindings: {vehicle_id: vehicle_id}
+          duplicate_filters: {status: [enrolled, observing, scored]}
+          distinct_fields: [end_date]
+    params:
+      max_per_customer: null
+
+  - id: telematics_agg_policy_discount
+    subject: [telematics_observation_complete, telematics_enroll]
+    rule: >-
+      DriveSense discounts and surcharges are applied vehicle by vehicle: each enrolled vehicle's participation or earned
+      adjustment lowers (or, for a surcharge, raises) that vehicle's share of the base premium only, before the
+      policy-level surcharges and discounts of the auto rating are applied, and is never averaged across the policy or
+      moved to another vehicle. A DriveSense adjustment is not part of the policy discount sum and does not count toward
+      the auto package's max_total_discount_pct. A vehicle on a pay-per-mile program takes no
+      participation or earned discount.
+    eligibility: []
+
+  - id: telematics_enrollment_eligibility
+    subject: [telematics_enroll, telematics_activate, telematics_activation_lapse]
+    rule: >-
+      A vehicle can be enrolled only while it is scheduled on an auto policy whose package has telematics_eligible true
+      and whose status is bound or in_force. A vehicle is enrolled only while its auto policy status is bound or in_force.
+      A connected-car program needs a supported make of model year connected_car_min_model_year or newer; the teen
+      coaching program needs a rated driver no older than teen_driver_max_age; a pay-per-mile program needs an odometer
+      photo at enrollment. A plug-in device is shipped within device_shipping_business_days. The app or device must
+      report a first trip within activation_days of enrollment; otherwise the enrollment ends and no participation
+      discount applies. The participation discount applies from participation_discount_applies_from.
+    eligibility:
+      - id: auto_policy_open_for_enrollment
+        applies_to: [telematics_enroll]
+        kind: state
+        condition: "A vehicle is enrolled only while its auto policy status is bound or in_force."
+        evidence_fields: [auto_policies.status, auto_policies.policy_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [auto_policies.policy_id]
+          action_bindings:
+            auto_policies.policy_id: policy_id
+        state_contract:
+          field: auto_policies.status
+          allowed: [bound, in_force]
+
+  - id: telematics_scoring
+    subject: [telematics_score_posted, telematics_observation_complete]
+    rule: >-
+      Driving is scored from 0 to 100 using score_weights over hard braking (hard_brake_threshold_mph_per_sec), rapid
+      acceleration, speeding (speeding_threshold_mph_over), handheld phone use where phone_handling_tracked, and driving
+      in the night_driving_window; a running score is posted monthly. The observation period lasts observation_days from
+      the first trip. A score is fixed only when the observation period has at least min_active_days active days and
+      min_trips trips (telematics_msr_active_days); otherwise the observation is extended by one month at a time until it
+      does, up to the end of the policy term. The fixed score earns the discount of its band in score_discount_ladder;
+      below the lowest discount band it brings the surcharge of its band in score_surcharge_ladder, but only where the
+      policy state is in surcharge_permitted_states and never more than max_surcharge_pct; elsewhere a low score earns no
+      discount and no surcharge. The earned adjustment applies from discount_applies_from and, where rescored_each_term is
+      false, stays for as long as the vehicle is insured with Cardinal. Driving data is never used to decide claims.
+    eligibility: []
+    measures: [telematics_msr_active_days]
+    params:
+      per_tier:
+        Cardinal DriveSense Mobile: {max_earned_discount_pct: "=max_earned_discount_pct", max_surcharge_pct: "=max_surcharge_pct", observation_days: "=observation_days"}
+        Cardinal DriveSense Plug-In: {max_earned_discount_pct: "=max_earned_discount_pct", max_surcharge_pct: "=max_surcharge_pct", observation_days: "=observation_days"}
+        Cardinal DriveSense Connected Car: {max_earned_discount_pct: "=max_earned_discount_pct", max_surcharge_pct: "=max_surcharge_pct", observation_days: "=observation_days"}
+        Cardinal DriveSense Teen Coach: {max_earned_discount_pct: "=max_earned_discount_pct", max_surcharge_pct: "=max_surcharge_pct", observation_days: "=observation_days"}
+        Cardinal DriveSense Miles Mobile: {max_earned_discount_pct: "=max_earned_discount_pct", max_surcharge_pct: "=max_surcharge_pct", observation_days: "=observation_days"}
+        Cardinal DriveSense Miles Plug-In: {max_earned_discount_pct: "=max_earned_discount_pct", max_surcharge_pct: "=max_surcharge_pct", observation_days: "=observation_days"}
+
+  - id: telematics_device_handling
+    subject: [telematics_device_shipped, telematics_device_return_due, telematics_device_returned, telematics_device_fee]
+    rule: >-
+      A plug-in device stays Cardinal's property. When a plug-in enrollment ends, a return is requested with a due date
+      device_return_days after the end date. The device non-return fee is charged only when the device has not been received
+      by the return due date. The return due date is the last day a return is accepted without a fee, and the fee may be
+      charged from the next day. A device received after the fee was charged
+      has the fee waived through billing. A device reported lost in a covered total loss or theft carries no fee.
+    eligibility:
+      - id: return_window_passed
+        applies_to: [telematics_device_fee]
+        kind: time
+        condition: "The device non-return fee is charged only when the device has not been received by the return due date."
+        evidence_fields: [telematics_events.return_due_date, telematics_events.device_serial]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [telematics_events.device_serial]
+          action_bindings:
+            telematics_events.device_serial: device_serial
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the return due date
+          anchor_source: telematics_events.return_due_date
+          relation: not_before
+          duration_source: params.fee_after_due_days
+          unit: calendar_days
+          counting_rule: "The return due date is the last day a return is accepted without a fee, and the fee may be charged from the next day."
+          boundary: exclusive
+    params:
+      fee_after_due_days: 0
+
+  - id: telematics_evt_pay_per_mile
+    subject: [telematics_mileage_charge, telematics_mileage_adjustment]
+    rule: >-
+      Under a pay-per-mile program the vehicle's rated premium is reduced to pay_per_mile_base_rate_pct percent as a fixed
+      base, and the miles driven each calendar month are charged at per_mile_rate_cents per mile, counting no more than
+      pay_per_mile_daily_cap_miles miles for any one day (telematics_msr_monthly_miles); the charge is rounded to the cent
+      and billed with the next installment. Days without data are estimated on outage_mileage_estimate_basis and replaced
+      by actual data when it arrives. An odometer correction is accepted within odometer_correction_window_days after the
+      charge it corrects and lowers that charge; a mileage charge is adjusted only once for each reason.
+    eligibility: []
+    formula:
+      amount: round(telematics_msr_monthly_miles * per_mile_rate_cents / 100, 2)
+    measures: [telematics_msr_monthly_miles]
+
+  - id: telematics_opt_out_and_termination
+    subject: [telematics_opt_out, telematics_terminate]
+    rule: >-
+      The customer may opt out at any time. A fixed earned discount is kept after opting out where
+      discount_retained_after_opt_out is true; a participation discount ends with the opt-out at the next renewal, and a
+      surcharge already fixed is kept until the next renewal. A pay-per-mile vehicle that opts out is re-rated at its full
+      rated premium from the next renewal, with mileage charged through the opt-out date. An enrollment ends when the
+      vehicle leaves the policy, or when no data arrives for device_disconnect_termination_days consecutive days during
+      observation; a disconnected enrollment loses its participation discount.
+    eligibility: []
+
+  - id: telematics_teen_coaching
+    subject: [telematics_enroll, telematics_score_posted, telematics_terminate]
+    rule: >-
+      The teen coaching program scores one rated driver no older than teen_driver_max_age on the enrollment date, using
+      the driver's profile in the app. The named insured receives speeding and late-night alerts where
+      parent_alerts_included. The teen's adjustment is rescored every term where rescored_each_term is true, and it is
+      not kept after opting out. When the scored driver passes teen_driver_max_age the enrollment continues to the end of
+      the current term and is then ended; the vehicle may enroll in another program after reenrollment_wait_days.
+    eligibility: []
+
+  - id: telematics_data_use
+    subject: [telematics_score_posted, telematics_mileage_charge]
+    rule: >-
+      Trip-level driving data is kept for data_retention_days and is used only to set the DriveSense adjustment and the
+      per-mile charge. Driving data is never shared outside Cardinal for marketing (data_shared_with_third_parties) and
+      never used to decide a claim (score_used_for_claims). A customer who disputes a monthly score is shown the trip
+      events behind it; the score itself is not changed at the desk, and an error in the data source is referred to the
+      DriveSense support team.
+    eligibility: []

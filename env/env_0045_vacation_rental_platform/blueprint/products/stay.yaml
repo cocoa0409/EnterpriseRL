@@ -1,0 +1,1327 @@
+# Policy charter of the Stays category (guest reservations) at Roamhaven.
+# A stay is the contract a guest holds for one booked range of nights at one listing. Its tier is the
+# cancellation policy the stay was booked under, fixed at booking: the listing's chosen short-stay
+# policy, or Long-Term for any stay of long_term_min_nights or more. The stay records the full price
+# breakdown at booking; money actually moving (collections and refunds) is booked in stay_transactions.
+
+category: stay
+display_name: Stays (Guest Reservations)
+
+binding:
+  holding_table: stays
+  event_tables: [stay_transactions]
+  intake_tables: [stay_requests]
+  status_field: status
+  variant_field: variant_name
+
+lifecycle:
+  states: [requested, confirmed, checked_in, completed, cancelled_by_guest, cancelled_by_host, declined, expired]
+  transitions:
+    - {from: requested, to: confirmed, by: user, means: "The host accepts the booking request, or an Instant Book request is accepted automatically at the moment it is booked."}
+    - {from: requested, to: declined, by: user, means: "The host declines the booking request; no money is collected."}
+    - {from: requested, to: expired, by: system, means: "The booking request lapses because the host did not accept it in time; no money is collected."}
+    - {from: confirmed, to: checked_in, by: system, means: "The check-in date arrives on a confirmed stay and the stay is in progress."}
+    - {from: checked_in, to: completed, by: system, means: "The check-out date arrives on a stay in progress and the stay is completed."}
+    - {from: confirmed, to: cancelled_by_guest, by: user, means: "The guest cancels the confirmed stay before check-in."}
+    - {from: checked_in, to: cancelled_by_guest, by: user, means: "The guest cancels a stay in progress and leaves early."}
+    - {from: confirmed, to: cancelled_by_guest, by: system, means: "The stay is cancelled for non-payment of a scheduled installment; it is treated as a guest cancellation."}
+    - {from: confirmed, to: cancelled_by_host, by: user, means: "The host cancels the confirmed stay before check-in."}
+
+accounts:
+  - key: guest_payments
+    unit: USD
+    meaning: Net money collected from the guest's payment method on this stay — collections in, refunds out; its balance is what the guest has paid and not had back.
+
+parameter_schema:
+  full_refund_cutoff_days: "int, calendar days before the check-in date at or beyond which a guest cancellation refunds every nightly-based component in full; 0 means the tier has no full-refund window"
+  booking_grace_hours: "int, elapsed hours after the stay was booked within which a guest cancellation refunds in full (subject to grace_min_lead_days); 0 means the tier has no booking grace period"
+  grace_min_lead_days: "int, minimum calendar days between the cancellation date and the check-in date for the booking grace period to apply; 0 when the tier has no grace period"
+  partial_window_cutoff_days: "int, calendar days before check-in at or beyond which the partial-refund window applies once the full-refund window is missed; 0 means the partial window runs right up to the check-in date"
+  partial_refund_pct: "decimal percent of the nightly-based components refunded in the partial-refund window, applied to the nights left after the forfeited nights"
+  partial_window_forfeited_nights: "int, nights (taken from the start of the stay) that are never refunded in the partial-refund window"
+  after_check_in_refund_pct: "decimal percent of the unspent nights (after notice nights) refunded when the guest cancels after check-in"
+  after_check_in_notice_nights: "int, unspent nights forfeited as notice when the guest cancels after check-in"
+  cleaning_fee_refund_before_check_in: "bool, whether the cleaning fee is refunded in full on any standard-rate guest cancellation dated before the check-in date"
+  cleaning_fee_refund_after_check_in: "bool, whether the cleaning fee is refunded on a guest cancellation dated on or after the check-in date"
+  add_on_fees_follow_nightly: "bool, whether the pet fee and extra-guest fee are refunded in the same proportion as the nightly subtotal"
+  service_fee_refund_in_full_window: "bool, whether the guest service fee is refunded in full when the cancellation falls in the full-refund window or the booking grace period"
+  service_fee_partial_refund_mode: "enum (proportional | none), how the guest service fee is refunded outside the full-refund window"
+  service_fee_refund_annual_cap: "int, number of other guest-cancelled stays with a guest service fee refund in the cap window beyond which no guest service fee is refunded"
+  service_fee_refund_cap_window_days: "int, calendar days of the trailing window over which the service-fee refund cap is counted"
+  occupancy_tax_refund_mode: "enum (proportional), occupancy tax is refunded in the same proportion as the refunded taxable base"
+  non_refundable_option_available: "bool, whether a guest may book this tier at the non-refundable rate"
+  non_refundable_discount_pct: "decimal percent off the nightly subtotal for the non-refundable rate; 0.00 where the option is not offered"
+  non_refundable_refund_pct: "decimal percent of any component refunded on a guest cancellation of a non-refundable-rate stay"
+  host_cancellation_guest_refund_pct: "decimal percent of every collected component refunded to the guest when the host cancels"
+  refund_destination: "string, where refunds are sent"
+  refund_posting_business_days_max: "int, business days within which the card issuer posts a refund after it is issued (guest-facing expectation only)"
+  pay_part_now_available: "bool, whether the pay-part-now plan (deposit now, balance later) may be chosen on this tier"
+  pay_part_now_deposit_pct: "decimal percent of every component collected as installment 1 under pay-part-now; 0.00 where unavailable"
+  pay_part_now_min_lead_days: "int, minimum calendar days between the booking date and the check-in date for pay-part-now; 0 where unavailable"
+  balance_due_days_before_check_in: "int, calendar days before the check-in date on which the pay-part-now balance (installment 2) is collected; 0 where unavailable"
+  payment_retry_attempts: "int, automatic retries of a failed scheduled collection"
+  failed_payment_grace_hours: "int, elapsed hours after the first failed collection attempt of an installment after which a still-unpaid confirmed stay is cancelled for non-payment"
+  monthly_installments_available: "bool, whether the stay is paid in monthly installments"
+  installment_nights: "int, nights covered by each monthly installment; 0 where monthly installments are not used"
+  long_term_min_nights: "int, nights at or above which a stay is booked under Long-Term regardless of the listing's chosen policy"
+  guest_service_fee_pct: "decimal percent of the service-fee base charged as the guest service fee on a split_fee stay"
+  host_only_fee_guest_service_fee_pct: "decimal percent of the service-fee base charged as the guest service fee on a host_only_fee stay"
+  service_fee_base_components: "list, the stay amounts that make up the guest service fee base"
+  occupancy_tax_base_components: "list, the stay amounts that make up the occupancy tax base"
+  amount_rounding: "string, rounding applied to every computed component amount"
+  request_expiry_hours: "int, elapsed hours after a request-to-book stay was booked after which the unaccepted request expires"
+  instant_book_permitted: "bool, whether a listing on this policy may accept stays by Instant Book"
+  alteration_response_hours: "int, elapsed hours the host has to accept a date or guest-count change request before it lapses"
+  alteration_removed_nights_treatment: "string, how nights removed by an accepted alteration are refunded"
+  alteration_after_check_in_allowed: "bool, whether a stay in progress may still be altered"
+  alteration_added_nights_pricing: "string, the nightly price used for nights added by an alteration"
+  travel_issue_report_hours: "int, elapsed hours after the guest discovered a travel issue within which it must be reported"
+  travel_issue_refund_pct_by_category: "mapping issue_category -> decimal percent of the affected nights' nightly amount refunded on an approved travel issue"
+  travel_issue_cleaning_fee_categories: "list, travel-issue categories for which the cleaning fee is also refunded in full when reported on the check-in date"
+  major_event_refund_pct: "decimal percent of every collected component for unspent nights refunded on an approved major disruptive event request"
+  major_event_counts_toward_service_fee_cap: "bool, whether a major-disruptive-event refund counts toward the service-fee refund cap"
+  review_window_days: "int, calendar days after the check-out date within which guest and host may each submit a review"
+  review_one_per_role: "bool, whether each side may submit only one review per stay"
+  nightly_rate_basis: "string, how one night's price is derived for any per-night refund"
+  unspent_night_basis: "string, which nights count as unspent on a cancellation after check-in"
+
+variants:
+  - name: Flexible
+    rank: 1
+    entry_gate: {listing_cancellation_policy: Flexible, max_nights_exclusive: 28}
+    parameters:
+      full_refund_cutoff_days: 1
+      booking_grace_hours: 0
+      grace_min_lead_days: 0
+      partial_window_cutoff_days: 0
+      partial_refund_pct: 100.00
+      partial_window_forfeited_nights: 1
+      after_check_in_refund_pct: 100.00
+      after_check_in_notice_nights: 1
+      cleaning_fee_refund_before_check_in: true
+      cleaning_fee_refund_after_check_in: false
+      add_on_fees_follow_nightly: true
+      service_fee_refund_in_full_window: true
+      service_fee_partial_refund_mode: proportional
+      service_fee_refund_annual_cap: 3
+      service_fee_refund_cap_window_days: 365
+      occupancy_tax_refund_mode: proportional
+      non_refundable_option_available: false
+      non_refundable_discount_pct: 0.00
+      non_refundable_refund_pct: 0.00
+      host_cancellation_guest_refund_pct: 100.00
+      refund_destination: original payment method
+      refund_posting_business_days_max: 10
+      pay_part_now_available: true
+      pay_part_now_deposit_pct: 50.00
+      pay_part_now_min_lead_days: 21
+      balance_due_days_before_check_in: 14
+      payment_retry_attempts: 2
+      failed_payment_grace_hours: 48
+      monthly_installments_available: false
+      installment_nights: 0
+      long_term_min_nights: 28
+      guest_service_fee_pct: 14.20
+      host_only_fee_guest_service_fee_pct: 0.00
+      service_fee_base_components: [nightly_subtotal, cleaning_fee, pet_fee_total, extra_guest_fee_total]
+      occupancy_tax_base_components: [nightly_subtotal, cleaning_fee, pet_fee_total, extra_guest_fee_total]
+      amount_rounding: nearest cent, half up, per component
+      request_expiry_hours: 24
+      instant_book_permitted: true
+      alteration_response_hours: 24
+      alteration_removed_nights_treatment: refunded as if those nights were cancelled by the guest on the date the host accepted the alteration
+      alteration_after_check_in_allowed: true
+      alteration_added_nights_pricing: listing nightly rate in effect when the host accepts the alteration
+      travel_issue_report_hours: 72
+      travel_issue_refund_pct_by_category: {no_access: 100.00, uninhabitable: 100.00, misrepresented: 50.00, amenity_missing: 25.00}
+      travel_issue_cleaning_fee_categories: [no_access, uninhabitable]
+      major_event_refund_pct: 100.00
+      major_event_counts_toward_service_fee_cap: false
+      review_window_days: 14
+      review_one_per_role: true
+      nightly_rate_basis: nightly_subtotal divided by nights, rounded half up to the cent
+      unspent_night_basis: nights dated after the cancellation date and before the check-out date
+  - name: Moderate
+    rank: 2
+    entry_gate: {listing_cancellation_policy: Moderate, max_nights_exclusive: 28}
+    parameters:
+      full_refund_cutoff_days: 5
+      booking_grace_hours: 0
+      grace_min_lead_days: 0
+      partial_window_cutoff_days: 0
+      partial_refund_pct: 50.00
+      partial_window_forfeited_nights: 1
+      after_check_in_refund_pct: 50.00
+      after_check_in_notice_nights: 1
+      cleaning_fee_refund_before_check_in: true
+      cleaning_fee_refund_after_check_in: false
+      add_on_fees_follow_nightly: true
+      service_fee_refund_in_full_window: true
+      service_fee_partial_refund_mode: proportional
+      service_fee_refund_annual_cap: 3
+      service_fee_refund_cap_window_days: 365
+      occupancy_tax_refund_mode: proportional
+      non_refundable_option_available: true
+      non_refundable_discount_pct: 10.00
+      non_refundable_refund_pct: 0.00
+      host_cancellation_guest_refund_pct: 100.00
+      refund_destination: original payment method
+      refund_posting_business_days_max: 10
+      pay_part_now_available: true
+      pay_part_now_deposit_pct: 50.00
+      pay_part_now_min_lead_days: 21
+      balance_due_days_before_check_in: 14
+      payment_retry_attempts: 2
+      failed_payment_grace_hours: 48
+      monthly_installments_available: false
+      installment_nights: 0
+      long_term_min_nights: 28
+      guest_service_fee_pct: 14.20
+      host_only_fee_guest_service_fee_pct: 0.00
+      service_fee_base_components: [nightly_subtotal, cleaning_fee, pet_fee_total, extra_guest_fee_total]
+      occupancy_tax_base_components: [nightly_subtotal, cleaning_fee, pet_fee_total, extra_guest_fee_total]
+      amount_rounding: nearest cent, half up, per component
+      request_expiry_hours: 24
+      instant_book_permitted: true
+      alteration_response_hours: 24
+      alteration_removed_nights_treatment: refunded as if those nights were cancelled by the guest on the date the host accepted the alteration
+      alteration_after_check_in_allowed: true
+      alteration_added_nights_pricing: listing nightly rate in effect when the host accepts the alteration
+      travel_issue_report_hours: 72
+      travel_issue_refund_pct_by_category: {no_access: 100.00, uninhabitable: 100.00, misrepresented: 50.00, amenity_missing: 25.00}
+      travel_issue_cleaning_fee_categories: [no_access, uninhabitable]
+      major_event_refund_pct: 100.00
+      major_event_counts_toward_service_fee_cap: false
+      review_window_days: 14
+      review_one_per_role: true
+      nightly_rate_basis: nightly_subtotal divided by nights, rounded half up to the cent
+      unspent_night_basis: nights dated after the cancellation date and before the check-out date
+  - name: Limited
+    rank: 3
+    entry_gate: {listing_cancellation_policy: Limited, max_nights_exclusive: 28}
+    parameters:
+      full_refund_cutoff_days: 14
+      booking_grace_hours: 0
+      grace_min_lead_days: 0
+      partial_window_cutoff_days: 7
+      partial_refund_pct: 50.00
+      partial_window_forfeited_nights: 0
+      after_check_in_refund_pct: 0.00
+      after_check_in_notice_nights: 0
+      cleaning_fee_refund_before_check_in: true
+      cleaning_fee_refund_after_check_in: false
+      add_on_fees_follow_nightly: true
+      service_fee_refund_in_full_window: true
+      service_fee_partial_refund_mode: proportional
+      service_fee_refund_annual_cap: 3
+      service_fee_refund_cap_window_days: 365
+      occupancy_tax_refund_mode: proportional
+      non_refundable_option_available: true
+      non_refundable_discount_pct: 10.00
+      non_refundable_refund_pct: 0.00
+      host_cancellation_guest_refund_pct: 100.00
+      refund_destination: original payment method
+      refund_posting_business_days_max: 10
+      pay_part_now_available: true
+      pay_part_now_deposit_pct: 50.00
+      pay_part_now_min_lead_days: 28
+      balance_due_days_before_check_in: 21
+      payment_retry_attempts: 2
+      failed_payment_grace_hours: 48
+      monthly_installments_available: false
+      installment_nights: 0
+      long_term_min_nights: 28
+      guest_service_fee_pct: 14.20
+      host_only_fee_guest_service_fee_pct: 0.00
+      service_fee_base_components: [nightly_subtotal, cleaning_fee, pet_fee_total, extra_guest_fee_total]
+      occupancy_tax_base_components: [nightly_subtotal, cleaning_fee, pet_fee_total, extra_guest_fee_total]
+      amount_rounding: nearest cent, half up, per component
+      request_expiry_hours: 24
+      instant_book_permitted: true
+      alteration_response_hours: 24
+      alteration_removed_nights_treatment: refunded as if those nights were cancelled by the guest on the date the host accepted the alteration
+      alteration_after_check_in_allowed: true
+      alteration_added_nights_pricing: listing nightly rate in effect when the host accepts the alteration
+      travel_issue_report_hours: 72
+      travel_issue_refund_pct_by_category: {no_access: 100.00, uninhabitable: 100.00, misrepresented: 50.00, amenity_missing: 25.00}
+      travel_issue_cleaning_fee_categories: [no_access, uninhabitable]
+      major_event_refund_pct: 100.00
+      major_event_counts_toward_service_fee_cap: false
+      review_window_days: 14
+      review_one_per_role: true
+      nightly_rate_basis: nightly_subtotal divided by nights, rounded half up to the cent
+      unspent_night_basis: nights dated after the cancellation date and before the check-out date
+  - name: Firm
+    rank: 4
+    entry_gate: {listing_cancellation_policy: Firm, max_nights_exclusive: 28}
+    parameters:
+      full_refund_cutoff_days: 30
+      booking_grace_hours: 48
+      grace_min_lead_days: 14
+      partial_window_cutoff_days: 7
+      partial_refund_pct: 50.00
+      partial_window_forfeited_nights: 0
+      after_check_in_refund_pct: 0.00
+      after_check_in_notice_nights: 0
+      cleaning_fee_refund_before_check_in: true
+      cleaning_fee_refund_after_check_in: false
+      add_on_fees_follow_nightly: true
+      service_fee_refund_in_full_window: true
+      service_fee_partial_refund_mode: proportional
+      service_fee_refund_annual_cap: 3
+      service_fee_refund_cap_window_days: 365
+      occupancy_tax_refund_mode: proportional
+      non_refundable_option_available: true
+      non_refundable_discount_pct: 10.00
+      non_refundable_refund_pct: 0.00
+      host_cancellation_guest_refund_pct: 100.00
+      refund_destination: original payment method
+      refund_posting_business_days_max: 10
+      pay_part_now_available: true
+      pay_part_now_deposit_pct: 50.00
+      pay_part_now_min_lead_days: 42
+      balance_due_days_before_check_in: 35
+      payment_retry_attempts: 2
+      failed_payment_grace_hours: 48
+      monthly_installments_available: false
+      installment_nights: 0
+      long_term_min_nights: 28
+      guest_service_fee_pct: 14.20
+      host_only_fee_guest_service_fee_pct: 0.00
+      service_fee_base_components: [nightly_subtotal, cleaning_fee, pet_fee_total, extra_guest_fee_total]
+      occupancy_tax_base_components: [nightly_subtotal, cleaning_fee, pet_fee_total, extra_guest_fee_total]
+      amount_rounding: nearest cent, half up, per component
+      request_expiry_hours: 24
+      instant_book_permitted: true
+      alteration_response_hours: 24
+      alteration_removed_nights_treatment: refunded as if those nights were cancelled by the guest on the date the host accepted the alteration
+      alteration_after_check_in_allowed: true
+      alteration_added_nights_pricing: listing nightly rate in effect when the host accepts the alteration
+      travel_issue_report_hours: 72
+      travel_issue_refund_pct_by_category: {no_access: 100.00, uninhabitable: 100.00, misrepresented: 50.00, amenity_missing: 25.00}
+      travel_issue_cleaning_fee_categories: [no_access, uninhabitable]
+      major_event_refund_pct: 100.00
+      major_event_counts_toward_service_fee_cap: false
+      review_window_days: 14
+      review_one_per_role: true
+      nightly_rate_basis: nightly_subtotal divided by nights, rounded half up to the cent
+      unspent_night_basis: nights dated after the cancellation date and before the check-out date
+  - name: Strict
+    rank: 5
+    entry_gate: {listing_cancellation_policy: Strict, max_nights_exclusive: 28}
+    parameters:
+      full_refund_cutoff_days: 0
+      booking_grace_hours: 48
+      grace_min_lead_days: 14
+      partial_window_cutoff_days: 7
+      partial_refund_pct: 50.00
+      partial_window_forfeited_nights: 0
+      after_check_in_refund_pct: 0.00
+      after_check_in_notice_nights: 0
+      cleaning_fee_refund_before_check_in: true
+      cleaning_fee_refund_after_check_in: false
+      add_on_fees_follow_nightly: true
+      service_fee_refund_in_full_window: true
+      service_fee_partial_refund_mode: proportional
+      service_fee_refund_annual_cap: 3
+      service_fee_refund_cap_window_days: 365
+      occupancy_tax_refund_mode: proportional
+      non_refundable_option_available: true
+      non_refundable_discount_pct: 10.00
+      non_refundable_refund_pct: 0.00
+      host_cancellation_guest_refund_pct: 100.00
+      refund_destination: original payment method
+      refund_posting_business_days_max: 10
+      pay_part_now_available: false
+      pay_part_now_deposit_pct: 0.00
+      pay_part_now_min_lead_days: 0
+      balance_due_days_before_check_in: 0
+      payment_retry_attempts: 2
+      failed_payment_grace_hours: 48
+      monthly_installments_available: false
+      installment_nights: 0
+      long_term_min_nights: 28
+      guest_service_fee_pct: 14.20
+      host_only_fee_guest_service_fee_pct: 0.00
+      service_fee_base_components: [nightly_subtotal, cleaning_fee, pet_fee_total, extra_guest_fee_total]
+      occupancy_tax_base_components: [nightly_subtotal, cleaning_fee, pet_fee_total, extra_guest_fee_total]
+      amount_rounding: nearest cent, half up, per component
+      request_expiry_hours: 24
+      instant_book_permitted: true
+      alteration_response_hours: 24
+      alteration_removed_nights_treatment: refunded as if those nights were cancelled by the guest on the date the host accepted the alteration
+      alteration_after_check_in_allowed: true
+      alteration_added_nights_pricing: listing nightly rate in effect when the host accepts the alteration
+      travel_issue_report_hours: 72
+      travel_issue_refund_pct_by_category: {no_access: 100.00, uninhabitable: 100.00, misrepresented: 50.00, amenity_missing: 25.00}
+      travel_issue_cleaning_fee_categories: [no_access, uninhabitable]
+      major_event_refund_pct: 100.00
+      major_event_counts_toward_service_fee_cap: false
+      review_window_days: 14
+      review_one_per_role: true
+      nightly_rate_basis: nightly_subtotal divided by nights, rounded half up to the cent
+      unspent_night_basis: nights dated after the cancellation date and before the check-out date
+  - name: Super Strict 30 Days
+    rank: 6
+    entry_gate: {listing_cancellation_policy: Super Strict 30 Days, max_nights_exclusive: 28}
+    parameters:
+      full_refund_cutoff_days: 0
+      booking_grace_hours: 0
+      grace_min_lead_days: 0
+      partial_window_cutoff_days: 30
+      partial_refund_pct: 50.00
+      partial_window_forfeited_nights: 0
+      after_check_in_refund_pct: 0.00
+      after_check_in_notice_nights: 0
+      cleaning_fee_refund_before_check_in: true
+      cleaning_fee_refund_after_check_in: false
+      add_on_fees_follow_nightly: true
+      service_fee_refund_in_full_window: true
+      service_fee_partial_refund_mode: proportional
+      service_fee_refund_annual_cap: 3
+      service_fee_refund_cap_window_days: 365
+      occupancy_tax_refund_mode: proportional
+      non_refundable_option_available: false
+      non_refundable_discount_pct: 0.00
+      non_refundable_refund_pct: 0.00
+      host_cancellation_guest_refund_pct: 100.00
+      refund_destination: original payment method
+      refund_posting_business_days_max: 10
+      pay_part_now_available: false
+      pay_part_now_deposit_pct: 0.00
+      pay_part_now_min_lead_days: 0
+      balance_due_days_before_check_in: 0
+      payment_retry_attempts: 2
+      failed_payment_grace_hours: 48
+      monthly_installments_available: false
+      installment_nights: 0
+      long_term_min_nights: 28
+      guest_service_fee_pct: 14.20
+      host_only_fee_guest_service_fee_pct: 0.00
+      service_fee_base_components: [nightly_subtotal, cleaning_fee, pet_fee_total, extra_guest_fee_total]
+      occupancy_tax_base_components: [nightly_subtotal, cleaning_fee, pet_fee_total, extra_guest_fee_total]
+      amount_rounding: nearest cent, half up, per component
+      request_expiry_hours: 24
+      instant_book_permitted: true
+      alteration_response_hours: 24
+      alteration_removed_nights_treatment: refunded as if those nights were cancelled by the guest on the date the host accepted the alteration
+      alteration_after_check_in_allowed: true
+      alteration_added_nights_pricing: listing nightly rate in effect when the host accepts the alteration
+      travel_issue_report_hours: 72
+      travel_issue_refund_pct_by_category: {no_access: 100.00, uninhabitable: 100.00, misrepresented: 50.00, amenity_missing: 25.00}
+      travel_issue_cleaning_fee_categories: [no_access, uninhabitable]
+      major_event_refund_pct: 100.00
+      major_event_counts_toward_service_fee_cap: false
+      review_window_days: 14
+      review_one_per_role: true
+      nightly_rate_basis: nightly_subtotal divided by nights, rounded half up to the cent
+      unspent_night_basis: nights dated after the cancellation date and before the check-out date
+  - name: Super Strict 60 Days
+    rank: 7
+    entry_gate: {listing_cancellation_policy: Super Strict 60 Days, max_nights_exclusive: 28}
+    parameters:
+      full_refund_cutoff_days: 0
+      booking_grace_hours: 0
+      grace_min_lead_days: 0
+      partial_window_cutoff_days: 60
+      partial_refund_pct: 50.00
+      partial_window_forfeited_nights: 0
+      after_check_in_refund_pct: 0.00
+      after_check_in_notice_nights: 0
+      cleaning_fee_refund_before_check_in: true
+      cleaning_fee_refund_after_check_in: false
+      add_on_fees_follow_nightly: true
+      service_fee_refund_in_full_window: true
+      service_fee_partial_refund_mode: proportional
+      service_fee_refund_annual_cap: 3
+      service_fee_refund_cap_window_days: 365
+      occupancy_tax_refund_mode: proportional
+      non_refundable_option_available: false
+      non_refundable_discount_pct: 0.00
+      non_refundable_refund_pct: 0.00
+      host_cancellation_guest_refund_pct: 100.00
+      refund_destination: original payment method
+      refund_posting_business_days_max: 10
+      pay_part_now_available: false
+      pay_part_now_deposit_pct: 0.00
+      pay_part_now_min_lead_days: 0
+      balance_due_days_before_check_in: 0
+      payment_retry_attempts: 2
+      failed_payment_grace_hours: 48
+      monthly_installments_available: false
+      installment_nights: 0
+      long_term_min_nights: 28
+      guest_service_fee_pct: 14.20
+      host_only_fee_guest_service_fee_pct: 0.00
+      service_fee_base_components: [nightly_subtotal, cleaning_fee, pet_fee_total, extra_guest_fee_total]
+      occupancy_tax_base_components: [nightly_subtotal, cleaning_fee, pet_fee_total, extra_guest_fee_total]
+      amount_rounding: nearest cent, half up, per component
+      request_expiry_hours: 24
+      instant_book_permitted: true
+      alteration_response_hours: 24
+      alteration_removed_nights_treatment: refunded as if those nights were cancelled by the guest on the date the host accepted the alteration
+      alteration_after_check_in_allowed: true
+      alteration_added_nights_pricing: listing nightly rate in effect when the host accepts the alteration
+      travel_issue_report_hours: 72
+      travel_issue_refund_pct_by_category: {no_access: 100.00, uninhabitable: 100.00, misrepresented: 50.00, amenity_missing: 25.00}
+      travel_issue_cleaning_fee_categories: [no_access, uninhabitable]
+      major_event_refund_pct: 100.00
+      major_event_counts_toward_service_fee_cap: false
+      review_window_days: 14
+      review_one_per_role: true
+      nightly_rate_basis: nightly_subtotal divided by nights, rounded half up to the cent
+      unspent_night_basis: nights dated after the cancellation date and before the check-out date
+  - name: Long-Term
+    rank: 8
+    entry_gate: {min_nights: 28, listing_cancellation_policy: any}
+    parameters:
+      full_refund_cutoff_days: 0
+      booking_grace_hours: 48
+      grace_min_lead_days: 28
+      partial_window_cutoff_days: 0
+      partial_refund_pct: 100.00
+      partial_window_forfeited_nights: 30
+      after_check_in_refund_pct: 100.00
+      after_check_in_notice_nights: 30
+      cleaning_fee_refund_before_check_in: true
+      cleaning_fee_refund_after_check_in: false
+      add_on_fees_follow_nightly: true
+      service_fee_refund_in_full_window: true
+      service_fee_partial_refund_mode: proportional
+      service_fee_refund_annual_cap: 3
+      service_fee_refund_cap_window_days: 365
+      occupancy_tax_refund_mode: proportional
+      non_refundable_option_available: false
+      non_refundable_discount_pct: 0.00
+      non_refundable_refund_pct: 0.00
+      host_cancellation_guest_refund_pct: 100.00
+      refund_destination: original payment method
+      refund_posting_business_days_max: 10
+      pay_part_now_available: false
+      pay_part_now_deposit_pct: 0.00
+      pay_part_now_min_lead_days: 0
+      balance_due_days_before_check_in: 0
+      payment_retry_attempts: 2
+      failed_payment_grace_hours: 48
+      monthly_installments_available: true
+      installment_nights: 30
+      long_term_min_nights: 28
+      guest_service_fee_pct: 12.00
+      host_only_fee_guest_service_fee_pct: 0.00
+      service_fee_base_components: [nightly_subtotal, cleaning_fee, pet_fee_total, extra_guest_fee_total]
+      occupancy_tax_base_components: [nightly_subtotal, cleaning_fee, pet_fee_total, extra_guest_fee_total]
+      amount_rounding: nearest cent, half up, per component
+      request_expiry_hours: 24
+      instant_book_permitted: true
+      alteration_response_hours: 24
+      alteration_removed_nights_treatment: refunded as if those nights were cancelled by the guest on the date the host accepted the alteration
+      alteration_after_check_in_allowed: true
+      alteration_added_nights_pricing: listing nightly rate in effect when the host accepts the alteration
+      travel_issue_report_hours: 72
+      travel_issue_refund_pct_by_category: {no_access: 100.00, uninhabitable: 100.00, misrepresented: 50.00, amenity_missing: 25.00}
+      travel_issue_cleaning_fee_categories: [no_access, uninhabitable]
+      major_event_refund_pct: 100.00
+      major_event_counts_toward_service_fee_cap: false
+      review_window_days: 14
+      review_one_per_role: true
+      nightly_rate_basis: nightly_subtotal divided by nights, rounded half up to the cent
+      unspent_night_basis: nights dated after the cancellation date and before the check-out date
+
+events:
+  - type: stay_booked
+    target: stays
+    mutation: create
+    meaning: A guest books a range of nights at a listing, creating the stay with its full price breakdown frozen at the moment of booking.
+    grain: one row per reservation
+    fields:
+      stay_id: reference number of the new stay
+      customer_id: the guest who booked
+      listing_id: the listing booked
+      host_account_id: the host account that owns the listing at booking
+      variant_name: the cancellation policy the stay is booked under (the listing's policy, or Long-Term for long stays)
+      status: requested at creation
+      confirmation_code: the 10-character confirmation code shown to guest and host
+      rate_type: standard or non_refundable
+      payment_plan: pay_in_full, pay_part_now or monthly_installments
+      booking_channel: instant_book or request_to_book
+      fee_structure: split_fee or host_only_fee, copied from the host account's tier at booking
+      booked_at: timestamp the stay was booked
+      check_in_date: first night of the stay
+      check_out_date: departure date (the last night is the day before)
+      nights: number of nights
+      guest_count: guests on the stay
+      pet_count: pets on the stay
+      nightly_subtotal: nightly price total after the single applicable discount
+      discount_type: the discount applied to the nightly subtotal
+      discount_amount: amount of that discount
+      cleaning_fee: cleaning fee (or short-stay cleaning fee) charged
+      pet_fee_total: pet fee charged
+      extra_guest_fee_total: extra-guest fee charged
+      guest_service_fee: guest service fee charged
+      occupancy_tax: occupancy tax charged
+      total_price: sum of all charged components
+      jurisdiction_code: tax jurisdiction of the listing at booking
+    triggers:
+      - event: stay:stay_confirmed
+        when: {booking_channel: instant_book}
+        map: {stay_id: stay_id}
+  - type: stay_confirmed
+    target: stays
+    mutation: {transition: {from: requested, to: confirmed}}
+    meaning: The booking request is accepted (by the host, or automatically by Instant Book) and the stay becomes a confirmed reservation.
+    grain: one row per reservation
+    fields:
+      stay_id: the stay confirmed
+      status: becomes confirmed
+    triggers:
+      - event: stay:stay_payment_collected
+        map: {stay_id: stay_id, installment_number: 1}
+  - type: stay_declined
+    target: stays
+    mutation: {transition: {from: requested, to: declined}}
+    meaning: The host declines a request-to-book stay.
+    grain: one row per reservation
+    fields:
+      stay_id: the stay declined
+      status: becomes declined
+    triggers: []
+  - type: stay_request_expired
+    target: stays
+    mutation: {transition: {from: requested, to: expired}}
+    meaning: A request-to-book stay lapses unaccepted.
+    grain: one row per reservation
+    fields:
+      stay_id: the stay that expired
+      status: becomes expired
+    triggers: []
+  - type: stay_checked_in
+    target: stays
+    mutation: {transition: {from: confirmed, to: checked_in}}
+    meaning: The check-in date of a confirmed stay arrives and the stay is in progress.
+    grain: one row per reservation
+    fields:
+      stay_id: the stay in progress
+      status: becomes checked_in
+    triggers:
+      - event: payout:payout_earnings_released
+        map: {stay_id: stay_id}
+      - event: host:host_service_fee_assessed
+        map: {stay_id: stay_id}
+  - type: stay_completed
+    target: stays
+    mutation: {transition: {from: checked_in, to: completed}}
+    meaning: The check-out date of a stay in progress arrives and the stay is completed.
+    grain: one row per reservation
+    fields:
+      stay_id: the stay completed
+      status: becomes completed
+    triggers: []
+  - type: stay_guest_cancelled
+    target: stays
+    mutation: {transition: [{from: confirmed, to: cancelled_by_guest}, {from: checked_in, to: cancelled_by_guest}]}
+    meaning: The guest cancels a confirmed stay or leaves a stay in progress early.
+    grain: one row per reservation
+    fields:
+      stay_id: the stay cancelled
+      status: becomes cancelled_by_guest
+      cancelled_at: timestamp of the cancellation (the frozen handling time)
+    triggers: []
+  - type: stay_payment_lapse_cancelled
+    target: stays
+    mutation: {transition: {from: confirmed, to: cancelled_by_guest}}
+    meaning: A confirmed stay is cancelled because a scheduled installment stayed unpaid past the failed-payment grace period.
+    grain: one row per reservation
+    fields:
+      stay_id: the stay cancelled
+      status: becomes cancelled_by_guest
+      cancelled_at: timestamp of the lapse cancellation
+    triggers: []
+  - type: stay_host_cancelled
+    target: stays
+    mutation: {transition: {from: confirmed, to: cancelled_by_host}}
+    meaning: The host cancels a confirmed stay before check-in.
+    grain: one row per reservation
+    fields:
+      stay_id: the stay cancelled
+      status: becomes cancelled_by_host
+      cancelled_at: timestamp of the host cancellation
+    triggers:
+      - event: stay:stay_refund_issued
+        map: {stay_id: stay_id, refund_reason: host_cancellation, refund_stage: before_payout_release}
+      - event: host:host_cancellation_recorded
+        map: {stay_id: stay_id}
+      - event: listing:listing_calendar_blocked
+        map: {stay_id: stay_id, block_reason: host_cancellation}
+  - type: stay_altered
+    target: stays
+    mutation: update
+    meaning: An accepted date or guest-count change is applied to the stay, re-pricing the affected components.
+    grain: one row per reservation (each accepted alteration rewrites the price breakdown)
+    fields:
+      stay_id: the stay altered
+      check_in_date: new check-in date
+      check_out_date: new check-out date
+      nights: new number of nights
+      guest_count: new guest count
+      nightly_subtotal: re-priced nightly subtotal
+      extra_guest_fee_total: re-priced extra-guest fee
+      guest_service_fee: re-priced guest service fee
+      occupancy_tax: re-priced occupancy tax
+      total_price: re-priced total
+    triggers: []
+  - type: stay_payment_collected
+    target: stay_transactions
+    meaning: Money is collected from the guest's payment method for one installment of the stay, or for the price increase of an accepted alteration.
+    grain: one row per successful collection of one installment (or one alteration increase) on one stay
+    distinguish_by: [installment_number, request_id]
+    fields:
+      stay_id: the stay paid for
+      customer_id: the guest
+      amount: amount collected, positive
+      posted_at: timestamp of the collection
+      installment_number: 1 for the amount collected at confirmation, 2 for the pay-part-now balance, n for the nth monthly installment, 0 for an alteration increase
+      request_id: the accepted alteration request this collection pays for; empty for scheduled installments
+    account: guest_payments
+    direction: in
+    triggers: []
+  - type: stay_payment_failed
+    target: stay_transactions
+    meaning: A scheduled collection of an installment is declined by the guest's payment method.
+    grain: one row per failed attempt on one installment
+    distinguish_by: [installment_number, attempt_number]
+    fields:
+      stay_id: the stay
+      customer_id: the guest
+      amount: amount that failed to collect, positive
+      posted_at: timestamp of the failed attempt
+      installment_number: the installment that failed
+      attempt_number: 1 for the scheduled attempt, 2.. for retries
+    triggers: []
+  - type: stay_refund_issued
+    target: stay_transactions
+    meaning: Money is returned to the guest's original payment method for one charge component of the stay.
+    grain: one row per charge component refunded for one refund reason (and one request, where the refund rests on a request) on one stay
+    distinguish_by: [charge_component, refund_reason, request_id]
+    fields:
+      stay_id: the stay refunded
+      customer_id: the guest
+      amount: amount refunded, positive
+      posted_at: timestamp the refund was issued
+      charge_component: nightly, cleaning_fee, pet_fee, extra_guest_fee, guest_service_fee or occupancy_tax
+      refund_reason: guest_cancellation, host_cancellation, alteration, travel_issue or major_disruptive_event
+      funded_by: host when the refund reduces the host's earnings, platform when Roamhaven bears it
+      refund_stage: before_payout_release or after_payout_release, according to whether the host's earnings for the stay had already been released when the refund was issued
+      request_id: the stay request the refund rests on (alteration, travel issue or major disruptive event); empty for cancellations
+    account: guest_payments
+    direction: out
+    triggers:
+      - event: payout:payout_deduction_applied
+        when: {funded_by: host, refund_stage: after_payout_release}
+        map: {stay_id: stay_id, deduction_type: refund_clawback}
+      - event: host:host_service_fee_refunded
+        when: {funded_by: host, refund_stage: after_payout_release}
+        map: {stay_id: stay_id}
+  - type: stay_review_submitted
+    target: stay_transactions
+    meaning: The guest or the host submits the review of a completed stay.
+    grain: one row per reviewer side per stay
+    distinguish_by: [reviewer_role]
+    fields:
+      stay_id: the stay reviewed
+      customer_id: the guest of the stay
+      posted_at: timestamp the review was submitted
+      reviewer_role: guest or host
+      rating: overall star rating 1-5
+    triggers: []
+
+measures:
+  - id: stay_msr_guest_sf_refunds_365d
+    window: the service_fee_refund_cap_window_days calendar days ending on (and including) the date part of the current cancellation's cancelled_at, across every stay held by the same guest customer_id
+    measure: count of distinct stay_id values, other than the stay being cancelled, that carry a stay_refund_issued row with refund_reason guest_cancellation, charge_component guest_service_fee and amount greater than 0.00 whose posted_at date falls inside the window
+
+policies:
+  - id: stay_agg_multi_holding
+    subject: [stay_booked]
+    rule: >-
+      A guest may hold any number of stays at the same time, on the same or different listings, including stays
+      whose nights overlap on different listings; there is no cap on concurrent or lifetime stays. Two stays can never
+      hold the same night on the same listing, because a confirmed or checked-in stay removes its nights from the
+      listing's availability. Each stay is priced, paid, cancelled and refunded on its own; the only rule that reads
+      across a guest's stays is the guest service fee refund cap in stay_agg_service_fee_refund_cap.
+    eligibility: []
+    params:
+      max_per_customer: null
+  - id: stay_agg_service_fee_refund_cap
+    subject: [stay_refund_issued]
+    rule: >-
+      The guest service fee refunded on a guest cancellation is capped across all of a guest's stays. Count, with
+      stay_msr_guest_sf_refunds_365d, the guest's other stays whose guest-cancellation refunds included a guest service
+      fee refund dated within the cap window. When that count is below the tier's service_fee_refund_annual_cap, the
+      guest service fee of the current guest cancellation is refunded as stay_evt_guest_cancellation_refund computes it.
+      When that count is equal to or greater than service_fee_refund_annual_cap, no guest service fee is refunded on the
+      current guest cancellation and every other component is refunded unchanged. The cap applies only to refunds with
+      refund_reason guest_cancellation (including non-payment lapses, which are refunded as guest cancellations); host
+      cancellation, travel issue, alteration and major disruptive event refunds are never capped and never counted.
+    eligibility: []
+    measures: [stay_msr_guest_sf_refunds_365d]
+    formula:
+      when: refund_reason == "guest_cancellation" and charge_component == "guest_service_fee"
+      service_fee_refund_allowed: stay_msr_guest_sf_refunds_365d < service_fee_refund_annual_cap
+  - id: stay_booking_terms
+    subject: [stay_booked, stay_confirmed]
+    rule: >-
+      A stay is booked against one listing for the nights from check_in_date up to (not including) check_out_date, and
+      nights is the number of calendar days between those two dates. A stay can be booked only while the listing's
+      status is listed. The stay's tier is fixed at booking and never changes afterwards: a stay whose nights are equal
+      to or greater than long_term_min_nights is booked under Long-Term whatever the listing's setting; any other stay is
+      booked under the cancellation policy recorded on the listing at the moment of booking, and a later change of the
+      listing's cancellation policy never touches an existing stay. A non-refundable rate may be booked only on a tier
+      whose non_refundable_option_available is true, and it takes non_refundable_discount_pct off the nightly subtotal
+      in place of any listing discount. The guest pays the nightly subtotal (the listing's nightly rate times nights,
+      less the single discount the Listings charter selects), the cleaning fee (the short-stay cleaning fee where the
+      Listings charter applies it), the pet fee and the extra-guest fee as set on the listing at booking, the guest
+      service fee and the occupancy tax. The guest service fee is guest_service_fee_pct of the service-fee base when the
+      stay's fee_structure is split_fee, and host_only_fee_guest_service_fee_pct of that base when fee_structure is
+      host_only_fee; fee_structure is copied at booking from the fee structure of the host account's tier under the Host
+      Accounts charter, and a later change of the host's tier never re-prices an existing stay. Occupancy tax uses the
+      jurisdiction recorded on the listing at booking and the occupancy_tax_schedule below: the jurisdiction's rate_pct
+      of the occupancy-tax base plus its flat_per_night_usd times nights, except that a stay whose nights are equal to
+      or greater than the jurisdiction's exempt_min_nights carries no occupancy tax at all. Every component is rounded
+      per amount_rounding, and total_price is the sum of nightly_subtotal, cleaning_fee, pet_fee_total,
+      extra_guest_fee_total, guest_service_fee and occupancy_tax. An Instant Book stay is confirmed the moment it is
+      booked; a request-to-book stay is confirmed only when the host accepts it.
+    eligibility:
+      - id: listing_is_listed
+        applies_to: [stay_booked]
+        kind: state
+        condition: A stay can be booked only while the listing's status is listed.
+        evidence_fields: [listings.status, listings.listing_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [listings.listing_id]
+          action_bindings:
+            listings.listing_id: listing_id
+        state_contract:
+          field: listings.status
+          allowed: [listed]
+    params:
+      occupancy_tax_schedule:
+        TX-AUSTIN: {rate_pct: 17.00, flat_per_night_usd: 0.00, exempt_min_nights: 30}
+        FL-ORANGE: {rate_pct: 12.50, flat_per_night_usd: 0.00, exempt_min_nights: 183}
+        CO-DENVER: {rate_pct: 15.75, flat_per_night_usd: 0.00, exempt_min_nights: 30}
+        TN-NASHVILLE: {rate_pct: 15.25, flat_per_night_usd: 2.50, exempt_min_nights: 30}
+        HI-HONOLULU: {rate_pct: 17.96, flat_per_night_usd: 0.00, exempt_min_nights: 180}
+        CA-SAN-DIEGO: {rate_pct: 12.50, flat_per_night_usd: 0.00, exempt_min_nights: 30}
+      per_tier:
+        Flexible: {guest_service_fee_pct: "=guest_service_fee_pct", non_refundable_discount_pct: "=non_refundable_discount_pct"}
+        Moderate: {guest_service_fee_pct: "=guest_service_fee_pct", non_refundable_discount_pct: "=non_refundable_discount_pct"}
+        Limited: {guest_service_fee_pct: "=guest_service_fee_pct", non_refundable_discount_pct: "=non_refundable_discount_pct"}
+        Firm: {guest_service_fee_pct: "=guest_service_fee_pct", non_refundable_discount_pct: "=non_refundable_discount_pct"}
+        Strict: {guest_service_fee_pct: "=guest_service_fee_pct", non_refundable_discount_pct: "=non_refundable_discount_pct"}
+        Super Strict 30 Days: {guest_service_fee_pct: "=guest_service_fee_pct", non_refundable_discount_pct: "=non_refundable_discount_pct"}
+        Super Strict 60 Days: {guest_service_fee_pct: "=guest_service_fee_pct", non_refundable_discount_pct: "=non_refundable_discount_pct"}
+        Long-Term: {guest_service_fee_pct: "=guest_service_fee_pct", non_refundable_discount_pct: "=non_refundable_discount_pct"}
+    formula:
+      service_fee_base: nightly_subtotal + cleaning_fee + pet_fee_total + extra_guest_fee_total
+      guest_service_fee: round(service_fee_base * guest_service_fee_pct / 100, 2) if fee_structure == "split_fee" else round(service_fee_base * host_only_fee_guest_service_fee_pct / 100, 2)
+      total_price: nightly_subtotal + cleaning_fee + pet_fee_total + extra_guest_fee_total + guest_service_fee + occupancy_tax
+  - id: stay_evt_payment_schedule
+    subject: [stay_payment_collected, stay_payment_failed, stay_payment_lapse_cancelled]
+    rule: >-
+      Every stay records its payment plan at booking. Under pay_in_full the whole total_price is collected as
+      installment 1 when the stay is confirmed. Pay-part-now may be chosen only on a tier whose pay_part_now_available
+      is true, only at the standard rate, and only when the booking date is at least pay_part_now_min_lead_days
+      calendar days before check-in; installment 1 collects pay_part_now_deposit_pct of every component (each rounded
+      per amount_rounding) at confirmation, and installment 2 collects the remainder of every component on the balance
+      due date, balance_due_days_before_check_in calendar days before check_in_date. Monthly installments apply to every
+      stay of a tier whose monthly_installments_available is true: installment 1 covers the first installment_nights
+      nights and is collected at confirmation; installment n covers the next installment_nights nights (or the nights
+      that remain, if fewer) and is collected on the first night it covers; the cleaning, pet and extra-guest fees are
+      collected with installment 1, and each installment carries the guest service fee and occupancy tax attributable
+      to the amounts it collects. Money is collected only on a confirmed or checked-in stay. A failed scheduled
+      collection is recorded as a failed payment and retried up to payment_retry_attempts times. A confirmed stay is
+      cancelled for non-payment only when the installment is still unpaid failed_payment_grace_hours after the first
+      failed collection attempt for that installment; that elapsed time is counted in full 24-hour clock hours from the
+      posted_at of the first failed attempt, and a collection at any moment before the boundary keeps the stay. A stay
+      cancelled for non-payment is refunded exactly as a guest cancellation dated at the lapse. An installment that
+      fails while the stay is already checked in is never cancelled for non-payment under this rule.
+    eligibility:
+      - id: collect_on_live_stay
+        applies_to: [stay_payment_collected]
+        kind: state
+        condition: Money is collected only on a confirmed or checked-in stay.
+        evidence_fields: [stays.status, stays.stay_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [stays.stay_id]
+          action_bindings:
+            stays.stay_id: stay_id
+        state_contract:
+          field: stays.status
+          allowed: [confirmed, checked_in]
+      - id: lapse_after_grace
+        applies_to: [stay_payment_lapse_cancelled]
+        kind: time
+        condition: A confirmed stay is cancelled for non-payment only when the installment is still unpaid failed_payment_grace_hours after the first failed collection attempt for that installment; that elapsed time is counted in full 24-hour clock hours from the posted_at of the first failed attempt, and a collection at any moment before the boundary keeps the stay.
+        evidence_fields: [stay_transactions.posted_at, stay_transactions.installment_number, stay_transactions.stay_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [stay_transactions.stay_id, stay_transactions.installment_number]
+          action_bindings:
+            stay_transactions.stay_id: stay_id
+            stay_transactions.installment_number: installment_number
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the first failed collection attempt for that installment
+          anchor_source: stay_transactions.posted_at
+          relation: not_before
+          duration_source: variants.failed_payment_grace_hours
+          unit: elapsed_hours
+          counting_rule: that elapsed time is counted in full 24-hour clock hours from the posted_at of the first failed attempt, and a collection at any moment before the boundary keeps the stay.
+          boundary: inclusive
+    formula:
+      deposit_component_share: pay_part_now_deposit_pct / 100
+  - id: stay_evt_guest_cancellation_refund
+    subject: [stay_guest_cancelled, stay_refund_issued]
+    rule: >-
+      A guest may cancel a confirmed stay at any time before check-in, or a checked-in stay at any time before the
+      check-out date; the cancellation date is the date part of cancelled_at, and days before check-in are counted as
+      whole calendar days from the cancellation date to check_in_date. The refund is decided by the stay's tier as
+      recorded on the stay, never by the listing's current setting. A stay at the non_refundable rate gets
+      non_refundable_refund_pct of every component on a guest cancellation, with no further window. For a standard-rate
+      stay cancelled before check-in, the windows are tested in this order and the first one met applies. The booking
+      grace period is met when the guest cancels no more than booking_grace_hours elapsed hours after the reservation
+      was booked; grace hours are counted as elapsed clock time from booked_at to cancelled_at, never as calendar days,
+      and a tier whose booking_grace_hours is 0 has no grace period. The booking grace period also requires the
+      cancellation date to fall at least grace_min_lead_days calendar days before the stay's check-in date. The
+      full-refund window is met when the cancellation date falls at least full_refund_cutoff_days calendar days before
+      the stay's check-in date; a tier whose full_refund_cutoff_days is 0 has no full-refund window. In the grace period
+      or the full-refund window every component is refunded in full, the guest service fee included when
+      service_fee_refund_in_full_window is true. The partial-refund window is met when the cancellation date falls at
+      least partial_window_cutoff_days calendar days before the stay's check-in date and neither earlier window is met;
+      a partial_window_cutoff_days of 0 means the partial window runs up to and including the day before check-in, and
+      also covers a cancellation dated on the check-in date before the stay is checked in. In the partial window the
+      first partial_window_forfeited_nights nights are never refunded and partial_refund_pct of the remaining nights'
+      price is refunded. A standard-rate cancellation before check-in that meets no window refunds no nightly amount.
+      For a cancellation after check-in, the unspent nights are those dated after the cancellation date and before the
+      check-out date; the first after_check_in_notice_nights of them are forfeited and after_check_in_refund_pct of the
+      rest is refunded. One night's price is nightly_subtotal divided by nights, rounded to the cent. The cleaning fee is
+      refunded in full on any standard-rate cancellation dated before the check-in date when
+      cleaning_fee_refund_before_check_in is true, and on a cancellation on or after the check-in date only when
+      cleaning_fee_refund_after_check_in is true. The pet fee and extra-guest fee are refunded in the same proportion as
+      the nightly subtotal when add_on_fees_follow_nightly is true. Outside the full-refund window and grace period the
+      guest service fee is refunded in the proportion that the refunded service-fee base bears to the full service-fee
+      base when service_fee_partial_refund_mode is proportional, and not at all when it is none, always subject to
+      stay_agg_service_fee_refund_cap. Occupancy tax is refunded in the proportion that the refunded occupancy-tax base
+      bears to the full occupancy-tax base. For each component the refund posted is the lesser of the amount of that
+      component collected so far and the amount refundable under this rule; installments not yet collected are cancelled
+      and never collected. A guest-cancellation refund for the same stay and the same charge component is issued only
+      once. Nightly, cleaning, pet and extra-guest refunds are funded_by host; guest service fee and occupancy tax
+      refunds are funded_by platform. A component whose refund comes to 0.00 posts no row.
+    eligibility:
+      - id: grace_hours
+        applies_to: [stay_refund_issued]
+        kind: time
+        condition: The booking grace period is met when the guest cancels no more than booking_grace_hours elapsed hours after the reservation was booked; grace hours are counted as elapsed clock time from booked_at to cancelled_at, never as calendar days, and a tier whose booking_grace_hours is 0 has no grace period.
+        evidence_fields: [stays.booked_at, stays.cancelled_at, stays.stay_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [stays.stay_id]
+          action_bindings:
+            stays.stay_id: stay_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the reservation was booked
+          anchor_source: stays.booked_at
+          relation: not_after
+          duration_source: variants.booking_grace_hours
+          unit: elapsed_hours
+          counting_rule: grace hours are counted as elapsed clock time from booked_at to cancelled_at, never as calendar days, and a tier whose booking_grace_hours is 0 has no grace period.
+          boundary: inclusive
+      - id: grace_lead_days
+        applies_to: [stay_refund_issued]
+        kind: time
+        condition: The booking grace period also requires the cancellation date to fall at least grace_min_lead_days calendar days before the stay's check-in date.
+        evidence_fields: [stays.check_in_date, stays.cancelled_at, stays.stay_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [stays.stay_id]
+          action_bindings:
+            stays.stay_id: stay_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the stay's check-in date
+          anchor_source: stays.check_in_date
+          relation: not_after
+          duration_source: variants.grace_min_lead_days
+          unit: calendar_days
+          counting_rule: the cancellation date is the date part of cancelled_at, and days before check-in are counted as whole calendar days from the cancellation date to check_in_date.
+          boundary: inclusive
+      - id: full_window
+        applies_to: [stay_refund_issued]
+        kind: time
+        condition: The full-refund window is met when the cancellation date falls at least full_refund_cutoff_days calendar days before the stay's check-in date; a tier whose full_refund_cutoff_days is 0 has no full-refund window.
+        evidence_fields: [stays.check_in_date, stays.cancelled_at, stays.stay_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [stays.stay_id]
+          action_bindings:
+            stays.stay_id: stay_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the stay's check-in date
+          anchor_source: stays.check_in_date
+          relation: not_after
+          duration_source: variants.full_refund_cutoff_days
+          unit: calendar_days
+          counting_rule: the cancellation date is the date part of cancelled_at, and days before check-in are counted as whole calendar days from the cancellation date to check_in_date.
+          boundary: inclusive
+      - id: partial_window
+        applies_to: [stay_refund_issued]
+        kind: time
+        condition: The partial-refund window is met when the cancellation date falls at least partial_window_cutoff_days calendar days before the stay's check-in date and neither earlier window is met; a partial_window_cutoff_days of 0 means the partial window runs up to and including the day before check-in, and also covers a cancellation dated on the check-in date before the stay is checked in.
+        evidence_fields: [stays.check_in_date, stays.cancelled_at, stays.stay_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [stays.stay_id]
+          action_bindings:
+            stays.stay_id: stay_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the stay's check-in date
+          anchor_source: stays.check_in_date
+          relation: not_after
+          duration_source: variants.partial_window_cutoff_days
+          unit: calendar_days
+          counting_rule: the cancellation date is the date part of cancelled_at, and days before check-in are counted as whole calendar days from the cancellation date to check_in_date.
+          boundary: inclusive
+      - id: one_guest_refund_per_component
+        applies_to: [stay_refund_issued]
+        kind: dedup
+        condition: A guest-cancellation refund for the same stay and the same charge component is issued only once.
+        evidence_fields: [stay_transactions.stay_id, stay_transactions.charge_component, stay_transactions.refund_reason, stay_transactions.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [stay_transactions.stay_id, stay_transactions.charge_component]
+          action_bindings:
+            stay_transactions.stay_id: stay_id
+            stay_transactions.charge_component: charge_component
+        dedup_contract:
+          table: stay_transactions
+          mode: separate_record
+          object_bindings: {stay_id: stay_id, charge_component: charge_component, refund_reason: refund_reason}
+          duplicate_filters: {event_type: [stay_refund_issued]}
+          distinct_fields: [posted_at]
+    formula:
+      when_not: rate_type == "non_refundable"
+      night_price: round(nightly_subtotal / nights, 2)
+      partial_nightly_refund: round(night_price * max(nights - partial_window_forfeited_nights, 0) * partial_refund_pct / 100, 2)
+      after_check_in_nightly_refund: round(night_price * max(nights - after_check_in_notice_nights, 0) * after_check_in_refund_pct / 100, 2)
+  - id: stay_evt_host_cancellation_refund
+    subject: [stay_host_cancelled, stay_refund_issued]
+    rule: >-
+      When the host cancels a confirmed stay, the guest is refunded host_cancellation_guest_refund_pct of every amount
+      collected on the stay — nightly, cleaning, pet and extra-guest fees, guest service fee and occupancy tax — whatever
+      the stay's tier, rate type, payment plan or the guest's service-fee refund history, and installments not yet
+      collected are cancelled. Each component is posted with refund_reason host_cancellation and refund_stage
+      before_payout_release (a host can cancel only before check-in, and earnings are released only after check-in);
+      nightly, cleaning, pet and extra-guest components are funded_by host and the guest service fee and occupancy tax
+      are funded_by platform. A host-cancellation refund for the same stay and the same charge component is issued only
+      once. These refunds never count toward stay_agg_service_fee_refund_cap. The host-side consequences of the
+      cancellation (penalty, calendar block, standing) are governed by the Host Accounts and Listings charters.
+    eligibility:
+      - id: one_host_refund_per_component
+        applies_to: [stay_refund_issued]
+        kind: dedup
+        condition: A host-cancellation refund for the same stay and the same charge component is issued only once.
+        evidence_fields: [stay_transactions.stay_id, stay_transactions.charge_component, stay_transactions.refund_reason, stay_transactions.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [stay_transactions.stay_id, stay_transactions.charge_component]
+          action_bindings:
+            stay_transactions.stay_id: stay_id
+            stay_transactions.charge_component: charge_component
+        dedup_contract:
+          table: stay_transactions
+          mode: separate_record
+          object_bindings: {stay_id: stay_id, charge_component: charge_component, refund_reason: refund_reason}
+          duplicate_filters: {event_type: [stay_refund_issued]}
+          distinct_fields: [posted_at]
+    formula:
+      when: refund_reason == "host_cancellation"
+      component_refund: round(amount * host_cancellation_guest_refund_pct / 100, 2)
+  - id: stay_evt_travel_issue_refund
+    subject: [stay_refund_issued]
+    rule: >-
+      A guest who meets a serious problem at a stay — the guest cannot get in (no_access), the place is unsafe or
+      unsanitary (uninhabitable), it differs materially from the listing (misrepresented), or an essential amenity
+      listed is missing (amenity_missing) — reports it as a travel_issue stay request. A travel-issue refund is issued
+      only when Roamhaven has approved the travel-issue request. A travel issue is eligible only when the guest reported
+      it no more than travel_issue_report_hours elapsed hours after the guest discovered the issue; the hours are counted
+      in elapsed clock time from the request's issue_discovered_at to its submitted_at. The affected nights are the
+      stay's nights dated on or after the date part of submitted_at and before the check-out date, and the nightly
+      refund is the travel_issue_refund_pct_by_category percentage for the request's issue_category times one night's
+      price times the affected nights. The cleaning fee is refunded in full as well when the issue_category is in
+      travel_issue_cleaning_fee_categories and the request was submitted on the check-in date. The guest service fee and
+      occupancy tax are refunded in the proportion that the refunded nightly and cleaning amounts bear to their full
+      amounts. Travel-issue refunds are posted with refund_reason travel_issue and the request_id; nightly and cleaning
+      components are funded_by host, and service fee and tax components are funded_by platform. They never count toward
+      stay_agg_service_fee_refund_cap, and the cancellation tier of the stay does not limit them.
+    eligibility:
+      - id: travel_issue_approved
+        applies_to: [stay_refund_issued]
+        kind: state
+        condition: A travel-issue refund is issued only when Roamhaven has approved the travel-issue request.
+        evidence_fields: [stay_requests.request_status, stay_requests.request_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [stay_requests.request_id]
+          action_bindings:
+            stay_requests.request_id: request_id
+        state_contract:
+          field: stay_requests.request_status
+          allowed: [approved]
+      - id: travel_issue_reported_in_time
+        applies_to: [stay_refund_issued]
+        kind: time
+        condition: A travel issue is eligible only when the guest reported it no more than travel_issue_report_hours elapsed hours after the guest discovered the issue; the hours are counted in elapsed clock time from the request's issue_discovered_at to its submitted_at.
+        evidence_fields: [stay_requests.issue_discovered_at, stay_requests.submitted_at, stay_requests.request_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [stay_requests.request_id]
+          action_bindings:
+            stay_requests.request_id: request_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the guest discovered the issue
+          anchor_source: stay_requests.issue_discovered_at
+          relation: not_after
+          duration_source: variants.travel_issue_report_hours
+          unit: elapsed_hours
+          counting_rule: the hours are counted in elapsed clock time from the request's issue_discovered_at to its submitted_at.
+          boundary: inclusive
+  - id: stay_evt_major_disruptive_event
+    subject: [stay_refund_issued, stay_guest_cancelled]
+    rule: >-
+      A major disruptive event is a large-scale occurrence after booking — a declared natural disaster, epidemic,
+      government travel restriction or severe infrastructure failure at the listing's location — that prevents the
+      stay. The guest asks for it to be applied through a major_disruptive_event stay request, and Roamhaven alone
+      decides it. A major-disruptive-event refund is issued only when Roamhaven has approved the major-disruptive-event
+      request. When such a request is approved, the guest's cancellation of that stay is refunded under this policy in
+      place of the stay's tier: major_event_refund_pct of every collected component for unspent nights (all nights when
+      the cancellation precedes check-in), the cleaning fee in full when the cancellation precedes check-in, and the
+      guest service fee and occupancy tax in the proportion of the refunded amounts, whatever the rate type. The refunds
+      are posted with refund_reason major_disruptive_event and the request_id; nightly, cleaning, pet and extra-guest
+      components are funded_by host and service fee and tax components by platform. When
+      major_event_counts_toward_service_fee_cap is false the refund never counts toward the service-fee refund cap.
+      A denied or still-submitted request leaves the cancellation under the stay's tier.
+    eligibility:
+      - id: major_event_approved
+        applies_to: [stay_refund_issued]
+        kind: state
+        condition: A major-disruptive-event refund is issued only when Roamhaven has approved the major-disruptive-event request.
+        evidence_fields: [stay_requests.request_status, stay_requests.request_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [stay_requests.request_id]
+          action_bindings:
+            stay_requests.request_id: request_id
+        state_contract:
+          field: stay_requests.request_status
+          allowed: [approved]
+  - id: stay_evt_alteration
+    subject: [stay_altered, stay_payment_collected, stay_refund_issued]
+    rule: >-
+      A guest changes the dates or guest count of a stay by submitting a date_change or guest_count_change stay request,
+      which the host accepts or declines. An alteration is applied only after the host has accepted the alteration
+      request. An alteration request lapses unless the host accepts it within alteration_response_hours elapsed hours
+      after the guest submitted the request; the hours are counted in elapsed clock time from submitted_at, and a request
+      accepted exactly at the boundary stands. A stay in progress may be altered only when
+      alteration_after_check_in_allowed is true, and the check-in date of a checked-in stay cannot move. On acceptance
+      the stay is re-priced: added nights are priced at the listing's nightly rate in effect at acceptance, removed
+      nights are refunded as if the guest had cancelled them on the acceptance date under the stay's tier, the
+      extra-guest fee, guest service fee and occupancy tax are recomputed on the new amounts per stay_booking_terms, and
+      the stay's tier and fee_structure never change, even if the new nights cross long_term_min_nights. A price
+      increase is collected at once as installment 0 carrying the request_id; a decrease is refunded with refund_reason
+      alteration and the request_id, nightly and add-on components funded_by host and service fee and tax by platform.
+      A declined or lapsed request changes nothing.
+    eligibility:
+      - id: alteration_accepted
+        applies_to: [stay_altered]
+        kind: state
+        condition: An alteration is applied only after the host has accepted the alteration request.
+        evidence_fields: [stay_requests.request_status, stay_requests.request_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [stay_requests.request_id]
+          action_bindings:
+            stay_requests.request_id: request_id
+        state_contract:
+          field: stay_requests.request_status
+          allowed: [accepted]
+      - id: alteration_response_window
+        applies_to: [stay_altered]
+        kind: time
+        condition: An alteration request lapses unless the host accepts it within alteration_response_hours elapsed hours after the guest submitted the request; the hours are counted in elapsed clock time from submitted_at, and a request accepted exactly at the boundary stands.
+        evidence_fields: [stay_requests.submitted_at, stay_requests.decided_at, stay_requests.request_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [stay_requests.request_id]
+          action_bindings:
+            stay_requests.request_id: request_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the guest submitted the request
+          anchor_source: stay_requests.submitted_at
+          relation: not_after
+          duration_source: variants.alteration_response_hours
+          unit: elapsed_hours
+          counting_rule: the hours are counted in elapsed clock time from submitted_at, and a request accepted exactly at the boundary stands.
+          boundary: inclusive
+  - id: stay_evt_non_refundable_rate
+    subject: [stay_booked, stay_guest_cancelled]
+    rule: >-
+      The non-refundable rate trades refundability for a lower price. It is mutually exclusive with pay-part-now and
+      with monthly installments: a non-refundable stay is always paid in full at confirmation. On a guest cancellation
+      at any time it refunds non_refundable_refund_pct of every component, the cleaning fee included, and no
+      cancellation window of the tier applies. It does not limit refunds that rest on something other than the guest's
+      own cancellation: a host cancellation, an approved travel issue and an approved major disruptive event are
+      refunded under their own policies exactly as for a standard-rate stay.
+    eligibility: []
+  - id: stay_evt_reviews
+    subject: [stay_review_submitted]
+    rule: >-
+      Reviews are left only on stays that were actually stayed. A review can be submitted only on a completed stay. A
+      review can be submitted only within review_window_days calendar days after the stay's check-out date; the days are
+      counted as whole calendar days from check_out_date to the date part of the submission, and a review on the last
+      day stands. Each side — guest and host — may submit one review per stay when review_one_per_role is true; a
+      second review by the same side is not recorded. The rating is a whole number of stars from 1 to 5. Reviews feed the
+      listing quality assessment and the Superhost assessment, which read them by posted_at.
+    eligibility:
+      - id: review_completed_stay
+        applies_to: [stay_review_submitted]
+        kind: state
+        condition: A review can be submitted only on a completed stay.
+        evidence_fields: [stays.status, stays.stay_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [stays.stay_id]
+          action_bindings:
+            stays.stay_id: stay_id
+        state_contract:
+          field: stays.status
+          allowed: [completed]
+      - id: review_window
+        applies_to: [stay_review_submitted]
+        kind: time
+        condition: A review can be submitted only within review_window_days calendar days after the stay's check-out date; the days are counted as whole calendar days from check_out_date to the date part of the submission, and a review on the last day stands.
+        evidence_fields: [stays.check_out_date, stays.stay_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [stays.stay_id]
+          action_bindings:
+            stays.stay_id: stay_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the stay's check-out date
+          anchor_source: stays.check_out_date
+          relation: not_after
+          duration_source: variants.review_window_days
+          unit: calendar_days
+          counting_rule: the days are counted as whole calendar days from check_out_date to the date part of the submission, and a review on the last day stands.
+          boundary: inclusive
+      - id: one_review_per_side
+        applies_to: [stay_review_submitted]
+        kind: dedup
+        condition: Each side — guest and host — may submit one review per stay when review_one_per_role is true; a second review by the same side is not recorded.
+        evidence_fields: [stay_transactions.stay_id, stay_transactions.reviewer_role, stay_transactions.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [stay_transactions.stay_id, stay_transactions.reviewer_role]
+          action_bindings:
+            stay_transactions.stay_id: stay_id
+            stay_transactions.reviewer_role: reviewer_role
+        dedup_contract:
+          table: stay_transactions
+          mode: separate_record
+          object_bindings: {stay_id: stay_id, reviewer_role: reviewer_role}
+          duplicate_filters: {event_type: [stay_review_submitted]}
+          distinct_fields: []
+  - id: stay_lifecycle_progression
+    subject: [stay_confirmed, stay_declined, stay_request_expired, stay_checked_in, stay_completed]
+    rule: >-
+      A request-to-book stay waits for the host. A booking request expires when the host has not accepted it within
+      request_expiry_hours elapsed hours after the reservation was booked; the hours are counted in elapsed clock time
+      from booked_at, and acceptance at any moment up to the boundary confirms the stay. A declined or expired request
+      collects nothing and leaves nothing to refund. A listing may confirm stays by Instant Book only when the tier's
+      instant_book_permitted is true. A confirmed stay becomes checked_in on its check_in_date and completed on its
+      check_out_date without any action; a stay that was cancelled never checks in. Check-in releases the host's
+      earnings and assesses the host service fee under the Payouts and Host Accounts charters.
+    eligibility:
+      - id: request_expiry
+        applies_to: [stay_request_expired]
+        kind: time
+        condition: A booking request expires when the host has not accepted it within request_expiry_hours elapsed hours after the reservation was booked; the hours are counted in elapsed clock time from booked_at, and acceptance at any moment up to the boundary confirms the stay.
+        evidence_fields: [stays.booked_at, stays.stay_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [stays.stay_id]
+          action_bindings:
+            stays.stay_id: stay_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the reservation was booked
+          anchor_source: stays.booked_at
+          relation: not_before
+          duration_source: variants.request_expiry_hours
+          unit: elapsed_hours
+          counting_rule: the hours are counted in elapsed clock time from booked_at, and acceptance at any moment up to the boundary confirms the stay.
+          boundary: exclusive
+  - id: stay_evt_refund_settlement
+    subject: [stay_refund_issued]
+    rule: >-
+      Every refund on a stay is sent to the refund_destination of the tier — the guest's original payment method — and
+      the card issuer posts it within refund_posting_business_days_max business days; Roamhaven never pays a stay refund
+      in cash, travel credit or to another card. A refund is posted per charge component, as a positive amount, and
+      never exceeds the amount of that component collected on the stay net of earlier refunds of it. refund_stage is
+      before_payout_release when no payout_earnings_released record exists for the stay in the Payouts ledger at the
+      moment of the refund, and after_payout_release otherwise. funded_by host marks a refund that reduces the host's
+      earnings for the stay; when such a refund is after_payout_release, the host's share is recovered from the host's
+      future payouts and the host service fee on it is refunded, under the Payouts and Host Accounts charters.
+    eligibility: []

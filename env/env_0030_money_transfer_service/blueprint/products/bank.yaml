@@ -1,0 +1,1506 @@
+# Paloma Remit — product charter: Bank Deposit transfers.
+# Each personal transfer paid into a recipient's bank account is one holding: the transfer order the
+# customer booked, at one Bank Deposit service tier, carrying its own principal, fee, locked exchange
+# rate and disclosed date of availability. The tier decides the payout rail (local batch, local real
+# time, SWIFT), the funding methods, the price (fee ladder and exchange-rate margin), and how
+# cancellations, returns, resends, recalls and error claims are handled. Paloma is a US money
+# transmitter: the Remittance Transfer Rule (Regulation E, subpart B) governs cancellation, refunds
+# and error resolution for these consumer transfers.
+
+category: bank
+display_name: Bank Deposit
+
+binding:
+  holding_table: bank_transfers
+  event_tables: [bank_ledger, bank_cases]
+  status_field: status
+  variant_field: variant_name
+  quantity_fields: {principal_held_usd: principal_held, fees_held_usd: fees_held}
+
+lifecycle:
+  states: [awaiting_funds, on_hold, in_transit, deposited, returned, cancelled, refunded]
+  transitions:
+    - {from: awaiting_funds, to: in_transit, by: system, means: "Funds are collected (or ACH principal is released early) and screening passes; the transfer is released to the payout partner."}
+    - {from: awaiting_funds, to: on_hold, by: system, means: "A compliance, funding or new-recipient screening hold is placed before release."}
+    - {from: in_transit, to: on_hold, by: system, means: "The payout partner or Paloma compliance stops a released transfer for screening."}
+    - {from: on_hold, to: in_transit, by: system, means: "Compliance clears the hold and the transfer is released."}
+    - {from: in_transit, to: deposited, by: system, means: "The beneficiary bank confirms the credit to the recipient's account."}
+    - {from: in_transit, to: returned, by: system, means: "The beneficiary bank rejects the payment and the funds come back to Paloma."}
+    - {from: deposited, to: returned, by: system, means: "A deposited payment comes back, by a late bank return or a successful recall."}
+    - {from: returned, to: in_transit, by: agent, means: "The returned transfer is sent again with corrected recipient bank details."}
+    - {from: deposited, to: in_transit, by: agent, means: "After an error resolution found in the customer's favour, the funds are delivered again at no cost to the customer."}
+    - {from: awaiting_funds, to: cancelled, by: user, means: "The customer cancels a transfer that has not been released."}
+    - {from: on_hold, to: cancelled, by: user, means: "The customer cancels a transfer that is on hold."}
+    - {from: in_transit, to: cancelled, by: user, means: "The customer cancels a released batch-rail transfer before the beneficiary bank credits it."}
+    - {from: on_hold, to: cancelled, by: system, means: "Paloma cancels a held transfer whose request for information expired unanswered or that compliance rejected."}
+    - {from: awaiting_funds, to: cancelled, by: system, means: "The customer's payment fails (ACH return, card capture failure) or an inbound wire does not arrive in time."}
+    - {from: cancelled, to: refunded, by: agent, means: "The collected money owed back on a cancelled transfer is refunded to the customer."}
+    - {from: returned, to: refunded, by: agent, means: "The money owed back on a returned transfer is refunded to the customer."}
+    - {from: deposited, to: refunded, by: agent, means: "After an error resolution, Paloma refunds the customer for a deposited transfer."}
+
+accounts:
+  - key: principal_held
+    unit: USD
+    meaning: "Customer principal Paloma holds for this transfer: collected funds, returned funds and Paloma make-good credits in; payouts to the beneficiary bank and refunds to the customer out."
+  - key: fees_held
+    unit: USD
+    meaning: "Fees Paloma has collected on this transfer net of fee refunds: fee charges in, fee refunds out."
+
+parameter_schema:
+  delivery_rail: "Payout rail the tier uses: local_batch, local_realtime or swift."
+  funding_methods_allowed: "Funding methods the tier accepts (list of ach_debit, debit_card, credit_card, pay_by_bank, wire); the account level may narrow it further."
+  entry_min_account_level: "Lowest Personal Sender Account level (official name) that may book this tier."
+  entry_min_completed_transfers: "Fewest completed personal transfers (account_msr_completed_transfers) the customer needs before booking this tier (count)."
+  corridors_served: "Corridors this tier pays into (list of corridor codes)."
+  min_send_usd: "Smallest principal (USD) the tier accepts per transfer."
+  max_send_usd: "Largest principal (USD) the tier accepts per transfer, before the account level's per-transfer limit is applied."
+  realtime_cap_usd_by_corridor: "Per-corridor ceiling (USD principal) imposed by the corridor's instant-payment scheme on real-time tiers; a corridor not listed has no ceiling below max_send_usd; empty on non-real-time tiers (mapping corridor -> USD)."
+  max_transfers_per_recipient_24h: "Largest number of Bank Deposit transfers to the same recipient in a rolling 24 hours (count)."
+  fee_ladder: "Transfer fee by principal band: list of {from_usd, to_usd, fee_usd}; bands are inclusive at both ends and cover min_send_usd to max_send_usd."
+  credit_card_fee_pct: "Card funding fee charged as a percentage of principal when the transfer is funded by credit card (percent; 0 when credit cards are not accepted)."
+  debit_card_fee_usd: "Flat fee (USD) added when the transfer is funded by debit card."
+  pay_by_bank_fee_discount_usd: "Amount (USD) taken off the ladder fee when the transfer is funded by pay-by-bank; the fee never goes below 0.00."
+  fx_margin_pct: "Exchange-rate margin below the mid-market rate applied to the customer rate (percent)."
+  margin_reduction_threshold_usd: "Principal (USD) at or above which the reduced margin applies."
+  margin_reduction_pct_points: "Percentage points taken off fx_margin_pct when principal is at or above the threshold."
+  rate_lock_hours: "Hours from booked_at for which the quoted exchange rate stays guaranteed while funds are awaited."
+  delivery_business_days: "Paloma business days from release to the disclosed date of availability (0 = same day as release)."
+  booking_cutoff_ct: "Latest US Central time on a business day for release to count from that day; later releases count from the next business day (HH:MM, or 24x7 for real-time tiers)."
+  weekend_payout: "Whether payouts are made on Saturdays, Sundays and US Federal Reserve holidays (boolean)."
+  purpose_code_corridors: "Corridors where a transfer_purpose must be stated at booking (list of corridor codes)."
+  first_transfer_fee_waived: "Whether the transfer fee is waived on the customer's first-ever personal transfer when booked on this tier (boolean)."
+  first_transfer_promo_cap_usd: "Largest principal (USD) a first-transfer promotion covers; above it the regular price applies to the whole transfer (USD; 0 = no promotion)."
+  first_transfer_promo_margin_pct: "Exchange-rate margin applied to a first transfer covered by the promotion (percent)."
+  on_time_promise: "Whether Paloma refunds the transfer fee when a transfer reaches the recipient after its disclosed date_available for a reason on Paloma's side (boolean)."
+  cancel_full_refund_window_hours: "Elapsed hours after booked_at within which a cancellation refunds principal and every fee in full (Regulation E 30-minute right, expressed in hours)."
+  late_cancel_fee_refund_pct: "Share of the transfer fee refunded when a not-yet-released transfer is cancelled after the full-refund window (percent)."
+  in_transit_cancellable: "Whether a released transfer may still be cancelled before the beneficiary bank credits it (boolean)."
+  refund_business_days: "Paloma business days within which a refund owed to the customer must be issued, counted from the day it becomes owed."
+  rfi_response_days: "Calendar days the customer has to answer a transfer-level request for information before the transfer is cancelled."
+  rfi_expiry_fee_refund_pct: "Share of the transfer fee refunded when Paloma cancels a held transfer (percent)."
+  hold_review_business_days: "Paloma business days compliance takes to clear a hold once its request for information is answered; the date_available is re-disclosed from the release."
+  funding_deadline_hours: "Hours after booked_at within which an inbound wire must arrive before the booking is cancelled (0 = not applicable)."
+  return_reason_attribution: "Whether each bank return reason is attributable to the sender's details or to Paloma's side (mapping return_reason -> sender | paloma)."
+  return_decision_window_days: "Calendar days after funds come back within which the customer may have the transfer sent again; after that it is refunded."
+  return_handling_fee_usd: "Fee (USD) a beneficiary bank charges on a sender-attributable return, deducted from the refund."
+  return_conversion_margin_pct: "Margin below the mid-market rate at which returned foreign currency is converted back to USD (percent)."
+  resend_fee_usd: "Fee (USD) for sending a returned transfer again after a sender-attributable return."
+  free_resends_per_transfer: "Number of sender-attributable resends on one transfer for which resend_fee_usd is waived (count)."
+  max_resends: "Largest number of times one transfer may be sent again after returns (count); beyond it the transfer must be refunded."
+  amendable_fields: "Recipient bank details that may be corrected on a returned transfer (list of field names)."
+  swift_charge_options: "Charge options offered for SWIFT payments (list of SHA, OUR, or not_applicable)."
+  swift_our_surcharge_usd: "Fee (USD) for the OUR option, under which Paloma pays every intermediary bank charge."
+  intermediary_fee_estimate_usd: "Intermediary-bank deduction (USD) disclosed as an estimate on SHA payments."
+  recall_fee_usd: "Fee (USD) for asking the beneficiary bank to recall a deposited payment sent to wrong details the customer supplied."
+  recall_window_days: "Calendar days after deposited_date within which a recall may be requested."
+  error_notice_window_days: "Calendar days after the disclosed date_available within which the customer may give notice of an error."
+  error_investigation_days: "Calendar days after an error notice within which Paloma must decide it."
+  redelivery_business_days: "Paloma business days within which funds are sent again after the customer chooses redelivery as a remedy."
+  payout_retry_attempts: "Automatic retries of a payout that fails for a technical reason before it is treated as returned (count)."
+
+variants:
+  - name: Bank Deposit Economy
+    rank: 1
+    entry_gate: {min_account_level: Paloma Starter, funding: [ach_debit]}
+    parameters:
+      delivery_rail: local_batch
+      funding_methods_allowed: [ach_debit]
+      entry_min_account_level: Paloma Starter
+      entry_min_completed_transfers: 0
+      corridors_served: [MX-MXN, GT-GTQ, SV-USD, HN-HNL, DO-DOP, CO-COP, PH-PHP, IN-INR, VN-VND, BD-BDT, NG-NGN, KE-KES, GH-GHS]
+      min_send_usd: 10.00
+      max_send_usd: 10000.00
+      realtime_cap_usd_by_corridor: {}
+      max_transfers_per_recipient_24h: 3
+      fee_ladder: [{from_usd: 10.00, to_usd: 999.99, fee_usd: 1.99}, {from_usd: 1000.00, to_usd: 2999.99, fee_usd: 2.99}, {from_usd: 3000.00, to_usd: 10000.00, fee_usd: 3.99}]
+      credit_card_fee_pct: 0.00
+      debit_card_fee_usd: 0.00
+      pay_by_bank_fee_discount_usd: 0.00
+      fx_margin_pct: 0.95
+      margin_reduction_threshold_usd: 5000.00
+      margin_reduction_pct_points: 0.15
+      rate_lock_hours: 96
+      delivery_business_days: 3
+      booking_cutoff_ct: "15:00"
+      weekend_payout: false
+      purpose_code_corridors: [IN-INR, BD-BDT, NG-NGN, VN-VND]
+      first_transfer_fee_waived: true
+      first_transfer_promo_cap_usd: 1000.00
+      first_transfer_promo_margin_pct: 0.00
+      on_time_promise: true
+      cancel_full_refund_window_hours: 0.50
+      late_cancel_fee_refund_pct: 100
+      in_transit_cancellable: true
+      refund_business_days: 3
+      rfi_response_days: 10
+      rfi_expiry_fee_refund_pct: 100
+      hold_review_business_days: 2
+      funding_deadline_hours: 0
+      return_reason_attribution: {invalid_account_number: sender, account_closed: sender, name_mismatch: sender, account_frozen: sender, account_type_mismatch: sender, currency_not_accepted: paloma, partner_processing_error: paloma, duplicate_payment: paloma, recalled_at_sender_request: sender}
+      return_decision_window_days: 30
+      return_handling_fee_usd: 0.00
+      return_conversion_margin_pct: 0.50
+      resend_fee_usd: 4.99
+      free_resends_per_transfer: 0
+      max_resends: 2
+      amendable_fields: [beneficiary_name, beneficiary_bank_name, beneficiary_account_number]
+      swift_charge_options: [not_applicable]
+      swift_our_surcharge_usd: 0.00
+      intermediary_fee_estimate_usd: 0.00
+      recall_fee_usd: 10.00
+      recall_window_days: 30
+      error_notice_window_days: 180
+      error_investigation_days: 90
+      redelivery_business_days: 1
+      payout_retry_attempts: 2
+  - name: Bank Deposit Standard
+    rank: 2
+    entry_gate: {min_account_level: Paloma Verified, min_completed_transfers: 3, funding: [ach_debit, pay_by_bank]}
+    parameters:
+      delivery_rail: local_batch
+      funding_methods_allowed: [ach_debit, pay_by_bank]
+      entry_min_account_level: Paloma Verified
+      entry_min_completed_transfers: 3
+      corridors_served: [MX-MXN, GT-GTQ, SV-USD, HN-HNL, DO-DOP, CO-COP, PH-PHP, IN-INR, VN-VND, BD-BDT, NG-NGN, KE-KES, GH-GHS]
+      min_send_usd: 10.00
+      max_send_usd: 10000.00
+      realtime_cap_usd_by_corridor: {}
+      max_transfers_per_recipient_24h: 3
+      fee_ladder: [{from_usd: 10.00, to_usd: 999.99, fee_usd: 2.99}, {from_usd: 1000.00, to_usd: 2999.99, fee_usd: 3.99}, {from_usd: 3000.00, to_usd: 10000.00, fee_usd: 4.99}]
+      credit_card_fee_pct: 0.00
+      debit_card_fee_usd: 0.00
+      pay_by_bank_fee_discount_usd: 1.00
+      fx_margin_pct: 1.10
+      margin_reduction_threshold_usd: 5000.00
+      margin_reduction_pct_points: 0.15
+      rate_lock_hours: 48
+      delivery_business_days: 1
+      booking_cutoff_ct: "15:00"
+      weekend_payout: false
+      purpose_code_corridors: [IN-INR, BD-BDT, NG-NGN, VN-VND]
+      first_transfer_fee_waived: false
+      first_transfer_promo_cap_usd: 0.00
+      first_transfer_promo_margin_pct: 1.10
+      on_time_promise: true
+      cancel_full_refund_window_hours: 0.50
+      late_cancel_fee_refund_pct: 100
+      in_transit_cancellable: true
+      refund_business_days: 3
+      rfi_response_days: 10
+      rfi_expiry_fee_refund_pct: 100
+      hold_review_business_days: 2
+      funding_deadline_hours: 0
+      return_reason_attribution: {invalid_account_number: sender, account_closed: sender, name_mismatch: sender, account_frozen: sender, account_type_mismatch: sender, currency_not_accepted: paloma, partner_processing_error: paloma, duplicate_payment: paloma, recalled_at_sender_request: sender}
+      return_decision_window_days: 30
+      return_handling_fee_usd: 0.00
+      return_conversion_margin_pct: 0.50
+      resend_fee_usd: 4.99
+      free_resends_per_transfer: 0
+      max_resends: 2
+      amendable_fields: [beneficiary_name, beneficiary_bank_name, beneficiary_account_number]
+      swift_charge_options: [not_applicable]
+      swift_our_surcharge_usd: 0.00
+      intermediary_fee_estimate_usd: 0.00
+      recall_fee_usd: 10.00
+      recall_window_days: 30
+      error_notice_window_days: 180
+      error_investigation_days: 90
+      redelivery_business_days: 1
+      payout_retry_attempts: 2
+  - name: Bank Deposit Express
+    rank: 3
+    entry_gate: {min_account_level: Paloma Starter, funding: [debit_card, credit_card, pay_by_bank]}
+    parameters:
+      delivery_rail: local_realtime
+      funding_methods_allowed: [debit_card, credit_card, pay_by_bank]
+      entry_min_account_level: Paloma Starter
+      entry_min_completed_transfers: 0
+      corridors_served: [MX-MXN, GT-GTQ, DO-DOP, CO-COP, PH-PHP, IN-INR, VN-VND, BD-BDT, NG-NGN, KE-KES, GH-GHS]
+      min_send_usd: 10.00
+      max_send_usd: 2999.00
+      realtime_cap_usd_by_corridor: {PH-PHP: 850.00, BD-BDT: 2450.00, GH-GHS: 1900.00}
+      max_transfers_per_recipient_24h: 5
+      fee_ladder: [{from_usd: 10.00, to_usd: 499.99, fee_usd: 3.99}, {from_usd: 500.00, to_usd: 999.99, fee_usd: 4.99}, {from_usd: 1000.00, to_usd: 2999.00, fee_usd: 5.99}]
+      credit_card_fee_pct: 3.00
+      debit_card_fee_usd: 0.00
+      pay_by_bank_fee_discount_usd: 1.00
+      fx_margin_pct: 1.65
+      margin_reduction_threshold_usd: 2000.00
+      margin_reduction_pct_points: 0.10
+      rate_lock_hours: 24
+      delivery_business_days: 0
+      booking_cutoff_ct: 24x7
+      weekend_payout: true
+      purpose_code_corridors: [IN-INR, BD-BDT, NG-NGN, VN-VND]
+      first_transfer_fee_waived: true
+      first_transfer_promo_cap_usd: 500.00
+      first_transfer_promo_margin_pct: 0.00
+      on_time_promise: true
+      cancel_full_refund_window_hours: 0.50
+      late_cancel_fee_refund_pct: 0
+      in_transit_cancellable: false
+      refund_business_days: 1
+      rfi_response_days: 7
+      rfi_expiry_fee_refund_pct: 100
+      hold_review_business_days: 1
+      funding_deadline_hours: 0
+      return_reason_attribution: {invalid_account_number: sender, account_closed: sender, name_mismatch: sender, account_frozen: sender, account_type_mismatch: sender, currency_not_accepted: paloma, partner_processing_error: paloma, duplicate_payment: paloma, recalled_at_sender_request: sender}
+      return_decision_window_days: 30
+      return_handling_fee_usd: 0.00
+      return_conversion_margin_pct: 0.50
+      resend_fee_usd: 2.99
+      free_resends_per_transfer: 1
+      max_resends: 2
+      amendable_fields: [beneficiary_name, beneficiary_bank_name, beneficiary_account_number]
+      swift_charge_options: [not_applicable]
+      swift_our_surcharge_usd: 0.00
+      intermediary_fee_estimate_usd: 0.00
+      recall_fee_usd: 10.00
+      recall_window_days: 10
+      error_notice_window_days: 180
+      error_investigation_days: 90
+      redelivery_business_days: 1
+      payout_retry_attempts: 3
+  - name: Bank Deposit Express Plus
+    rank: 4
+    entry_gate: {min_account_level: Paloma Verified Plus, min_completed_transfers: 5, funding: [debit_card, credit_card, pay_by_bank]}
+    parameters:
+      delivery_rail: local_realtime
+      funding_methods_allowed: [debit_card, credit_card, pay_by_bank]
+      entry_min_account_level: Paloma Verified Plus
+      entry_min_completed_transfers: 5
+      corridors_served: [MX-MXN, GT-GTQ, DO-DOP, CO-COP, PH-PHP, IN-INR, VN-VND, BD-BDT, NG-NGN, KE-KES, GH-GHS]
+      min_send_usd: 50.00
+      max_send_usd: 6000.00
+      realtime_cap_usd_by_corridor: {PH-PHP: 850.00, BD-BDT: 2450.00, GH-GHS: 1900.00}
+      max_transfers_per_recipient_24h: 5
+      fee_ladder: [{from_usd: 50.00, to_usd: 999.99, fee_usd: 3.49}, {from_usd: 1000.00, to_usd: 2999.99, fee_usd: 4.49}, {from_usd: 3000.00, to_usd: 6000.00, fee_usd: 5.49}]
+      credit_card_fee_pct: 3.00
+      debit_card_fee_usd: 0.00
+      pay_by_bank_fee_discount_usd: 1.00
+      fx_margin_pct: 1.25
+      margin_reduction_threshold_usd: 3000.00
+      margin_reduction_pct_points: 0.10
+      rate_lock_hours: 24
+      delivery_business_days: 0
+      booking_cutoff_ct: 24x7
+      weekend_payout: true
+      purpose_code_corridors: [IN-INR, BD-BDT, NG-NGN, VN-VND]
+      first_transfer_fee_waived: false
+      first_transfer_promo_cap_usd: 0.00
+      first_transfer_promo_margin_pct: 1.25
+      on_time_promise: true
+      cancel_full_refund_window_hours: 0.50
+      late_cancel_fee_refund_pct: 50
+      in_transit_cancellable: false
+      refund_business_days: 1
+      rfi_response_days: 7
+      rfi_expiry_fee_refund_pct: 100
+      hold_review_business_days: 1
+      funding_deadline_hours: 0
+      return_reason_attribution: {invalid_account_number: sender, account_closed: sender, name_mismatch: sender, account_frozen: sender, account_type_mismatch: sender, currency_not_accepted: paloma, partner_processing_error: paloma, duplicate_payment: paloma, recalled_at_sender_request: sender}
+      return_decision_window_days: 30
+      return_handling_fee_usd: 0.00
+      return_conversion_margin_pct: 0.50
+      resend_fee_usd: 0.00
+      free_resends_per_transfer: 1
+      max_resends: 3
+      amendable_fields: [beneficiary_name, beneficiary_bank_name, beneficiary_account_number]
+      swift_charge_options: [not_applicable]
+      swift_our_surcharge_usd: 0.00
+      intermediary_fee_estimate_usd: 0.00
+      recall_fee_usd: 10.00
+      recall_window_days: 10
+      error_notice_window_days: 180
+      error_investigation_days: 90
+      redelivery_business_days: 1
+      payout_retry_attempts: 3
+  - name: Bank Deposit Large Amount
+    rank: 5
+    entry_gate: {min_account_level: Paloma Enhanced, min_completed_transfers: 5, min_send_usd: 5000.00, funding: [wire, pay_by_bank]}
+    parameters:
+      delivery_rail: local_batch
+      funding_methods_allowed: [wire, pay_by_bank]
+      entry_min_account_level: Paloma Enhanced
+      entry_min_completed_transfers: 5
+      corridors_served: [MX-MXN, GT-GTQ, DO-DOP, CO-COP, PH-PHP, IN-INR, VN-VND]
+      min_send_usd: 5000.00
+      max_send_usd: 75000.00
+      realtime_cap_usd_by_corridor: {}
+      max_transfers_per_recipient_24h: 2
+      fee_ladder: [{from_usd: 5000.00, to_usd: 24999.99, fee_usd: 9.99}, {from_usd: 25000.00, to_usd: 75000.00, fee_usd: 14.99}]
+      credit_card_fee_pct: 0.00
+      debit_card_fee_usd: 0.00
+      pay_by_bank_fee_discount_usd: 0.00
+      fx_margin_pct: 0.55
+      margin_reduction_threshold_usd: 25000.00
+      margin_reduction_pct_points: 0.10
+      rate_lock_hours: 48
+      delivery_business_days: 1
+      booking_cutoff_ct: "13:00"
+      weekend_payout: false
+      purpose_code_corridors: [MX-MXN, GT-GTQ, DO-DOP, CO-COP, PH-PHP, IN-INR, VN-VND]
+      first_transfer_fee_waived: false
+      first_transfer_promo_cap_usd: 0.00
+      first_transfer_promo_margin_pct: 0.55
+      on_time_promise: true
+      cancel_full_refund_window_hours: 0.50
+      late_cancel_fee_refund_pct: 100
+      in_transit_cancellable: true
+      refund_business_days: 2
+      rfi_response_days: 14
+      rfi_expiry_fee_refund_pct: 100
+      hold_review_business_days: 3
+      funding_deadline_hours: 48
+      return_reason_attribution: {invalid_account_number: sender, account_closed: sender, name_mismatch: sender, account_frozen: sender, account_type_mismatch: sender, currency_not_accepted: paloma, partner_processing_error: paloma, duplicate_payment: paloma, recalled_at_sender_request: sender}
+      return_decision_window_days: 45
+      return_handling_fee_usd: 15.00
+      return_conversion_margin_pct: 0.35
+      resend_fee_usd: 9.99
+      free_resends_per_transfer: 0
+      max_resends: 2
+      amendable_fields: [beneficiary_name, beneficiary_bank_name, beneficiary_account_number]
+      swift_charge_options: [not_applicable]
+      swift_our_surcharge_usd: 0.00
+      intermediary_fee_estimate_usd: 0.00
+      recall_fee_usd: 15.00
+      recall_window_days: 60
+      error_notice_window_days: 180
+      error_investigation_days: 90
+      redelivery_business_days: 1
+      payout_retry_attempts: 2
+  - name: Bank Deposit International Wire
+    rank: 6
+    entry_gate: {min_account_level: Paloma Verified, min_send_usd: 100.00, funding: [ach_debit, debit_card, pay_by_bank, wire]}
+    parameters:
+      delivery_rail: swift
+      funding_methods_allowed: [ach_debit, debit_card, pay_by_bank, wire]
+      entry_min_account_level: Paloma Verified
+      entry_min_completed_transfers: 0
+      corridors_served: [MX-MXN, GT-GTQ, SV-USD, HN-HNL, DO-DOP, CO-COP, PH-PHP, IN-INR, VN-VND, BD-BDT, NG-NGN, KE-KES, GH-GHS]
+      min_send_usd: 100.00
+      max_send_usd: 50000.00
+      realtime_cap_usd_by_corridor: {}
+      max_transfers_per_recipient_24h: 2
+      fee_ladder: [{from_usd: 100.00, to_usd: 50000.00, fee_usd: 24.99}]
+      credit_card_fee_pct: 0.00
+      debit_card_fee_usd: 0.00
+      pay_by_bank_fee_discount_usd: 0.00
+      fx_margin_pct: 0.85
+      margin_reduction_threshold_usd: 10000.00
+      margin_reduction_pct_points: 0.15
+      rate_lock_hours: 48
+      delivery_business_days: 2
+      booking_cutoff_ct: "14:00"
+      weekend_payout: false
+      purpose_code_corridors: [IN-INR, BD-BDT, NG-NGN, VN-VND]
+      first_transfer_fee_waived: false
+      first_transfer_promo_cap_usd: 0.00
+      first_transfer_promo_margin_pct: 0.85
+      on_time_promise: false
+      cancel_full_refund_window_hours: 0.50
+      late_cancel_fee_refund_pct: 0
+      in_transit_cancellable: false
+      refund_business_days: 3
+      rfi_response_days: 14
+      rfi_expiry_fee_refund_pct: 100
+      hold_review_business_days: 3
+      funding_deadline_hours: 48
+      return_reason_attribution: {invalid_account_number: sender, account_closed: sender, name_mismatch: sender, account_frozen: sender, account_type_mismatch: sender, currency_not_accepted: paloma, partner_processing_error: paloma, duplicate_payment: paloma, recalled_at_sender_request: sender}
+      return_decision_window_days: 60
+      return_handling_fee_usd: 30.00
+      return_conversion_margin_pct: 0.50
+      resend_fee_usd: 25.00
+      free_resends_per_transfer: 0
+      max_resends: 1
+      amendable_fields: [beneficiary_name, beneficiary_bank_name, beneficiary_account_number]
+      swift_charge_options: [SHA, OUR]
+      swift_our_surcharge_usd: 20.00
+      intermediary_fee_estimate_usd: 15.00
+      recall_fee_usd: 35.00
+      recall_window_days: 180
+      error_notice_window_days: 180
+      error_investigation_days: 90
+      redelivery_business_days: 1
+      payout_retry_attempts: 1
+
+events:
+  # ---- holding writes (bank_transfers) ----
+  - type: bank_transfer_booked
+    target: bank_transfers
+    mutation: create
+    meaning: "The customer books and pays for a Bank Deposit transfer after seeing the pre-payment disclosure (principal, fees, exchange rate, amount received, date available)."
+    grain: "One row per transfer order."
+    fields:
+      customer_id: "The sending customer."
+      sender_account_id: "The customer's Personal Sender Account the transfer is booked under."
+      recipient_id: "The saved recipient paid."
+      variant_name: "The Bank Deposit tier chosen."
+      corridor: "Destination corridor (country and payout currency)."
+      confirmation_number: "Confirmation number shown on the receipt."
+      send_amount_usd: "Principal in USD."
+      transfer_fee_usd: "Transfer fee disclosed, after any promotion or pay-by-bank discount."
+      surcharge_usd: "Card funding fee or SWIFT OUR surcharge disclosed; 0.00 when none."
+      fx_rate: "Customer exchange rate locked at booking."
+      receive_amount: "Amount the recipient receives in the payout currency."
+      funding_method: "How the customer pays."
+      swift_charge_option: "SHA or OUR on the International Wire tier; not_applicable otherwise."
+      transfer_purpose: "Stated purpose of the transfer."
+      beneficiary_name: "Account holder name of the recipient's bank account."
+      beneficiary_bank_name: "Recipient's bank."
+      beneficiary_account_number: "Recipient's account number (CLABE, IBAN-style or local format)."
+      booked_at: "Moment the customer authorised payment."
+      date_available: "Disclosed date the money will be available to the recipient."
+    triggers:
+      - event: bank:bank_funds_received
+        when: {funding_method: [debit_card, credit_card, pay_by_bank]}
+        map: {amount_usd: send_amount_usd}
+      - event: bank:bank_fee_charged
+        when: {funding_method: [debit_card, credit_card, pay_by_bank], transfer_fee_usd: {not: 0.0}}
+        map: {fee_type: transfer_fee, amount_usd: transfer_fee_usd, payout_attempt: 1}
+      - event: bank:bank_fee_charged
+        when: {funding_method: credit_card}
+        map: {fee_type: card_funding_fee, amount_usd: surcharge_usd, payout_attempt: 1}
+  - type: bank_rate_requoted
+    target: bank_transfers
+    mutation: update
+    meaning: "Funds arrive after the rate lock lapsed, and the exchange rate, amount received and date available are re-disclosed."
+    grain: "One row per re-quote."
+    fields:
+      fx_rate: "New customer exchange rate."
+      receive_amount: "New amount the recipient receives."
+      date_available: "Re-disclosed date available."
+    triggers: []
+  - type: bank_released
+    target: bank_transfers
+    mutation: {transition: {from: awaiting_funds, to: in_transit}}
+    meaning: "The transfer is released to the payout partner."
+    grain: "One row per first release."
+    fields:
+      date_available: "Date available, unchanged unless the release itself re-disclosed it."
+    triggers:
+      - event: bank:bank_payout_sent
+        map: {payout_attempt: 1}
+  - type: bank_hold_placed
+    target: bank_transfers
+    mutation: {transition: [{from: awaiting_funds, to: on_hold}, {from: in_transit, to: on_hold}]}
+    meaning: "Compliance, funding review, partner screening or new-recipient cooling-off stops the transfer."
+    grain: "One row per hold."
+    fields:
+      hold_reason: "Why the transfer is held."
+      held_at: "Moment the hold was placed."
+    triggers: []
+  - type: bank_hold_released
+    target: bank_transfers
+    mutation: {transition: {from: on_hold, to: in_transit}}
+    meaning: "Compliance clears the hold and the transfer moves on to the payout partner."
+    grain: "One row per hold release."
+    fields:
+      hold_reason: "Reset to none."
+      date_available: "Re-disclosed date available counted from the release."
+    triggers: []
+  - type: bank_deposit_confirmed
+    target: bank_transfers
+    mutation: {transition: {from: in_transit, to: deposited}}
+    meaning: "The beneficiary bank confirms the money is in the recipient's account."
+    grain: "One row per confirmed deposit."
+    fields:
+      deposited_date: "Date the beneficiary bank credited the account."
+      closed_date: "Same as deposited_date."
+    triggers:
+      - event: rewards:rewards_points_earned
+        map: {source_transfer_id: bank_transfer_id, source_category: bank}
+  - type: bank_transfer_returned
+    target: bank_transfers
+    mutation: {transition: [{from: in_transit, to: returned}, {from: deposited, to: returned}]}
+    meaning: "The payment comes back to Paloma from the beneficiary bank."
+    grain: "One row per return."
+    fields:
+      deposited_date: "Cleared when a deposited payment comes back."
+      closed_date: "Cleared; the transfer is open again."
+    triggers: []
+  - type: bank_resent
+    target: bank_transfers
+    mutation: {transition: [{from: returned, to: in_transit}, {from: deposited, to: in_transit}]}
+    meaning: "The transfer is sent again: after a return with corrected details, or as a no-cost redelivery after an error resolution."
+    grain: "One row per resend."
+    fields:
+      date_available: "Re-disclosed date available for the new payout."
+    triggers:
+      - event: bank:bank_payout_sent
+        map: {}
+  - type: bank_transfer_cancelled
+    target: bank_transfers
+    mutation: {transition: [{from: awaiting_funds, to: cancelled}, {from: on_hold, to: cancelled}, {from: in_transit, to: cancelled}]}
+    meaning: "The customer cancels their own transfer before the money reaches the recipient's account."
+    grain: "One row per customer cancellation."
+    fields:
+      cancelled_at: "Moment the customer confirmed the cancellation."
+    triggers: []
+  - type: bank_transfer_auto_cancelled
+    target: bank_transfers
+    mutation: {transition: [{from: on_hold, to: cancelled}, {from: awaiting_funds, to: cancelled}]}
+    meaning: "Paloma cancels the transfer: an unanswered or rejected request for information, a compliance rejection, or a failed or late payment."
+    grain: "One row per Paloma-initiated cancellation."
+    fields:
+      cancelled_at: "Moment Paloma cancelled it."
+      hold_reason: "The hold or funding reason that led to the cancellation."
+    triggers: []
+  - type: bank_transfer_refunded
+    target: bank_transfers
+    mutation: {transition: [{from: cancelled, to: refunded}, {from: returned, to: refunded}, {from: deposited, to: refunded}]}
+    meaning: "The money owed back to the customer has been refunded and the transfer is closed."
+    grain: "One row per closing refund."
+    fields:
+      closed_date: "Date of the closing refund."
+    triggers: []
+  - type: bank_beneficiary_amended
+    target: bank_transfers
+    mutation: update
+    meaning: "Recipient bank details on a returned transfer are corrected with details the customer supplies."
+    grain: "One row per amendment."
+    fields:
+      beneficiary_name: "Corrected account holder name, exactly as the customer gives it."
+      beneficiary_bank_name: "Corrected bank, exactly as the customer gives it."
+      beneficiary_account_number: "Corrected account number, exactly as the customer gives it."
+    triggers: []
+  # ---- ledger writes (bank_ledger) ----
+  - type: bank_funds_received
+    target: bank_ledger
+    meaning: "The customer's payment for the principal is collected (card or pay-by-bank capture, ACH settlement, or wire arrival)."
+    grain: "One row per principal collection on a transfer."
+    distinguish_by: [entry_date]
+    fields:
+      amount_usd: "Principal collected (positive)."
+      entry_date: "Date collected."
+    account: principal_held
+    direction: in
+    triggers: []
+  - type: bank_fee_charged
+    target: bank_ledger
+    meaning: "A fee is collected on the transfer: the transfer fee, a card funding fee, the SWIFT OUR surcharge, a resend fee or a recall fee."
+    grain: "One row per fee type per payout attempt."
+    distinguish_by: [fee_type, payout_attempt]
+    fields:
+      fee_type: "Kind of fee."
+      amount_usd: "Fee collected (positive)."
+      payout_attempt: "The payout attempt the fee belongs to (1 for booking fees; the new attempt number for a resend fee; the recalled attempt for a recall fee)."
+      entry_date: "Date collected."
+    account: fees_held
+    direction: in
+    triggers: []
+  - type: bank_fee_refunded
+    target: bank_ledger
+    meaning: "All or part of one collected fee is refunded to the customer."
+    grain: "One row per refunded fee charge."
+    distinguish_by: [related_entry_id]
+    fields:
+      related_entry_id: "ledger_entry_id of the bank_fee_charged row refunded."
+      amount_usd: "Amount refunded (positive)."
+      fee_refund_reason: "Why the fee is refunded."
+      entry_date: "Date refunded."
+    account: fees_held
+    direction: out
+    triggers: []
+  - type: bank_payout_sent
+    target: bank_ledger
+    meaning: "Principal is paid out to the beneficiary bank in the payout currency."
+    grain: "One row per payout attempt."
+    distinguish_by: [payout_attempt]
+    fields:
+      amount_usd: "USD principal paid out (positive)."
+      receive_amount: "Payout-currency amount sent."
+      fx_rate_applied: "Exchange rate used for the payout."
+      payout_attempt: "1 for the first payout, 2 and up for each resend."
+      entry_date: "Date paid out."
+    account: principal_held
+    direction: out
+    triggers: []
+  - type: bank_funds_returned
+    target: bank_ledger
+    meaning: "A payout comes back and its payout-currency amount is converted back to USD."
+    grain: "One row per returned payout attempt."
+    distinguish_by: [payout_attempt]
+    fields:
+      amount_usd: "USD recovered after conversion back (positive)."
+      receive_amount: "Payout-currency amount that came back."
+      fx_rate_applied: "Rate at which it was converted back."
+      return_reason: "Return reason code from the beneficiary bank."
+      payout_attempt: "The payout attempt that came back."
+      entry_date: "Date the funds came back."
+    account: principal_held
+    direction: in
+    triggers:
+      - event: bank:bank_transfer_returned
+        map: {}
+  - type: bank_paloma_credit
+    target: bank_ledger
+    meaning: "Paloma puts its own money into the transfer: covering an exchange-rate shortfall on a return that is on Paloma's side, or funding a no-cost redelivery, refund or shortfall after an error resolution."
+    grain: "One row per make-good credit per source entry."
+    distinguish_by: [credit_reason, related_entry_id]
+    fields:
+      credit_reason: "Why Paloma funds the credit."
+      amount_usd: "Amount Paloma puts in (positive)."
+      related_entry_id: "The ledger entry the credit makes good (the funds_returned row, or the payout row an error concerned)."
+      entry_date: "Date credited."
+    account: principal_held
+    direction: in
+    triggers: []
+  - type: bank_refund_issued
+    target: bank_ledger
+    meaning: "Principal owed back to the customer is refunded to the original funding method."
+    grain: "One row per principal refund per basis and source entry."
+    distinguish_by: [refund_basis, related_entry_id]
+    fields:
+      amount_usd: "Principal refunded (positive)."
+      refund_basis: "Why the refund is owed."
+      related_entry_id: "The ledger entry the refund pays back (the funds_received row, or the funds_returned row on a return)."
+      entry_date: "Date refunded."
+    account: principal_held
+    direction: out
+    triggers:
+      - event: bank:bank_transfer_refunded
+        when: {refund_basis: {not: error_shortfall}}
+        map: {closed_date: entry_date}
+  # ---- case writes (bank_cases) ----
+  - type: bank_rfi_answer_logged
+    target: bank_cases
+    meaning: "The customer's answer to a transfer-level request for information is logged with the document they uploaded."
+    grain: "One row per uploaded answer."
+    distinguish_by: [doc_reference]
+    fields:
+      rfi_topic: "What the request asked about."
+      doc_reference: "Upload reference of the answer document, as the app shows it."
+      case_date: "Date logged."
+    triggers: []
+  - type: bank_error_notice_filed
+    target: bank_cases
+    meaning: "The customer gives notice of an error on a transfer under the Remittance Transfer Rule."
+    grain: "One row per error notice."
+    distinguish_by: [case_type, case_date]
+    fields:
+      case_type: "Kind of error asserted."
+      case_date: "Date the notice was given."
+      resolution_due_date: "Last day for Paloma's decision."
+    triggers: []
+  - type: bank_error_decided
+    target: bank_cases
+    meaning: "Paloma's error-resolution team records its finding on one error notice."
+    grain: "One row per decision; points back to one notice."
+    distinguish_by: [related_case_id]
+    fields:
+      related_case_id: "case_id of the error notice decided."
+      case_outcome: "error_found or no_error."
+      case_date: "Date decided."
+    triggers: []
+  - type: bank_remedy_chosen
+    target: bank_cases
+    meaning: "After an error is found, the customer chooses their remedy: a refund or delivery at no cost."
+    grain: "One row per choice; points back to one notice."
+    distinguish_by: [related_case_id]
+    fields:
+      related_case_id: "case_id of the error notice."
+      remedy_choice: "refund or resend for a misdirected or undelivered transfer; refund_shortfall or resend_shortfall for an incorrect amount."
+      case_date: "Date chosen."
+    triggers:
+      - event: bank:bank_refund_issued
+        when: {remedy_choice: refund}
+        map: {refund_basis: error_resolution}
+      - event: bank:bank_refund_issued
+        when: {remedy_choice: refund_shortfall}
+        map: {refund_basis: error_shortfall}
+      - event: bank:bank_resent
+        when: {remedy_choice: [resend, resend_shortfall]}
+        map: {}
+  - type: bank_recall_requested
+    target: bank_cases
+    meaning: "The customer asks Paloma to recall a deposited payment that went to wrong account details they supplied."
+    grain: "One row per recall request."
+    distinguish_by: [case_date]
+    fields:
+      case_type: "recall_request."
+      case_date: "Date requested."
+    triggers: []
+  - type: bank_recall_closed
+    target: bank_cases
+    meaning: "The beneficiary bank answers a recall: the money is recovered or the recall fails."
+    grain: "One row per recall outcome; points back to one request."
+    distinguish_by: [related_case_id]
+    fields:
+      related_case_id: "case_id of the recall request."
+      case_outcome: "recalled or recall_failed."
+      case_date: "Date of the answer."
+    triggers:
+      - event: bank:bank_funds_returned
+        when: {case_outcome: recalled}
+        map: {return_reason: recalled_at_sender_request}
+
+measures:
+  - id: bank_msr_transfers_to_recipient_24h
+    window: "Rolling 24 hours ending at frozen_time: booked_at strictly later than frozen_time minus 24 hours."
+    measure: "Count of bank_transfers on the same recipient_id, excluding status cancelled or refunded."
+  - id: bank_msr_resends
+    window: "The life of one transfer."
+    measure: "Count of bank_payout_sent rows on this bank_transfer_id with payout_attempt of 2 or more."
+  - id: bank_msr_sender_resends
+    window: "The life of one transfer."
+    measure: "Count of bank_payout_sent rows on this bank_transfer_id with payout_attempt of 2 or more that followed a bank_funds_returned row whose return_reason is attributed to the sender."
+
+policies:
+  - id: bank_agg_multi_holding
+    subject: [bank_transfer_booked]
+    rule: >-
+      A customer may hold any number of Bank Deposit transfers at once; every booking is its own
+      transfer with its own confirmation number, principal, fees, locked rate and disclosed date of
+      availability. What bounds them is the aggregate sending limits of the customer's Personal
+      Sender Account and the per-recipient frequency cap (bank_agg_sending_limits). Transfers are
+      never merged, netted or batched: each is priced, cancelled, refunded, returned and resolved on
+      its own, and a refund or fee refund on one transfer never offsets an amount on another.
+    eligibility: []
+    params:
+      max_per_customer: null
+
+  - id: bank_agg_sending_limits
+    subject: [bank_transfer_booked]
+    rule: >-
+      A Bank Deposit transfer is booked only under the customer's own Personal Sender Account, and
+      only while that account's status is active. Its principal must fit every ceiling of
+      account_sending_limits for the account's level at the moment of booking, aggregated over all
+      of the customer's personal transfers in Bank Deposit, Cash Pickup and Mobile Wallet
+      (account_msr_send_24h, account_msr_send_30d, account_msr_send_180d,
+      account_msr_transfers_24h, account_msr_corridors_30d). The principal must also lie between
+      the tier's min_send_usd and max_send_usd, both inclusive. On a tier whose delivery_rail is local_realtime the
+      principal may not exceed the corridor's entry in realtime_cap_usd_by_corridor; a corridor
+      with no entry has no ceiling below max_send_usd. No more than
+      max_transfers_per_recipient_24h Bank Deposit transfers to one recipient may be booked as
+      counted by bank_msr_transfers_to_recipient_24h including the new one. The binding ceiling for
+      one transfer is the lowest of the account level's per_transfer_limit_usd, the tier's
+      max_send_usd and the corridor cap. A booking over any ceiling is not made: the customer may
+      lower the principal, pick a tier or delivery method whose ceiling fits, wait for the window,
+      or raise the account level; Paloma never splits one requested amount into several transfers.
+    eligibility:
+      - id: sender_account_active
+        applies_to: [bank_transfer_booked]
+        kind: state
+        condition: "A Bank Deposit transfer is booked only under the customer's own Personal Sender Account, and only while that account's status is active."
+        evidence_fields: [sender_accounts.sender_account_id, sender_accounts.customer_id, sender_accounts.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [sender_accounts.sender_account_id]
+          action_bindings:
+            sender_accounts.sender_account_id: sender_account_id
+        state_contract:
+          field: sender_accounts.status
+          allowed: [active]
+      - id: recipient_frequency
+        applies_to: [bank_transfer_booked]
+        kind: authorization
+        condition: "No more than max_transfers_per_recipient_24h Bank Deposit transfers to one recipient may be booked as counted by bank_msr_transfers_to_recipient_24h including the new one."
+        evidence_fields: [bank_transfers.recipient_id, bank_transfers.booked_at, bank_transfers.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bank_transfers.recipient_id]
+          action_bindings:
+            bank_transfers.recipient_id: recipient_id
+    params:
+      per_tier:
+        Bank Deposit Economy: {delivery_rail: "=delivery_rail", min_send_usd: "=min_send_usd", max_send_usd: "=max_send_usd", realtime_cap_usd_by_corridor: "=realtime_cap_usd_by_corridor", max_transfers_per_recipient_24h: "=max_transfers_per_recipient_24h"}
+        Bank Deposit Standard: {delivery_rail: "=delivery_rail", min_send_usd: "=min_send_usd", max_send_usd: "=max_send_usd", realtime_cap_usd_by_corridor: "=realtime_cap_usd_by_corridor", max_transfers_per_recipient_24h: "=max_transfers_per_recipient_24h"}
+        Bank Deposit Express: {delivery_rail: "=delivery_rail", min_send_usd: "=min_send_usd", max_send_usd: "=max_send_usd", realtime_cap_usd_by_corridor: "=realtime_cap_usd_by_corridor", max_transfers_per_recipient_24h: "=max_transfers_per_recipient_24h"}
+        Bank Deposit Express Plus: {delivery_rail: "=delivery_rail", min_send_usd: "=min_send_usd", max_send_usd: "=max_send_usd", realtime_cap_usd_by_corridor: "=realtime_cap_usd_by_corridor", max_transfers_per_recipient_24h: "=max_transfers_per_recipient_24h"}
+        Bank Deposit Large Amount: {delivery_rail: "=delivery_rail", min_send_usd: "=min_send_usd", max_send_usd: "=max_send_usd", realtime_cap_usd_by_corridor: "=realtime_cap_usd_by_corridor", max_transfers_per_recipient_24h: "=max_transfers_per_recipient_24h"}
+        Bank Deposit International Wire: {delivery_rail: "=delivery_rail", min_send_usd: "=min_send_usd", max_send_usd: "=max_send_usd", realtime_cap_usd_by_corridor: "=realtime_cap_usd_by_corridor", max_transfers_per_recipient_24h: "=max_transfers_per_recipient_24h"}
+    measures: [bank_msr_transfers_to_recipient_24h]
+
+  - id: bank_evt_booking_eligibility
+    subject: [bank_transfer_booked]
+    rule: >-
+      Booking is the customer's own authorisation of payment: the agent may quote and explain, and
+      the customer books. A tier may be booked only when the account's level is at or above the
+      tier's entry_min_account_level (by level_number) and account_msr_completed_transfers is at
+      least the tier's entry_min_completed_transfers. The funding method must be in the tier's
+      funding_methods_allowed and also allowed by the account level (account_evt_funding_entitlements);
+      when the two disagree the narrower one wins. The corridor must be in the tier's
+      corridors_served. The recipient must be a saved recipient of the same customer whose status is
+      active and whose corridor equals the transfer's corridor, and the beneficiary name, bank and
+      account number are copied from that saved recipient exactly. In a corridor listed in
+      purpose_code_corridors a transfer_purpose must be stated; elsewhere it is recorded as the
+      customer states it. swift_charge_option is SHA or OUR, as the customer picks from
+      swift_charge_options, on the International Wire tier and not_applicable on every other tier.
+      A tier that does not serve the corridor or funding method is never substituted silently; the
+      customer chooses another tier or delivery method.
+    eligibility:
+      - id: tier_entry
+        applies_to: [bank_transfer_booked]
+        kind: authorization
+        condition: "A tier may be booked only when the account's level is at or above the tier's entry_min_account_level (by level_number) and account_msr_completed_transfers is at least the tier's entry_min_completed_transfers."
+        evidence_fields: [sender_accounts.sender_account_id, sender_accounts.variant_name]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [sender_accounts.sender_account_id]
+          action_bindings:
+            sender_accounts.sender_account_id: sender_account_id
+      - id: recipient_on_file
+        applies_to: [bank_transfer_booked]
+        kind: authorization
+        condition: "The recipient must be a saved recipient of the same customer whose status is active and whose corridor equals the transfer's corridor, and the beneficiary name, bank and account number are copied from that saved recipient exactly."
+        evidence_fields: [recipients.recipient_id, recipients.customer_id, recipients.status, recipients.corridor]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [recipients.recipient_id]
+          action_bindings:
+            recipients.recipient_id: recipient_id
+    params:
+      per_tier:
+        Bank Deposit Economy: {entry_min_account_level: "=entry_min_account_level", entry_min_completed_transfers: "=entry_min_completed_transfers", funding_methods_allowed: "=funding_methods_allowed", corridors_served: "=corridors_served", purpose_code_corridors: "=purpose_code_corridors", swift_charge_options: "=swift_charge_options"}
+        Bank Deposit Standard: {entry_min_account_level: "=entry_min_account_level", entry_min_completed_transfers: "=entry_min_completed_transfers", funding_methods_allowed: "=funding_methods_allowed", corridors_served: "=corridors_served", purpose_code_corridors: "=purpose_code_corridors", swift_charge_options: "=swift_charge_options"}
+        Bank Deposit Express: {entry_min_account_level: "=entry_min_account_level", entry_min_completed_transfers: "=entry_min_completed_transfers", funding_methods_allowed: "=funding_methods_allowed", corridors_served: "=corridors_served", purpose_code_corridors: "=purpose_code_corridors", swift_charge_options: "=swift_charge_options"}
+        Bank Deposit Express Plus: {entry_min_account_level: "=entry_min_account_level", entry_min_completed_transfers: "=entry_min_completed_transfers", funding_methods_allowed: "=funding_methods_allowed", corridors_served: "=corridors_served", purpose_code_corridors: "=purpose_code_corridors", swift_charge_options: "=swift_charge_options"}
+        Bank Deposit Large Amount: {entry_min_account_level: "=entry_min_account_level", entry_min_completed_transfers: "=entry_min_completed_transfers", funding_methods_allowed: "=funding_methods_allowed", corridors_served: "=corridors_served", purpose_code_corridors: "=purpose_code_corridors", swift_charge_options: "=swift_charge_options"}
+        Bank Deposit International Wire: {entry_min_account_level: "=entry_min_account_level", entry_min_completed_transfers: "=entry_min_completed_transfers", funding_methods_allowed: "=funding_methods_allowed", corridors_served: "=corridors_served", purpose_code_corridors: "=purpose_code_corridors", swift_charge_options: "=swift_charge_options"}
+
+  - id: bank_evt_pricing
+    subject: [bank_transfer_booked, bank_fee_charged]
+    rule: >-
+      The transfer fee is the fee_usd of the fee_ladder band whose from_usd and to_usd contain the
+      principal. When the transfer is funded by pay_by_bank, pay_by_bank_fee_discount_usd is taken
+      off that fee, never below 0.00. A transfer is the customer's first personal transfer when no
+      other personal transfer exists on the sender account in Bank Deposit, Cash Pickup or Mobile
+      Wallet except ones whose status is cancelled or refunded. On a first transfer booked on a tier
+      whose first_transfer_fee_waived is true and whose principal is at or below
+      first_transfer_promo_cap_usd, the transfer fee is 0.00 and the margin is
+      first_transfer_promo_margin_pct; above the cap the regular price applies to the whole
+      transfer. The first-transfer promotion and the pay-by-bank discount never stack: when the
+      promotion applies the fee is already 0.00. The surcharge is the card funding fee
+      (credit_card_fee_pct of the principal, rounded half up to the cent) for a credit card,
+      debit_card_fee_usd for a debit card, swift_our_surcharge_usd for an OUR wire, and 0.00
+      otherwise. The margin is fx_margin_pct, less margin_reduction_pct_points when the principal is
+      at or above margin_reduction_threshold_usd; the promotional margin replaces both and is never
+      reduced further. The customer rate fx_rate is the mid_market_rate of the corridor in the
+      Paloma rate sheet for the booking date (the date part of booked_at) multiplied by one minus
+      the margin over 100, rounded half up to 4 decimals. receive_amount is the principal times
+      fx_rate rounded half up to the corridor's receive_amount_decimals; on an SHA wire the
+      intermediary_fee_estimate_usd is first taken off the principal before conversion and
+      disclosed as an estimate, and on an OUR wire nothing is taken off. date_available is counted
+      from the release day: release on the booking day when the booking is on a Paloma business day
+      at or before booking_cutoff_ct (every day for 24x7 tiers), otherwise on the next Paloma
+      business day; ACH settlement waits and new-recipient cooling-off move the release later
+      (account_evt_funding_entitlements, account_evt_recipients); then delivery_business_days Paloma
+      business days are added, and on a tier whose weekend_payout is true the resulting date may
+      fall on any calendar day. Fees are collected with the principal as bank_fee_charged rows: the
+      transfer fee as transfer_fee when above 0.00, the card fee as card_funding_fee and the OUR
+      surcharge as swift_our_fee, each with payout_attempt 1. Fees and limits are never
+      recalculated after booking except by a re-quote, a resend or a refund rule.
+    eligibility: []
+    params:
+      receive_amount_decimals: {VN-VND: 0, all_other_corridors: 2}
+      per_tier:
+        Bank Deposit Economy: {fee_ladder: "=fee_ladder", pay_by_bank_fee_discount_usd: "=pay_by_bank_fee_discount_usd", first_transfer_fee_waived: "=first_transfer_fee_waived", first_transfer_promo_cap_usd: "=first_transfer_promo_cap_usd", first_transfer_promo_margin_pct: "=first_transfer_promo_margin_pct", credit_card_fee_pct: "=credit_card_fee_pct", debit_card_fee_usd: "=debit_card_fee_usd", swift_our_surcharge_usd: "=swift_our_surcharge_usd", fx_margin_pct: "=fx_margin_pct", margin_reduction_threshold_usd: "=margin_reduction_threshold_usd", margin_reduction_pct_points: "=margin_reduction_pct_points", intermediary_fee_estimate_usd: "=intermediary_fee_estimate_usd", booking_cutoff_ct: "=booking_cutoff_ct", delivery_business_days: "=delivery_business_days", weekend_payout: "=weekend_payout"}
+        Bank Deposit Standard: {fee_ladder: "=fee_ladder", pay_by_bank_fee_discount_usd: "=pay_by_bank_fee_discount_usd", first_transfer_fee_waived: "=first_transfer_fee_waived", first_transfer_promo_cap_usd: "=first_transfer_promo_cap_usd", first_transfer_promo_margin_pct: "=first_transfer_promo_margin_pct", credit_card_fee_pct: "=credit_card_fee_pct", debit_card_fee_usd: "=debit_card_fee_usd", swift_our_surcharge_usd: "=swift_our_surcharge_usd", fx_margin_pct: "=fx_margin_pct", margin_reduction_threshold_usd: "=margin_reduction_threshold_usd", margin_reduction_pct_points: "=margin_reduction_pct_points", intermediary_fee_estimate_usd: "=intermediary_fee_estimate_usd", booking_cutoff_ct: "=booking_cutoff_ct", delivery_business_days: "=delivery_business_days", weekend_payout: "=weekend_payout"}
+        Bank Deposit Express: {fee_ladder: "=fee_ladder", pay_by_bank_fee_discount_usd: "=pay_by_bank_fee_discount_usd", first_transfer_fee_waived: "=first_transfer_fee_waived", first_transfer_promo_cap_usd: "=first_transfer_promo_cap_usd", first_transfer_promo_margin_pct: "=first_transfer_promo_margin_pct", credit_card_fee_pct: "=credit_card_fee_pct", debit_card_fee_usd: "=debit_card_fee_usd", swift_our_surcharge_usd: "=swift_our_surcharge_usd", fx_margin_pct: "=fx_margin_pct", margin_reduction_threshold_usd: "=margin_reduction_threshold_usd", margin_reduction_pct_points: "=margin_reduction_pct_points", intermediary_fee_estimate_usd: "=intermediary_fee_estimate_usd", booking_cutoff_ct: "=booking_cutoff_ct", delivery_business_days: "=delivery_business_days", weekend_payout: "=weekend_payout"}
+        Bank Deposit Express Plus: {fee_ladder: "=fee_ladder", pay_by_bank_fee_discount_usd: "=pay_by_bank_fee_discount_usd", first_transfer_fee_waived: "=first_transfer_fee_waived", first_transfer_promo_cap_usd: "=first_transfer_promo_cap_usd", first_transfer_promo_margin_pct: "=first_transfer_promo_margin_pct", credit_card_fee_pct: "=credit_card_fee_pct", debit_card_fee_usd: "=debit_card_fee_usd", swift_our_surcharge_usd: "=swift_our_surcharge_usd", fx_margin_pct: "=fx_margin_pct", margin_reduction_threshold_usd: "=margin_reduction_threshold_usd", margin_reduction_pct_points: "=margin_reduction_pct_points", intermediary_fee_estimate_usd: "=intermediary_fee_estimate_usd", booking_cutoff_ct: "=booking_cutoff_ct", delivery_business_days: "=delivery_business_days", weekend_payout: "=weekend_payout"}
+        Bank Deposit Large Amount: {fee_ladder: "=fee_ladder", pay_by_bank_fee_discount_usd: "=pay_by_bank_fee_discount_usd", first_transfer_fee_waived: "=first_transfer_fee_waived", first_transfer_promo_cap_usd: "=first_transfer_promo_cap_usd", first_transfer_promo_margin_pct: "=first_transfer_promo_margin_pct", credit_card_fee_pct: "=credit_card_fee_pct", debit_card_fee_usd: "=debit_card_fee_usd", swift_our_surcharge_usd: "=swift_our_surcharge_usd", fx_margin_pct: "=fx_margin_pct", margin_reduction_threshold_usd: "=margin_reduction_threshold_usd", margin_reduction_pct_points: "=margin_reduction_pct_points", intermediary_fee_estimate_usd: "=intermediary_fee_estimate_usd", booking_cutoff_ct: "=booking_cutoff_ct", delivery_business_days: "=delivery_business_days", weekend_payout: "=weekend_payout"}
+        Bank Deposit International Wire: {fee_ladder: "=fee_ladder", pay_by_bank_fee_discount_usd: "=pay_by_bank_fee_discount_usd", first_transfer_fee_waived: "=first_transfer_fee_waived", first_transfer_promo_cap_usd: "=first_transfer_promo_cap_usd", first_transfer_promo_margin_pct: "=first_transfer_promo_margin_pct", credit_card_fee_pct: "=credit_card_fee_pct", debit_card_fee_usd: "=debit_card_fee_usd", swift_our_surcharge_usd: "=swift_our_surcharge_usd", fx_margin_pct: "=fx_margin_pct", margin_reduction_threshold_usd: "=margin_reduction_threshold_usd", margin_reduction_pct_points: "=margin_reduction_pct_points", intermediary_fee_estimate_usd: "=intermediary_fee_estimate_usd", booking_cutoff_ct: "=booking_cutoff_ct", delivery_business_days: "=delivery_business_days", weekend_payout: "=weekend_payout"}
+    formula:
+      card_funding_fee: "round(send_amount_usd * credit_card_fee_pct / 100, 2)"
+      effective_margin_pct: "fx_margin_pct - margin_reduction_pct_points if send_amount_usd >= margin_reduction_threshold_usd else fx_margin_pct"
+      receive_amount: "round(send_amount_usd * fx_rate, 2)"
+
+  - id: bank_evt_funding_and_rate_lock
+    subject: [bank_funds_received, bank_rate_requoted, bank_transfer_auto_cancelled]
+    rule: >-
+      Card and pay-by-bank payments are collected at booking; an ACH debit is collected when it
+      settles; a wire is collected when it arrives. The quoted rate is guaranteed for rate_lock_hours
+      elapsed hours from booked_at. A rate is re-quoted only when funds are collected more than
+      rate_lock_hours after the transfer was booked. Lock hours are counted as elapsed hours from
+      booked_at to the moment the funds are collected. A re-quote uses the rate sheet for the
+      collection date with the same margin rule as at booking, re-discloses fx_rate, receive_amount
+      and date_available, and never changes the fees. On a tier whose funding_deadline_hours is above
+      0, Paloma cancels a wire-funded booking only when the funds have not arrived
+      more than funding_deadline_hours after the transfer was booked. The funding deadline is
+      counted in elapsed hours from booked_at to the handling moment. When an ACH debit is returned
+      unpaid before release, or a card capture fails, Paloma cancels the transfer with hold_reason
+      funding_failed. A cancellation for missing or failed funding owes nothing back, because
+      nothing was collected, and the transfer stays cancelled as its final status.
+    eligibility:
+      - id: rate_lock_lapsed
+        applies_to: [bank_rate_requoted]
+        kind: time
+        condition: "A rate is re-quoted only when funds are collected more than rate_lock_hours after the transfer was booked."
+        evidence_fields: [bank_transfers.bank_transfer_id, bank_transfers.booked_at]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bank_transfers.bank_transfer_id]
+          action_bindings:
+            bank_transfers.bank_transfer_id: bank_transfer_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the transfer was booked"
+          anchor_source: bank_transfers.booked_at
+          relation: not_before
+          duration_source: variants.rate_lock_hours
+          unit: elapsed_hours
+          counting_rule: "Lock hours are counted as elapsed hours from booked_at to the moment the funds are collected."
+          boundary: exclusive
+      - id: funding_deadline_passed
+        applies_to: [bank_transfer_auto_cancelled]
+        kind: time
+        condition: "Paloma cancels a wire-funded booking only when the funds have not arrived more than funding_deadline_hours after the transfer was booked."
+        evidence_fields: [bank_transfers.bank_transfer_id, bank_transfers.booked_at, bank_transfers.funding_method]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bank_transfers.bank_transfer_id]
+          action_bindings:
+            bank_transfers.bank_transfer_id: bank_transfer_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the transfer was booked"
+          anchor_source: bank_transfers.booked_at
+          relation: not_before
+          duration_source: variants.funding_deadline_hours
+          unit: elapsed_hours
+          counting_rule: "The funding deadline is counted in elapsed hours from booked_at to the handling moment."
+          boundary: exclusive
+    params:
+      per_tier:
+        Bank Deposit Economy: {rate_lock_hours: "=rate_lock_hours", funding_deadline_hours: "=funding_deadline_hours", funding_methods_allowed: "=funding_methods_allowed"}
+        Bank Deposit Standard: {rate_lock_hours: "=rate_lock_hours", funding_deadline_hours: "=funding_deadline_hours", funding_methods_allowed: "=funding_methods_allowed"}
+        Bank Deposit Express: {rate_lock_hours: "=rate_lock_hours", funding_deadline_hours: "=funding_deadline_hours", funding_methods_allowed: "=funding_methods_allowed"}
+        Bank Deposit Express Plus: {rate_lock_hours: "=rate_lock_hours", funding_deadline_hours: "=funding_deadline_hours", funding_methods_allowed: "=funding_methods_allowed"}
+        Bank Deposit Large Amount: {rate_lock_hours: "=rate_lock_hours", funding_deadline_hours: "=funding_deadline_hours", funding_methods_allowed: "=funding_methods_allowed"}
+        Bank Deposit International Wire: {rate_lock_hours: "=rate_lock_hours", funding_deadline_hours: "=funding_deadline_hours", funding_methods_allowed: "=funding_methods_allowed"}
+
+  - id: bank_evt_release_and_holds
+    subject: [bank_released, bank_hold_placed, bank_hold_released, bank_payout_sent, bank_deposit_confirmed, bank_rfi_answer_logged, bank_transfer_auto_cancelled]
+    rule: >-
+      A transfer is released to the payout partner once its principal is collected, or earlier for
+      ACH-funded principal within the account's early-release allowance
+      (account_evt_funding_entitlements), and once any new-recipient cooling-off has run; release
+      books the first payout (payout_attempt 1) at the transfer's fx_rate. Compliance, funding
+      review, partner screening or a new-recipient cooling-off may hold a transfer before or after
+      release, recording hold_reason and held_at; a hold with hold_reason rfi_transfer asks the
+      customer for information about this transfer. The customer answers by uploading a document in
+      the app, and a support agent logs the answer by its upload reference. An answer is logged only
+      while the transfer is on_hold with hold_reason rfi_transfer. Each upload reference is logged
+      once. Only compliance releases a hold, within hold_review_business_days Paloma business days of
+      a complete answer; the agent never releases one. On release from a hold the date_available is
+      re-disclosed as the release day plus delivery_business_days Paloma business days, counted as
+      in bank_evt_pricing. A payout that fails for a technical reason is retried up to
+      payout_retry_attempts times before it is treated as a return. When the beneficiary bank
+      confirms the credit the transfer is deposited, with deposited_date and closed_date set to that
+      date, and Paloma Rewards points are earned under the rewards charter. A transfer held by
+      compliance is cancelled by Paloma only when its request for information has gone unanswered
+      for more than rfi_response_days calendar days after the hold was placed, or when compliance
+      rejects it. The answer window is counted in calendar days from the date part of held_at, and
+      an answer logged on held_at plus rfi_response_days is on time.
+    eligibility:
+      - id: rfi_hold_open
+        applies_to: [bank_rfi_answer_logged]
+        kind: state
+        condition: "An answer is logged only while the transfer is on_hold with hold_reason rfi_transfer."
+        evidence_fields: [bank_transfers.bank_transfer_id, bank_transfers.status, bank_transfers.hold_reason]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bank_transfers.bank_transfer_id]
+          action_bindings:
+            bank_transfers.bank_transfer_id: bank_transfer_id
+        state_contract:
+          field: bank_transfers.status
+          allowed: [on_hold]
+      - id: one_log_per_upload
+        applies_to: [bank_rfi_answer_logged]
+        kind: dedup
+        condition: "Each upload reference is logged once."
+        evidence_fields: [bank_cases.doc_reference, bank_cases.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bank_cases.doc_reference]
+          action_bindings:
+            bank_cases.doc_reference: doc_reference
+        dedup_contract:
+          table: bank_cases
+          mode: separate_record
+          object_bindings: {doc_reference: doc_reference}
+          duplicate_filters: {event_type: [bank_rfi_answer_logged]}
+          distinct_fields: []
+    params:
+      per_tier:
+        Bank Deposit Economy: {hold_review_business_days: "=hold_review_business_days", rfi_response_days: "=rfi_response_days", payout_retry_attempts: "=payout_retry_attempts", delivery_business_days: "=delivery_business_days"}
+        Bank Deposit Standard: {hold_review_business_days: "=hold_review_business_days", rfi_response_days: "=rfi_response_days", payout_retry_attempts: "=payout_retry_attempts", delivery_business_days: "=delivery_business_days"}
+        Bank Deposit Express: {hold_review_business_days: "=hold_review_business_days", rfi_response_days: "=rfi_response_days", payout_retry_attempts: "=payout_retry_attempts", delivery_business_days: "=delivery_business_days"}
+        Bank Deposit Express Plus: {hold_review_business_days: "=hold_review_business_days", rfi_response_days: "=rfi_response_days", payout_retry_attempts: "=payout_retry_attempts", delivery_business_days: "=delivery_business_days"}
+        Bank Deposit Large Amount: {hold_review_business_days: "=hold_review_business_days", rfi_response_days: "=rfi_response_days", payout_retry_attempts: "=payout_retry_attempts", delivery_business_days: "=delivery_business_days"}
+        Bank Deposit International Wire: {hold_review_business_days: "=hold_review_business_days", rfi_response_days: "=rfi_response_days", payout_retry_attempts: "=payout_retry_attempts", delivery_business_days: "=delivery_business_days"}
+
+  - id: bank_evt_cancellation
+    subject: [bank_transfer_cancelled, bank_fee_refunded]
+    rule: >-
+      Only the customer can cancel their own transfer; the agent explains what will be refunded and
+      the customer confirms the cancellation. A transfer can be cancelled while it is awaiting_funds
+      or on_hold. A released transfer (in_transit) can be cancelled only on a tier whose
+      in_transit_cancellable is true, and only until the beneficiary bank credits it. A deposited
+      transfer can never be cancelled; what remains is an error notice (bank_evt_error_resolution)
+      or a recall (bank_evt_recall). A fee is refunded in full on cancellation only when the
+      customer confirms the cancellation within cancel_full_refund_window_hours elapsed hours after
+      the transfer was booked. The window is measured in elapsed hours from booked_at to
+      cancelled_at, and a cancellation at exactly the end of the window is inside it. Inside the
+      window every fee collected is refunded with fee_refund_reason cancellation_in_window. After
+      the window, each fee collected (transfer fee, card funding fee, OUR surcharge) is refunded at
+      late_cancel_fee_refund_pct of its amount, rounded half up to the cent, when the transfer was
+      cancelled from awaiting_funds or on_hold, and is not refunded at all when it was cancelled from
+      in_transit; these refunds carry fee_refund_reason cancellation_post_window. The principal is
+      always refunded in full under bank_evt_refunds. Money not yet collected (an ACH debit not yet
+      settled) is simply not collected. Each fee charge is refunded at most once.
+    eligibility:
+      - id: in_transit_cancel_allowed
+        applies_to: [bank_transfer_cancelled]
+        kind: authorization
+        condition: "A released transfer (in_transit) can be cancelled only on a tier whose in_transit_cancellable is true, and only until the beneficiary bank credits it."
+        evidence_fields: [bank_transfers.bank_transfer_id, bank_transfers.status, bank_transfers.variant_name]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bank_transfers.bank_transfer_id]
+          action_bindings:
+            bank_transfers.bank_transfer_id: bank_transfer_id
+      - id: full_refund_window
+        applies_to: [bank_fee_refunded]
+        kind: time
+        condition: "A fee is refunded in full on cancellation only when the customer confirms the cancellation within cancel_full_refund_window_hours elapsed hours after the transfer was booked."
+        evidence_fields: [bank_transfers.bank_transfer_id, bank_transfers.booked_at, bank_transfers.cancelled_at]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bank_transfers.bank_transfer_id]
+          action_bindings:
+            bank_transfers.bank_transfer_id: bank_transfer_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the transfer was booked"
+          anchor_source: bank_transfers.booked_at
+          relation: not_after
+          duration_source: variants.cancel_full_refund_window_hours
+          unit: elapsed_hours
+          counting_rule: "The window is measured in elapsed hours from booked_at to cancelled_at, and a cancellation at exactly the end of the window is inside it."
+          boundary: inclusive
+      - id: fee_refunded_once
+        applies_to: [bank_fee_refunded]
+        kind: dedup
+        condition: "Each fee charge is refunded at most once."
+        evidence_fields: [bank_ledger.related_entry_id, bank_ledger.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bank_ledger.related_entry_id]
+          action_bindings:
+            bank_ledger.related_entry_id: related_entry_id
+        dedup_contract:
+          table: bank_ledger
+          mode: separate_record
+          object_bindings: {related_entry_id: related_entry_id}
+          duplicate_filters: {event_type: [bank_fee_refunded]}
+          distinct_fields: []
+    params:
+      per_tier:
+        Bank Deposit Economy: {cancel_full_refund_window_hours: "=cancel_full_refund_window_hours", late_cancel_fee_refund_pct: "=late_cancel_fee_refund_pct", in_transit_cancellable: "=in_transit_cancellable"}
+        Bank Deposit Standard: {cancel_full_refund_window_hours: "=cancel_full_refund_window_hours", late_cancel_fee_refund_pct: "=late_cancel_fee_refund_pct", in_transit_cancellable: "=in_transit_cancellable"}
+        Bank Deposit Express: {cancel_full_refund_window_hours: "=cancel_full_refund_window_hours", late_cancel_fee_refund_pct: "=late_cancel_fee_refund_pct", in_transit_cancellable: "=in_transit_cancellable"}
+        Bank Deposit Express Plus: {cancel_full_refund_window_hours: "=cancel_full_refund_window_hours", late_cancel_fee_refund_pct: "=late_cancel_fee_refund_pct", in_transit_cancellable: "=in_transit_cancellable"}
+        Bank Deposit Large Amount: {cancel_full_refund_window_hours: "=cancel_full_refund_window_hours", late_cancel_fee_refund_pct: "=late_cancel_fee_refund_pct", in_transit_cancellable: "=in_transit_cancellable"}
+        Bank Deposit International Wire: {cancel_full_refund_window_hours: "=cancel_full_refund_window_hours", late_cancel_fee_refund_pct: "=late_cancel_fee_refund_pct", in_transit_cancellable: "=in_transit_cancellable"}
+    formula:
+      late_fee_refund: "round(amount_usd * late_cancel_fee_refund_pct / 100, 2)"
+
+  - id: bank_evt_refunds
+    subject: [bank_refund_issued, bank_transfer_refunded]
+    rule: >-
+      Principal is refunded only on a transfer whose status is cancelled, returned or deposited, and
+      on a deposited transfer only as an error-resolution remedy. The amount follows the refund
+      basis: cancellation refunds the principal collected (the bank_funds_received amount);
+      rfi_expiry and compliance_rejection refund the principal collected, and each fee collected is
+      refunded at rfi_expiry_fee_refund_pct with fee_refund_reason compliance_cancellation; return
+      refunds what bank_evt_returns sets; error_resolution and error_shortfall refund what
+      bank_evt_error_resolution sets. Each refund basis is paid once against its source entry. A refund is issued within
+      refund_business_days Paloma business days of the day it became owed (the cancellation, the
+      end of the return decision window or the customer's choice to refund, or the remedy choice),
+      to the original funding method; a wire-funded transfer is refunded by ACH credit to the bank
+      account the wire came from. Once the principal refund is booked the transfer moves to
+      refunded with closed_date the refund date, except that a shortfall refund (error_shortfall)
+      leaves a deposited transfer deposited. A cancelled transfer from which nothing was
+      collected owes no refund and stays cancelled.
+    eligibility:
+      - id: refundable_status
+        applies_to: [bank_refund_issued]
+        kind: state
+        condition: "Principal is refunded only on a transfer whose status is cancelled, returned or deposited, and on a deposited transfer only as an error-resolution remedy."
+        evidence_fields: [bank_transfers.bank_transfer_id, bank_transfers.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bank_transfers.bank_transfer_id]
+          action_bindings:
+            bank_transfers.bank_transfer_id: bank_transfer_id
+        state_contract:
+          field: bank_transfers.status
+          allowed: [cancelled, returned, deposited]
+      - id: refund_once_per_basis
+        applies_to: [bank_refund_issued]
+        kind: dedup
+        condition: "Each refund basis is paid once against its source entry."
+        evidence_fields: [bank_ledger.bank_transfer_id, bank_ledger.refund_basis, bank_ledger.related_entry_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bank_ledger.bank_transfer_id, bank_ledger.related_entry_id]
+          action_bindings:
+            bank_ledger.bank_transfer_id: bank_transfer_id
+            bank_ledger.related_entry_id: related_entry_id
+        dedup_contract:
+          table: bank_ledger
+          mode: separate_record
+          object_bindings: {bank_transfer_id: bank_transfer_id, related_entry_id: related_entry_id}
+          duplicate_filters: {event_type: [bank_refund_issued]}
+          distinct_fields: [refund_basis]
+    params:
+      per_tier:
+        Bank Deposit Economy: {refund_business_days: "=refund_business_days", rfi_expiry_fee_refund_pct: "=rfi_expiry_fee_refund_pct"}
+        Bank Deposit Standard: {refund_business_days: "=refund_business_days", rfi_expiry_fee_refund_pct: "=rfi_expiry_fee_refund_pct"}
+        Bank Deposit Express: {refund_business_days: "=refund_business_days", rfi_expiry_fee_refund_pct: "=rfi_expiry_fee_refund_pct"}
+        Bank Deposit Express Plus: {refund_business_days: "=refund_business_days", rfi_expiry_fee_refund_pct: "=rfi_expiry_fee_refund_pct"}
+        Bank Deposit Large Amount: {refund_business_days: "=refund_business_days", rfi_expiry_fee_refund_pct: "=rfi_expiry_fee_refund_pct"}
+        Bank Deposit International Wire: {refund_business_days: "=refund_business_days", rfi_expiry_fee_refund_pct: "=rfi_expiry_fee_refund_pct"}
+
+  - id: bank_evt_returns
+    subject: [bank_funds_returned, bank_transfer_returned, bank_paloma_credit]
+    rule: >-
+      When a payout comes back, the payout-currency amount is converted back to USD at the
+      corridor's mid_market_rate in the Paloma rate sheet for the return date multiplied by one plus
+      return_conversion_margin_pct over 100 (rounded half up to 4 decimals), and amount_usd is the
+      returned amount divided by that rate, rounded half up to the cent. The return reason's entry in
+      return_reason_attribution decides who bears the consequences. When the return is on Paloma's
+      side, Paloma credits any shortfall between the principal of that payout and the USD recovered
+      (bank_paloma_credit with credit_reason fx_shortfall), the transfer is sent again free of
+      charge at its original fx_rate and receive_amount or, at the customer's choice, refunded in
+      full, and every fee collected is refunded with fee_refund_reason return_paloma_attributable.
+      When the return is on the sender's side, the customer bears the exchange difference: the
+      customer may have the transfer sent again with corrected details (bank_evt_amend_resend), or
+      be refunded the USD recovered less return_handling_fee_usd, while fees already collected are
+      not refunded. The customer has return_decision_window_days calendar days from the return date
+      to choose; with no choice by then Paloma refunds on the same basis. A recovered amount above
+      the principal is refunded in full and never retained.
+    eligibility: []
+    params:
+      per_tier:
+        Bank Deposit Economy: {return_reason_attribution: "=return_reason_attribution", return_conversion_margin_pct: "=return_conversion_margin_pct", return_handling_fee_usd: "=return_handling_fee_usd", return_decision_window_days: "=return_decision_window_days"}
+        Bank Deposit Standard: {return_reason_attribution: "=return_reason_attribution", return_conversion_margin_pct: "=return_conversion_margin_pct", return_handling_fee_usd: "=return_handling_fee_usd", return_decision_window_days: "=return_decision_window_days"}
+        Bank Deposit Express: {return_reason_attribution: "=return_reason_attribution", return_conversion_margin_pct: "=return_conversion_margin_pct", return_handling_fee_usd: "=return_handling_fee_usd", return_decision_window_days: "=return_decision_window_days"}
+        Bank Deposit Express Plus: {return_reason_attribution: "=return_reason_attribution", return_conversion_margin_pct: "=return_conversion_margin_pct", return_handling_fee_usd: "=return_handling_fee_usd", return_decision_window_days: "=return_decision_window_days"}
+        Bank Deposit Large Amount: {return_reason_attribution: "=return_reason_attribution", return_conversion_margin_pct: "=return_conversion_margin_pct", return_handling_fee_usd: "=return_handling_fee_usd", return_decision_window_days: "=return_decision_window_days"}
+        Bank Deposit International Wire: {return_reason_attribution: "=return_reason_attribution", return_conversion_margin_pct: "=return_conversion_margin_pct", return_handling_fee_usd: "=return_handling_fee_usd", return_decision_window_days: "=return_decision_window_days"}
+    formula:
+      sender_side_refund: "round(amount_usd - return_handling_fee_usd, 2)"
+
+  - id: bank_evt_amend_resend
+    subject: [bank_beneficiary_amended, bank_resent, bank_fee_charged, bank_rate_requoted]
+    rule: >-
+      Recipient bank details on a transfer can be corrected only while its status is returned; before
+      release a wrong detail is fixed by cancelling and booking again. Only the amendable_fields may
+      change, each set exactly as the customer gives it, and the customer's saved recipient record
+      is updated by the customer in the app, never by the amendment. A returned transfer may be sent
+      again only within return_decision_window_days calendar days after the funds came back. The
+      window is counted in calendar days from the entry_date of the bank_funds_returned row, and a
+      resend on the last day of the window is on time. One transfer may be sent again at most
+      max_resends times in total (bank_msr_resends). A resend after a return on Paloma's side needs
+      no amendment, is free, and pays out the original receive_amount at the original fx_rate. A
+      resend after a return on the sender's side needs the corrected details first; it pays out the
+      USD recovered less return_handling_fee_usd, converted at a re-quoted rate (the rate sheet for
+      the resend date with the transfer's margin rule, re-disclosed by bank_rate_requoted), and it
+      carries resend_fee_usd as fee_type resend_fee with the new payout_attempt, except that the
+      first free_resends_per_transfer sender-side resends (bank_msr_sender_resends) are free. The
+      resend's date_available is the resend day plus delivery_business_days Paloma business days.
+      When max_resends is reached, or the window has passed, the transfer can only be refunded.
+    eligibility:
+      - id: returned_only
+        applies_to: [bank_beneficiary_amended]
+        kind: state
+        condition: "Recipient bank details on a transfer can be corrected only while its status is returned; before release a wrong detail is fixed by cancelling and booking again."
+        evidence_fields: [bank_transfers.bank_transfer_id, bank_transfers.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bank_transfers.bank_transfer_id]
+          action_bindings:
+            bank_transfers.bank_transfer_id: bank_transfer_id
+        state_contract:
+          field: bank_transfers.status
+          allowed: [returned]
+      - id: decision_window
+        applies_to: [bank_resent]
+        kind: time
+        condition: "A returned transfer may be sent again only within return_decision_window_days calendar days after the funds came back."
+        evidence_fields: [bank_ledger.bank_transfer_id, bank_ledger.event_type, bank_ledger.entry_date]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bank_ledger.bank_transfer_id]
+          action_bindings:
+            bank_ledger.bank_transfer_id: bank_transfer_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the funds came back"
+          anchor_source: bank_ledger.entry_date
+          relation: not_after
+          duration_source: variants.return_decision_window_days
+          unit: calendar_days
+          counting_rule: "The window is counted in calendar days from the entry_date of the bank_funds_returned row, and a resend on the last day of the window is on time."
+          boundary: inclusive
+      - id: resend_cap
+        applies_to: [bank_resent]
+        kind: authorization
+        condition: "One transfer may be sent again at most max_resends times in total (bank_msr_resends)."
+        evidence_fields: [bank_ledger.bank_transfer_id, bank_ledger.event_type, bank_ledger.payout_attempt]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bank_ledger.bank_transfer_id]
+          action_bindings:
+            bank_ledger.bank_transfer_id: bank_transfer_id
+    params:
+      per_tier:
+        Bank Deposit Economy: {amendable_fields: "=amendable_fields", return_decision_window_days: "=return_decision_window_days", max_resends: "=max_resends", resend_fee_usd: "=resend_fee_usd", free_resends_per_transfer: "=free_resends_per_transfer", return_handling_fee_usd: "=return_handling_fee_usd", delivery_business_days: "=delivery_business_days"}
+        Bank Deposit Standard: {amendable_fields: "=amendable_fields", return_decision_window_days: "=return_decision_window_days", max_resends: "=max_resends", resend_fee_usd: "=resend_fee_usd", free_resends_per_transfer: "=free_resends_per_transfer", return_handling_fee_usd: "=return_handling_fee_usd", delivery_business_days: "=delivery_business_days"}
+        Bank Deposit Express: {amendable_fields: "=amendable_fields", return_decision_window_days: "=return_decision_window_days", max_resends: "=max_resends", resend_fee_usd: "=resend_fee_usd", free_resends_per_transfer: "=free_resends_per_transfer", return_handling_fee_usd: "=return_handling_fee_usd", delivery_business_days: "=delivery_business_days"}
+        Bank Deposit Express Plus: {amendable_fields: "=amendable_fields", return_decision_window_days: "=return_decision_window_days", max_resends: "=max_resends", resend_fee_usd: "=resend_fee_usd", free_resends_per_transfer: "=free_resends_per_transfer", return_handling_fee_usd: "=return_handling_fee_usd", delivery_business_days: "=delivery_business_days"}
+        Bank Deposit Large Amount: {amendable_fields: "=amendable_fields", return_decision_window_days: "=return_decision_window_days", max_resends: "=max_resends", resend_fee_usd: "=resend_fee_usd", free_resends_per_transfer: "=free_resends_per_transfer", return_handling_fee_usd: "=return_handling_fee_usd", delivery_business_days: "=delivery_business_days"}
+        Bank Deposit International Wire: {amendable_fields: "=amendable_fields", return_decision_window_days: "=return_decision_window_days", max_resends: "=max_resends", resend_fee_usd: "=resend_fee_usd", free_resends_per_transfer: "=free_resends_per_transfer", return_handling_fee_usd: "=return_handling_fee_usd", delivery_business_days: "=delivery_business_days"}
+    measures: [bank_msr_resends, bank_msr_sender_resends]
+
+  - id: bank_evt_error_resolution
+    subject: [bank_error_notice_filed, bank_error_decided, bank_remedy_chosen, bank_paloma_credit, bank_fee_refunded]
+    rule: >-
+      Under the Remittance Transfer Rule the customer may give notice of an error on a transfer: the
+      money was not available to the recipient by date_available (not_received_by_date), the
+      recipient received less than the disclosed receive_amount other than an SHA intermediary
+      deduction within the disclosed estimate (incorrect_amount), or the money was deposited to an
+      account other than the one in the transfer's beneficiary details (wrong_account_details). The
+      notice is the customer's own assertion and the customer gives it; the agent explains the
+      process. A notice can be given only within error_notice_window_days calendar days after the
+      disclosed date of availability. The window is counted in calendar days from date_available,
+      and a notice on date_available plus the window days is on time. Only one notice of each
+      case_type may be open on a transfer at a time. The resolution_due_date is the notice date
+      plus error_investigation_days calendar days. Paloma's error-resolution team decides: no_error
+      when the cause lies with the customer (beneficiary details the customer supplied were wrong,
+      or a hold lasted because the customer answered a request for information late), error_found
+      otherwise. On error_found every fee collected on the transfer is refunded with
+      fee_refund_reason paloma_error, unless it was already refunded under the on-time promise. A
+      remedy can be chosen only after a decision of error_found on that notice. For
+      incorrect_amount, Paloma credits the shortfall (bank_paloma_credit, credit_reason
+      incorrect_amount_shortfall) and the customer chooses to have the shortfall delivered
+      (resend_shortfall) or refunded (refund_shortfall, booked with refund_basis error_shortfall). For
+      wrong_account_details, and for not_received_by_date while the money has still not been
+      deposited, the customer chooses between a refund of the principal and delivery to the correct
+      account at no cost; Paloma funds whichever is chosen when the original payout cannot be
+      recovered (credit_reason error_refund or error_redelivery). The choice is the customer's own;
+      a refund is issued within refund_business_days and a delivery within
+      redelivery_business_days Paloma business days of the choice. On no_error nothing is owed and
+      the customer is told the finding; for wrong details a recall (bank_evt_recall) is the remaining
+      route.
+    eligibility:
+      - id: notice_window
+        applies_to: [bank_error_notice_filed]
+        kind: time
+        condition: "A notice can be given only within error_notice_window_days calendar days after the disclosed date of availability."
+        evidence_fields: [bank_transfers.bank_transfer_id, bank_transfers.date_available]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bank_transfers.bank_transfer_id]
+          action_bindings:
+            bank_transfers.bank_transfer_id: bank_transfer_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the disclosed date of availability"
+          anchor_source: bank_transfers.date_available
+          relation: not_after
+          duration_source: variants.error_notice_window_days
+          unit: calendar_days
+          counting_rule: "The window is counted in calendar days from date_available, and a notice on date_available plus the window days is on time."
+          boundary: inclusive
+      - id: one_open_notice_per_type
+        applies_to: [bank_error_notice_filed]
+        kind: dedup
+        condition: "Only one notice of each case_type may be open on a transfer at a time."
+        evidence_fields: [bank_cases.bank_transfer_id, bank_cases.case_type, bank_cases.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bank_cases.bank_transfer_id]
+          action_bindings:
+            bank_cases.bank_transfer_id: bank_transfer_id
+        dedup_contract:
+          table: bank_cases
+          mode: separate_record
+          object_bindings: {bank_transfer_id: bank_transfer_id, case_type: case_type}
+          duplicate_filters: {event_type: [bank_error_notice_filed]}
+          distinct_fields: [case_date]
+      - id: error_found_first
+        applies_to: [bank_remedy_chosen]
+        kind: authorization
+        condition: "A remedy can be chosen only after a decision of error_found on that notice."
+        evidence_fields: [bank_cases.case_id, bank_cases.related_case_id, bank_cases.case_outcome]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bank_cases.related_case_id]
+          action_bindings:
+            bank_cases.related_case_id: related_case_id
+    params:
+      per_tier:
+        Bank Deposit Economy: {error_notice_window_days: "=error_notice_window_days", error_investigation_days: "=error_investigation_days", refund_business_days: "=refund_business_days", redelivery_business_days: "=redelivery_business_days", intermediary_fee_estimate_usd: "=intermediary_fee_estimate_usd"}
+        Bank Deposit Standard: {error_notice_window_days: "=error_notice_window_days", error_investigation_days: "=error_investigation_days", refund_business_days: "=refund_business_days", redelivery_business_days: "=redelivery_business_days", intermediary_fee_estimate_usd: "=intermediary_fee_estimate_usd"}
+        Bank Deposit Express: {error_notice_window_days: "=error_notice_window_days", error_investigation_days: "=error_investigation_days", refund_business_days: "=refund_business_days", redelivery_business_days: "=redelivery_business_days", intermediary_fee_estimate_usd: "=intermediary_fee_estimate_usd"}
+        Bank Deposit Express Plus: {error_notice_window_days: "=error_notice_window_days", error_investigation_days: "=error_investigation_days", refund_business_days: "=refund_business_days", redelivery_business_days: "=redelivery_business_days", intermediary_fee_estimate_usd: "=intermediary_fee_estimate_usd"}
+        Bank Deposit Large Amount: {error_notice_window_days: "=error_notice_window_days", error_investigation_days: "=error_investigation_days", refund_business_days: "=refund_business_days", redelivery_business_days: "=redelivery_business_days", intermediary_fee_estimate_usd: "=intermediary_fee_estimate_usd"}
+        Bank Deposit International Wire: {error_notice_window_days: "=error_notice_window_days", error_investigation_days: "=error_investigation_days", refund_business_days: "=refund_business_days", redelivery_business_days: "=redelivery_business_days", intermediary_fee_estimate_usd: "=intermediary_fee_estimate_usd"}
+
+  - id: bank_evt_recall
+    subject: [bank_recall_requested, bank_recall_closed, bank_fee_charged]
+    rule: >-
+      A recall asks the beneficiary bank to send back a deposited payment that went to wrong
+      beneficiary details the customer supplied; it is not an error under the Remittance Transfer
+      Rule and Paloma cannot compel the beneficiary bank. The customer requests the recall and
+      accepts its fee. A recall can be requested only on a transfer whose status is deposited. A
+      recall may be requested only within recall_window_days calendar days after the funds were
+      deposited. The window is counted in calendar days from deposited_date, and a request on
+      deposited_date plus the window days is on time. Only one recall may be requested per
+      transfer. recall_fee_usd is collected when the recall is requested, as fee_type recall_fee
+      with the deposited payout's payout_attempt, and is not refunded whatever the outcome. When the
+      beneficiary bank sends the money back (recalled) it is booked as a return with return_reason
+      recalled_at_sender_request, attributed to the sender, and handled under bank_evt_returns; when
+      the recall fails nothing comes back and nothing further is owed. A recall and an error notice
+      of wrong_account_details are mutually exclusive on one transfer: wrong details the customer
+      supplied go to recall, a misrouting on Paloma's side goes to an error notice.
+    eligibility:
+      - id: deposited_only
+        applies_to: [bank_recall_requested]
+        kind: state
+        condition: "A recall can be requested only on a transfer whose status is deposited."
+        evidence_fields: [bank_transfers.bank_transfer_id, bank_transfers.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bank_transfers.bank_transfer_id]
+          action_bindings:
+            bank_transfers.bank_transfer_id: bank_transfer_id
+        state_contract:
+          field: bank_transfers.status
+          allowed: [deposited]
+      - id: recall_window
+        applies_to: [bank_recall_requested]
+        kind: time
+        condition: "A recall may be requested only within recall_window_days calendar days after the funds were deposited."
+        evidence_fields: [bank_transfers.bank_transfer_id, bank_transfers.deposited_date]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bank_transfers.bank_transfer_id]
+          action_bindings:
+            bank_transfers.bank_transfer_id: bank_transfer_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the funds were deposited"
+          anchor_source: bank_transfers.deposited_date
+          relation: not_after
+          duration_source: variants.recall_window_days
+          unit: calendar_days
+          counting_rule: "The window is counted in calendar days from deposited_date, and a request on deposited_date plus the window days is on time."
+          boundary: inclusive
+      - id: one_recall
+        applies_to: [bank_recall_requested]
+        kind: dedup
+        condition: "Only one recall may be requested per transfer."
+        evidence_fields: [bank_cases.bank_transfer_id, bank_cases.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bank_cases.bank_transfer_id]
+          action_bindings:
+            bank_cases.bank_transfer_id: bank_transfer_id
+        dedup_contract:
+          table: bank_cases
+          mode: separate_record
+          object_bindings: {bank_transfer_id: bank_transfer_id}
+          duplicate_filters: {event_type: [bank_recall_requested]}
+          distinct_fields: []
+    params:
+      per_tier:
+        Bank Deposit Economy: {recall_window_days: "=recall_window_days", recall_fee_usd: "=recall_fee_usd"}
+        Bank Deposit Standard: {recall_window_days: "=recall_window_days", recall_fee_usd: "=recall_fee_usd"}
+        Bank Deposit Express: {recall_window_days: "=recall_window_days", recall_fee_usd: "=recall_fee_usd"}
+        Bank Deposit Express Plus: {recall_window_days: "=recall_window_days", recall_fee_usd: "=recall_fee_usd"}
+        Bank Deposit Large Amount: {recall_window_days: "=recall_window_days", recall_fee_usd: "=recall_fee_usd"}
+        Bank Deposit International Wire: {recall_window_days: "=recall_window_days", recall_fee_usd: "=recall_fee_usd"}
+
+  - id: bank_evt_on_time_promise
+    subject: [bank_fee_refunded]
+    rule: >-
+      On a tier whose on_time_promise is true, Paloma refunds the transfer fee in full, with
+      fee_refund_reason late_delivery, when the transfer was deposited after its date_available as
+      last disclosed. The promise does not apply when the lateness came from the customer: wrong
+      beneficiary details the customer supplied, or a request for information the customer answered
+      after rfi_response_days. The promise covers the transfer fee only; card funding fees and
+      surcharges are not part of it. A customer may claim it from an agent without giving an error
+      notice. The transfer fee is refunded at most once on a transfer, so the on-time refund and an
+      error-resolution fee refund never stack. A tier whose on_time_promise is false gives no
+      automatic fee refund for lateness, and the customer's route is an error notice.
+    eligibility:
+      - id: deposited_late
+        applies_to: [bank_fee_refunded]
+        kind: authorization
+        condition: "On a tier whose on_time_promise is true, Paloma refunds the transfer fee in full, with fee_refund_reason late_delivery, when the transfer was deposited after its date_available as last disclosed."
+        evidence_fields: [bank_transfers.bank_transfer_id, bank_transfers.deposited_date, bank_transfers.date_available, bank_transfers.variant_name]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [bank_transfers.bank_transfer_id]
+          action_bindings:
+            bank_transfers.bank_transfer_id: bank_transfer_id
+    params:
+      per_tier:
+        Bank Deposit Economy: {on_time_promise: "=on_time_promise", rfi_response_days: "=rfi_response_days"}
+        Bank Deposit Standard: {on_time_promise: "=on_time_promise", rfi_response_days: "=rfi_response_days"}
+        Bank Deposit Express: {on_time_promise: "=on_time_promise", rfi_response_days: "=rfi_response_days"}
+        Bank Deposit Express Plus: {on_time_promise: "=on_time_promise", rfi_response_days: "=rfi_response_days"}
+        Bank Deposit Large Amount: {on_time_promise: "=on_time_promise", rfi_response_days: "=rfi_response_days"}
+        Bank Deposit International Wire: {on_time_promise: "=on_time_promise", rfi_response_days: "=rfi_response_days"}

@@ -1,0 +1,2177 @@
+
+# Northloop Payments — the seller's payments account: sale proceeds, reserves, deductions and payouts to the bank.
+category: payout
+display_name: Northloop Payments
+
+binding:
+  holding_table: payout_accounts
+  event_tables: [payout_events]
+  intake_tables: [payout_chargeback_disputes]
+  status_field: status
+  variant_field: variant_name
+  quantity_fields: {balance: payments_balance, reserved_balance: reserved_funds}
+
+lifecycle:
+  states: [pending_verification, active, on_hold, closing, closed]
+  transitions:
+    - {from: pending_verification, to: active, by: system, means: "Identity and bank account verification completes."}
+    - {from: pending_verification, to: closed, by: system, means: "Verification is never completed and the application lapses."}
+    - {from: active, to: on_hold, by: system, means: "Payouts are held: selling suspended, bank details invalid, or re-verification overdue."}
+    - {from: on_hold, to: active, by: agent, means: "The hold cause is cleared and payouts resume."}
+    - {from: active, to: closing, by: user, means: "The seller asks to close the payments account; the balance is held for the final hold period."}
+    - {from: on_hold, to: closing, by: user, means: "A held seller asks to close the payments account."}
+    - {from: closing, to: closed, by: system, means: "The final hold has ended, reserves are released and the balance is paid out or collected to zero."}
+
+accounts:
+  - key: payments_balance
+    unit: USD
+    meaning: "Total seller balance on the payments account, reserved funds included; may go negative. The holding's balance is its running sum."
+  - key: reserved_funds
+    unit: USD
+    meaning: "Part of the balance held back and not yet payable; the holding's reserved_balance is its running sum."
+
+parameter_schema:
+  payout_schedule_rule: When scheduled payouts are initiated (enum string).
+  business_day_calendar: Business-day calendar for every business-day count of this category (enum string).
+  payout_cutoff_time_et: Eastern-time cutoff (HH:MM) on a payout day for funds released that day to be included.
+  min_payout_amount: Smallest available amount that is paid out; a smaller amount rolls to the next payout, USD.
+  max_payout_per_disbursement: Largest amount sent in one scheduled payout; the excess rolls to the next payout, USD.
+  bank_arrival_business_days: Business days for a scheduled payout to reach the bank after initiation (integer).
+  on_demand_payout_allowed: Whether the seller may request an extra standard payout outside the schedule (boolean).
+  on_demand_interval_hours: Minimum hours between two on-demand payouts; not_applicable without on-demand payouts.
+  sale_credit_basis: Amount credited to the balance for a sold order (enum string).
+  delivery_reserve_days: Calendar days after an order's delivered_date for which its sale credit stays reserved (integer).
+  no_scan_release_days_after_promised: Calendar days after the promised delivery date at which a sale credit with no delivered scan is released (integer).
+  reserve_release_basis: Anchor of the delivery reserve release date (enum string).
+  high_value_order_threshold: Sale credit (USD) at or above which an extra high-value hold is added to the delivery reserve.
+  high_value_extra_hold_days: Extra calendar days added to the delivery reserve of a high-value sale (integer).
+  rolling_reserve_rate: Share of each sale credit additionally held as a rolling reserve (decimal fraction).
+  rolling_reserve_hold_days: Calendar days a rolling reserve is held from the sale credit date; not_applicable when the rate is zero.
+  instant_payout_available: Whether instant payouts to an eligible debit card are offered (boolean).
+  instant_payout_fee_rate: Instant payout fee as a share of the amount paid out (decimal fraction); not_applicable without instant payouts.
+  instant_payout_min_fee: Minimum instant payout fee per payout, USD; not_applicable without instant payouts.
+  instant_payout_daily_limit: Maximum total instant payouts per calendar day, USD; not_applicable without instant payouts.
+  instant_payout_max_per_day: Maximum number of instant payouts per calendar day; not_applicable without instant payouts.
+  instant_payout_arrival: Arrival time of an instant payout (enum string); not_applicable without instant payouts.
+  refund_debit_source: Where buyer refunds funded by the seller are debited (enum string).
+  chargeback_liability_follows_order_liability: Whether a chargeback is debited to the seller only when the order's liability party is the seller (boolean).
+  chargeback_debit_timing: When a seller-liable chargeback is debited (enum string).
+  chargeback_fee: Fee per seller-liable chargeback, USD.
+  chargeback_fee_refunded_on_win: Whether the chargeback fee is returned when the seller wins the dispute (boolean).
+  chargeback_response_days: Calendar days after the chargeback debit within which the seller may submit dispute evidence (integer).
+  chargeback_disputes_per_case: Maximum dispute submissions per chargeback case (integer).
+  chargeback_win_reversal_timing: When the debit of a won chargeback is reversed (enum string).
+  negative_balance_card_charge_days: Calendar days a balance may stay negative before the card on file is charged for the deficit (integer).
+  negative_balance_card_retry_count: Card charge attempts made for one negative balance before it is referred for collection (integer).
+  negative_balance_collection_days: Calendar days of continuous negative balance after which the deficit is referred for collection (integer).
+  bank_change_payout_hold_days: Calendar days after a bank account change during which no payout is sent (integer).
+  bank_name_match_required: Whether the bank account holder name must match the profile or business name (boolean).
+  disbursement_return_resend_business_days: Business days after updated bank details are verified by which a returned payout is re-sent (integer).
+  reverification_interval_months: Months between mandatory identity and bank re-verifications (integer).
+  reverification_grace_days: Calendar days after a re-verification falls due before payouts are held (integer).
+  suspension_fund_hold_days: Calendar days the balance is held after the seller's selling privileges are suspended, unless reinstated earlier (integer).
+  suspension_hold_release_basis: How a suspension hold ends (enum string).
+  closure_final_hold_days: Calendar days the balance is held after a closure request before final payout (integer).
+  closure_release_basis: What is paid out at the end of the final hold (enum string).
+  min_account_age_days: Minimum age of the seller profile, counted from account_opened_date, to hold the plan (integer).
+  eligible_standing_levels: Seller performance standing levels allowed to hold the plan (list of official level names).
+  min_trailing_12m_sales: Minimum sale credits over the trailing 12 months to hold the plan, USD.
+  standing_fallback_plan: Plan the account is moved to at a plan review when it no longer qualifies (official plan name); not_applicable for plans open to every level.
+  plan_review_cycle: When payout plan qualification is reviewed (enum string).
+  plan_change_effective: When a payout plan change takes effect (enum string).
+
+variants:
+  - name: Payments Starter
+    rank: 1
+    entry_gate: {min_account_age_days: =min_account_age_days}
+    parameters:
+      payout_schedule_rule: every_wednesday
+      business_day_calendar: mon_fri_excluding_us_federal_holidays
+      payout_cutoff_time_et: '17:00'
+      min_payout_amount: 25.0
+      max_payout_per_disbursement: 10000.0
+      bank_arrival_business_days: 3
+      on_demand_payout_allowed: false
+      on_demand_interval_hours: not_applicable
+      sale_credit_basis: item_subtotal_plus_shipping_excluding_tax
+      delivery_reserve_days: 21
+      no_scan_release_days_after_promised: 30
+      reserve_release_basis: delivered_date_plus_reserve_days_or_promised_date_plus_no_scan_days
+      high_value_order_threshold: 1000.0
+      high_value_extra_hold_days: 7
+      rolling_reserve_rate: 0.1
+      rolling_reserve_hold_days: 90
+      instant_payout_available: false
+      instant_payout_fee_rate: not_applicable
+      instant_payout_min_fee: not_applicable
+      instant_payout_daily_limit: not_applicable
+      instant_payout_max_per_day: not_applicable
+      instant_payout_arrival: not_applicable
+      refund_debit_source: payments_balance
+      chargeback_liability_follows_order_liability: true
+      chargeback_debit_timing: on_chargeback_notice
+      chargeback_fee: 20.0
+      chargeback_fee_refunded_on_win: false
+      chargeback_response_days: 7
+      chargeback_disputes_per_case: 1
+      chargeback_win_reversal_timing: on_issuer_decision
+      negative_balance_card_charge_days: 14
+      negative_balance_card_retry_count: 3
+      negative_balance_collection_days: 90
+      bank_change_payout_hold_days: 7
+      bank_name_match_required: true
+      disbursement_return_resend_business_days: 5
+      reverification_interval_months: 12
+      reverification_grace_days: 30
+      suspension_fund_hold_days: 90
+      suspension_hold_release_basis: reinstatement_or_suspension_date_plus_hold_days
+      closure_final_hold_days: 90
+      closure_release_basis: entire_balance_including_reserves
+      min_account_age_days: 0
+      eligible_standing_levels: [Below Standard Level, Developing Seller Level, Standard Level, Above Standard Level, Top Rated Level, Preferred Partner Level]
+      min_trailing_12m_sales: 0.0
+      standing_fallback_plan: not_applicable
+      plan_review_cycle: monthly_after_standing_evaluation
+      plan_change_effective: next_payout_cycle
+  - name: Payments Biweekly
+    rank: 2
+    entry_gate: {min_account_age_days: =min_account_age_days, eligible_standing_levels: =eligible_standing_levels}
+    parameters:
+      payout_schedule_rule: every_other_wednesday_from_plan_start
+      business_day_calendar: mon_fri_excluding_us_federal_holidays
+      payout_cutoff_time_et: '17:00'
+      min_payout_amount: 1.0
+      max_payout_per_disbursement: 50000.0
+      bank_arrival_business_days: 3
+      on_demand_payout_allowed: true
+      on_demand_interval_hours: 24
+      sale_credit_basis: item_subtotal_plus_shipping_excluding_tax
+      delivery_reserve_days: 7
+      no_scan_release_days_after_promised: 7
+      reserve_release_basis: delivered_date_plus_reserve_days_or_promised_date_plus_no_scan_days
+      high_value_order_threshold: 2500.0
+      high_value_extra_hold_days: 7
+      rolling_reserve_rate: 0.0
+      rolling_reserve_hold_days: not_applicable
+      instant_payout_available: false
+      instant_payout_fee_rate: not_applicable
+      instant_payout_min_fee: not_applicable
+      instant_payout_daily_limit: not_applicable
+      instant_payout_max_per_day: not_applicable
+      instant_payout_arrival: not_applicable
+      refund_debit_source: payments_balance
+      chargeback_liability_follows_order_liability: true
+      chargeback_debit_timing: on_chargeback_notice
+      chargeback_fee: 20.0
+      chargeback_fee_refunded_on_win: false
+      chargeback_response_days: 7
+      chargeback_disputes_per_case: 1
+      chargeback_win_reversal_timing: on_issuer_decision
+      negative_balance_card_charge_days: 30
+      negative_balance_card_retry_count: 3
+      negative_balance_collection_days: 90
+      bank_change_payout_hold_days: 3
+      bank_name_match_required: true
+      disbursement_return_resend_business_days: 5
+      reverification_interval_months: 12
+      reverification_grace_days: 30
+      suspension_fund_hold_days: 90
+      suspension_hold_release_basis: reinstatement_or_suspension_date_plus_hold_days
+      closure_final_hold_days: 90
+      closure_release_basis: entire_balance_including_reserves
+      min_account_age_days: 90
+      eligible_standing_levels: [Standard Level, Above Standard Level, Top Rated Level, Preferred Partner Level]
+      min_trailing_12m_sales: 0.0
+      standing_fallback_plan: Payments Starter
+      plan_review_cycle: monthly_after_standing_evaluation
+      plan_change_effective: next_payout_cycle
+  - name: Payments Weekly
+    rank: 3
+    entry_gate: {min_account_age_days: =min_account_age_days, eligible_standing_levels: =eligible_standing_levels}
+    parameters:
+      payout_schedule_rule: every_wednesday
+      business_day_calendar: mon_fri_excluding_us_federal_holidays
+      payout_cutoff_time_et: '17:00'
+      min_payout_amount: 1.0
+      max_payout_per_disbursement: 50000.0
+      bank_arrival_business_days: 3
+      on_demand_payout_allowed: true
+      on_demand_interval_hours: 24
+      sale_credit_basis: item_subtotal_plus_shipping_excluding_tax
+      delivery_reserve_days: 7
+      no_scan_release_days_after_promised: 7
+      reserve_release_basis: delivered_date_plus_reserve_days_or_promised_date_plus_no_scan_days
+      high_value_order_threshold: 2500.0
+      high_value_extra_hold_days: 7
+      rolling_reserve_rate: 0.0
+      rolling_reserve_hold_days: not_applicable
+      instant_payout_available: false
+      instant_payout_fee_rate: not_applicable
+      instant_payout_min_fee: not_applicable
+      instant_payout_daily_limit: not_applicable
+      instant_payout_max_per_day: not_applicable
+      instant_payout_arrival: not_applicable
+      refund_debit_source: payments_balance
+      chargeback_liability_follows_order_liability: true
+      chargeback_debit_timing: on_chargeback_notice
+      chargeback_fee: 20.0
+      chargeback_fee_refunded_on_win: false
+      chargeback_response_days: 7
+      chargeback_disputes_per_case: 1
+      chargeback_win_reversal_timing: on_issuer_decision
+      negative_balance_card_charge_days: 30
+      negative_balance_card_retry_count: 3
+      negative_balance_collection_days: 90
+      bank_change_payout_hold_days: 3
+      bank_name_match_required: true
+      disbursement_return_resend_business_days: 5
+      reverification_interval_months: 12
+      reverification_grace_days: 30
+      suspension_fund_hold_days: 90
+      suspension_hold_release_basis: reinstatement_or_suspension_date_plus_hold_days
+      closure_final_hold_days: 90
+      closure_release_basis: entire_balance_including_reserves
+      min_account_age_days: 90
+      eligible_standing_levels: [Standard Level, Above Standard Level, Top Rated Level, Preferred Partner Level]
+      min_trailing_12m_sales: 0.0
+      standing_fallback_plan: Payments Biweekly
+      plan_review_cycle: monthly_after_standing_evaluation
+      plan_change_effective: next_payout_cycle
+  - name: Payments Daily
+    rank: 4
+    entry_gate: {min_account_age_days: =min_account_age_days, eligible_standing_levels: =eligible_standing_levels}
+    parameters:
+      payout_schedule_rule: every_business_day
+      business_day_calendar: mon_fri_excluding_us_federal_holidays
+      payout_cutoff_time_et: '17:00'
+      min_payout_amount: 1.0
+      max_payout_per_disbursement: 100000.0
+      bank_arrival_business_days: 2
+      on_demand_payout_allowed: true
+      on_demand_interval_hours: 24
+      sale_credit_basis: item_subtotal_plus_shipping_excluding_tax
+      delivery_reserve_days: 7
+      no_scan_release_days_after_promised: 7
+      reserve_release_basis: delivered_date_plus_reserve_days_or_promised_date_plus_no_scan_days
+      high_value_order_threshold: 5000.0
+      high_value_extra_hold_days: 5
+      rolling_reserve_rate: 0.0
+      rolling_reserve_hold_days: not_applicable
+      instant_payout_available: false
+      instant_payout_fee_rate: not_applicable
+      instant_payout_min_fee: not_applicable
+      instant_payout_daily_limit: not_applicable
+      instant_payout_max_per_day: not_applicable
+      instant_payout_arrival: not_applicable
+      refund_debit_source: payments_balance
+      chargeback_liability_follows_order_liability: true
+      chargeback_debit_timing: on_chargeback_notice
+      chargeback_fee: 15.0
+      chargeback_fee_refunded_on_win: false
+      chargeback_response_days: 7
+      chargeback_disputes_per_case: 1
+      chargeback_win_reversal_timing: on_issuer_decision
+      negative_balance_card_charge_days: 30
+      negative_balance_card_retry_count: 3
+      negative_balance_collection_days: 90
+      bank_change_payout_hold_days: 3
+      bank_name_match_required: true
+      disbursement_return_resend_business_days: 5
+      reverification_interval_months: 12
+      reverification_grace_days: 30
+      suspension_fund_hold_days: 90
+      suspension_hold_release_basis: reinstatement_or_suspension_date_plus_hold_days
+      closure_final_hold_days: 90
+      closure_release_basis: entire_balance_including_reserves
+      min_account_age_days: 180
+      eligible_standing_levels: [Above Standard Level, Top Rated Level, Preferred Partner Level]
+      min_trailing_12m_sales: 0.0
+      standing_fallback_plan: Payments Weekly
+      plan_review_cycle: monthly_after_standing_evaluation
+      plan_change_effective: next_payout_cycle
+  - name: Payments Daily Plus
+    rank: 5
+    entry_gate: {min_account_age_days: =min_account_age_days, eligible_standing_levels: =eligible_standing_levels, min_trailing_12m_sales: =min_trailing_12m_sales}
+    parameters:
+      payout_schedule_rule: every_business_day
+      business_day_calendar: mon_fri_excluding_us_federal_holidays
+      payout_cutoff_time_et: '17:00'
+      min_payout_amount: 1.0
+      max_payout_per_disbursement: 250000.0
+      bank_arrival_business_days: 1
+      on_demand_payout_allowed: true
+      on_demand_interval_hours: 24
+      sale_credit_basis: item_subtotal_plus_shipping_excluding_tax
+      delivery_reserve_days: 3
+      no_scan_release_days_after_promised: 7
+      reserve_release_basis: delivered_date_plus_reserve_days_or_promised_date_plus_no_scan_days
+      high_value_order_threshold: 10000.0
+      high_value_extra_hold_days: 3
+      rolling_reserve_rate: 0.0
+      rolling_reserve_hold_days: not_applicable
+      instant_payout_available: true
+      instant_payout_fee_rate: 0.015
+      instant_payout_min_fee: 0.5
+      instant_payout_daily_limit: 5000.0
+      instant_payout_max_per_day: 5
+      instant_payout_arrival: within_30_minutes
+      refund_debit_source: payments_balance
+      chargeback_liability_follows_order_liability: true
+      chargeback_debit_timing: on_chargeback_notice
+      chargeback_fee: 15.0
+      chargeback_fee_refunded_on_win: false
+      chargeback_response_days: 10
+      chargeback_disputes_per_case: 1
+      chargeback_win_reversal_timing: on_issuer_decision
+      negative_balance_card_charge_days: 30
+      negative_balance_card_retry_count: 3
+      negative_balance_collection_days: 90
+      bank_change_payout_hold_days: 3
+      bank_name_match_required: true
+      disbursement_return_resend_business_days: 5
+      reverification_interval_months: 12
+      reverification_grace_days: 30
+      suspension_fund_hold_days: 90
+      suspension_hold_release_basis: reinstatement_or_suspension_date_plus_hold_days
+      closure_final_hold_days: 90
+      closure_release_basis: entire_balance_including_reserves
+      min_account_age_days: 365
+      eligible_standing_levels: [Top Rated Level, Preferred Partner Level]
+      min_trailing_12m_sales: 25000.0
+      standing_fallback_plan: Payments Daily
+      plan_review_cycle: monthly_after_standing_evaluation
+      plan_change_effective: next_payout_cycle
+  - name: Payments Enterprise
+    rank: 6
+    entry_gate: {min_account_age_days: =min_account_age_days, eligible_standing_levels: =eligible_standing_levels, min_trailing_12m_sales: =min_trailing_12m_sales}
+    parameters:
+      payout_schedule_rule: every_business_day
+      business_day_calendar: mon_fri_excluding_us_federal_holidays
+      payout_cutoff_time_et: '17:00'
+      min_payout_amount: 1.0
+      max_payout_per_disbursement: 2000000.0
+      bank_arrival_business_days: 1
+      on_demand_payout_allowed: true
+      on_demand_interval_hours: 24
+      sale_credit_basis: item_subtotal_plus_shipping_excluding_tax
+      delivery_reserve_days: 3
+      no_scan_release_days_after_promised: 7
+      reserve_release_basis: delivered_date_plus_reserve_days_or_promised_date_plus_no_scan_days
+      high_value_order_threshold: 25000.0
+      high_value_extra_hold_days: 0
+      rolling_reserve_rate: 0.0
+      rolling_reserve_hold_days: not_applicable
+      instant_payout_available: true
+      instant_payout_fee_rate: 0.01
+      instant_payout_min_fee: 0.5
+      instant_payout_daily_limit: 50000.0
+      instant_payout_max_per_day: 10
+      instant_payout_arrival: within_30_minutes
+      refund_debit_source: payments_balance
+      chargeback_liability_follows_order_liability: true
+      chargeback_debit_timing: on_chargeback_notice
+      chargeback_fee: 10.0
+      chargeback_fee_refunded_on_win: true
+      chargeback_response_days: 14
+      chargeback_disputes_per_case: 1
+      chargeback_win_reversal_timing: on_issuer_decision
+      negative_balance_card_charge_days: 45
+      negative_balance_card_retry_count: 3
+      negative_balance_collection_days: 90
+      bank_change_payout_hold_days: 3
+      bank_name_match_required: true
+      disbursement_return_resend_business_days: 5
+      reverification_interval_months: 12
+      reverification_grace_days: 30
+      suspension_fund_hold_days: 90
+      suspension_hold_release_basis: reinstatement_or_suspension_date_plus_hold_days
+      closure_final_hold_days: 60
+      closure_release_basis: entire_balance_including_reserves
+      min_account_age_days: 365
+      eligible_standing_levels: [Top Rated Level, Preferred Partner Level]
+      min_trailing_12m_sales: 1000000.0
+      standing_fallback_plan: Payments Daily
+      plan_review_cycle: monthly_after_standing_evaluation
+      plan_change_effective: next_payout_cycle
+
+events:
+  - type: payout_account_open
+    target: payout_accounts
+    mutation: create
+    meaning: "A seller opens a Northloop Payments account."
+    grain: "one row per payments account"
+    fields:
+      payout_account_id: "Payments account reference."
+      customer_id: "The seller."
+      variant_name: "Payout plan."
+      opened_date: "Date opened."
+      bank_last4: "Last four digits of the bank account."
+    triggers: []
+  - type: payout_account_verify
+    target: payout_accounts
+    mutation: {transition: {from: pending_verification, to: active}}
+    meaning: "Identity and bank verification completes."
+    grain: "one row per transaction"
+    fields:
+      verified_date: "Date verified."
+    triggers: []
+  - type: payout_sale_credit
+    target: payout_events
+    meaning: "Proceeds of a captured order are credited to the seller's balance."
+    grain: "one row per order"
+    distinguish_by: [order_id]
+    fields:
+      payout_account_id: "Payments account."
+      customer_id: "The seller."
+      event_date: "Date credited (the capture date)."
+      order_id: "Order sold."
+      amount: "Item subtotal plus shipping, tax excluded, positive."
+    account: payments_balance
+    direction: in
+    triggers:
+      - event: payout:payout_reserve_hold
+        map: {order_id: order_id, amount: amount, reserve_type: delivery_date}
+  - type: payout_reserve_hold
+    target: payout_events
+    meaning: "Part of the balance is reserved and not yet payable."
+    grain: "one row per order per reserve type"
+    distinguish_by: [order_id, reserve_type]
+    fields:
+      payout_account_id: "Payments account."
+      customer_id: "The seller."
+      event_date: "Date reserved."
+      order_id: "Order whose proceeds are reserved."
+      reserve_type: "delivery_date or rolling_risk."
+      amount: "Amount reserved, positive."
+      release_due_date: "Date the reserve is due for release as computed when it was placed (empty for a delivery reserve until the order is delivered)."
+    account: reserved_funds
+    direction: in
+    triggers: []
+  - type: payout_reserve_release
+    target: payout_events
+    meaning: "A reserve is released and becomes payable."
+    grain: "one row per order per reserve type"
+    distinguish_by: [order_id, reserve_type]
+    fields:
+      payout_account_id: "Payments account."
+      customer_id: "The seller."
+      event_date: "Date released."
+      order_id: "Order whose reserve is released."
+      reserve_type: "delivery_date or rolling_risk."
+      amount: "Amount released, positive."
+    account: reserved_funds
+    direction: out
+    triggers: []
+  - type: payout_disbursement
+    target: payout_events
+    meaning: "Available funds are sent to the seller's bank account (scheduled or on-demand) or debit card (instant)."
+    grain: "one row per payout"
+    distinguish_by: [disbursement_ref]
+    fields:
+      payout_account_id: "Payments account."
+      customer_id: "The seller."
+      event_date: "Date initiated."
+      disbursement_ref: "Payout reference."
+      payout_method: "scheduled, on_demand or instant."
+      bank_last4: "Destination account or card (last four digits)."
+      amount: "Amount sent, positive."
+    account: payments_balance
+    direction: out
+    triggers:
+      - event: payout:payout_instant_fee
+        when: {payout_method: instant}
+        map: {disbursement_ref: disbursement_ref}
+  - type: payout_instant_fee
+    target: payout_events
+    meaning: "The fee of an instant payout."
+    grain: "one row per instant payout"
+    distinguish_by: [disbursement_ref]
+    fields:
+      payout_account_id: "Payments account."
+      customer_id: "The seller."
+      event_date: "Date charged."
+      disbursement_ref: "Instant payout charged for."
+      amount: "Fee, positive."
+    account: payments_balance
+    direction: out
+    triggers: []
+  - type: payout_disbursement_return
+    target: payout_events
+    meaning: "The bank rejects a payout and the funds come back to the balance."
+    grain: "one row per returned payout"
+    distinguish_by: [disbursement_ref]
+    fields:
+      payout_account_id: "Payments account."
+      customer_id: "The seller."
+      event_date: "Date returned."
+      disbursement_ref: "Payout returned."
+      return_reason: "Bank's return reason."
+      amount: "Amount returned, positive."
+    account: payments_balance
+    direction: in
+    triggers:
+      - event: payout:payout_hold_place
+        map: {hold_reason: bank_details_invalid}
+  - type: payout_fee_deduction
+    target: payout_events
+    meaning: "A billed selling or FBN fee is deducted from the balance."
+    grain: "one row per fee record"
+    distinguish_by: [fee_source, fee_event_ref]
+    fields:
+      payout_account_id: "Payments account."
+      customer_id: "The seller."
+      event_date: "Date deducted."
+      fee_source: "selling or fulfill."
+      fee_event_ref: "Fee record deducted."
+      amount: "Amount deducted, positive."
+    account: payments_balance
+    direction: out
+    triggers: []
+  - type: payout_fee_reversal
+    target: payout_events
+    meaning: "A fee credit is returned to the balance."
+    grain: "one row per credited fee record"
+    distinguish_by: [fee_source, fee_event_ref]
+    fields:
+      payout_account_id: "Payments account."
+      customer_id: "The seller."
+      event_date: "Date returned."
+      fee_source: "selling or fulfill."
+      fee_event_ref: "Fee record credited."
+      amount: "Amount returned, positive."
+    account: payments_balance
+    direction: in
+    triggers: []
+  - type: payout_refund_debit
+    target: payout_events
+    meaning: "A buyer refund funded by the seller is debited from the balance."
+    grain: "one row per buyer refund record"
+    distinguish_by: [order_refund_ref]
+    fields:
+      payout_account_id: "Payments account."
+      customer_id: "The seller."
+      event_date: "Date debited."
+      order_id: "Order refunded."
+      order_refund_ref: "The buyer refund record."
+      amount: "Amount debited, positive."
+    account: payments_balance
+    direction: out
+    triggers: []
+  - type: payout_chargeback_debit
+    target: payout_events
+    meaning: "A seller-liable card chargeback is debited from the balance."
+    grain: "one row per chargeback case"
+    distinguish_by: [chargeback_case_id]
+    fields:
+      payout_account_id: "Payments account."
+      customer_id: "The seller."
+      event_date: "Date of the chargeback notice."
+      chargeback_case_id: "Chargeback case."
+      order_id: "Order charged back."
+      amount: "Amount debited, positive."
+    account: payments_balance
+    direction: out
+    triggers:
+      - event: payout:payout_chargeback_fee
+        map: {chargeback_case_id: chargeback_case_id}
+      - event: standing:standing_defect_record
+        map: {order_id: order_id, defect_type: chargeback}
+  - type: payout_chargeback_fee
+    target: payout_events
+    meaning: "The chargeback fee of a seller-liable chargeback, or its return when refunded on a win."
+    grain: "one row per chargeback case per fee movement"
+    distinguish_by: [chargeback_case_id, fee_movement]
+    fields:
+      payout_account_id: "Payments account."
+      customer_id: "The seller."
+      event_date: "Date charged."
+      chargeback_case_id: "Chargeback case."
+      fee_movement: "charged."
+      amount: "Fee, positive."
+    account: payments_balance
+    direction: out
+    triggers: []
+  - type: payout_chargeback_reversal
+    target: payout_events
+    meaning: "The seller wins a chargeback dispute and the debit (and, where refundable, the fee) is returned."
+    grain: "one row per chargeback case per component returned"
+    distinguish_by: [chargeback_case_id, fee_movement]
+    fields:
+      payout_account_id: "Payments account."
+      customer_id: "The seller."
+      event_date: "Date of the issuer decision."
+      chargeback_case_id: "Chargeback case."
+      fee_movement: "debit_returned or fee_returned."
+      amount: "Amount returned, positive."
+    account: payments_balance
+    direction: in
+    triggers: []
+  - type: payout_reimbursement_credit
+    target: payout_events
+    meaning: "An FBN reimbursement is credited to the balance."
+    grain: "one row per reimbursement record"
+    distinguish_by: [reimbursement_ref]
+    fields:
+      payout_account_id: "Payments account."
+      customer_id: "The seller."
+      event_date: "Date credited."
+      reimbursement_ref: "FBN reimbursement record."
+      amount: "Amount credited, positive."
+    account: payments_balance
+    direction: in
+    triggers: []
+  - type: payout_reimbursement_reversal
+    target: payout_events
+    meaning: "An FBN reimbursement is taken back because the units were found."
+    grain: "one row per reversed reimbursement record"
+    distinguish_by: [reimbursement_ref]
+    fields:
+      payout_account_id: "Payments account."
+      customer_id: "The seller."
+      event_date: "Date reversed."
+      reimbursement_ref: "FBN reimbursement reversed."
+      amount: "Amount taken back, positive."
+    account: payments_balance
+    direction: out
+    triggers: []
+  - type: payout_negative_balance_charge
+    target: payout_events
+    meaning: "The card on file is charged to bring a negative balance back to zero."
+    grain: "one row per card charge attempt"
+    distinguish_by: [event_date, charge_attempt]
+    fields:
+      payout_account_id: "Payments account."
+      customer_id: "The seller."
+      event_date: "Date of the attempt."
+      charge_attempt: "Attempt number for this negative balance."
+      charge_outcome: "succeeded or declined."
+      amount: "Amount collected, positive (0.00 when declined)."
+    account: payments_balance
+    direction: in
+    triggers: []
+  - type: payout_hold_place
+    target: payout_accounts
+    mutation: {transition: {from: active, to: on_hold}}
+    meaning: "Payouts are held."
+    grain: "one row per transaction"
+    fields:
+      hold_reason: "Why payouts are held."
+      hold_start_date: "Date the hold began."
+    triggers: []
+  - type: payout_hold_release
+    target: payout_accounts
+    mutation: {transition: {from: on_hold, to: active}}
+    meaning: "The hold is lifted and payouts resume."
+    grain: "one row per transaction"
+    fields:
+      hold_reason: "Reset to none."
+      hold_start_date: "Cleared (empty)."
+    triggers: []
+  - type: payout_request_close
+    target: payout_accounts
+    mutation: {transition: [{from: active, to: closing}, {from: on_hold, to: closing}]}
+    meaning: "The seller asks to close the payments account."
+    grain: "one row per transaction"
+    fields:
+      close_requested_date: "Date of the request."
+    triggers: []
+  - type: payout_close
+    target: payout_accounts
+    mutation: {transition: [{from: closing, to: closed}, {from: pending_verification, to: closed}]}
+    meaning: "The payments account closes."
+    grain: "one row per transaction"
+    fields:
+      closed_date: "Date closed."
+    triggers: []
+  - type: payout_bank_change
+    target: payout_accounts
+    mutation: update
+    meaning: "The seller replaces the bank account payouts are sent to."
+    grain: "one row per transaction"
+    fields:
+      bank_last4: "Last four digits of the new bank account."
+      bank_changed_date: "Date the new account was verified."
+    triggers: []
+  - type: payout_plan_change
+    target: payout_accounts
+    mutation: update
+    meaning: "The account moves to another payout plan."
+    grain: "one row per transaction"
+    fields:
+      variant_name: "New payout plan."
+      plan_changed_date: "Date the change took effect."
+    triggers: []
+
+measures:
+  - id: payout_msr_instant_today
+    window: "The calendar day of the handling date (frozen time)."
+    measure: "Count of, and sum of amount over, payout_disbursement rows of the account with payout_method instant and event_date equal to the handling date."
+  - id: payout_msr_negative_days
+    window: "From negative_since_date to the handling date (frozen time)."
+    measure: "Calendar days elapsed since negative_since_date, counting the day after it as day one; 0 when negative_since_date is empty."
+  - id: payout_msr_trailing_12m_sales
+    window: "Rolling 365 calendar days ending on the handling date (frozen time), inclusive."
+    measure: "Sum of amount over payout_sale_credit rows of the account with event_date in the window."
+
+policies:
+  - id: payout_agg_multi_holding
+    subject: [payout_account_open]
+    rule: >-
+      A seller holds at most one Northloop Payments account; every selling plan, FBN enrollment and order of the seller
+      settles into it. A closed account does not count.
+    eligibility: []
+    params: {max_per_customer: 1}
+  - id: payout_verification
+    subject: [payout_account_open, payout_account_verify, payout_close]
+    rule: >-
+      A payments account pays out only after identity and bank verification; the bank account holder name must match
+      the profile name or business name when bank_name_match_required is true. Identity and bank details are
+      re-verified every reverification interval counted from verified_date; an account whose re-verification is more
+      than the reverification grace days overdue is placed on hold with reason reverification_overdue. A new account
+      starts on Payments Starter. An account still pending verification when its selling plan's verification deadline
+      passes is closed together with that plan.
+    eligibility: []
+  - id: payout_sale_and_reserve
+    subject: [payout_sale_credit, payout_reserve_hold, payout_reserve_release]
+    rule: >-
+      When an order's payment is captured, the seller's balance is credited the item subtotal plus shipping, tax
+      excluded, and the same amount is reserved as a delivery reserve. The delivery reserve is released on the
+      order's delivered_date plus the plan's delivery reserve days, plus the high-value extra hold days when the sale
+      credit is at or above the plan's high-value threshold; an order with no delivered scan is released on its
+      promised delivery date plus the no-scan release days. On a plan with a rolling reserve rate above zero, the rate
+      times the sale credit is additionally held as a rolling_risk reserve, released the rolling reserve hold days
+      after the sale credit date. Release dates are counted in calendar days; a reserve whose release date falls on
+      the handling date is released that day. The plan in force on the sale credit date governs the reserve.
+    eligibility: []
+    params:
+      per_tier:
+        "Payments Starter": {reserve_days: "=delivery_reserve_days", high_value_threshold: "=high_value_order_threshold", high_value_extra_days: "=high_value_extra_hold_days", rolling_rate: "=rolling_reserve_rate"}
+        "Payments Biweekly": {reserve_days: "=delivery_reserve_days", high_value_threshold: "=high_value_order_threshold", high_value_extra_days: "=high_value_extra_hold_days", rolling_rate: "=rolling_reserve_rate"}
+        "Payments Weekly": {reserve_days: "=delivery_reserve_days", high_value_threshold: "=high_value_order_threshold", high_value_extra_days: "=high_value_extra_hold_days", rolling_rate: "=rolling_reserve_rate"}
+        "Payments Daily": {reserve_days: "=delivery_reserve_days", high_value_threshold: "=high_value_order_threshold", high_value_extra_days: "=high_value_extra_hold_days", rolling_rate: "=rolling_reserve_rate"}
+        "Payments Daily Plus": {reserve_days: "=delivery_reserve_days", high_value_threshold: "=high_value_order_threshold", high_value_extra_days: "=high_value_extra_hold_days", rolling_rate: "=rolling_reserve_rate"}
+        "Payments Enterprise": {reserve_days: "=delivery_reserve_days", high_value_threshold: "=high_value_order_threshold", high_value_extra_days: "=high_value_extra_hold_days", rolling_rate: "=rolling_reserve_rate"}
+    formula:
+      rolling_reserve_amount: "round(amount * rolling_reserve_rate, 2)"
+  - id: payout_disbursement_schedule
+    subject: [payout_disbursement]
+    rule: >-
+      Payouts may be sent only while the account is active or closing. The payable amount is the balance less the
+      reserved balance; a payout is sent on each scheduled payout day when the payable amount is at least the plan's
+      minimum payout, for no more than the plan's maximum per payout. No payout is sent during the bank change payout
+      hold counted in calendar days from bank_changed_date. On a plan that allows on-demand payouts the seller may
+      request one standard payout of the payable amount when at least the on-demand interval has passed since the last
+      on-demand payout. A closing account sends one final payout of the entire balance once its final hold has ended.
+      A balance of zero or below is never paid out.
+    eligibility:
+      - id: account_can_pay
+        applies_to: [payout_disbursement]
+        kind: state
+        condition: "Payouts may be sent only while the account is active or closing."
+        evidence_fields: [payout_accounts.status, payout_accounts.payout_account_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [payout_accounts.payout_account_id]
+          action_bindings:
+            payout_accounts.payout_account_id: payout_account_id
+        state_contract:
+          field: payout_accounts.status
+          allowed: [active, closing]
+      - id: bank_change_hold
+        applies_to: [payout_disbursement]
+        kind: time
+        condition: "No payout is sent during the bank change payout hold counted in calendar days from bank_changed_date."
+        evidence_fields: [payout_accounts.bank_changed_date, payout_accounts.payout_account_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [payout_accounts.payout_account_id]
+          action_bindings:
+            payout_accounts.payout_account_id: payout_account_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "bank_changed_date"
+          anchor_source: payout_accounts.bank_changed_date
+          relation: not_before
+          duration_source: variants.bank_change_payout_hold_days
+          unit: calendar_days
+          counting_rule: "counted in calendar days from bank_changed_date"
+          boundary: inclusive
+    formula:
+      payable: "balance - reserved_balance"
+      payout_amount: "min(balance - reserved_balance, max_payout_per_disbursement)"
+  - id: payout_instant_terms
+    subject: [payout_disbursement, payout_instant_fee]
+    rule: >-
+      Instant payouts are available only on plans with instant_payout_available true and only from the payable amount.
+      Each instant payout bears a fee of the instant fee rate times the amount, but never less than the instant minimum
+      fee. The instant payouts of one calendar day may not exceed the plan's daily limit in total or its maximum count.
+    eligibility: []
+    measures: [payout_msr_instant_today]
+    formula:
+      instant_fee: "max(round(amount * instant_payout_fee_rate, 2), instant_payout_min_fee)"
+  - id: payout_debits
+    subject: [payout_fee_deduction, payout_fee_reversal, payout_refund_debit]
+    rule: >-
+      Every billed selling fee and FBN fee is deducted from the balance on its billing date, and every fee credit is
+      returned to it. Every buyer refund funded by the seller is debited from the balance on the refund date; refunds
+      funded by Northloop are never debited. Deductions and debits apply even when they take the balance below zero;
+      the date the balance first goes below zero is recorded as negative_since_date and cleared when it returns to zero
+      or more.
+    eligibility: []
+  - id: payout_chargebacks
+    subject: [payout_chargeback_debit, payout_chargeback_fee, payout_chargeback_reversal]
+    rule: >-
+      A card chargeback on an order is debited to the seller only when the order's liability party is the seller; a
+      chargeback on an order Northloop is liable for is never debited. A seller-liable chargeback is debited in full on
+      the chargeback notice together with the plan's chargeback fee. The seller may dispute a chargeback within the
+      chargeback response days counted in calendar days from the chargeback debit date, at most the per-case dispute
+      limit, by submitting evidence of delivery, signature, an earlier refund or item description. When the issuer
+      decides for the seller, the debit is returned; the fee is returned too only when chargeback_fee_refunded_on_win
+      is true. A chargeback on an order already refunded in full to the buyer is won on refund_already_issued
+      evidence, so the seller never bears both the refund and the chargeback for the same order amount. A
+      chargeback debit is returned only when the seller's dispute on that case is won. A dispute filed
+      after the response window, or lost, books nothing further.
+    eligibility:
+      - id: dispute_won
+        applies_to: [payout_chargeback_reversal]
+        kind: state
+        condition: "A chargeback debit is returned only when the seller's dispute on that case is won."
+        evidence_fields: [payout_chargeback_disputes.dispute_status, payout_chargeback_disputes.chargeback_case_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [payout_chargeback_disputes.chargeback_case_id]
+          action_bindings:
+            payout_chargeback_disputes.chargeback_case_id: chargeback_case_id
+        state_contract:
+          field: payout_chargeback_disputes.dispute_status
+          allowed: [won]
+  - id: payout_negative_balance
+    subject: [payout_negative_balance_charge]
+    rule: >-
+      When the balance has stayed below zero for more than the plan's negative balance card charge days, the card on
+      file is charged for the full deficit. A declined charge is retried up to the retry count, one attempt per
+      business day. A deficit still unpaid after the negative balance collection days is referred for collection; the
+      card is not charged again by this account.
+    eligibility: []
+    measures: [payout_msr_negative_days]
+  - id: payout_holds
+    subject: [payout_hold_place, payout_hold_release]
+    rule: >-
+      Payouts are held when the seller's performance standing is suspended (reason account_suspended), when the bank
+      returns a payout (reason bank_details_invalid), or when re-verification is overdue (reason
+      reverification_overdue). An account_suspended hold is released when the standing is reinstated, or after the
+      suspension fund hold days counted from the suspension date if the standing is deactivated, the balance then being
+      paid out in a final payout. A bank_details_invalid hold is released once new bank details are verified, and the
+      returned payout is re-sent within the resend business days. A reverification_overdue hold is released once
+      re-verification completes. Sale credits, reserves, fees and debits continue to be booked during a hold.
+    eligibility: []
+  - id: payout_reimbursement_postings
+    subject: [payout_reimbursement_credit, payout_reimbursement_reversal, payout_disbursement_return]
+    rule: >-
+      An FBN reimbursement is credited to the balance in full on its reimbursement date and is never reserved; when the
+      reimbursed units are later found, the same amount is taken back. A payout returned by the bank is credited back
+      to the balance on the return date and the account is placed on hold until new bank details are verified.
+    eligibility: []
+  - id: payout_plan_and_bank
+    subject: [payout_plan_change, payout_bank_change]
+    rule: >-
+      A seller may move to a payout plan only when the profile age, the seller's current performance standing level
+      and the trailing 12-month sale credits meet that plan's minimum account age, eligible standing levels and minimum
+      trailing sales. At each plan review an account that no longer qualifies for its plan is moved to the plan's
+      standing fallback plan. A plan change takes effect from the next payout cycle. A new bank account must be
+      verified before it is used, and the bank change payout hold then runs from its verification date.
+    eligibility: []
+    measures: [payout_msr_trailing_12m_sales]
+  - id: payout_closure
+    subject: [payout_request_close, payout_close]
+    rule: >-
+      Closing the payments account is the seller's own decision and is confirmed by the seller. After the request the
+      whole balance, reserves included, is held for the closure final hold days counted from the request date; refunds,
+      claims and chargebacks arriving in that period are still debited. At the end of the hold all reserves are
+      released and the entire balance is paid out, or, if negative, collected from the card on file; the account closes
+      once the balance is zero.
+    eligibility: []
+
+extended_policies:
+  - id: payout_ext_scheduled_payout_limit
+    base_policy_refs: [payout_disbursement_schedule, payout_instant_terms]
+    overwrite:
+      - base_policy: payout_disbursement_schedule
+        superseded_clause: >-
+          a payout is sent on each scheduled payout day when the payable amount is at least the plan's minimum payout, for no more than the plan's maximum per payout.
+        replaced_by: >-
+          The scheduled payout is the lesser of the payable amount and the payout limit, rounded to the cent.
+    trigger: state_due
+    subject: [payout_disbursement]
+    computes: amount
+    target_tool: send_scheduled_payout_7857f918
+    params:
+      bank_change_window_days: 30
+      new_bank_returned_multiplier: 0.04
+      new_bank_multiplier: 0.10
+      trusted_sales_threshold: 250000
+      trusted_level_multiplier: 1.5
+      middle_level_multiplier: 0.8
+      low_level_multiplier: 0.5
+      young_account_days: 730
+      settled_account_days: 1095
+      young_account_multiplier: 0.6
+      settling_account_multiplier: 0.8
+      large_fbn_program_multiplier: 1.25
+      growing_fbn_program_multiplier: 1.10
+    rule: >-
+      A scheduled payout is sent on each scheduled payout day while the payments account is active or closing and the
+      payable amount is at least the plan's minimum payout. The scheduled payout is the lesser of the payable amount and
+      the payout limit, rounded to the cent. The payable amount is the balance less the reserved balance as they stand
+      when the payout is sent. The payout limit is the plan's maximum per payout. Northloop scales the payout limit of a
+      scheduled payout by four payout-limit multipliers and one combination rule, and the scaled payout limit is the
+      plan's maximum per payout times the combined payout-limit multiplier, rounded to the cent. The new-bank payout-
+      limit multiplier is 0.04 when the payout bank account was changed no more than 30 calendar days before the payout
+      date and the bank returned at least one payout from the account in the last twelve months; it is 0.10 when the
+      bank account was changed no more than 30 calendar days before the payout date and the bank returned no payout from
+      the account in the last twelve months; otherwise it is 1. The standing payout-limit multiplier is 1.5 when the
+      seller's current performance standing level is Top Rated Level or Preferred Partner Level and the sale credits
+      booked on the account in the last twelve months total at least 250,000 USD; it is 0.8 when the level is Standard
+      Level or Above Standard Level; it is 0.5 when the level is Below Standard Level or Developing Seller Level;
+      otherwise it is 1. The account-age payout-limit multiplier is 0.6 when the payments account was opened fewer than
+      730 calendar days before the payout date; it is 0.8 when it was opened at least 730 but fewer than 1,095 calendar
+      days before; otherwise it is 1. The fulfillment payout-limit multiplier is 1.25 when the seller's FBN enrollment
+      is active in FBN Premier Program or FBN Enterprise Program; it is 1.10 when the enrollment is active in FBN Growth
+      Program or FBN Scale Program; otherwise it is 1. The four payout-limit multipliers combine into one as follows:
+      when the seller's current level is Preferred Partner Level and no chargeback was debited to the account in the
+      last twelve months, the new-bank payout-limit multiplier times the largest of the other three is the combined
+      payout-limit multiplier; when at least one chargeback was debited to the account in the last six months, the four
+      are multiplied together; otherwise the smallest of the four is the combined payout-limit multiplier. A window of
+      the last twelve months, or of the last six months, takes in the ledger entries dated after the same calendar day
+      twelve, or six, months before the payout date, up to and including the payout date. The part of the payable amount
+      that exceeds the payout limit stays in the balance and is paid by a later payout. The payout limit applies to
+      scheduled payouts, which are sent without the seller confirming them in a verified support contact; it does not
+      apply to a payout the seller requests and confirms in such a contact.
+    prerequisite: []
+    cross_category:
+      - category: standing
+        as: branch
+        reads: [variant_name]
+        note: The seller's current performance standing level decides the tier of the standing payout-limit multiplier and of the combination rule.
+      - category: fulfill
+        as: branch
+        reads: [status, variant_name]
+        note: The status and program of the seller's FBN enrollment decide the tier of the fulfillment payout-limit multiplier.
+    compute:
+      - payable_now: "RND(F('balance') - F('reserved_balance'), 2)"
+      - bank_change_days: "DAYS(F('bank_changed_date'), NOW) if F('bank_changed_date') else 99999"
+      - returned_payouts_12m: "COUNT('payout_events', within_months=12, event_type='payout_disbursement_return')"
+      - new_bank_multiplier: "K('new_bank_returned_multiplier') if (bank_change_days <= K('bank_change_window_days') and returned_payouts_12m >= 1) else (K('new_bank_multiplier') if (bank_change_days <= K('bank_change_window_days') and returned_payouts_12m == 0) else 1.0)"
+      - standing_level: "CFIELD('standing','variant_name')"
+      - sale_credits_12m: "SUM('payout_events','amount', within_months=12, event_type='payout_sale_credit')"
+      - standing_multiplier: "K('trusted_level_multiplier') if ((standing_level == 'Top Rated Level' or standing_level == 'Preferred Partner Level') and sale_credits_12m >= K('trusted_sales_threshold')) else (K('middle_level_multiplier') if (standing_level == 'Standard Level' or standing_level == 'Above Standard Level') else (K('low_level_multiplier') if (standing_level == 'Below Standard Level' or standing_level == 'Developing Seller Level') else 1.0))"
+      - account_age_days: "DAYS(F('opened_date'), NOW)"
+      - account_age_multiplier: "K('young_account_multiplier') if account_age_days < K('young_account_days') else (K('settling_account_multiplier') if account_age_days < K('settled_account_days') else 1.0)"
+      - fbn_status: "CFIELD('fulfill','status')"
+      - fbn_program: "CFIELD('fulfill','variant_name')"
+      - fulfillment_multiplier: "K('large_fbn_program_multiplier') if (fbn_status == 'active' and (fbn_program == 'FBN Premier Program' or fbn_program == 'FBN Enterprise Program')) else (K('growing_fbn_program_multiplier') if (fbn_status == 'active' and (fbn_program == 'FBN Growth Program' or fbn_program == 'FBN Scale Program')) else 1.0)"
+      - chargebacks_12m: "COUNT('payout_events', within_months=12, event_type='payout_chargeback_debit')"
+      - chargebacks_6m: "COUNT('payout_events', within_months=6, event_type='payout_chargeback_debit')"
+      - combined_limit_multiplier: "(new_bank_multiplier * MX(standing_multiplier, account_age_multiplier, fulfillment_multiplier)) if (standing_level == 'Preferred Partner Level' and chargebacks_12m == 0) else ((new_bank_multiplier * standing_multiplier * account_age_multiplier * fulfillment_multiplier) if chargebacks_6m >= 1 else MN(new_bank_multiplier, standing_multiplier, account_age_multiplier, fulfillment_multiplier))"
+      - payout_limit: "RND(P('max_payout_per_disbursement') * combined_limit_multiplier, 2)"
+      - result: "RND(MX(0, MN(payable_now, payout_limit)), 2)"
+    compute_basis:
+      payable_now: "The payable amount is the balance less the reserved balance as they stand when the payout is sent."
+      bank_change_days: "The new-bank payout-limit multiplier is 0.04 when the payout bank account was changed no more than 30 calendar days before the payout date"
+      returned_payouts_12m: "the bank returned at least one payout from the account in the last twelve months"
+      new_bank_multiplier: "The new-bank payout-limit multiplier is 0.04 when the payout bank account was changed no more than 30 calendar days before the payout date and the bank returned at least one payout from the account in the last twelve months; it is 0.10 when the bank account was changed no more than 30 calendar days before the payout date and the bank returned no payout from the account in the last twelve months; otherwise it is 1."
+      standing_level: "when the seller's current performance standing level is Top Rated Level or Preferred Partner Level"
+      sale_credits_12m: "the sale credits booked on the account in the last twelve months total at least 250,000 USD"
+      standing_multiplier: "The standing payout-limit multiplier is 1.5 when the seller's current performance standing level is Top Rated Level or Preferred Partner Level and the sale credits booked on the account in the last twelve months total at least 250,000 USD; it is 0.8 when the level is Standard Level or Above Standard Level; it is 0.5 when the level is Below Standard Level or Developing Seller Level; otherwise it is 1."
+      account_age_days: "The account-age payout-limit multiplier is 0.6 when the payments account was opened fewer than 730 calendar days before the payout date"
+      account_age_multiplier: "The account-age payout-limit multiplier is 0.6 when the payments account was opened fewer than 730 calendar days before the payout date; it is 0.8 when it was opened at least 730 but fewer than 1,095 calendar days before; otherwise it is 1."
+      fbn_status: "when the seller's FBN enrollment is active in FBN Premier Program or FBN Enterprise Program"
+      fbn_program: "when the enrollment is active in FBN Growth Program or FBN Scale Program"
+      fulfillment_multiplier: "The fulfillment payout-limit multiplier is 1.25 when the seller's FBN enrollment is active in FBN Premier Program or FBN Enterprise Program; it is 1.10 when the enrollment is active in FBN Growth Program or FBN Scale Program; otherwise it is 1."
+      chargebacks_12m: "no chargeback was debited to the account in the last twelve months"
+      chargebacks_6m: "when at least one chargeback was debited to the account in the last six months"
+      combined_limit_multiplier: "The four payout-limit multipliers combine into one as follows: when the seller's current level is Preferred Partner Level and no chargeback was debited to the account in the last twelve months, the new-bank payout-limit multiplier times the largest of the other three is the combined payout-limit multiplier; when at least one chargeback was debited to the account in the last six months, the four are multiplied together; otherwise the smallest of the four is the combined payout-limit multiplier."
+      payout_limit: "the scaled payout limit is the plan's maximum per payout times the combined payout-limit multiplier, rounded to the cent."
+      result: "The scheduled payout is the lesser of the payable amount and the payout limit, rounded to the cent."
+    factors:
+      - id: new_bank_limit
+        effect: parameter
+        decides: new_bank_multiplier
+        bindings: [bank_change_days, returned_payouts_12m, new_bank_multiplier]
+        ladder:
+          - when: "the payout bank account was changed no more than 30 calendar days before the payout date and the bank returned at least one payout in the last twelve months"
+            value: "K('new_bank_returned_multiplier') = 0.04"
+          - when: "the payout bank account was changed no more than 30 calendar days before the payout date and the bank returned no payout in the last twelve months"
+            value: "K('new_bank_multiplier') = 0.10"
+          - when: "otherwise"
+            value: "1"
+        baseline:
+          new_bank_multiplier: "1.0"
+        evidence: [date, history]
+        cross_difficulty: null
+      - id: standing_limit
+        effect: parameter
+        decides: standing_multiplier
+        bindings: [standing_level, sale_credits_12m, standing_multiplier]
+        ladder:
+          - when: "the current standing level is Top Rated Level or Preferred Partner Level and the sale credits of the last twelve months total at least 250,000 USD"
+            value: "K('trusted_level_multiplier') = 1.5"
+          - when: "the current standing level is Standard Level or Above Standard Level"
+            value: "K('middle_level_multiplier') = 0.8"
+          - when: "the current standing level is Below Standard Level or Developing Seller Level"
+            value: "K('low_level_multiplier') = 0.5"
+          - when: "otherwise (Top Rated Level or Preferred Partner Level with sale credits of the last twelve months below 250,000 USD)"
+            value: "1"
+        baseline:
+          standing_multiplier: "1.0"
+        evidence: [cross_category, history]
+        cross_difficulty: standing
+      - id: account_age_limit
+        effect: parameter
+        decides: account_age_multiplier
+        bindings: [account_age_days, account_age_multiplier]
+        ladder:
+          - when: "the payments account was opened fewer than 730 calendar days before the payout date"
+            value: "K('young_account_multiplier') = 0.6"
+          - when: "the payments account was opened at least 730 but fewer than 1,095 calendar days before the payout date"
+            value: "K('settling_account_multiplier') = 0.8"
+          - when: "otherwise"
+            value: "1"
+        baseline:
+          account_age_multiplier: "1.0"
+        evidence: [date]
+        cross_difficulty: null
+      - id: fulfillment_limit
+        effect: parameter
+        decides: fulfillment_multiplier
+        bindings: [fbn_status, fbn_program, fulfillment_multiplier]
+        ladder:
+          - when: "the FBN enrollment is active in FBN Premier Program or FBN Enterprise Program"
+            value: "K('large_fbn_program_multiplier') = 1.25"
+          - when: "the FBN enrollment is active in FBN Growth Program or FBN Scale Program"
+            value: "K('growing_fbn_program_multiplier') = 1.10"
+          - when: "otherwise"
+            value: "1"
+        baseline:
+          fulfillment_multiplier: "1.0"
+        evidence: [cross_category]
+        cross_difficulty: fulfill
+      - id: limit_combination
+        effect: method
+        decides: combined_limit_multiplier
+        bindings: [chargebacks_12m, chargebacks_6m, combined_limit_multiplier]
+        ladder:
+          - when: "the current standing level is Preferred Partner Level and no chargeback was debited in the last twelve months"
+            method: "the new-bank payout-limit multiplier times the largest of the other three is the combined multiplier"
+          - when: "at least one chargeback was debited in the last six months"
+            method: "the four payout-limit multipliers are multiplied together"
+          - when: "otherwise"
+            method: "the smallest of the four payout-limit multipliers is the combined multiplier"
+        baseline:
+          combined_limit_multiplier: "MN(new_bank_multiplier, standing_multiplier, account_age_multiplier, fulfillment_multiplier)"
+        evidence: [history]
+        cross_difficulty: null
+    baseline:
+      rule: >-
+        A scheduled payout is sent on each scheduled payout day while the payments account is active or closing and
+        the payable amount is at least the plan's minimum payout. The scheduled payout is the lesser of the payable
+        amount and the payout limit, rounded to the cent. The payable amount is the balance less the reserved balance
+        as they stand when the payout is sent. The payout limit is the plan's maximum per payout.
+      params: [max_payout_per_disbursement, min_payout_amount]
+    inputs:
+      history:
+        - {table: payout_events, aggregate: count, field: payout_event_id, within_months: 12, filters: {event_type: payout_disbursement_return}}
+        - {table: payout_events, aggregate: sum, field: amount, within_months: 12, filters: {event_type: payout_sale_credit}}
+        - {table: payout_events, aggregate: count, field: payout_event_id, within_months: 12, filters: {event_type: payout_chargeback_debit}}
+        - {table: payout_events, aggregate: count, field: payout_event_id, within_months: 6, filters: {event_type: payout_chargeback_debit}}
+      cross_category: [standing, fulfill]
+  - id: payout_ext_instant_fee_posting
+    base_policy_refs: [payout_instant_terms]
+    overwrite:
+      - base_policy: payout_instant_terms
+        superseded_clause: >-
+          Each instant payout bears a fee of the instant fee rate times the amount, but never less than the instant minimum fee.
+        replaced_by: >-
+          The instant payout fee is the payout amount times the instant fee rate, rounded to the cent, but never less than the plan's instant minimum fee.
+    trigger: state_due
+    subject: [payout_instant_fee]
+    computes: amount
+    target_tool: post_instant_payout_fee_64da22a6
+    params:
+      volume_top: 500000
+      volume_high: 250000
+      top_volume_rate_reduction: 0.0050
+      high_volume_rate_reduction: 0.0025
+      young_account_days: 365
+      settled_account_days: 1095
+      large_fbn_fee_multiplier: 0.75
+      growing_fbn_fee_multiplier: 0.90
+      large_store_rate_discount: 0.0025
+      premium_store_rate_discount: 0.0010
+      frequent_instant_count: 6
+      repeat_instant_count: 2
+      frequent_rate_discount: 0.0015
+      repeat_rate_discount: 0.0005
+      heavy_violation_points: 6
+      heavy_violation_surcharge: 0.0030
+      light_violation_surcharge: 0.0010
+    rule: >-
+      The fee of every instant payout is booked on the payments ledger on the day the instant payout is sent, as one
+      instant payout fee entry that names the instant payout it is charged for. The instant payout fee is the payout
+      amount times the instant fee rate, rounded to the cent, but never less than the plan's instant minimum fee. The
+      instant fee rate is the plan's instant payout fee rate. Northloop prices instant payouts by payout volume,
+      standing, store plan, instant payout frequency, policy compliance and fulfillment program, as follows. The volume-
+      priced instant fee rate is the plan's instant payout fee rate less 0.0050 when the seller's instant pricing volume
+      is at least 500,000 USD and the seller's current performance standing level is Top Rated Level or Preferred
+      Partner Level; it is the plan's rate less 0.0025 when the instant pricing volume is at least 250,000 USD but below
+      500,000 USD and the level is Top Rated Level or Preferred Partner Level; otherwise it is the plan's instant payout
+      fee rate. The instant pricing volume is taken from the sale credits booked on the account: when the payments
+      account was opened fewer than 365 calendar days before the fee date, it is four times the sale credits of the last
+      three months, the only annual measure such a young account has; when it was opened at least 365 but fewer than
+      1,095 calendar days before, two candidate measures are compared — the sale credits of the last twelve months and
+      two times the sale credits of the last six months — and the larger of the two is the instant pricing volume;
+      otherwise it is the sale credits of the last twelve months. From the volume-priced rate Northloop subtracts a
+      store-plan rate discount of 0.0025 when the seller's selling plan is Anchor Store or Enterprise Store, 0.0010 when
+      it is Premium Store, and nothing on any other selling plan; it subtracts a frequency rate discount of 0.0015 when
+      at least 6 instant payouts were sent from the account in the last three months, counting the one being charged,
+      0.0005 when 2 to 5 were sent, and nothing when only the one being charged was sent; and it adds a compliance rate
+      surcharge of 0.0030 when the seller's standing record carries at least 6 active violation points, 0.0010 when it
+      carries 1 to 5, and nothing when it carries none. The rate so combined is applied once to the payout amount. The
+      fee so obtained is then multiplied by the fulfillment fee multiplier, which is 0.75 when the seller's FBN
+      enrollment is active in FBN Premier Program or FBN Enterprise Program, 0.90 when it is active in FBN Growth
+      Program or FBN Scale Program, and 1 otherwise; the product is rounded to the cent, and the plan's instant minimum
+      fee is applied last. A window of the last three, six or twelve months takes in the ledger entries dated after the
+      same calendar day three, six or twelve months before the fee date, up to and including the fee date.
+    prerequisite: []
+    cross_category:
+      - category: standing
+        as: branch
+        reads: [variant_name, violation_points]
+        note: The current standing level decides the volume-priced rate tier together with the instant pricing volume, and the active violation points decide the compliance rate surcharge.
+      - category: selling
+        as: branch
+        reads: [variant_name]
+        note: The seller's selling plan decides the store-plan rate discount.
+      - category: fulfill
+        as: branch
+        reads: [status, variant_name]
+        note: The status and program of the FBN enrollment decide the fulfillment fee multiplier.
+    compute:
+      - instant_amount_today: "SUM('payout_events','amount', event_type='payout_disbursement', payout_method='instant', event_date=NOW)"
+      - account_age_days: "DAYS(F('opened_date'), NOW)"
+      - sale_credits_3m: "SUM('payout_events','amount', within_months=3, event_type='payout_sale_credit')"
+      - sale_credits_6m: "SUM('payout_events','amount', within_months=6, event_type='payout_sale_credit')"
+      - sale_credits_12m: "SUM('payout_events','amount', within_months=12, event_type='payout_sale_credit')"
+      - instant_pricing_volume: "RND(sale_credits_3m * 4, 2) if account_age_days < K('young_account_days') else (MX(sale_credits_12m, RND(sale_credits_6m * 2, 2)) if account_age_days < K('settled_account_days') else sale_credits_12m)"
+      - standing_level: "CFIELD('standing','variant_name')"
+      - volume_fee_rate: "(P('instant_payout_fee_rate') - K('top_volume_rate_reduction')) if (instant_pricing_volume >= K('volume_top') and (standing_level == 'Top Rated Level' or standing_level == 'Preferred Partner Level')) else ((P('instant_payout_fee_rate') - K('high_volume_rate_reduction')) if (instant_pricing_volume >= K('volume_high') and (standing_level == 'Top Rated Level' or standing_level == 'Preferred Partner Level')) else P('instant_payout_fee_rate'))"
+      - store_plan: "CFIELD('selling','variant_name')"
+      - store_rate_discount: "K('large_store_rate_discount') if (store_plan == 'Anchor Store' or store_plan == 'Enterprise Store') else (K('premium_store_rate_discount') if store_plan == 'Premium Store' else 0)"
+      - instant_payouts_3m: "COUNT('payout_events', within_months=3, event_type='payout_disbursement', payout_method='instant')"
+      - frequency_rate_discount: "K('frequent_rate_discount') if instant_payouts_3m >= K('frequent_instant_count') else (K('repeat_rate_discount') if instant_payouts_3m >= K('repeat_instant_count') else 0)"
+      - active_violation_points: "CFIELD('standing','violation_points')"
+      - compliance_rate_surcharge: "K('heavy_violation_surcharge') if active_violation_points >= K('heavy_violation_points') else (K('light_violation_surcharge') if active_violation_points >= 1 else 0)"
+      - fbn_status: "CFIELD('fulfill','status')"
+      - fbn_program: "CFIELD('fulfill','variant_name')"
+      - fulfillment_fee_multiplier: "K('large_fbn_fee_multiplier') if (fbn_status == 'active' and (fbn_program == 'FBN Premier Program' or fbn_program == 'FBN Enterprise Program')) else (K('growing_fbn_fee_multiplier') if (fbn_status == 'active' and (fbn_program == 'FBN Growth Program' or fbn_program == 'FBN Scale Program')) else 1.0)"
+      - combined_fee_rate: "volume_fee_rate - store_rate_discount - frequency_rate_discount + compliance_rate_surcharge"
+      - fee_before_minimum: "RND(instant_amount_today * combined_fee_rate * fulfillment_fee_multiplier, 2)"
+      - result: "MX(fee_before_minimum, P('instant_payout_min_fee'))"
+    compute_basis:
+      instant_amount_today: "The fee of every instant payout is booked on the payments ledger on the day the instant payout is sent, as one instant payout fee entry that names the instant payout it is charged for."
+      account_age_days: "when the payments account was opened fewer than 365 calendar days before the fee date"
+      sale_credits_3m: "it is four times the sale credits of the last three months"
+      sale_credits_6m: "two times the sale credits of the last six months"
+      sale_credits_12m: "the sale credits of the last twelve months and two times the sale credits of the last six months"
+      instant_pricing_volume: "The instant pricing volume is taken from the sale credits booked on the account: when the payments account was opened fewer than 365 calendar days before the fee date, it is four times the sale credits of the last three months, the only annual measure such a young account has; when it was opened at least 365 but fewer than 1,095 calendar days before, two candidate measures are compared — the sale credits of the last twelve months and two times the sale credits of the last six months — and the larger of the two is the instant pricing volume; otherwise it is the sale credits of the last twelve months."
+      standing_level: "the seller's current performance standing level is Top Rated Level or Preferred Partner Level"
+      volume_fee_rate: "The volume-priced instant fee rate is the plan's instant payout fee rate less 0.0050 when the seller's instant pricing volume is at least 500,000 USD and the seller's current performance standing level is Top Rated Level or Preferred Partner Level; it is the plan's rate less 0.0025 when the instant pricing volume is at least 250,000 USD but below 500,000 USD and the level is Top Rated Level or Preferred Partner Level; otherwise it is the plan's instant payout fee rate."
+      store_plan: "when the seller's selling plan is Anchor Store or Enterprise Store"
+      store_rate_discount: "From the volume-priced rate Northloop subtracts a store-plan rate discount of 0.0025 when the seller's selling plan is Anchor Store or Enterprise Store, 0.0010 when it is Premium Store, and nothing on any other selling plan"
+      instant_payouts_3m: "when at least 6 instant payouts were sent from the account in the last three months, counting the one being charged"
+      frequency_rate_discount: "it subtracts a frequency rate discount of 0.0015 when at least 6 instant payouts were sent from the account in the last three months, counting the one being charged, 0.0005 when 2 to 5 were sent, and nothing when only the one being charged was sent"
+      active_violation_points: "when the seller's standing record carries at least 6 active violation points"
+      compliance_rate_surcharge: "it adds a compliance rate surcharge of 0.0030 when the seller's standing record carries at least 6 active violation points, 0.0010 when it carries 1 to 5, and nothing when it carries none."
+      fbn_status: "when the seller's FBN enrollment is active in FBN Premier Program or FBN Enterprise Program"
+      fbn_program: "0.90 when it is active in FBN Growth Program or FBN Scale Program"
+      fulfillment_fee_multiplier: "The fee so obtained is then multiplied by the fulfillment fee multiplier, which is 0.75 when the seller's FBN enrollment is active in FBN Premier Program or FBN Enterprise Program, 0.90 when it is active in FBN Growth Program or FBN Scale Program, and 1 otherwise"
+      combined_fee_rate: "The rate so combined is applied once to the payout amount."
+      fee_before_minimum: "the product is rounded to the cent, and the plan's instant minimum fee is applied last."
+      result: "The instant payout fee is the payout amount times the instant fee rate, rounded to the cent, but never less than the plan's instant minimum fee."
+    factors:
+      - id: volume_rate
+        effect: parameter
+        decides: volume_fee_rate
+        bindings: [standing_level, volume_fee_rate]
+        ladder:
+          - when: "the instant pricing volume is at least 500,000 USD and the current standing level is Top Rated Level or Preferred Partner Level"
+            value: "plan rate less K('top_volume_rate_reduction') = plan rate - 0.0050"
+          - when: "the instant pricing volume is at least 250,000 USD but below 500,000 USD and the current standing level is Top Rated Level or Preferred Partner Level"
+            value: "plan rate less K('high_volume_rate_reduction') = plan rate - 0.0025"
+          - when: "otherwise"
+            value: "P('instant_payout_fee_rate')"
+        baseline:
+          volume_fee_rate: "P('instant_payout_fee_rate')"
+        evidence: [cross_category, history]
+        cross_difficulty: standing
+      - id: pricing_volume_window
+        effect: method
+        decides: instant_pricing_volume
+        bindings: [account_age_days, sale_credits_3m, sale_credits_6m, sale_credits_12m, instant_pricing_volume]
+        ladder:
+          - when: "the payments account was opened fewer than 365 calendar days before the fee date"
+            method: "the instant pricing volume is four times the sale credits of the last three months (the only annual measure of a young account)"
+          - when: "the payments account was opened at least 365 but fewer than 1,095 calendar days before the fee date"
+            method: "two candidate measures are compared (twelve-month sale credits and two times six-month sale credits) and the larger is the instant pricing volume"
+          - when: "otherwise (account opened at least 1,095 days before)"
+            method: "the instant pricing volume is the sale credits of the last twelve months"
+        baseline:
+          instant_pricing_volume: "sale_credits_12m"
+        evidence: [history, date]
+        cross_difficulty: null
+      - id: store_plan_discount
+        effect: parameter
+        decides: store_rate_discount
+        bindings: [store_plan, store_rate_discount]
+        ladder:
+          - when: "the selling plan is Anchor Store or Enterprise Store"
+            value: "K('large_store_rate_discount') = 0.0025"
+          - when: "the selling plan is Premium Store"
+            value: "K('premium_store_rate_discount') = 0.0010"
+          - when: "otherwise"
+            value: "0"
+        baseline:
+          store_rate_discount: "0"
+        evidence: [cross_category]
+        cross_difficulty: selling
+      - id: frequency_discount
+        effect: parameter
+        decides: frequency_rate_discount
+        bindings: [instant_payouts_3m, frequency_rate_discount]
+        ladder:
+          - when: "at least 6 instant payouts were sent in the last three months, counting the one being charged"
+            value: "K('frequent_rate_discount') = 0.0015"
+          - when: "2 to 5 instant payouts were sent in the last three months, counting the one being charged"
+            value: "K('repeat_rate_discount') = 0.0005"
+          - when: "otherwise (only the one being charged)"
+            value: "0"
+        baseline:
+          frequency_rate_discount: "0"
+        evidence: [history]
+        cross_difficulty: null
+      - id: compliance_surcharge
+        effect: parameter
+        decides: compliance_rate_surcharge
+        bindings: [active_violation_points, compliance_rate_surcharge]
+        ladder:
+          - when: "the standing record carries at least 6 active violation points"
+            value: "K('heavy_violation_surcharge') = 0.0030"
+          - when: "the standing record carries 1 to 5 active violation points"
+            value: "K('light_violation_surcharge') = 0.0010"
+          - when: "otherwise (no active violation points)"
+            value: "0"
+        baseline:
+          compliance_rate_surcharge: "0"
+        evidence: [cross_category]
+        cross_difficulty: standing
+      - id: fulfillment_fee_relief
+        effect: parameter
+        decides: fulfillment_fee_multiplier
+        bindings: [fbn_status, fbn_program, fulfillment_fee_multiplier]
+        ladder:
+          - when: "the FBN enrollment is active in FBN Premier Program or FBN Enterprise Program"
+            value: "K('large_fbn_fee_multiplier') = 0.75"
+          - when: "the FBN enrollment is active in FBN Growth Program or FBN Scale Program"
+            value: "K('growing_fbn_fee_multiplier') = 0.90"
+          - when: "otherwise"
+            value: "1"
+        baseline:
+          fulfillment_fee_multiplier: "1.0"
+        evidence: [cross_category]
+        cross_difficulty: fulfill
+    baseline:
+      rule: >-
+        The fee of every instant payout is booked on the payments ledger on the day the instant payout is sent, as one
+        instant payout fee entry that names the instant payout it is charged for. The instant payout fee is the payout
+        amount times the instant fee rate, rounded to the cent, but never less than the plan's instant minimum fee. The
+        instant fee rate is the plan's instant payout fee rate.
+      params: [instant_payout_fee_rate, instant_payout_min_fee]
+    inputs:
+      history:
+        - {table: payout_events, aggregate: sum, field: amount, filters: {event_type: payout_disbursement, payout_method: instant}}
+        - {table: payout_events, aggregate: sum, field: amount, within_months: 3, filters: {event_type: payout_sale_credit}}
+        - {table: payout_events, aggregate: sum, field: amount, within_months: 6, filters: {event_type: payout_sale_credit}}
+        - {table: payout_events, aggregate: sum, field: amount, within_months: 12, filters: {event_type: payout_sale_credit}}
+        - {table: payout_events, aggregate: count, field: payout_event_id, within_months: 3, filters: {event_type: payout_disbursement, payout_method: instant}}
+      cross_category: [standing, selling, fulfill]
+  - id: payout_ext_won_chargeback_debit_return
+    base_policy_refs: [payout_chargebacks]
+    overwrite:
+      - base_policy: payout_chargebacks
+        superseded_clause: >-
+          When the issuer decides for the seller, the debit is returned;
+        replaced_by: >-
+          The debit returned on a won case is its return basis, rounded to the cent.
+      - base_policy: payout_chargebacks
+        superseded_clause: >-
+          A chargeback on an order already refunded in full to the buyer is won on refund_already_issued evidence, so the seller never bears both the refund and the chargeback for the same order amount.
+        replaced_by: >-
+          when the seller's dispute on a chargeback case is recorded as won, the debit returned on that case is the return basis less the dispute response fee, never below zero, rounded to the cent.
+    trigger: state_due
+    subject: [payout_chargeback_reversal]
+    computes: amount
+    target_tool: return_won_chargeback_debit_b5e77014
+    params:
+      repeat_dispute_count: 3
+      response_fee_repeat: 25.00
+      response_fee_second: 15.00
+      upper_level_fee_multiplier: 0.5
+      lower_level_fee_multiplier: 1.5
+      large_store_fee_multiplier: 0.5
+      premium_store_fee_multiplier: 0.8
+      prompt_evidence_days: 2
+      timely_evidence_days: 5
+      prompt_evidence_multiplier: 0.5
+      timely_evidence_multiplier: 0.75
+      new_account_days: 365
+      established_account_days: 730
+    rule: >-
+      A chargeback debit is returned only on a case whose dispute is recorded as won, and it is booked as one
+      returned-debit entry on that case. The debit returned on a won case is its return basis, rounded to the cent.
+      The return basis is the chargeback debit booked on the case, except that when the won dispute was submitted on
+      refund_already_issued evidence it is the lesser of the chargeback debit on the case and the seller-funded refund
+      debits booked on the same order, so that the seller does not bear the refund and the chargeback for the same
+      order amount. Northloop withholds a dispute response fee from sellers who contest chargebacks repeatedly: when
+      the seller's dispute on a chargeback case is recorded as won, the debit returned on that case is the return
+      basis less the dispute response fee, never below zero, rounded to the cent. The dispute response fee starts from
+      a base response fee of 25.00 USD when the seller submitted at least 3 chargeback disputes in the last twelve
+      months, counting the won one, 15.00 USD when the seller submitted exactly 2, and nothing when the won dispute is
+      the only one. The base response fee is scaled by three fee multipliers: a standing fee multiplier of 0.5 when the
+      seller's current performance standing level is Top Rated Level or Preferred Partner Level, 1.5 when it is Below
+      Standard Level or Developing Seller Level, and 1 at Standard Level or Above Standard Level; a store fee
+      multiplier of 0.5 when the seller's selling plan is Anchor Store or Enterprise Store, 0.8 when it is Premium
+      Store, and 1 on any other selling plan; and an evidence timing multiplier of 0.5 when the dispute was submitted
+      no more than 2 calendar days after the chargeback debit date, 0.75 when it was submitted 3 to 5 calendar days
+      after, and 1 when it was submitted later. The three fee multipliers combine into one combined fee multiplier as
+      follows: when the payments account was opened at least 730 calendar days before the return date, the three are
+      multiplied together; when it was opened fewer than 365 calendar days before, only the largest of the three
+      applies; otherwise only the smallest of the three applies. The dispute response fee is the base response fee
+      times the combined fee multiplier, rounded to the cent. A window of the last twelve months takes in the disputes
+      submitted after the same calendar day twelve months before the return date, up to and including the return
+      date.
+    prerequisite: []
+    cross_category:
+      - category: standing
+        as: branch
+        reads: [variant_name]
+        note: The current standing level decides the standing fee multiplier of the dispute response fee.
+      - category: selling
+        as: branch
+        reads: [variant_name]
+        note: The selling plan decides the store fee multiplier of the dispute response fee.
+    compute:
+      - won_case: "LATEST('payout_chargeback_disputes','chargeback_case_id', date_field='created_at', dispute_status='won')"
+      - won_order: "LATEST('payout_chargeback_disputes','order_id', date_field='created_at', dispute_status='won')"
+      - won_evidence: "LATEST('payout_chargeback_disputes','evidence_type', date_field='created_at', dispute_status='won')"
+      - won_dispute_submitted: "LATEST('payout_chargeback_disputes','created_at', date_field='created_at', dispute_status='won')"
+      - case_debit: "SUM('payout_events','amount', event_type='payout_chargeback_debit', chargeback_case_id=won_case)"
+      - case_debit_date: "LATEST('payout_events','event_date', event_type='payout_chargeback_debit', chargeback_case_id=won_case)"
+      - order_refund_debits: "SUM('payout_events','amount', event_type='payout_refund_debit', order_id=won_order)"
+      - return_basis: "MN(case_debit, order_refund_debits) if won_evidence == 'refund_already_issued' else case_debit"
+      - disputes_12m: "COUNT('payout_chargeback_disputes', within_months=12, date_field='created_at')"
+      - base_response_fee: "K('response_fee_repeat') if disputes_12m >= K('repeat_dispute_count') else (K('response_fee_second') if disputes_12m == 2 else 0)"
+      - standing_level: "CFIELD('standing','variant_name')"
+      - standing_fee_multiplier: "K('upper_level_fee_multiplier') if (standing_level == 'Top Rated Level' or standing_level == 'Preferred Partner Level') else (K('lower_level_fee_multiplier') if (standing_level == 'Below Standard Level' or standing_level == 'Developing Seller Level') else 1.0)"
+      - store_plan: "CFIELD('selling','variant_name')"
+      - store_fee_multiplier: "K('large_store_fee_multiplier') if (store_plan == 'Anchor Store' or store_plan == 'Enterprise Store') else (K('premium_store_fee_multiplier') if store_plan == 'Premium Store' else 1.0)"
+      - evidence_days: "DAYS(case_debit_date, won_dispute_submitted)"
+      - timing_fee_multiplier: "K('prompt_evidence_multiplier') if evidence_days <= K('prompt_evidence_days') else (K('timely_evidence_multiplier') if evidence_days <= K('timely_evidence_days') else 1.0)"
+      - account_age_days: "DAYS(F('opened_date'), NOW)"
+      - combined_fee_multiplier: "(standing_fee_multiplier * store_fee_multiplier * timing_fee_multiplier) if account_age_days >= K('established_account_days') else (MX(standing_fee_multiplier, store_fee_multiplier, timing_fee_multiplier) if account_age_days < K('new_account_days') else MN(standing_fee_multiplier, store_fee_multiplier, timing_fee_multiplier))"
+      - response_fee: "RND(base_response_fee * combined_fee_multiplier, 2)"
+      - result: "RND(MX(0, return_basis - response_fee), 2)"
+    compute_basis:
+      won_case: "A chargeback debit is returned only on a case whose dispute is recorded as won, and it is booked as one returned-debit entry on that case."
+      won_order: "the seller-funded refund debits booked on the same order"
+      won_evidence: "when the won dispute was submitted on refund_already_issued evidence"
+      won_dispute_submitted: "when the dispute was submitted no more than 2 calendar days after the chargeback debit date"
+      case_debit: "The return basis is the chargeback debit booked on the case"
+      case_debit_date: "when the dispute was submitted no more than 2 calendar days after the chargeback debit date"
+      order_refund_debits: "the seller-funded refund debits booked on the same order"
+      return_basis: "The return basis is the chargeback debit booked on the case, except that when the won dispute was submitted on refund_already_issued evidence it is the lesser of the chargeback debit on the case and the seller-funded refund debits booked on the same order, so that the seller does not bear the refund and the chargeback for the same order amount."
+      disputes_12m: "when the seller submitted at least 3 chargeback disputes in the last twelve months, counting the won one"
+      base_response_fee: "The dispute response fee starts from a base response fee of 25.00 USD when the seller submitted at least 3 chargeback disputes in the last twelve months, counting the won one, 15.00 USD when the seller submitted exactly 2, and nothing when the won dispute is the only one."
+      standing_level: "when the seller's current performance standing level is Top Rated Level or Preferred Partner Level"
+      standing_fee_multiplier: "a standing fee multiplier of 0.5 when the seller's current performance standing level is Top Rated Level or Preferred Partner Level, 1.5 when it is Below Standard Level or Developing Seller Level, and 1 at Standard Level or Above Standard Level"
+      store_plan: "when the seller's selling plan is Anchor Store or Enterprise Store"
+      store_fee_multiplier: "a store fee multiplier of 0.5 when the seller's selling plan is Anchor Store or Enterprise Store, 0.8 when it is Premium Store, and 1 on any other selling plan"
+      evidence_days: "when the dispute was submitted no more than 2 calendar days after the chargeback debit date"
+      timing_fee_multiplier: "an evidence timing multiplier of 0.5 when the dispute was submitted no more than 2 calendar days after the chargeback debit date, 0.75 when it was submitted 3 to 5 calendar days after, and 1 when it was submitted later."
+      account_age_days: "when the payments account was opened at least 730 calendar days before the return date"
+      combined_fee_multiplier: "The three fee multipliers combine into one combined fee multiplier as follows: when the payments account was opened at least 730 calendar days before the return date, the three are multiplied together; when it was opened fewer than 365 calendar days before, only the largest of the three applies; otherwise only the smallest of the three applies."
+      response_fee: "The dispute response fee is the base response fee times the combined fee multiplier, rounded to the cent."
+      result: "when the seller's dispute on a chargeback case is recorded as won, the debit returned on that case is the return basis less the dispute response fee, never below zero, rounded to the cent."
+    factors:
+      - id: repeat_dispute_fee
+        effect: parameter
+        decides: base_response_fee
+        bindings: [disputes_12m, base_response_fee]
+        ladder:
+          - when: "at least 3 chargeback disputes were submitted in the last twelve months, counting the won one"
+            value: "K('response_fee_repeat') = 25.00"
+          - when: "exactly 2 chargeback disputes were submitted in the last twelve months"
+            value: "K('response_fee_second') = 15.00"
+          - when: "otherwise (the won dispute is the only one)"
+            value: "0"
+        baseline:
+          base_response_fee: "0"
+        evidence: [history]
+        cross_difficulty: null
+      - id: standing_fee_scale
+        effect: parameter
+        decides: standing_fee_multiplier
+        bindings: [standing_level, standing_fee_multiplier]
+        ladder:
+          - when: "the current standing level is Top Rated Level or Preferred Partner Level"
+            value: "K('upper_level_fee_multiplier') = 0.5"
+          - when: "the current standing level is Below Standard Level or Developing Seller Level"
+            value: "K('lower_level_fee_multiplier') = 1.5"
+          - when: "otherwise (Standard Level or Above Standard Level)"
+            value: "1"
+        baseline:
+          standing_fee_multiplier: "1.0"
+        evidence: [cross_category]
+        cross_difficulty: standing
+      - id: store_fee_scale
+        effect: parameter
+        decides: store_fee_multiplier
+        bindings: [store_plan, store_fee_multiplier]
+        ladder:
+          - when: "the selling plan is Anchor Store or Enterprise Store"
+            value: "K('large_store_fee_multiplier') = 0.5"
+          - when: "the selling plan is Premium Store"
+            value: "K('premium_store_fee_multiplier') = 0.8"
+          - when: "otherwise"
+            value: "1"
+        baseline:
+          store_fee_multiplier: "1.0"
+        evidence: [cross_category]
+        cross_difficulty: selling
+      - id: evidence_timing_fee_scale
+        effect: parameter
+        decides: timing_fee_multiplier
+        bindings: [won_dispute_submitted, case_debit_date, evidence_days, timing_fee_multiplier]
+        ladder:
+          - when: "the dispute was submitted no more than 2 calendar days after the chargeback debit date"
+            value: "K('prompt_evidence_multiplier') = 0.5"
+          - when: "the dispute was submitted 3 to 5 calendar days after the chargeback debit date"
+            value: "K('timely_evidence_multiplier') = 0.75"
+          - when: "otherwise"
+            value: "1"
+        baseline:
+          timing_fee_multiplier: "1.0"
+        evidence: [date, history]
+        cross_difficulty: null
+      - id: fee_multiplier_combination
+        effect: method
+        decides: combined_fee_multiplier
+        bindings: [account_age_days, combined_fee_multiplier]
+        ladder:
+          - when: "the payments account was opened at least 730 calendar days before the return date"
+            method: "the three fee multipliers are multiplied together"
+          - when: "the payments account was opened fewer than 365 calendar days before the return date"
+            method: "only the largest of the three fee multipliers applies"
+          - when: "otherwise (opened 365 to 729 days before)"
+            method: "only the smallest of the three fee multipliers applies"
+        baseline:
+          combined_fee_multiplier: "MN(standing_fee_multiplier, store_fee_multiplier, timing_fee_multiplier)"
+        evidence: [date]
+        cross_difficulty: null
+    baseline:
+      rule: >-
+        A chargeback debit is returned only on a case whose dispute is recorded as won, and it is booked as one
+        returned-debit entry on that case. The debit returned on a won case is its return basis, rounded to the cent.
+        The return basis is the chargeback debit booked on the case, except that when the won dispute was submitted on
+        refund_already_issued evidence it is the lesser of the chargeback debit on the case and the seller-funded refund
+        debits booked on the same order, so that the seller does not bear the refund and the chargeback for the same
+        order amount.
+      params: []
+    inputs:
+      history:
+        - {table: payout_events, aggregate: sum, field: amount, filters: {event_type: payout_chargeback_debit}}
+        - {table: payout_events, aggregate: sum, field: amount, filters: {event_type: payout_refund_debit}}
+        - {table: payout_chargeback_disputes, aggregate: count, field: dispute_id, within_months: 12, filters: {}}
+        - {table: payout_chargeback_disputes, aggregate: latest, field: evidence_type, filters: {dispute_status: won}}
+      cross_category: [standing, selling]
+  - id: payout_ext_on_demand_payout
+    base_policy_refs: [payout_disbursement_schedule, payout_instant_terms]
+    overwrite:
+      - base_policy: payout_disbursement_schedule
+        superseded_clause: >-
+          On a plan that allows on-demand payouts the seller may request one standard payout of the payable amount when at least the on-demand interval has passed since the last on-demand payout.
+        replaced_by: >-
+          the on-demand payout is the on-demand payable amount less the account-level reserve, the chargeback holdback, the refund holdback and the compliance holdback, never below zero, capped at the plan's maximum per payout and rounded to the cent.
+    trigger: on_request
+    subject: [payout_disbursement]
+    computes: amount
+    target_tool: request_on_demand_payout_667d53e6
+    params:
+      young_account_days: 730
+      settled_account_days: 1095
+      spike_trigger: 1.5
+      reserve_rate_lower_levels: 0.15
+      reserve_rate_upper_levels: 0.05
+      relief_large_units: 5000
+      relief_mid_units: 1000
+      relief_large: 0.50
+      relief_mid: 0.25
+      chargeback_count_high: 3
+      chargeback_share_high: 1.0
+      chargeback_share_low: 0.5
+      refund_ratio_high: 0.10
+      refund_ratio_mid: 0.05
+      refund_share_high: 1.0
+      refund_share_mid: 0.5
+      heavy_violation_points: 6
+      violation_share_heavy: 0.10
+      violation_share_light: 0.05
+    rule: >-
+      On a plan that allows on-demand payouts the seller may request one on-demand payout to the bank account on file
+      when at least the on-demand interval has passed since the last on-demand payout. The on-demand payout is the on-
+      demand payable amount, capped at the plan's maximum per payout and rounded to the cent. The on-demand payable
+      amount is the balance less the reserved balance as they stand when the payout is requested. An on-demand payout is
+      fixed only after the scheduled payout due on the same payout day stands on the payments ledger. An on-demand
+      payout is not worked out until every chargeback case whose dispute is recorded as won carries its returned-debit
+      entry on the payments ledger. Before an on-demand payout amount is worked out, every instant payout already sent
+      that day must carry its instant payout fee entry on the payments ledger. Because an on-demand payout is sent ahead
+      of the payout schedule, Northloop keeps back four on-demand holdbacks from it, which stay in the balance and are
+      paid with later scheduled payouts: the on-demand payout is the on-demand payable amount less the account-level
+      reserve, the chargeback holdback, the refund holdback and the compliance holdback, never below zero, capped at the
+      plan's maximum per payout and rounded to the cent. The four holdbacks are each worked out on their own, as
+      follows. The account-level reserve is the reserve base sales times the reserve rate times one minus the
+      fulfillment relief, rounded to the cent. The reserve base sales are the sale credits of the last month when the
+      payments account was opened fewer than 730 calendar days before the request date, since such an account has no
+      settled monthly average; when it was opened at least 730 but fewer than 1,095 days before, two candidate monthly
+      measures are compared — one third of the sale credits of the last three months and one twelfth of the sale credits
+      of the last twelve months, each rounded to the cent — and the larger of the two is the reserve base sales;
+      otherwise the reserve base sales are one twelfth of the sale credits of the last twelve months, rounded to the
+      cent. The reserve rate is 0.15 when the seller's current performance standing level is Below Standard Level,
+      Developing Seller Level, Standard Level or Above Standard Level and the sales surge ratio is at least 1.5; it is
+      0.05 when the level is Top Rated Level or Preferred Partner Level and the sales surge ratio is at least 1.5;
+      otherwise it is 0. The sales surge ratio is twelve times the sale credits of the last month divided by the sale
+      credits of the last twelve months, and it is 0 when no sale credit was booked in the last twelve months. The
+      fulfillment relief is 0.50 when the seller's FBN enrollment is active and holds at least 5,000 units, 0.25 when it
+      is active and holds at least 1,000 but fewer than 5,000 units, and 0 otherwise. The chargeback holdback is the
+      chargeback debits booked in the last six months less the debits returned on won disputes in those six months,
+      never below zero, times a chargeback holdback share of 1.0 when at least 3 chargebacks were debited in the last
+      six months, 0.5 when 1 or 2 were debited, and 0 when none was, rounded to the cent. The refund holdback is the
+      seller-funded refund debits of the last month times a refund holdback share of 1.0 when those refund debits are
+      positive and at least 10 percent of the sale credits of the last month, 0.5 when they are positive and at least 5
+      percent but below 10 percent, and 0 otherwise, rounded to the cent. The compliance holdback is the on-demand
+      payable amount times a compliance holdback share of 0.10 when the seller's standing record carries at least 6
+      active violation points, 0.05 when it carries 1 to 5, and 0 when it carries none, rounded to the cent. A window of
+      the last month, three, six or twelve months takes in the ledger entries dated after the same calendar day one,
+      three, six or twelve months before the request date, up to and including the request date.
+    prerequisite:
+      - problem: payout_ext_scheduled_payout_limit
+        kind: value_input
+        gate: payable_now
+        form: state
+        policy_source: >-
+          An on-demand payout is fixed only after the scheduled payout due on the same payout day stands on the payments ledger.
+        condition: >-
+          On a scheduled payout day, the payments ledger carries a scheduled payout entry dated that day for the account.
+        resolved_by: send_scheduled_payout_7857f918
+        effect: >-
+          The scheduled payout entry lowers the balance by the scheduled payout amount, so the on-demand payable amount and the compliance holdback worked out on it fall by the scheduled payout and its share.
+      - problem: payout_ext_won_chargeback_debit_return
+        kind: value_input
+        gate: payable_now
+        form: state
+        policy_source: >-
+          An on-demand payout is not worked out until every chargeback case whose dispute is recorded as won carries its returned-debit entry on the payments ledger.
+        condition: >-
+          Every chargeback case with a dispute whose status is won has a chargeback reversal entry of the debit_returned movement on the payments ledger.
+        resolved_by: return_won_chargeback_debit_b5e77014
+        effect: >-
+          The returned-debit entry raises the balance by the debit returned, which raises the on-demand payable amount, and it lowers the net chargeback debits of the last six months on which the chargeback holdback is worked out.
+      - problem: payout_ext_instant_fee_posting
+        kind: value_input
+        gate: payable_now
+        form: state
+        policy_source: >-
+          Before an on-demand payout amount is worked out, every instant payout already sent that day must carry its instant payout fee entry on the payments ledger.
+        condition: >-
+          Every instant payout entry dated the request day has an instant payout fee entry naming its payout reference on the payments ledger.
+        resolved_by: post_instant_payout_fee_64da22a6
+        effect: >-
+          The instant payout fee entry lowers the balance by the fee, which lowers the on-demand payable amount and the compliance holdback worked out on it.
+    cross_category:
+      - category: standing
+        as: branch
+        reads: [variant_name, violation_points]
+        note: The current standing level, together with the sales surge ratio, decides the reserve rate, and the active violation points decide the compliance holdback share.
+      - category: fulfill
+        as: branch
+        reads: [status, units_on_hand]
+        note: The status of the FBN enrollment and the units it holds decide the fulfillment relief of the account-level reserve.
+    compute:
+      - payable_now: "RND(F('balance') - F('reserved_balance'), 2)"
+      - account_age_days: "DAYS(F('opened_date'), NOW)"
+      - sale_credits_1m: "SUM('payout_events','amount', within_months=1, event_type='payout_sale_credit')"
+      - sale_credits_3m: "SUM('payout_events','amount', within_months=3, event_type='payout_sale_credit')"
+      - sale_credits_12m: "SUM('payout_events','amount', within_months=12, event_type='payout_sale_credit')"
+      - reserve_base_sales: "sale_credits_1m if account_age_days < K('young_account_days') else (MX(RND(sale_credits_3m / 3, 2), RND(sale_credits_12m / 12, 2)) if account_age_days < K('settled_account_days') else RND(sale_credits_12m / 12, 2))"
+      - standing_level: "CFIELD('standing','variant_name')"
+      - sales_surge_ratio: "(sale_credits_1m * 12 / sale_credits_12m) if sale_credits_12m > 0 else 0"
+      - reserve_rate: "K('reserve_rate_lower_levels') if ((standing_level == 'Below Standard Level' or standing_level == 'Developing Seller Level' or standing_level == 'Standard Level' or standing_level == 'Above Standard Level') and sales_surge_ratio >= K('spike_trigger')) else (K('reserve_rate_upper_levels') if ((standing_level == 'Top Rated Level' or standing_level == 'Preferred Partner Level') and sales_surge_ratio >= K('spike_trigger')) else 0)"
+      - fbn_status: "CFIELD('fulfill','status')"
+      - fbn_units: "CFIELD('fulfill','units_on_hand')"
+      - fulfillment_relief: "K('relief_large') if (fbn_status == 'active' and fbn_units >= K('relief_large_units')) else (K('relief_mid') if (fbn_status == 'active' and fbn_units >= K('relief_mid_units')) else 0)"
+      - account_level_reserve: "RND(reserve_base_sales * reserve_rate * (1 - fulfillment_relief), 2)"
+      - chargeback_debits_6m: "SUM('payout_events','amount', within_months=6, event_type='payout_chargeback_debit')"
+      - returned_debits_6m: "SUM('payout_events','amount', within_months=6, event_type='payout_chargeback_reversal', fee_movement='debit_returned')"
+      - chargebacks_6m: "COUNT('payout_events', within_months=6, event_type='payout_chargeback_debit')"
+      - chargeback_holdback_share: "K('chargeback_share_high') if chargebacks_6m >= K('chargeback_count_high') else (K('chargeback_share_low') if chargebacks_6m >= 1 else 0)"
+      - chargeback_holdback: "RND(MX(0, chargeback_debits_6m - returned_debits_6m) * chargeback_holdback_share, 2)"
+      - refund_debits_1m: "SUM('payout_events','amount', within_months=1, event_type='payout_refund_debit')"
+      - refund_holdback_share: "K('refund_share_high') if (refund_debits_1m > 0 and refund_debits_1m >= K('refund_ratio_high') * sale_credits_1m) else (K('refund_share_mid') if (refund_debits_1m > 0 and refund_debits_1m >= K('refund_ratio_mid') * sale_credits_1m) else 0)"
+      - refund_holdback: "RND(refund_debits_1m * refund_holdback_share, 2)"
+      - active_violation_points: "CFIELD('standing','violation_points')"
+      - compliance_holdback_share: "K('violation_share_heavy') if active_violation_points >= K('heavy_violation_points') else (K('violation_share_light') if active_violation_points >= 1 else 0)"
+      - compliance_holdback: "RND(payable_now * compliance_holdback_share, 2)"
+      - result: "RND(MX(0, MN(payable_now - account_level_reserve - chargeback_holdback - refund_holdback - compliance_holdback, P('max_payout_per_disbursement'))), 2)"
+    compute_basis:
+      payable_now: "The on-demand payable amount is the balance less the reserved balance as they stand when the payout is requested."
+      account_age_days: "when the payments account was opened fewer than 730 calendar days before the request date"
+      sale_credits_1m: "The reserve base sales are the sale credits of the last month when the payments account was opened fewer than 730 calendar days before the request date"
+      sale_credits_3m: "one third of the sale credits of the last three months and one twelfth of the sale credits of the last twelve months, each rounded to the cent"
+      sale_credits_12m: "otherwise the reserve base sales are one twelfth of the sale credits of the last twelve months, rounded to the cent."
+      reserve_base_sales: "The reserve base sales are the sale credits of the last month when the payments account was opened fewer than 730 calendar days before the request date, since such an account has no settled monthly average; when it was opened at least 730 but fewer than 1,095 days before, two candidate monthly measures are compared — one third of the sale credits of the last three months and one twelfth of the sale credits of the last twelve months, each rounded to the cent — and the larger of the two is the reserve base sales; otherwise the reserve base sales are one twelfth of the sale credits of the last twelve months, rounded to the cent."
+      standing_level: "when the seller's current performance standing level is Below Standard Level, Developing Seller Level, Standard Level or Above Standard Level"
+      sales_surge_ratio: "The sales surge ratio is twelve times the sale credits of the last month divided by the sale credits of the last twelve months, and it is 0 when no sale credit was booked in the last twelve months."
+      reserve_rate: "The reserve rate is 0.15 when the seller's current performance standing level is Below Standard Level, Developing Seller Level, Standard Level or Above Standard Level and the sales surge ratio is at least 1.5; it is 0.05 when the level is Top Rated Level or Preferred Partner Level and the sales surge ratio is at least 1.5; otherwise it is 0."
+      fbn_status: "when the seller's FBN enrollment is active and holds at least 5,000 units"
+      fbn_units: "0.25 when it is active and holds at least 1,000 but fewer than 5,000 units"
+      fulfillment_relief: "The fulfillment relief is 0.50 when the seller's FBN enrollment is active and holds at least 5,000 units, 0.25 when it is active and holds at least 1,000 but fewer than 5,000 units, and 0 otherwise."
+      account_level_reserve: "The account-level reserve is the reserve base sales times the reserve rate times one minus the fulfillment relief, rounded to the cent."
+      chargeback_debits_6m: "the chargeback debits booked in the last six months"
+      returned_debits_6m: "less the debits returned on won disputes in those six months, never below zero"
+      chargebacks_6m: "when at least 3 chargebacks were debited in the last six months"
+      chargeback_holdback_share: "times a chargeback holdback share of 1.0 when at least 3 chargebacks were debited in the last six months, 0.5 when 1 or 2 were debited, and 0 when none was, rounded to the cent."
+      chargeback_holdback: "The chargeback holdback is the chargeback debits booked in the last six months less the debits returned on won disputes in those six months, never below zero, times a chargeback holdback share of 1.0 when at least 3 chargebacks were debited in the last six months, 0.5 when 1 or 2 were debited, and 0 when none was, rounded to the cent."
+      refund_debits_1m: "the seller-funded refund debits of the last month"
+      refund_holdback_share: "times a refund holdback share of 1.0 when those refund debits are positive and at least 10 percent of the sale credits of the last month, 0.5 when they are positive and at least 5 percent but below 10 percent, and 0 otherwise, rounded to the cent."
+      refund_holdback: "The refund holdback is the seller-funded refund debits of the last month times a refund holdback share of 1.0 when those refund debits are positive and at least 10 percent of the sale credits of the last month, 0.5 when they are positive and at least 5 percent but below 10 percent, and 0 otherwise, rounded to the cent."
+      active_violation_points: "when the seller's standing record carries at least 6 active violation points"
+      compliance_holdback_share: "times a compliance holdback share of 0.10 when the seller's standing record carries at least 6 active violation points, 0.05 when it carries 1 to 5, and 0 when it carries none, rounded to the cent."
+      compliance_holdback: "The compliance holdback is the on-demand payable amount times a compliance holdback share of 0.10 when the seller's standing record carries at least 6 active violation points, 0.05 when it carries 1 to 5, and 0 when it carries none, rounded to the cent."
+      result: "the on-demand payout is the on-demand payable amount less the account-level reserve, the chargeback holdback, the refund holdback and the compliance holdback, never below zero, capped at the plan's maximum per payout and rounded to the cent."
+    factors:
+      - id: reserve_base_window
+        effect: method
+        decides: reserve_base_sales
+        bindings: [account_age_days, sale_credits_1m, sale_credits_3m, sale_credits_12m, reserve_base_sales]
+        ladder:
+          - when: "the payments account was opened fewer than 730 calendar days before the request date"
+            method: "the reserve base sales are the sale credits of the last month (no settled monthly average yet)"
+          - when: "the payments account was opened at least 730 but fewer than 1,095 calendar days before the request date"
+            method: "two candidate monthly measures are compared (one third of the three-month sale credits, one twelfth of the twelve-month sale credits) and the larger is the reserve base sales"
+          - when: "otherwise"
+            method: "the reserve base sales are one twelfth of the sale credits of the last twelve months"
+        baseline:
+          reserve_base_sales: "RND(sale_credits_12m / 12, 2)"
+        evidence: [history, date]
+        cross_difficulty: null
+      - id: surge_reserve_rate
+        effect: parameter
+        decides: reserve_rate
+        bindings: [standing_level, sales_surge_ratio, reserve_rate]
+        ladder:
+          - when: "the current standing level is Below Standard Level, Developing Seller Level, Standard Level or Above Standard Level and the sales surge ratio is at least 1.5"
+            value: "K('reserve_rate_lower_levels') = 0.15"
+          - when: "the current standing level is Top Rated Level or Preferred Partner Level and the sales surge ratio is at least 1.5"
+            value: "K('reserve_rate_upper_levels') = 0.05"
+          - when: "otherwise (sales surge ratio below 1.5)"
+            value: "0"
+        baseline:
+          reserve_rate: "0"
+        evidence: [cross_category, history]
+        cross_difficulty: standing
+      - id: fulfillment_reserve_relief
+        effect: parameter
+        decides: fulfillment_relief
+        bindings: [fbn_status, fbn_units, fulfillment_relief]
+        ladder:
+          - when: "the FBN enrollment is active and holds at least 5,000 units"
+            value: "K('relief_large') = 0.50"
+          - when: "the FBN enrollment is active and holds at least 1,000 but fewer than 5,000 units"
+            value: "K('relief_mid') = 0.25"
+          - when: "otherwise"
+            value: "0"
+        baseline:
+          fulfillment_relief: "0"
+        evidence: [cross_category]
+        cross_difficulty: fulfill
+      - id: chargeback_holdback_rule
+        effect: parameter
+        decides: chargeback_holdback_share
+        bindings: [chargeback_debits_6m, returned_debits_6m, chargebacks_6m, chargeback_holdback_share]
+        ladder:
+          - when: "at least 3 chargebacks were debited in the last six months"
+            value: "K('chargeback_share_high') = 1.0"
+          - when: "1 or 2 chargebacks were debited in the last six months"
+            value: "K('chargeback_share_low') = 0.5"
+          - when: "otherwise (none debited)"
+            value: "0"
+        baseline:
+          chargeback_holdback_share: "0"
+        evidence: [history]
+        cross_difficulty: null
+      - id: refund_holdback_rule
+        effect: parameter
+        decides: refund_holdback_share
+        bindings: [refund_debits_1m, refund_holdback_share]
+        ladder:
+          - when: "the seller-funded refund debits of the last month are positive and at least 10 percent of the sale credits of the last month"
+            value: "K('refund_share_high') = 1.0"
+          - when: "the seller-funded refund debits of the last month are positive and at least 5 percent but below 10 percent of the sale credits of the last month"
+            value: "K('refund_share_mid') = 0.5"
+          - when: "otherwise"
+            value: "0"
+        baseline:
+          refund_holdback_share: "0"
+        evidence: [history]
+        cross_difficulty: null
+      - id: compliance_holdback_rule
+        effect: parameter
+        decides: compliance_holdback_share
+        bindings: [active_violation_points, compliance_holdback_share]
+        ladder:
+          - when: "the standing record carries at least 6 active violation points"
+            value: "K('violation_share_heavy') = 0.10"
+          - when: "the standing record carries 1 to 5 active violation points"
+            value: "K('violation_share_light') = 0.05"
+          - when: "otherwise (no active violation points)"
+            value: "0"
+        baseline:
+          compliance_holdback_share: "0"
+        evidence: [cross_category]
+        cross_difficulty: standing
+    baseline:
+      rule: >-
+        On a plan that allows on-demand payouts the seller may request one on-demand payout to the bank account on file
+        when at least the on-demand interval has passed since the last on-demand payout. The on-demand payout is the
+        on-demand payable amount, capped at the plan's maximum per payout and rounded to the cent. The on-demand payable
+        amount is the balance less the reserved balance as they stand when the payout is requested.
+      params: [max_payout_per_disbursement, on_demand_interval_hours]
+    inputs:
+      history:
+        - {table: payout_events, aggregate: sum, field: amount, within_months: 1, filters: {event_type: payout_sale_credit}}
+        - {table: payout_events, aggregate: sum, field: amount, within_months: 3, filters: {event_type: payout_sale_credit}}
+        - {table: payout_events, aggregate: sum, field: amount, within_months: 12, filters: {event_type: payout_sale_credit}}
+        - {table: payout_events, aggregate: sum, field: amount, within_months: 6, filters: {event_type: payout_chargeback_debit}}
+        - {table: payout_events, aggregate: sum, field: amount, within_months: 6, filters: {event_type: payout_chargeback_reversal, fee_movement: debit_returned}}
+        - {table: payout_events, aggregate: sum, field: amount, within_months: 1, filters: {event_type: payout_refund_debit}}
+      cross_category: [standing, fulfill]
+  - id: payout_ext_won_chargeback_fee_return
+    base_policy_refs: [payout_chargebacks]
+    overwrite:
+      - base_policy: payout_chargebacks
+        superseded_clause: >-
+          the fee is returned too only when chargeback_fee_refunded_on_win is true.
+        replaced_by: >-
+          the fee returned on that case is the chargeback fee charged on the case times the evidence fee-return share times the combined history multiplier, rounded to the cent.
+    trigger: state_due
+    subject: [payout_chargeback_reversal]
+    computes: amount
+    target_tool: return_won_chargeback_fee_5c062853
+    params:
+      delivery_proof_share: 1.0
+      description_proof_share: 0.5
+      lower_level_multiplier: 0.5
+      middle_level_multiplier: 0.75
+      repeat_chargeback_count: 3
+      repeat_chargeback_multiplier: 0.5
+      second_chargeback_multiplier: 0.75
+      new_account_days: 365
+      established_account_days: 1095
+    rule: >-
+      A chargeback fee is returned only on a case whose dispute is recorded as won, and it is booked as one fee-return
+      entry on that case. The fee returned on a won case is the chargeback fee charged on that case when the plan
+      returns the chargeback fee on a win, and nothing when it does not, rounded to the cent. Northloop also returns
+      part or all of the chargeback fee on plans that do not return it, according to the evidence that won the dispute
+      and the seller's standing and chargeback history: when the seller's dispute on a chargeback case is recorded as
+      won, the fee returned on that case is the chargeback fee charged on the case times the evidence fee-return share
+      times the combined history multiplier, rounded to the cent. The evidence fee-return share is 1.0 when the plan
+      does not return the chargeback fee on a win and the won dispute was submitted on proof_of_delivery or
+      signature_confirmation evidence; it is 0.5 when the plan does not return the fee on a win and the won dispute was
+      submitted on item_as_described_evidence; otherwise it is 1 when the plan returns the chargeback fee on a win and 0
+      when it does not. The standing history multiplier is 0.5 when the seller's current performance standing level is
+      Below Standard Level or Developing Seller Level, 0.75 when it is Standard Level or Above Standard Level, and 1 at
+      Top Rated Level or Preferred Partner Level. The chargeback history multiplier is 0.5 when at least 3 chargebacks
+      were debited to the account in the last twelve months, counting the won case, 0.75 when exactly 2 were, and 1 when
+      the won case is the only one. The two history multipliers combine into the combined history multiplier as follows:
+      when the payments account was opened fewer than 365 calendar days before the return date, they are multiplied
+      together; when it was opened at least 1,095 calendar days before, the larger of the two applies; otherwise the
+      smaller of the two applies. A window of the last twelve months takes in the ledger entries dated after the same
+      calendar day twelve months before the return date, up to and including the return date.
+    prerequisite: []
+    cross_category:
+      - category: standing
+        as: branch
+        reads: [variant_name]
+        note: The current standing level decides the standing history multiplier of the fee returned.
+    compute:
+      - won_case: "LATEST('payout_chargeback_disputes','chargeback_case_id', date_field='created_at', dispute_status='won')"
+      - case_fee: "SUM('payout_events','amount', event_type='payout_chargeback_fee', chargeback_case_id=won_case, fee_movement='charged')"
+      - won_evidence: "LATEST('payout_chargeback_disputes','evidence_type', date_field='created_at', dispute_status='won')"
+      - evidence_fee_share: "K('delivery_proof_share') if ((not P('chargeback_fee_refunded_on_win')) and (won_evidence == 'proof_of_delivery' or won_evidence == 'signature_confirmation')) else (K('description_proof_share') if ((not P('chargeback_fee_refunded_on_win')) and won_evidence == 'item_as_described_evidence') else (1.0 if P('chargeback_fee_refunded_on_win') else 0.0))"
+      - standing_level: "CFIELD('standing','variant_name')"
+      - standing_history_multiplier: "K('lower_level_multiplier') if (standing_level == 'Below Standard Level' or standing_level == 'Developing Seller Level') else (K('middle_level_multiplier') if (standing_level == 'Standard Level' or standing_level == 'Above Standard Level') else 1.0)"
+      - chargebacks_12m: "COUNT('payout_events', within_months=12, event_type='payout_chargeback_debit')"
+      - chargeback_history_multiplier: "K('repeat_chargeback_multiplier') if chargebacks_12m >= K('repeat_chargeback_count') else (K('second_chargeback_multiplier') if chargebacks_12m == 2 else 1.0)"
+      - account_age_days: "DAYS(F('opened_date'), NOW)"
+      - combined_history_multiplier: "(standing_history_multiplier * chargeback_history_multiplier) if account_age_days < K('new_account_days') else (MX(standing_history_multiplier, chargeback_history_multiplier) if account_age_days >= K('established_account_days') else MN(standing_history_multiplier, chargeback_history_multiplier))"
+      - result: "RND(case_fee * evidence_fee_share * combined_history_multiplier, 2)"
+    compute_basis:
+      won_case: "A chargeback fee is returned only on a case whose dispute is recorded as won, and it is booked as one fee-return entry on that case."
+      case_fee: "The fee returned on a won case is the chargeback fee charged on that case when the plan returns the chargeback fee on a win, and nothing when it does not, rounded to the cent."
+      won_evidence: "according to the evidence that won the dispute"
+      evidence_fee_share: "The evidence fee-return share is 1.0 when the plan does not return the chargeback fee on a win and the won dispute was submitted on proof_of_delivery or signature_confirmation evidence; it is 0.5 when the plan does not return the fee on a win and the won dispute was submitted on item_as_described_evidence; otherwise it is 1 when the plan returns the chargeback fee on a win and 0 when it does not."
+      standing_level: "when the seller's current performance standing level is Below Standard Level or Developing Seller Level"
+      standing_history_multiplier: "The standing history multiplier is 0.5 when the seller's current performance standing level is Below Standard Level or Developing Seller Level, 0.75 when it is Standard Level or Above Standard Level, and 1 at Top Rated Level or Preferred Partner Level."
+      chargebacks_12m: "when at least 3 chargebacks were debited to the account in the last twelve months, counting the won case"
+      chargeback_history_multiplier: "The chargeback history multiplier is 0.5 when at least 3 chargebacks were debited to the account in the last twelve months, counting the won case, 0.75 when exactly 2 were, and 1 when the won case is the only one."
+      account_age_days: "when the payments account was opened fewer than 365 calendar days before the return date"
+      combined_history_multiplier: "The two history multipliers combine into the combined history multiplier as follows: when the payments account was opened fewer than 365 calendar days before the return date, they are multiplied together; when it was opened at least 1,095 calendar days before, the larger of the two applies; otherwise the smaller of the two applies."
+      result: "the fee returned on that case is the chargeback fee charged on the case times the evidence fee-return share times the combined history multiplier, rounded to the cent."
+    factors:
+      - id: evidence_fee_share_rule
+        effect: parameter
+        decides: evidence_fee_share
+        bindings: [won_evidence, evidence_fee_share]
+        ladder:
+          - when: "the plan does not return the chargeback fee on a win and the won dispute was submitted on proof_of_delivery or signature_confirmation evidence"
+            value: "K('delivery_proof_share') = 1.0"
+          - when: "the plan does not return the chargeback fee on a win and the won dispute was submitted on item_as_described_evidence"
+            value: "K('description_proof_share') = 0.5"
+          - when: "otherwise (a plan that returns the fee on a win, or refund_already_issued evidence)"
+            value: "1 when the plan returns the chargeback fee on a win, else 0 (P('chargeback_fee_refunded_on_win'))"
+        baseline:
+          evidence_fee_share: "1.0 if P('chargeback_fee_refunded_on_win') else 0.0"
+        evidence: [history]
+        cross_difficulty: null
+      - id: standing_history_scale
+        effect: parameter
+        decides: standing_history_multiplier
+        bindings: [standing_level, standing_history_multiplier]
+        ladder:
+          - when: "the current standing level is Below Standard Level or Developing Seller Level"
+            value: "K('lower_level_multiplier') = 0.5"
+          - when: "the current standing level is Standard Level or Above Standard Level"
+            value: "K('middle_level_multiplier') = 0.75"
+          - when: "otherwise (Top Rated Level or Preferred Partner Level)"
+            value: "1"
+        baseline:
+          standing_history_multiplier: "1.0"
+        evidence: [cross_category]
+        cross_difficulty: standing
+      - id: chargeback_history_scale
+        effect: parameter
+        decides: chargeback_history_multiplier
+        bindings: [chargebacks_12m, chargeback_history_multiplier]
+        ladder:
+          - when: "at least 3 chargebacks were debited in the last twelve months, counting the won case"
+            value: "K('repeat_chargeback_multiplier') = 0.5"
+          - when: "exactly 2 chargebacks were debited in the last twelve months"
+            value: "K('second_chargeback_multiplier') = 0.75"
+          - when: "otherwise (the won case is the only one)"
+            value: "1"
+        baseline:
+          chargeback_history_multiplier: "1.0"
+        evidence: [history]
+        cross_difficulty: null
+      - id: history_combination
+        effect: method
+        decides: combined_history_multiplier
+        bindings: [account_age_days, combined_history_multiplier]
+        ladder:
+          - when: "the payments account was opened fewer than 365 calendar days before the return date"
+            method: "the standing and chargeback history multipliers are multiplied together"
+          - when: "the payments account was opened at least 1,095 calendar days before the return date"
+            method: "the larger of the two history multipliers applies"
+          - when: "otherwise"
+            method: "the smaller of the two history multipliers applies"
+        baseline:
+          combined_history_multiplier: "MN(standing_history_multiplier, chargeback_history_multiplier)"
+        evidence: [date]
+        cross_difficulty: null
+    baseline:
+      rule: >-
+        A chargeback fee is returned only on a case whose dispute is recorded as won, and it is booked as one fee-return
+        entry on that case. The fee returned on a won case is the chargeback fee charged on that case when the plan
+        returns the chargeback fee on a win, and nothing when it does not, rounded to the cent.
+      params: [chargeback_fee, chargeback_fee_refunded_on_win]
+    inputs:
+      history:
+        - {table: payout_events, aggregate: sum, field: amount, filters: {event_type: payout_chargeback_fee, fee_movement: charged}}
+        - {table: payout_events, aggregate: count, field: payout_event_id, within_months: 12, filters: {event_type: payout_chargeback_debit}}
+        - {table: payout_chargeback_disputes, aggregate: latest, field: evidence_type, filters: {dispute_status: won}}
+      cross_category: [standing]
+  - id: payout_ext_negative_balance_settlement
+    base_policy_refs: [payout_negative_balance, payout_debits]
+    overwrite: []
+    trigger: on_request
+    subject: [payout_negative_balance_charge]
+    computes: amount
+    target_tool: pay_negative_balance_by_card_47b519ae
+    params:
+      lower_level_top_up: 0.20
+      middle_level_top_up: 0.10
+      upper_level_top_up: 0.05
+      upper_level_chargeback_count: 2
+      declined_charge_cushion: 50.00
+      settled_charge_cushion: 25.00
+      refund_ratio_high: 0.10
+      refund_ratio_mid: 0.05
+      refund_cover_high: 0.25
+      refund_cover_mid: 0.10
+      new_account_days: 365
+      young_account_days: 730
+      settled_account_days: 1095
+      new_account_cushion: 50.00
+      young_account_cushion: 20.00
+      billing_window_days: 7
+    rule: >-
+      Besides the automatic card charge after the negative balance card charge days, a seller whose payments balance is
+      below zero may settle it by authorising a card settlement against the card on file while the balance has been
+      below zero for no more than the plan's negative balance card charge days; the settlement is booked as one card
+      charge entry and is credited to the balance in full. Once the balance has been below zero for longer, only the
+      automatic charge of the full deficit applies. The card settlement amount is the settlement basis, rounded to the
+      cent. The settlement basis is the deficit, which is the balance below zero taken as a positive amount. A card
+      settlement of a negative balance is not charged until every won chargeback case with a fee return due carries that
+      fee-return entry on the payments ledger. Because a balance that has gone negative tends to go negative again,
+      Northloop sizes a seller-authorised card settlement to restore a working balance, as follows: the card settlement
+      amount is the settlement basis times one plus the risk top-up share, plus the negative-history cushion, the refund
+      cover, the new-account cushion and the upcoming store fee, rounded to the cent; the top-up share acts on the
+      settlement basis only, and the four added amounts are added to that product unchanged. The unreturned chargeback
+      count is the number of chargebacks debited in the last six months less the number of returned-debit entries booked
+      in those six months, never below zero. The risk top-up share is 0.20 when the seller's current performance
+      standing level is Below Standard Level or Developing Seller Level and the unreturned chargeback count is at least
+      1; it is 0.10 when the level is Standard Level or Above Standard Level and the count is at least 1; it is 0.05
+      when the level is Top Rated Level or Preferred Partner Level and the count is at least 2; otherwise it is 0. The
+      negative-history cushion is 50.00 USD when a card charge for a negative balance was declined in the last twelve
+      months, 25.00 USD when card charges for a negative balance were made in the last twelve months and none was
+      declined, and nothing when none was made. The refund cover is worked out over a refund window: when the payments
+      account was opened fewer than 365 calendar days before the settlement date, the last month and the last two months
+      are compared and the window whose refund debits are the smaller share of its sale credits is used (the last two
+      months when the shares are equal), so that one unusual week does not set the cover of a young account; when the
+      account was opened at least 1,095 calendar days before, the window is the last three months; otherwise it is the
+      last month. The refund cover is 0.25 times the seller-funded refund debits of the refund window when those refund
+      debits are positive and at least 10 percent of the sale credits of the same window, 0.10 times them when they are
+      positive and at least 5 percent but below 10 percent, and nothing otherwise. The new-account cushion is 50.00 USD
+      when the payments account was opened fewer than 365 calendar days before the settlement date, 20.00 USD when it
+      was opened at least 365 but fewer than 730 days before, and nothing otherwise. The upcoming store fee is the
+      monthly term fee of the seller's store plan when the plan is billed on the monthly term and its next billing date
+      falls on the settlement date or no more than 7 calendar days after it; it is the annual term monthly fee when the
+      plan is billed on the annual term and its next billing date falls on the settlement date or no more than 7
+      calendar days after it; otherwise it is nothing. A window of the last one, two, three, six or twelve months takes
+      in the ledger entries dated after the same calendar day that many months before the settlement date, up to and
+      including the settlement date.
+    prerequisite:
+      - problem: payout_ext_won_chargeback_fee_return
+        kind: value_input
+        gate: deficit
+        form: state
+        policy_source: >-
+          A card settlement of a negative balance is not charged until every won chargeback case with a fee return due carries that fee-return entry on the payments ledger.
+        condition: >-
+          Every chargeback case whose dispute status is won and on which the fee-return rule gives a fee above zero has a chargeback reversal entry of the fee_returned movement on the payments ledger.
+        resolved_by: return_won_chargeback_fee_5c062853
+        effect: >-
+          The fee-return entry raises the balance by the fee returned, so the deficit, the settlement basis and the risk top-up worked out on it all fall.
+    cross_category:
+      - category: standing
+        as: branch
+        reads: [variant_name]
+        note: The current standing level, together with the unreturned chargebacks of the last six months, decides the risk top-up share.
+      - category: selling
+        as: branch
+        reads: [variant_name, billing_term, next_billing_date]
+        note: The store plan's billing term, next billing date and term fee decide the upcoming store fee.
+    compute:
+      - deficit: "RND(MX(0, 0 - F('balance')), 2)"
+      - standing_level: "CFIELD('standing','variant_name')"
+      - chargebacks_6m: "COUNT('payout_events', within_months=6, event_type='payout_chargeback_debit')"
+      - returned_debits_6m: "COUNT('payout_events', within_months=6, event_type='payout_chargeback_reversal', fee_movement='debit_returned')"
+      - unreturned_chargebacks: "MX(0, chargebacks_6m - returned_debits_6m)"
+      - risk_top_up_share: "K('lower_level_top_up') if ((standing_level == 'Below Standard Level' or standing_level == 'Developing Seller Level') and unreturned_chargebacks >= 1) else (K('middle_level_top_up') if ((standing_level == 'Standard Level' or standing_level == 'Above Standard Level') and unreturned_chargebacks >= 1) else (K('upper_level_top_up') if ((standing_level == 'Top Rated Level' or standing_level == 'Preferred Partner Level') and unreturned_chargebacks >= K('upper_level_chargeback_count')) else 0))"
+      - declined_charges_12m: "COUNT('payout_events', within_months=12, event_type='payout_negative_balance_charge', charge_outcome='declined')"
+      - card_charges_12m: "COUNT('payout_events', within_months=12, event_type='payout_negative_balance_charge')"
+      - negative_history_cushion: "K('declined_charge_cushion') if declined_charges_12m >= 1 else (K('settled_charge_cushion') if card_charges_12m >= 1 else 0)"
+      - window_account_age_days: "DAYS(F('opened_date'), NOW)"
+      - refund_debits_1m: "SUM('payout_events','amount', within_months=1, event_type='payout_refund_debit')"
+      - refund_debits_2m: "SUM('payout_events','amount', within_months=2, event_type='payout_refund_debit')"
+      - refund_debits_3m: "SUM('payout_events','amount', within_months=3, event_type='payout_refund_debit')"
+      - sale_credits_1m: "SUM('payout_events','amount', within_months=1, event_type='payout_sale_credit')"
+      - sale_credits_2m: "SUM('payout_events','amount', within_months=2, event_type='payout_sale_credit')"
+      - sale_credits_3m: "SUM('payout_events','amount', within_months=3, event_type='payout_sale_credit')"
+      - window_refund_debits: "(refund_debits_2m if refund_debits_2m * sale_credits_1m <= refund_debits_1m * sale_credits_2m else refund_debits_1m) if window_account_age_days < K('new_account_days') else (refund_debits_3m if window_account_age_days >= K('settled_account_days') else refund_debits_1m)"
+      - window_sale_credits: "(sale_credits_2m if refund_debits_2m * sale_credits_1m <= refund_debits_1m * sale_credits_2m else sale_credits_1m) if window_account_age_days < K('new_account_days') else (sale_credits_3m if window_account_age_days >= K('settled_account_days') else sale_credits_1m)"
+      - refund_cover_share: "K('refund_cover_high') if (window_refund_debits > 0 and window_refund_debits >= K('refund_ratio_high') * window_sale_credits) else (K('refund_cover_mid') if (window_refund_debits > 0 and window_refund_debits >= K('refund_ratio_mid') * window_sale_credits) else 0)"
+      - refund_cover: "RND(window_refund_debits * refund_cover_share, 2)"
+      - cushion_account_age_days: "DAYS(F('opened_date'), NOW)"
+      - new_account_cushion: "K('new_account_cushion') if cushion_account_age_days < K('new_account_days') else (K('young_account_cushion') if cushion_account_age_days < K('young_account_days') else 0)"
+      - store_billing_term: "CFIELD('selling','billing_term')"
+      - store_next_billing: "CFIELD('selling','next_billing_date')"
+      - days_to_store_billing: "DAYS(NOW, store_next_billing) if store_next_billing else -1"
+      - upcoming_store_fee: "CPARAM('selling','monthly_term_fee') if (store_billing_term == 'monthly' and days_to_store_billing >= 0 and days_to_store_billing <= K('billing_window_days')) else (CPARAM('selling','annual_term_monthly_fee') if (store_billing_term == 'annual' and days_to_store_billing >= 0 and days_to_store_billing <= K('billing_window_days')) else 0)"
+      - result: "RND(deficit * (1 + risk_top_up_share) + negative_history_cushion + refund_cover + new_account_cushion + upcoming_store_fee, 2)"
+    compute_basis:
+      deficit: "The settlement basis is the deficit, which is the balance below zero taken as a positive amount."
+      standing_level: "when the seller's current performance standing level is Below Standard Level or Developing Seller Level"
+      chargebacks_6m: "the number of chargebacks debited in the last six months"
+      returned_debits_6m: "the number of returned-debit entries booked in those six months"
+      unreturned_chargebacks: "The unreturned chargeback count is the number of chargebacks debited in the last six months less the number of returned-debit entries booked in those six months, never below zero."
+      risk_top_up_share: "The risk top-up share is 0.20 when the seller's current performance standing level is Below Standard Level or Developing Seller Level and the unreturned chargeback count is at least 1; it is 0.10 when the level is Standard Level or Above Standard Level and the count is at least 1; it is 0.05 when the level is Top Rated Level or Preferred Partner Level and the count is at least 2; otherwise it is 0."
+      declined_charges_12m: "when a card charge for a negative balance was declined in the last twelve months"
+      card_charges_12m: "when card charges for a negative balance were made in the last twelve months and none was declined"
+      negative_history_cushion: "The negative-history cushion is 50.00 USD when a card charge for a negative balance was declined in the last twelve months, 25.00 USD when card charges for a negative balance were made in the last twelve months and none was declined, and nothing when none was made."
+      window_account_age_days: "when the payments account was opened fewer than 365 calendar days before the settlement date, the last month and the last two months are compared"
+      refund_debits_1m: "the last month and the last two months are compared"
+      refund_debits_2m: "the window whose refund debits are the smaller share of its sale credits is used (the last two months when the shares are equal)"
+      refund_debits_3m: "when the account was opened at least 1,095 calendar days before, the window is the last three months"
+      sale_credits_1m: "at least 10 percent of the sale credits of the same window"
+      sale_credits_2m: "at least 10 percent of the sale credits of the same window"
+      sale_credits_3m: "at least 10 percent of the sale credits of the same window"
+      window_refund_debits: "The refund cover is worked out over a refund window: when the payments account was opened fewer than 365 calendar days before the settlement date, the last month and the last two months are compared and the window whose refund debits are the smaller share of its sale credits is used (the last two months when the shares are equal), so that one unusual week does not set the cover of a young account; when the account was opened at least 1,095 calendar days before, the window is the last three months; otherwise it is the last month."
+      window_sale_credits: "The refund cover is worked out over a refund window: when the payments account was opened fewer than 365 calendar days before the settlement date, the last month and the last two months are compared and the window whose refund debits are the smaller share of its sale credits is used (the last two months when the shares are equal), so that one unusual week does not set the cover of a young account; when the account was opened at least 1,095 calendar days before, the window is the last three months; otherwise it is the last month."
+      refund_cover_share: "The refund cover is 0.25 times the seller-funded refund debits of the refund window when those refund debits are positive and at least 10 percent of the sale credits of the same window, 0.10 times them when they are positive and at least 5 percent but below 10 percent, and nothing otherwise."
+      refund_cover: "The refund cover is 0.25 times the seller-funded refund debits of the refund window"
+      cushion_account_age_days: "when the payments account was opened fewer than 365 calendar days before the settlement date"
+      new_account_cushion: "The new-account cushion is 50.00 USD when the payments account was opened fewer than 365 calendar days before the settlement date, 20.00 USD when it was opened at least 365 but fewer than 730 days before, and nothing otherwise."
+      store_billing_term: "when the plan is billed on the monthly term"
+      store_next_billing: "its next billing date falls on the settlement date or no more than 7 calendar days after it"
+      days_to_store_billing: "its next billing date falls on the settlement date or no more than 7 calendar days after it"
+      upcoming_store_fee: "The upcoming store fee is the monthly term fee of the seller's store plan when the plan is billed on the monthly term and its next billing date falls on the settlement date or no more than 7 calendar days after it; it is the annual term monthly fee when the plan is billed on the annual term and its next billing date falls on the settlement date or no more than 7 calendar days after it; otherwise it is nothing."
+      result: "the card settlement amount is the settlement basis times one plus the risk top-up share, plus the negative-history cushion, the refund cover, the new-account cushion and the upcoming store fee, rounded to the cent; the top-up share acts on the settlement basis only, and the four added amounts are added to that product unchanged."
+    factors:
+      - id: refund_window
+        effect: method
+        decides: window_refund_debits
+        bindings: [window_account_age_days, window_refund_debits, window_sale_credits]
+        ladder:
+          - when: "the payments account was opened fewer than 365 calendar days before the settlement date"
+            method: "the last month and the last two months are compared and the window whose refund debits are the smaller share of its sale credits is used (two months when equal)"
+          - when: "the payments account was opened at least 1,095 calendar days before the settlement date"
+            method: "the refund cover is measured on the refund debits and sale credits of the last three months"
+          - when: "otherwise"
+            method: "the refund cover is measured on the refund debits and sale credits of the last month"
+        baseline:
+          window_refund_debits: "refund_debits_1m"
+          window_sale_credits: "sale_credits_1m"
+        evidence: [history, date]
+        cross_difficulty: null
+      - id: risk_top_up
+        effect: parameter
+        decides: risk_top_up_share
+        bindings: [standing_level, chargebacks_6m, returned_debits_6m, unreturned_chargebacks, risk_top_up_share]
+        ladder:
+          - when: "the current standing level is Below Standard Level or Developing Seller Level and the unreturned chargeback count of the last six months is at least 1"
+            value: "K('lower_level_top_up') = 0.20"
+          - when: "the current standing level is Standard Level or Above Standard Level and the unreturned chargeback count of the last six months is at least 1"
+            value: "K('middle_level_top_up') = 0.10"
+          - when: "the current standing level is Top Rated Level or Preferred Partner Level and the unreturned chargeback count of the last six months is at least 2"
+            value: "K('upper_level_top_up') = 0.05"
+          - when: "otherwise"
+            value: "0"
+        baseline:
+          risk_top_up_share: "0"
+        evidence: [cross_category, history]
+        cross_difficulty: standing
+      - id: negative_history
+        effect: parameter
+        decides: negative_history_cushion
+        bindings: [declined_charges_12m, card_charges_12m, negative_history_cushion]
+        ladder:
+          - when: "a card charge for a negative balance was declined in the last twelve months"
+            value: "K('declined_charge_cushion') = 50.00"
+          - when: "card charges for a negative balance were made in the last twelve months and none was declined"
+            value: "K('settled_charge_cushion') = 25.00"
+          - when: "otherwise"
+            value: "0"
+        baseline:
+          negative_history_cushion: "0"
+        evidence: [history]
+        cross_difficulty: null
+      - id: refund_cover_rule
+        effect: parameter
+        decides: refund_cover_share
+        bindings: [refund_debits_1m, refund_debits_2m, refund_debits_3m, sale_credits_1m, sale_credits_2m, sale_credits_3m, refund_cover_share]
+        ladder:
+          - when: "the refund debits of the refund window are positive and at least 10 percent of its sale credits"
+            value: "K('refund_cover_high') = 0.25"
+          - when: "the refund debits of the refund window are positive and at least 5 percent but below 10 percent of its sale credits"
+            value: "K('refund_cover_mid') = 0.10"
+          - when: "otherwise"
+            value: "0"
+        baseline:
+          refund_cover_share: "0"
+        evidence: [history]
+        cross_difficulty: null
+      - id: account_age_cushion
+        effect: parameter
+        decides: new_account_cushion
+        bindings: [cushion_account_age_days, new_account_cushion]
+        ladder:
+          - when: "the payments account was opened fewer than 365 calendar days before the settlement date"
+            value: "K('new_account_cushion') = 50.00"
+          - when: "the payments account was opened at least 365 but fewer than 730 calendar days before"
+            value: "K('young_account_cushion') = 20.00"
+          - when: "otherwise"
+            value: "0"
+        baseline:
+          new_account_cushion: "0"
+        evidence: [date]
+        cross_difficulty: null
+      - id: upcoming_store_fee_rule
+        effect: parameter
+        decides: upcoming_store_fee
+        bindings: [store_billing_term, store_next_billing, days_to_store_billing, upcoming_store_fee]
+        ladder:
+          - when: "the store plan is billed on the monthly term and its next billing date falls on the settlement date or no more than 7 calendar days after it"
+            value: "CPARAM('selling','monthly_term_fee')"
+          - when: "the store plan is billed on the annual term and its next billing date falls on the settlement date or no more than 7 calendar days after it"
+            value: "CPARAM('selling','annual_term_monthly_fee')"
+          - when: "otherwise"
+            value: "0"
+        baseline:
+          upcoming_store_fee: "0"
+        evidence: [cross_category, date]
+        cross_difficulty: selling
+    baseline:
+      rule: >-
+        Besides the automatic card charge after the negative balance card charge days, a seller whose payments balance
+        is below zero may settle it by authorising a card settlement against the card on file while the balance has
+        been below zero for no more than the plan's negative balance card charge days; the settlement is booked as one
+        card charge entry and is credited to the balance in full. Once the balance has been below zero for longer, only
+        the automatic charge of the full deficit applies. The card settlement amount
+        is the settlement basis, rounded to the cent. The settlement basis is the deficit, which is the balance below
+        zero taken as a positive amount.
+      params: []
+    inputs:
+      history:
+        - {table: payout_events, aggregate: count, field: payout_event_id, within_months: 6, filters: {event_type: payout_chargeback_debit}}
+        - {table: payout_events, aggregate: count, field: payout_event_id, within_months: 12, filters: {event_type: payout_negative_balance_charge}}
+        - {table: payout_events, aggregate: sum, field: amount, within_months: 1, filters: {event_type: payout_refund_debit}}
+        - {table: payout_events, aggregate: sum, field: amount, within_months: 2, filters: {event_type: payout_refund_debit}}
+        - {table: payout_events, aggregate: sum, field: amount, within_months: 2, filters: {event_type: payout_sale_credit}}
+        - {table: payout_events, aggregate: sum, field: amount, within_months: 1, filters: {event_type: payout_sale_credit}}
+      cross_category: [standing, selling]

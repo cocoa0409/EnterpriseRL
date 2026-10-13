@@ -1,0 +1,808 @@
+# Marlowe & Finch Unlimited — the paid free-shipping membership. Plans differ by billing period,
+# the delivery services they make free, and whether prepaid return labels are included. The
+# membership is a subscription holding; fees, refunds and benefit uses are booked on its ledger.
+
+category: pass
+display_name: Marlowe & Finch Unlimited
+
+binding:
+  holding_table: pass_memberships
+  event_tables: [pass_ledger]
+  intake_tables: [pass_requests]
+  status_field: status
+  variant_field: variant_name
+
+lifecycle:
+  states: [trial, active, past_due, cancellation_pending, expired]
+  transitions:
+    - {from: trial, to: active, by: system, means: "The trial ends with auto-renew on and the first fee is charged (on the enrollment date when no trial applies)."}
+    - {from: trial, to: expired, by: system, means: "The trial ends with auto-renew off, or the first fee is declined."}
+    - {from: active, to: past_due, by: system, means: "A renewal charge is declined; benefits pause while retries run."}
+    - {from: past_due, to: active, by: system, means: "A retry succeeds and the renewal period starts."}
+    - {from: past_due, to: expired, by: system, means: "The last retry fails and the membership ends."}
+    - {from: active, to: cancellation_pending, by: user, means: "The member personally confirms cancellation at the end of the current period; benefits continue until then."}
+    - {from: cancellation_pending, to: active, by: user, means: "The member personally withdraws the cancellation before the period ends."}
+    - {from: cancellation_pending, to: expired, by: system, means: "The paid period ends after a scheduled cancellation."}
+    - {from: active, to: expired, by: user, means: "The member personally confirms an immediate cancellation with the refund the cancellation rule allows."}
+
+accounts:
+  - key: membership_fees
+    unit: USD
+    meaning: "Membership fees charged net of fees refunded."
+
+parameter_schema:
+  fee_usd: "List fee per billing period (USD, 2 dp), charged on the period start."
+  billing_period_months: "Length of a billing period in calendar months (integer)."
+  trial_days: "Free trial length in calendar days for an eligible first-time member (integer; 0 = no trial)."
+  trial_eligibility_lookback_months: "Calendar months before enrollment in which any Unlimited membership removes trial eligibility (integer)."
+  max_trials_per_customer_lifetime: "Most trials one customer can ever receive (integer)."
+  trial_requires_payment_method: "Whether a card must be on file to start a trial (boolean)."
+  trial_converts_to: "Plan a trial converts into (enum string: same_plan)."
+  covered_delivery_services: "Delivery services whose fee the plan makes 0.00 (list of official service names)."
+  covers_return_label: "Whether the returns charter's method fee is waived for the member (boolean)."
+  covers_alaska_hawaii_surcharge: "Whether the Alaska/Hawaii surcharge is waived (boolean)."
+  same_day_discount_pct: "Percentage off the Same-Day Courier fee (integer percent; 0 = none)."
+  min_order_usd_for_benefit: "Merchandise subtotal after discounts needed for the shipping benefit (USD, 2 dp; 0.00 = none)."
+  benefit_order_scope: "Which orders get the benefit (enum string: orders_placed_while_trial_active_or_cancellation_pending)."
+  benefit_value_basis: "How the value of one benefit use is measured (enum string: list_fee_of_the_service_or_label_waived)."
+  missed_benefit_refund_days: "Calendar days after an order's placed date within which a shipping fee charged on a covered order is refunded (integer)."
+  auto_renew_default: "Whether auto-renew is on at enrollment (boolean)."
+  renewal_charge_timing: "When a renewal fee is charged (enum string: day_after_current_period_end)."
+  renewal_price_basis: "Fee charged on renewal (enum string: list_fee_on_renewal_date)."
+  renewal_notice_days_before: "Calendar days before an annual renewal that a renewal notice is sent (integer; 0 = no notice)."
+  price_change_notice_days: "Calendar days of notice before a list fee increase applies at renewal (integer)."
+  payment_retry_days: "Calendar days after the first decline on which retries are made (list of integers)."
+  retry_attempts_max: "Most retries after a declined renewal (integer)."
+  grace_period_days: "Calendar days in past_due before the membership expires (integer)."
+  benefits_during_past_due: "Whether benefits apply while past_due (boolean)."
+  benefits_during_cancellation_pending: "Whether benefits apply until a scheduled cancellation takes effect (boolean)."
+  cancellation_effective: "When a cancellation without refund takes effect (enum string: end_of_current_period)."
+  cancellation_requires_customer_confirmation: "Whether the member must personally confirm a cancellation (boolean)."
+  unused_full_refund_days: "Calendar days after a fee charge within which a cancellation with no benefit use since that charge refunds the fee in full (integer)."
+  proration_basis: "Refund on later cancellation (enum string: none | unused_full_months_less_benefit_value)."
+  refund_window_anchor: "Date the refund window counts from (enum string: latest_fee_charge_date)."
+  annual_refund_floor_usd: "Lowest prorated refund paid (USD, 2 dp)."
+  refund_rounding: "Rounding of computed refunds (enum string: half_up_to_cent)."
+  refund_tender: "Where fee refunds go (enum string: card_charged)."
+  upgrade_effective: "When a move to a higher-ranked plan takes effect (enum string: immediate_with_prorated_charge)."
+  upgrade_proration_basis: "How an upgrade is charged (enum string: new_fee_less_unused_value_of_current_period_by_remaining_days)."
+  downgrade_effective: "When a move to a lower-ranked plan takes effect (enum string: at_next_renewal)."
+  downgrade_refund: "Whether a downgrade refunds anything (boolean)."
+  plan_switch_limit_per_period: "Most plan changes per billing period (integer)."
+  student_verification_required: "Whether the plan needs a verified student status (boolean)."
+  student_verification_provider: "Who verifies student status (enum string: SheerID | not_applicable)."
+  student_verification_validity_months: "Calendar months a student verification lasts (integer; 0 when not a student plan)."
+  student_reverify_grace_days: "Calendar days after verification lapses to re-verify before the plan moves at renewal (integer; 0 when not a student plan)."
+  student_lapse_target_plan: "Plan a student membership renews into when not re-verified (official plan name, or not_applicable)."
+  household_sharing: "Whether benefits extend to other customer profiles (boolean)."
+  rejoin_wait_days: "Calendar days after expiry before rejoining (integer)."
+  fee_earns_loyalty_points: "Whether membership fees count as Marlowe Rewards qualifying spend (boolean)."
+  max_memberships_per_customer: "Most Unlimited memberships open at once per customer (integer)."
+  benefits_start: "When benefits begin (enum string: on_enrollment)."
+
+variants:
+  - name: Unlimited Standard Monthly
+    rank: 1
+    entry_gate: {card_on_file: true}
+    parameters:
+      fee_usd: 4.99
+      billing_period_months: 1
+      trial_days: 30
+      trial_eligibility_lookback_months: 12
+      max_trials_per_customer_lifetime: 1
+      trial_requires_payment_method: true
+      trial_converts_to: same_plan
+      covered_delivery_services: [Economy Ground, Pickup Point Delivery, Standard Ground]
+      covers_return_label: false
+      covers_alaska_hawaii_surcharge: false
+      same_day_discount_pct: 0
+      min_order_usd_for_benefit: 0.00
+      benefit_order_scope: orders_placed_while_trial_active_or_cancellation_pending
+      benefit_value_basis: list_fee_of_the_service_or_label_waived
+      missed_benefit_refund_days: 7
+      auto_renew_default: true
+      renewal_charge_timing: day_after_current_period_end
+      renewal_price_basis: list_fee_on_renewal_date
+      renewal_notice_days_before: 0
+      price_change_notice_days: 30
+      payment_retry_days: [1, 3, 7]
+      retry_attempts_max: 3
+      grace_period_days: 7
+      benefits_during_past_due: false
+      benefits_during_cancellation_pending: true
+      cancellation_effective: end_of_current_period
+      cancellation_requires_customer_confirmation: true
+      unused_full_refund_days: 14
+      proration_basis: none
+      refund_window_anchor: latest_fee_charge_date
+      annual_refund_floor_usd: 0.00
+      refund_rounding: half_up_to_cent
+      refund_tender: card_charged
+      upgrade_effective: immediate_with_prorated_charge
+      upgrade_proration_basis: new_fee_less_unused_value_of_current_period_by_remaining_days
+      downgrade_effective: at_next_renewal
+      downgrade_refund: false
+      plan_switch_limit_per_period: 1
+      student_verification_required: false
+      student_verification_provider: not_applicable
+      student_verification_validity_months: 0
+      student_reverify_grace_days: 0
+      student_lapse_target_plan: not_applicable
+      household_sharing: false
+      rejoin_wait_days: 0
+      fee_earns_loyalty_points: false
+      max_memberships_per_customer: 1
+      benefits_start: on_enrollment
+  - name: Unlimited Student Annual
+    rank: 2
+    entry_gate: {card_on_file: true, student_status: "verified by SheerID as enrolled at an accredited US college or university"}
+    parameters:
+      fee_usd: 9.99
+      billing_period_months: 12
+      trial_days: 0
+      trial_eligibility_lookback_months: 12
+      max_trials_per_customer_lifetime: 1
+      trial_requires_payment_method: true
+      trial_converts_to: same_plan
+      covered_delivery_services: [Economy Ground, Pickup Point Delivery, Standard Ground]
+      covers_return_label: false
+      covers_alaska_hawaii_surcharge: false
+      same_day_discount_pct: 0
+      min_order_usd_for_benefit: 0.00
+      benefit_order_scope: orders_placed_while_trial_active_or_cancellation_pending
+      benefit_value_basis: list_fee_of_the_service_or_label_waived
+      missed_benefit_refund_days: 7
+      auto_renew_default: true
+      renewal_charge_timing: day_after_current_period_end
+      renewal_price_basis: list_fee_on_renewal_date
+      renewal_notice_days_before: 30
+      price_change_notice_days: 30
+      payment_retry_days: [1, 3, 7]
+      retry_attempts_max: 3
+      grace_period_days: 7
+      benefits_during_past_due: false
+      benefits_during_cancellation_pending: true
+      cancellation_effective: end_of_current_period
+      cancellation_requires_customer_confirmation: true
+      unused_full_refund_days: 14
+      proration_basis: unused_full_months_less_benefit_value
+      refund_window_anchor: latest_fee_charge_date
+      annual_refund_floor_usd: 0.00
+      refund_rounding: half_up_to_cent
+      refund_tender: card_charged
+      upgrade_effective: immediate_with_prorated_charge
+      upgrade_proration_basis: new_fee_less_unused_value_of_current_period_by_remaining_days
+      downgrade_effective: at_next_renewal
+      downgrade_refund: false
+      plan_switch_limit_per_period: 1
+      student_verification_required: true
+      student_verification_provider: SheerID
+      student_verification_validity_months: 12
+      student_reverify_grace_days: 14
+      student_lapse_target_plan: Unlimited Standard Annual
+      household_sharing: false
+      rejoin_wait_days: 0
+      fee_earns_loyalty_points: false
+      max_memberships_per_customer: 1
+      benefits_start: on_enrollment
+  - name: Unlimited Standard Annual
+    rank: 3
+    entry_gate: {card_on_file: true}
+    parameters:
+      fee_usd: 24.99
+      billing_period_months: 12
+      trial_days: 30
+      trial_eligibility_lookback_months: 12
+      max_trials_per_customer_lifetime: 1
+      trial_requires_payment_method: true
+      trial_converts_to: same_plan
+      covered_delivery_services: [Economy Ground, Pickup Point Delivery, Standard Ground]
+      covers_return_label: false
+      covers_alaska_hawaii_surcharge: false
+      same_day_discount_pct: 0
+      min_order_usd_for_benefit: 0.00
+      benefit_order_scope: orders_placed_while_trial_active_or_cancellation_pending
+      benefit_value_basis: list_fee_of_the_service_or_label_waived
+      missed_benefit_refund_days: 7
+      auto_renew_default: true
+      renewal_charge_timing: day_after_current_period_end
+      renewal_price_basis: list_fee_on_renewal_date
+      renewal_notice_days_before: 30
+      price_change_notice_days: 30
+      payment_retry_days: [1, 3, 7]
+      retry_attempts_max: 3
+      grace_period_days: 7
+      benefits_during_past_due: false
+      benefits_during_cancellation_pending: true
+      cancellation_effective: end_of_current_period
+      cancellation_requires_customer_confirmation: true
+      unused_full_refund_days: 14
+      proration_basis: unused_full_months_less_benefit_value
+      refund_window_anchor: latest_fee_charge_date
+      annual_refund_floor_usd: 0.00
+      refund_rounding: half_up_to_cent
+      refund_tender: card_charged
+      upgrade_effective: immediate_with_prorated_charge
+      upgrade_proration_basis: new_fee_less_unused_value_of_current_period_by_remaining_days
+      downgrade_effective: at_next_renewal
+      downgrade_refund: false
+      plan_switch_limit_per_period: 1
+      student_verification_required: false
+      student_verification_provider: not_applicable
+      student_verification_validity_months: 0
+      student_reverify_grace_days: 0
+      student_lapse_target_plan: not_applicable
+      household_sharing: false
+      rejoin_wait_days: 0
+      fee_earns_loyalty_points: false
+      max_memberships_per_customer: 1
+      benefits_start: on_enrollment
+  - name: Unlimited Express Monthly
+    rank: 4
+    entry_gate: {card_on_file: true}
+    parameters:
+      fee_usd: 9.99
+      billing_period_months: 1
+      trial_days: 30
+      trial_eligibility_lookback_months: 12
+      max_trials_per_customer_lifetime: 1
+      trial_requires_payment_method: true
+      trial_converts_to: same_plan
+      covered_delivery_services: [Economy Ground, Pickup Point Delivery, Standard Ground, Expedited 2-Day]
+      covers_return_label: true
+      covers_alaska_hawaii_surcharge: false
+      same_day_discount_pct: 0
+      min_order_usd_for_benefit: 0.00
+      benefit_order_scope: orders_placed_while_trial_active_or_cancellation_pending
+      benefit_value_basis: list_fee_of_the_service_or_label_waived
+      missed_benefit_refund_days: 7
+      auto_renew_default: true
+      renewal_charge_timing: day_after_current_period_end
+      renewal_price_basis: list_fee_on_renewal_date
+      renewal_notice_days_before: 0
+      price_change_notice_days: 30
+      payment_retry_days: [1, 3, 7]
+      retry_attempts_max: 3
+      grace_period_days: 7
+      benefits_during_past_due: false
+      benefits_during_cancellation_pending: true
+      cancellation_effective: end_of_current_period
+      cancellation_requires_customer_confirmation: true
+      unused_full_refund_days: 14
+      proration_basis: none
+      refund_window_anchor: latest_fee_charge_date
+      annual_refund_floor_usd: 0.00
+      refund_rounding: half_up_to_cent
+      refund_tender: card_charged
+      upgrade_effective: immediate_with_prorated_charge
+      upgrade_proration_basis: new_fee_less_unused_value_of_current_period_by_remaining_days
+      downgrade_effective: at_next_renewal
+      downgrade_refund: false
+      plan_switch_limit_per_period: 1
+      student_verification_required: false
+      student_verification_provider: not_applicable
+      student_verification_validity_months: 0
+      student_reverify_grace_days: 0
+      student_lapse_target_plan: not_applicable
+      household_sharing: false
+      rejoin_wait_days: 0
+      fee_earns_loyalty_points: false
+      max_memberships_per_customer: 1
+      benefits_start: on_enrollment
+  - name: Unlimited Express Annual
+    rank: 5
+    entry_gate: {card_on_file: true}
+    parameters:
+      fee_usd: 59.00
+      billing_period_months: 12
+      trial_days: 30
+      trial_eligibility_lookback_months: 12
+      max_trials_per_customer_lifetime: 1
+      trial_requires_payment_method: true
+      trial_converts_to: same_plan
+      covered_delivery_services: [Economy Ground, Pickup Point Delivery, Standard Ground, Expedited 2-Day]
+      covers_return_label: true
+      covers_alaska_hawaii_surcharge: false
+      same_day_discount_pct: 0
+      min_order_usd_for_benefit: 0.00
+      benefit_order_scope: orders_placed_while_trial_active_or_cancellation_pending
+      benefit_value_basis: list_fee_of_the_service_or_label_waived
+      missed_benefit_refund_days: 7
+      auto_renew_default: true
+      renewal_charge_timing: day_after_current_period_end
+      renewal_price_basis: list_fee_on_renewal_date
+      renewal_notice_days_before: 30
+      price_change_notice_days: 30
+      payment_retry_days: [1, 3, 7]
+      retry_attempts_max: 3
+      grace_period_days: 7
+      benefits_during_past_due: false
+      benefits_during_cancellation_pending: true
+      cancellation_effective: end_of_current_period
+      cancellation_requires_customer_confirmation: true
+      unused_full_refund_days: 14
+      proration_basis: unused_full_months_less_benefit_value
+      refund_window_anchor: latest_fee_charge_date
+      annual_refund_floor_usd: 0.00
+      refund_rounding: half_up_to_cent
+      refund_tender: card_charged
+      upgrade_effective: immediate_with_prorated_charge
+      upgrade_proration_basis: new_fee_less_unused_value_of_current_period_by_remaining_days
+      downgrade_effective: at_next_renewal
+      downgrade_refund: false
+      plan_switch_limit_per_period: 1
+      student_verification_required: false
+      student_verification_provider: not_applicable
+      student_verification_validity_months: 0
+      student_reverify_grace_days: 0
+      student_lapse_target_plan: not_applicable
+      household_sharing: false
+      rejoin_wait_days: 0
+      fee_earns_loyalty_points: false
+      max_memberships_per_customer: 1
+      benefits_start: on_enrollment
+  - name: Unlimited Next-Day Annual
+    rank: 6
+    entry_gate: {card_on_file: true}
+    parameters:
+      fee_usd: 99.00
+      billing_period_months: 12
+      trial_days: 30
+      trial_eligibility_lookback_months: 12
+      max_trials_per_customer_lifetime: 1
+      trial_requires_payment_method: true
+      trial_converts_to: same_plan
+      covered_delivery_services: [Economy Ground, Pickup Point Delivery, Standard Ground, Expedited 2-Day, Next Business Day]
+      covers_return_label: true
+      covers_alaska_hawaii_surcharge: false
+      same_day_discount_pct: 50
+      min_order_usd_for_benefit: 0.00
+      benefit_order_scope: orders_placed_while_trial_active_or_cancellation_pending
+      benefit_value_basis: list_fee_of_the_service_or_label_waived
+      missed_benefit_refund_days: 7
+      auto_renew_default: true
+      renewal_charge_timing: day_after_current_period_end
+      renewal_price_basis: list_fee_on_renewal_date
+      renewal_notice_days_before: 30
+      price_change_notice_days: 30
+      payment_retry_days: [1, 3, 7]
+      retry_attempts_max: 3
+      grace_period_days: 7
+      benefits_during_past_due: false
+      benefits_during_cancellation_pending: true
+      cancellation_effective: end_of_current_period
+      cancellation_requires_customer_confirmation: true
+      unused_full_refund_days: 14
+      proration_basis: unused_full_months_less_benefit_value
+      refund_window_anchor: latest_fee_charge_date
+      annual_refund_floor_usd: 0.00
+      refund_rounding: half_up_to_cent
+      refund_tender: card_charged
+      upgrade_effective: immediate_with_prorated_charge
+      upgrade_proration_basis: new_fee_less_unused_value_of_current_period_by_remaining_days
+      downgrade_effective: at_next_renewal
+      downgrade_refund: false
+      plan_switch_limit_per_period: 1
+      student_verification_required: false
+      student_verification_provider: not_applicable
+      student_verification_validity_months: 0
+      student_reverify_grace_days: 0
+      student_lapse_target_plan: not_applicable
+      household_sharing: false
+      rejoin_wait_days: 0
+      fee_earns_loyalty_points: false
+      max_memberships_per_customer: 1
+      benefits_start: on_enrollment
+
+events:
+  - type: pass_enrolled
+    target: pass_memberships
+    mutation: create
+    meaning: "A customer joins a Marlowe & Finch Unlimited plan; the membership opens in status trial (a zero-day trial when no trial applies)."
+    grain: "One row per membership."
+    fields:
+      pass_id: "Reference of the membership."
+      customer_id: "Member."
+      variant_name: "Plan."
+      status: "Always trial at creation."
+      enrolled_date: "Enrollment date."
+      trial_end_date: "Enrollment date plus trial_days (equal to the enrollment date when no trial applies)."
+      current_period_start: "Enrollment date."
+      current_period_end: "Trial end date."
+      auto_renew: "auto_renew_default."
+      student_verified_through: "Last day of the student verification (student plan), else empty."
+    triggers: []
+
+  - type: pass_fee_charged
+    target: pass_ledger
+    meaning: "A membership fee is charged to the member's card."
+    grain: "One row per billing period start per charge type."
+    distinguish_by: [period_start, charge_type]
+    fields:
+      event_date: "Charge date."
+      charge_type: "first_charge, renewal or upgrade_proration."
+      period_start: "First day of the period the fee pays for."
+      period_end: "Last day of that period."
+      amount_usd: "Fee charged, positive."
+    account: membership_fees
+    direction: in
+    triggers: []
+
+  - type: pass_fee_refunded
+    target: pass_ledger
+    meaning: "All or part of a membership fee is refunded to the card it was charged to."
+    grain: "One row per refunded period per refund reason."
+    distinguish_by: [period_start, refund_reason]
+    fields:
+      event_date: "Refund date."
+      refund_reason: "unused_cancellation or prorated_cancellation."
+      period_start: "Start of the period whose fee is refunded."
+      amount_usd: "Fee refunded, negative."
+    account: membership_fees
+    direction: out
+    triggers: []
+
+  - type: pass_benefit_used
+    target: pass_ledger
+    meaning: "The membership waives a shipping fee or a return method fee on one order or return."
+    grain: "One row per order per benefit type."
+    distinguish_by: [order_id, benefit_type]
+    fields:
+      event_date: "Placed date of the order, or authorization date of the return."
+      order_id: "Order that received the benefit."
+      benefit_type: "free_shipping, same_day_discount or free_return_label."
+      value_usd: "Value waived under benefit_value_basis."
+    triggers: []
+
+  - type: pass_charge_declined
+    target: pass_ledger
+    meaning: "A membership fee charge attempt is declined."
+    grain: "One row per billing period per attempt."
+    distinguish_by: [period_start, attempt_number]
+    fields:
+      event_date: "Attempt date."
+      period_start: "Period the charge was for."
+      attempt_number: "0 for the scheduled charge, 1-3 for retries."
+    triggers: []
+
+  - type: pass_renewal_notice_sent
+    target: pass_ledger
+    meaning: "An annual renewal notice with the fee and cancellation instructions is sent before renewal."
+    grain: "One row per upcoming period."
+    distinguish_by: [period_start]
+    fields:
+      event_date: "Notice date."
+      period_start: "Start of the upcoming period."
+      amount_usd: "Fee that will be charged."
+    triggers: []
+
+  - type: pass_converted
+    target: pass_memberships
+    mutation: {transition: {from: trial, to: active}}
+    meaning: "The trial ends with auto-renew on and the first paid period starts."
+    grain: "One row per transaction."
+    fields:
+      status: "active."
+      current_period_start: "Day after the trial end date."
+      current_period_end: "Last day of the first paid period."
+    triggers:
+      - event: pass:pass_fee_charged
+        map: {charge_type: first_charge, period_start: current_period_start, period_end: current_period_end, event_date: current_period_start}
+
+  - type: pass_trial_lapsed
+    target: pass_memberships
+    mutation: {transition: {from: trial, to: expired}}
+    meaning: "The trial ends without a paid period."
+    grain: "One row per transaction."
+    fields:
+      status: "expired."
+      closed_date: "Day after the trial end date."
+    triggers: []
+
+  - type: pass_renewed
+    target: pass_memberships
+    mutation: update
+    meaning: "An active membership rolls into its next period."
+    grain: "One row per transaction."
+    fields:
+      current_period_start: "Start of the new period."
+      current_period_end: "End of the new period."
+    triggers:
+      - event: pass:pass_fee_charged
+        map: {charge_type: renewal, period_start: current_period_start, period_end: current_period_end, event_date: current_period_start}
+
+  - type: pass_payment_failed
+    target: pass_memberships
+    mutation: {transition: {from: active, to: past_due}}
+    meaning: "The scheduled renewal charge is declined."
+    grain: "One row per transaction."
+    fields:
+      status: "past_due."
+    triggers: []
+
+  - type: pass_payment_recovered
+    target: pass_memberships
+    mutation: {transition: {from: past_due, to: active}}
+    meaning: "A retry succeeds."
+    grain: "One row per transaction."
+    fields:
+      status: "active."
+      current_period_start: "Original renewal date."
+      current_period_end: "End of the period from the original renewal date."
+    triggers:
+      - event: pass:pass_fee_charged
+        map: {charge_type: renewal, period_start: current_period_start, period_end: current_period_end}
+
+  - type: pass_grace_expired
+    target: pass_memberships
+    mutation: {transition: {from: past_due, to: expired}}
+    meaning: "The last retry fails."
+    grain: "One row per transaction."
+    fields:
+      status: "expired."
+      closed_date: "Day after the grace period."
+    triggers: []
+
+  - type: pass_cancellation_scheduled
+    target: pass_memberships
+    mutation: {transition: {from: active, to: cancellation_pending}}
+    meaning: "The member confirms cancellation at period end."
+    grain: "One row per transaction."
+    fields:
+      status: "cancellation_pending."
+      auto_renew: "false."
+    triggers: []
+
+  - type: pass_cancellation_reversed
+    target: pass_memberships
+    mutation: {transition: {from: cancellation_pending, to: active}}
+    meaning: "The member withdraws a scheduled cancellation."
+    grain: "One row per transaction."
+    fields:
+      status: "active."
+      auto_renew: "true."
+    triggers: []
+
+  - type: pass_period_ended
+    target: pass_memberships
+    mutation: {transition: {from: cancellation_pending, to: expired}}
+    meaning: "The paid period of a cancelled membership ends."
+    grain: "One row per transaction."
+    fields:
+      status: "expired."
+      closed_date: "Day after current_period_end."
+    triggers: []
+
+  - type: pass_cancelled_with_refund
+    target: pass_memberships
+    mutation: {transition: {from: active, to: expired}}
+    meaning: "The member confirms an immediate cancellation with the refund the cancellation rule allows."
+    grain: "One row per transaction."
+    fields:
+      status: "expired."
+      closed_date: "Cancellation date."
+    triggers:
+      - event: pass:pass_fee_refunded
+        map: {event_date: closed_date}
+
+  - type: pass_auto_renew_changed
+    target: pass_memberships
+    mutation: update
+    meaning: "The member turns auto-renew off or on during a trial."
+    grain: "One row per transaction."
+    fields:
+      auto_renew: "New setting."
+    triggers: []
+
+  - type: pass_plan_changed
+    target: pass_memberships
+    mutation: update
+    meaning: "The membership moves to another plan."
+    grain: "One row per transaction."
+    fields:
+      variant_name: "New plan."
+      pending_variant_name: "Plan scheduled for the next renewal on a downgrade; empty otherwise."
+    triggers: []
+
+measures:
+  - id: pass_msr_benefit_uses_since_charge
+    window: "From the latest pass_fee_charged event_date of the membership to the frozen date."
+    measure: "Count of pass_benefit_used rows."
+  - id: pass_msr_benefit_value_current_period
+    window: "From current_period_start to the frozen date."
+    measure: "Sum of value_usd over pass_benefit_used rows."
+  - id: pass_msr_prior_memberships_12m
+    window: "Trailing trial_eligibility_lookback_months calendar months before the enrollment date."
+    measure: "Count of the customer's Unlimited memberships in any status with enrolled_date or closed_date in the window."
+
+policies:
+  - id: pass_enrollment
+    subject: [pass_enrolled]
+    rule: >-
+      A customer with a card on file (`trial_requires_payment_method`) may join any plan; a student plan
+      needs student status verified by `student_verification_provider` (`student_verification_required`).
+      A trial of `trial_days` is given only to a customer with no Unlimited membership in the last
+      `trial_eligibility_lookback_months` calendar months (pass_msr_prior_memberships_12m) and fewer than
+      `max_trials_per_customer_lifetime` earlier trials; otherwise the trial length is zero and the first
+      fee is charged on enrollment. Benefits start on enrollment (`benefits_start`). Benefits belong to
+      the member's own profile only (`household_sharing`). The fee never earns Marlowe Rewards points
+      (`fee_earns_loyalty_points`).
+      A trial converts into the same plan (`trial_converts_to`), and auto-renew starts on (`auto_renew_default`).
+    eligibility: []
+    measures: [pass_msr_prior_memberships_12m]
+
+  - id: pass_agg_multi_holding
+    subject: [pass_enrolled]
+    rule: >-
+      A customer holds at most one Unlimited membership that is not expired; moving between plans is a
+      plan change, never a second membership. Expired memberships do not count, and a customer may rejoin
+      after `rejoin_wait_days`.
+      The cap is the plan's `max_memberships_per_customer`.
+    eligibility: []
+    params: {max_per_customer: 1}
+
+  - id: pass_evt_billing
+    subject: [pass_fee_charged, pass_converted, pass_renewed, pass_renewal_notice_sent]
+    rule: >-
+      The first fee is charged when the trial converts and each later fee on the day after the current
+      period ends (`renewal_charge_timing`), at the list `fee_usd` on that date (`renewal_price_basis`);
+      a list fee increase applies only at a renewal at least `price_change_notice_days` after notice.
+      Periods run `billing_period_months` calendar months; when the start day does not exist in the end
+      month, the period ends on the last day of that month. Annual plans send a renewal notice
+      `renewal_notice_days_before` days before renewal. A membership renews only while auto_renew is
+      true and the status is active.
+    eligibility: []
+    params:
+      per_tier:
+        Unlimited Standard Monthly: {fee_usd: "=fee_usd", billing_period_months: "=billing_period_months"}
+        Unlimited Student Annual: {fee_usd: "=fee_usd", billing_period_months: "=billing_period_months"}
+        Unlimited Standard Annual: {fee_usd: "=fee_usd", billing_period_months: "=billing_period_months"}
+        Unlimited Express Monthly: {fee_usd: "=fee_usd", billing_period_months: "=billing_period_months"}
+        Unlimited Express Annual: {fee_usd: "=fee_usd", billing_period_months: "=billing_period_months"}
+        Unlimited Next-Day Annual: {fee_usd: "=fee_usd", billing_period_months: "=billing_period_months"}
+
+  - id: pass_evt_payment_failure
+    subject: [pass_charge_declined, pass_payment_failed, pass_payment_recovered, pass_grace_expired]
+    rule: >-
+      A declined renewal moves the membership to past_due and is retried on the `payment_retry_days`
+      after the first decline, at most `retry_attempts_max` times. While past_due no benefit applies
+      (`benefits_during_past_due`); a covered order placed then pays its shipping fee and is not refunded
+      later. A successful retry restores active status with the period starting on the original renewal
+      date; after `grace_period_days` without success the membership expires.
+    eligibility: []
+
+  - id: pass_evt_cancellation_refund
+    subject: [pass_cancellation_scheduled, pass_cancellation_reversed, pass_period_ended, pass_cancelled_with_refund, pass_fee_refunded, pass_trial_lapsed, pass_auto_renew_changed]
+    rule: >-
+      Cancelling is the member's own decision (`cancellation_requires_customer_confirmation`): the agent
+      records the request and the member confirms it. A membership is cancelled only on a request for
+      that membership whose request_status is confirmed. During a trial, cancelling means turning
+      auto-renew off; the trial runs to its end and lapses without charge. A paid membership cancelled
+      no later than `unused_full_refund_days` calendar days after the latest fee charge, with no benefit
+      used since that charge (pass_msr_benefit_uses_since_charge = 0), ends at once with a full refund of
+      that fee (unused_cancellation). The charge date is day zero and a cancellation on the last day
+      still qualifies. Otherwise, where `proration_basis` is unused_full_months_less_benefit_value, the
+      member may end an annual plan at once with a refund of the fee times the unused full calendar
+      months of the period divided by the months in the period, less the benefit value used this period
+      (pass_msr_benefit_value_current_period), rounded half up to the cent and never below
+      `annual_refund_floor_usd` (prorated_cancellation); where `proration_basis` is none, cancellation
+      takes effect at the end of the current period (`cancellation_effective`) with benefits until then
+      (`benefits_during_cancellation_pending`) and no refund. A scheduled cancellation can be withdrawn
+      until the period ends. Refunds go to the card charged (`refund_tender`).
+      Every refund window counts from the latest fee charge date (`refund_window_anchor`).
+    eligibility:
+      - id: confirmed_request
+        applies_to: [pass_cancellation_scheduled, pass_cancelled_with_refund]
+        kind: authorization
+        condition: "A membership is cancelled only on a request for that membership whose request_status is confirmed."
+        evidence_fields: [pass_requests.pass_id, pass_requests.request_type, pass_requests.request_status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [pass_requests.pass_id]
+          action_bindings:
+            pass_requests.pass_id: pass_id
+      - id: full_refund_window
+        applies_to: [pass_cancelled_with_refund]
+        kind: time
+        condition: "A paid membership cancelled no later than `unused_full_refund_days` calendar days after the latest fee charge, with no benefit used since that charge (pass_msr_benefit_uses_since_charge = 0), ends at once with a full refund of that fee (unused_cancellation)."
+        evidence_fields: [pass_ledger.event_date, pass_ledger.pass_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [pass_ledger.pass_id]
+          action_bindings:
+            pass_ledger.pass_id: pass_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the latest fee charge"
+          anchor_source: pass_ledger.event_date
+          relation: not_after
+          duration_source: variants.unused_full_refund_days
+          unit: calendar_days
+          counting_rule: "The charge date is day zero and a cancellation on the last day still qualifies."
+          boundary: inclusive
+    params:
+      per_tier:
+        Unlimited Standard Monthly: {proration_basis: "=proration_basis"}
+        Unlimited Student Annual: {proration_basis: "=proration_basis"}
+        Unlimited Standard Annual: {proration_basis: "=proration_basis"}
+        Unlimited Express Monthly: {proration_basis: "=proration_basis"}
+        Unlimited Express Annual: {proration_basis: "=proration_basis"}
+        Unlimited Next-Day Annual: {proration_basis: "=proration_basis"}
+    measures: [pass_msr_benefit_uses_since_charge, pass_msr_benefit_value_current_period]
+
+  - id: pass_evt_benefit
+    subject: [pass_benefit_used]
+    rule: >-
+      An order placed while the membership is in status trial, active or cancellation_pending
+      (`benefit_order_scope`) ships free on the plan's `covered_delivery_services`, with no minimum
+      (`min_order_usd_for_benefit`); a plan with `same_day_discount_pct` takes that percentage off the
+      Same-Day Courier fee; the Alaska/Hawaii surcharge is never waived
+      (`covers_alaska_hawaii_surcharge`). A plan with `covers_return_label` waives the returns method fee.
+      Each use is recorded at the list fee waived (`benefit_value_basis`). When a covered order was
+      charged a shipping fee although the membership was in a benefit status on its placed date, the fee
+      is refunded if the member asks no later than `missed_benefit_refund_days` calendar days after the
+      order is placed.
+    eligibility:
+      - id: benefit_status
+        applies_to: [pass_benefit_used]
+        kind: state
+        condition: "An order placed while the membership is in status trial, active or cancellation_pending (`benefit_order_scope`) ships free on the plan's `covered_delivery_services`, with no minimum (`min_order_usd_for_benefit`); a plan with `same_day_discount_pct` takes that percentage off the Same-Day Courier fee; the Alaska/Hawaii surcharge is never waived (`covers_alaska_hawaii_surcharge`)."
+        evidence_fields: [pass_memberships.status, pass_memberships.pass_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [pass_memberships.pass_id]
+          action_bindings:
+            pass_memberships.pass_id: pass_id
+        state_contract:
+          field: pass_memberships.status
+          allowed: [trial, active, cancellation_pending]
+    params:
+      per_tier:
+        Unlimited Standard Monthly: {covered_delivery_services: "=covered_delivery_services", covers_return_label: "=covers_return_label"}
+        Unlimited Student Annual: {covered_delivery_services: "=covered_delivery_services", covers_return_label: "=covers_return_label"}
+        Unlimited Standard Annual: {covered_delivery_services: "=covered_delivery_services", covers_return_label: "=covers_return_label"}
+        Unlimited Express Monthly: {covered_delivery_services: "=covered_delivery_services", covers_return_label: "=covers_return_label"}
+        Unlimited Express Annual: {covered_delivery_services: "=covered_delivery_services", covers_return_label: "=covers_return_label"}
+        Unlimited Next-Day Annual: {covered_delivery_services: "=covered_delivery_services", covers_return_label: "=covers_return_label"}
+
+  - id: pass_evt_plan_change
+    subject: [pass_plan_changed]
+    rule: >-
+      A move to a higher-ranked plan takes effect at once (`upgrade_effective`): the member pays the new
+      plan's fee less the unused value of the current period, the unused value being the current fee
+      times the remaining days of the period divided by its days (`upgrade_proration_basis`), and a new
+      period starts that day. A move to a lower-ranked plan takes effect at the next renewal
+      (`downgrade_effective`) without refund (`downgrade_refund`). At most `plan_switch_limit_per_period`
+      plan change is made per billing period. A plan change is made only while the membership is in
+      status active. Moving to the student plan needs a current student verification.
+    eligibility:
+      - id: active_only
+        applies_to: [pass_plan_changed]
+        kind: state
+        condition: "A plan change is made only while the membership is in status active."
+        evidence_fields: [pass_memberships.status, pass_memberships.pass_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [pass_memberships.pass_id]
+          action_bindings:
+            pass_memberships.pass_id: pass_id
+        state_contract:
+          field: pass_memberships.status
+          allowed: [active]
+
+  - id: pass_evt_student
+    subject: [pass_renewed]
+    rule: >-
+      A student verification lasts `student_verification_validity_months` calendar months. A student
+      membership whose verification has lapsed by its renewal date, and was not renewed within
+      `student_reverify_grace_days`, renews into `student_lapse_target_plan` at that plan's list fee; it
+      is never cancelled for the lapse alone. Non-student plans ignore this rule.
+    eligibility: []

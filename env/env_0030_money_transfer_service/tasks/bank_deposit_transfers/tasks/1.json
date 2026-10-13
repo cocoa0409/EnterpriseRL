@@ -1,0 +1,1813 @@
+{
+    "frozen_time": "2026-09-18 15:40:00 CDT",
+    "design_rationale": "WORKLOG task 1 (bank_deposit_transfers). Step 0 draw, printed by scripts/draw_counts.py --task 1: {\"prerequisite_problems\": 1, \"problems\": 2, \"factor_counts\": [4, 4]}. Root bank_ext_shortfall_delivery took 4 factors, prerequisite bank_ext_shortfall_credit took 4.\n\nWHY A GOOD TEST. A sender whose mother was short-paid 249.98 GTQ by Paloma's payout partner (it applied 7.4345 instead of the locked 7.6361) already has an error_found decision and asks only that the missing quetzales reach his mother's account. Choosing the delivery remedy is his own act, but the delivery rule says 'The shortfall delivery is not made until the transfer's ledger carries Paloma's make-good credit for the incorrect amount.' The ledger has no such credit, so the agent must find the make-good policy, value the shortfall (four factors: valuation rate by partner rate gap and level, decision-time goodwill by accrual or flat method, prompt-notice credit, transfer-size credit), book the credit, and only then work out the delivered amount from the make-good held at a delivery rate with its own four factors (margin by level, delay uplift by wait and rail, wallet bonus, tenure bonus). Skipping the credit leaves nothing to deliver; getting either rule's tier wrong changes the scored number.\n\nSCOPE / SPACE BUDGET. Occupied by task 0: bank_ext_late_delivery_refund (refund_late_delivery_fee_f06ff624) and bank_ext_recall_fee (request_transfer_recall_f96dc6b4). Claimed here: bank_ext_shortfall_credit (book_shortfall_credit_979e59e7, agent) and bank_ext_shortfall_delivery (choose_shortfall_delivery_49c1959f, user). Disjoint policies, tools, events (paloma_credit / remedy_chosen / payout_sent versus fee_refunded / recall_requested / fee_charged) and a different chain (error resolution versus recall). This is the last task (M=2); the union of the two scopes is every extended policy.\n\nPOLICIES CLAIMED. (1) bank_ext_shortfall_credit, trigger state_due (once error_found is decided, the make-good is owed whether or not anyone calls), subject [bank_paloma_credit], base_policy_refs = every base policy governing bank_paloma_credit: bank_evt_returns, bank_evt_error_resolution. Overwrite: 'For incorrect_amount, Paloma credits the shortfall (bank_paloma_credit, credit_reason incorrect_amount_shortfall)' is replaced by the computed make-good credit (shortfall value raised by goodwill plus notice and transfer-size credits). (2) bank_ext_shortfall_delivery, trigger on_request, subject [bank_remedy_chosen, bank_payout_sent], base_policy_refs bank_evt_error_resolution and bank_evt_release_and_holds (the governing policies of those events). Overwrite: 'the customer chooses to have the shortfall delivered (resend_shortfall) or refunded (refund_shortfall, booked with refund_basis error_shortfall)' is replaced by the delivery of the whole make-good held at the make-good delivery rate as a new payout attempt, refund remaining the other choice. Inherited: error_found_first (remedy only after an error_found decision), delivery within the redelivery business days of the choice, fees already refunded on error_found (seeded), remedy is the customer's own act. The bank_resent transition (deposited -> in_transit) that the remedy triggers is carried out by the same write. bank_resent is not in the subject because the return-decision window of bank_evt_amend_resend is anchored on funds that came back, which an error-resolution redelivery does not have; the resend cap of bank_evt_amend_resend (bank_msr_resends counts every payout attempt of 2 or more) does count this delivery as a resend, and it is respected: Standard allows 2 resends and the transfer has none before this attempt 2.\n\nFACTOR CARD (verification run, handling-time worlds; revised in rework round 2).\nbank_ext_shortfall_credit (result 38.47, fall-back 32.74):\n- valuation_rate [parameter; LATEST payout fx_rate_applied, F(fx_rate), CPARAM account level_number; multi-source; cross-difficulty account]: gap >= material 2% and level >= Verified Plus -> the partner's applied rate; gap >= 2% and below Verified Plus -> the average of the two rates; otherwise -> the locked rate. Gap 2.64%, level 3 -> 7.4345, shortfall value 249.98 / 7.4345 = 33.6243. Baseline (locked rate, 249.98 / 7.6361 = 32.7366) -> 37.55.\n- decision_goodwill [method; LATEST incorrect-amount notice date and the error_found decision on that notice]: >= 14 days -> weekly accrual (3% per whole week from notice to decision, capped at 12%); 7-13 days -> flat 4%; otherwise none. 2026-08-31 -> 2026-09-11 = 11 -> flat 4%. Near-miss: the not-received notice of 2026-08-27 (decided no_error 2026-08-28) is not the incorrect-amount notice; using it gives 15 days, the accrual method, 6% and a credit of 39.14. Baseline none -> 37.12.\n- notice_credit [parameter; DAYS availability -> incorrect-amount notice]: <= 7 -> 1.50; 8-30 -> 0.75; else 0. 4 days -> 1.50. Baseline 0 -> 36.97.\n- transfer_size_credit [parameter; SUM funds received + SUM fees charged]: >= 1000 -> 2.00; 500-999.99 -> 1.00; else 0. 1243.99 -> 2.00. Baseline 0 -> 36.47.\nbank_ext_shortfall_delivery (result 298.66, fall-back 293.76):\n- delivery_margin [parameter; CPARAM level; cross-difficulty account]: Enhanced or above -> 0; Verified Plus -> 0.45 percentage points; otherwise the tier margin 1.10. Verified Plus -> 0.45. Baseline 1.10 -> 296.71.\n- delay_uplift [method; LATEST payout entry_date, DAYS, tier delivery business days; multi-source]: wait >= 21 days on a batch rail -> 0.25% per whole week capped at 2.00; wait >= 21 on a real-time rail -> flat 0.50%; otherwise none. 23 days, Standard batch -> 0.75%. Baseline 0 -> 296.43.\n- wallet_rate_bonus [parameter, percentage points of the reference; XCOUNT wallet_ledger wallet_credit_sent within 12 months; cross-difficulty wallet]: >= 5 -> 0.20; 3-4 -> 0.10; else 0. Credits 2025-12-05, 2026-02-06, 2026-05-08, 2026-07-31 -> 4 -> 0.10. Near-miss 2025-09-12 (12 whole months back, excluded; counting it gives 5, 0.20 and 298.96). Baseline 0 -> 298.36.\n- tenure_rate_bonus [parameter, percentage points of the reference; MONTHS from CFIELD account opened_date; cross-difficulty account]: >= 60 months -> 0.30; 24-59 -> 0.15; else 0. 2022-01-20 -> 55 months -> 0.15. Near-miss: level_effective_date 2025-03-04 (18 months). Baseline 0 -> 298.21.\nNo stamp decides a tier: the gap comes from two recorded rates, timing from case and ledger dates, activity from the wallet ledger, standing from the account level and opening date.\n\nBASE-INVARIANT CARD. Step 10 (bank_paloma_credit): bank_evt_returns and bank_evt_error_resolution carry no eligibility gate on a Paloma credit (policy_scope); the stage fact is the pre-existing error_found decision of 2026-09-11 on the incorrect-amount notice (system record). Step 12 (bank_remedy_chosen + bank_payout_sent): error_found_first, evidence the decision row (related_case_id = the incorrect-amount notice, case_outcome error_found), bound to the tool argument related_case_id; release_and_holds has no gate on payouts (policy_scope). No time gate applies to these subjects (the 180-day notice window governed the notice itself: 2026-08-31 is 4 days after availability).\n\nBUSINESS-OBJECT CARD. Target transfer PB-260824-23164 (8c674512-e08c-4020-9e88-1788262aa3b3). Correlation keys: the short payout entry 7fd1e3d8-df37-4bd1-916d-18138d8a05af (the credit points back to it), the incorrect-amount notice 655f4b72-2a38-4019-9dfa-0fc69dd22c0a (the remedy points back to it). Rows aggregated: funds 1240.00, fee 3.99, payout 1240.00 / 9218.78 GTQ / 7.4345, the new credit. Excluded: the not-received notice and its no_error decision (other case type), the Paloma-error fee refund (fee account, not principal), the five wallet transfers (other product, read only for the bonus).\n\nWORLD ROWS AND WHY. customers/sender_accounts/recipients: identity, level 3 and opening date for three factors, the delivery account. bank_transfers: disclosed 9468.76 and locked 7.6361 (shortfall, gap, reference rate), dates (notice credit), tier (rail, redelivery days, margin). bank_ledger: the short payout (shortfall, gap, wait, attempt), funds and fee (transfer-size credit, make-good held), fee refund (settles the error_found fee obligation so no extra obligation is owed). bank_cases: two notices and two decisions (goodwill from the right pair; near-miss from the other). wallet_transfers + wallet_ledger (5 transfers, 15 rows): the wallet bonus; deleting the four in-window credits drops it to 0 (298.49). Base automatic clauses: nothing fires (no hold, no open notice past due, error fees already refunded, wallet transfers credited and closed).\n\nPROBLEM-TREE CARD. Root bank_ext_shortfall_delivery (user tool choose_shortfall_delivery_49c1959f); prerequisite bank_ext_shortfall_credit (agent tool book_shortfall_credit_979e59e7). Edge: value_input, gate make_good_held_usd, form state, prerequisite sentence in the delivery rule, negated direction as a payout desk states a release: 'The shortfall delivery is not made until the transfer's ledger carries Paloma's make-good credit for the incorrect amount.' (task 0's recall sentence uses the affirmative direction, so the charter carries both). Four-point test: connective 'not until'; record-visible state (a make-good credit for the incorrect amount on the ledger); no tool, id or code token; hard requirement, one credit kind named. Exactly one write of this difficulty books a Paloma credit for an incorrect-amount shortfall: the make-good credit policy's tool. Derivation: sentence + ledger (no such credit; principal held 0.00) + the make-good rule ('Paloma puts its make-good credit into the transfer, booked as a credit for an incorrect-amount shortfall against the payout that came up short') -> book the credit first. False at frozen_time: principal_held_usd 0.00, ledger rows funds/fee/payout/fee refund only. Flips at step 10: make-good held 0.00 -> 38.47. Order: credit (step 10) then delivery (step 12); single edge. Deletion sensitivity: skipping the credit -> make-good held 0.00, receive_amount 0.00. user_scenario names no credit and no dollar amount owed. Tools validate nothing.\n\nLENGTH AND BREADTH. Goal (send the missing quetzales) -> delivery rule -> prerequisite sentence -> make-good rule (four factors over the ledger, the case file, the account) -> delivery rule (four factors over the account, the ledger dates, the tier rail, the wallet ledger) -> payout. Breadth: two other categories (account, wallet), two notices to tell apart, two rates to compare, a twelve-month window.\n\nEASY MISTAKES. (a) Delivering 249.98 GTQ (the bare shortfall) or refunding instead of delivering. (b) Valuing the shortfall at the locked rate (32.74 + goodwill) though the gap is material and the account is Verified Plus. (c) Measuring decision time from the not-received notice (15 days, weekly accrual 6%). (d) Leaving out the fee in what the customer paid (still >= 1000 here, harmless) or using the refunded fee to cut it. (e) Delivering at the locked rate (293.76). (f) Counting the 2025-09-12 wallet credit. (g) Tenure from the level date. (h) Choosing the remedy before the credit (0.00 delivered). (i) Date of availability on a calendar day (2026-09-19) instead of the next Paloma business day 2026-09-21.\n\nPERSONA DESIGN. Rigoberto: direct, tired, polite, a few Spanish words. Volunteers the goal and the two amounts (both grounded: transfer 9468.76, payout 9218.78) and that Paloma found the mistake (the error_found decision row). Identity items only on request (phone 7735550134, DOB 1979-11-02, ZIP 60623, email, ID 2T91). Passive branches: picks delivery over refund if offered; says go ahead if told Paloma must first put money on its side; submits the choice with exactly the details read out; accepts the quoted amount; hangs up once the delivery is on its way (the last gold action). No extra asks.\n\nSTANDARD SOLUTION. Locate and verify; read transfers, ledger, cases, account, recipients, wallet transfers and wallet ledger; book the make-good credit 38.47 against payout 7fd1e3d8-df37-4bd1-916d-18138d8a05af; hand over the delivery choice; the customer submits bank_transfer_id 8c674512-e08c-4020-9e88-1788262aa3b3, related_case_id 655f4b72-2a38-4019-9dfa-0fc69dd22c0a, payout_attempt 2, payout_usd 38.47, delivery_rate 7.7634, receive_amount 298.66, date_available 2026-09-21.\n\nVERIFICATION CODE (authoring/verify.py, deleted after authoring; the gates re-run the same logic). Output: credit 38.47 (factors 37.55 / 37.12 / 36.97 / 36.47, all-baseline 32.74); delivery 298.66 with make-good held 38.47 and rate 7.7634 (factors 296.71 / 296.43 / 298.36 / 298.21, all-baseline 293.76); skipping the credit -> make-good held 0.00, delivery 0.00. Gates --task 1: EXTENDED OK, TASK TOOL CONTRACT OK, REPLAY OK, SOLVABILITY OK, COMPUTE OK (history rows 8), GROUNDING OK, SCOPE OK.\n\nCLOSURE. bank_ext_shortfall_credit -> book_shortfall_credit_979e59e7 -> computations[0] step 10 credit_amount_usd 38.47 -> credit row (incorrect_amount_shortfall, related to the short payout), principal held 38.47; bank_ext_shortfall_delivery -> choose_shortfall_delivery_49c1959f -> computations[1] step 12 receive_amount 298.66 -> remedy row (resend_shortfall, related to the notice), payout attempt 2, status in_transit, date_available 2026-09-21, principal held 0.00. charter_scope = required_documents = [credit, delivery].\n\nDRAFT RECOMPUTATION FROM VISIBLE CONTEXT. From the KB texts, the tool schemas and the readable records: the delivery text names the make-good credit as what it waits on; the make-good text gives 249.98 / 7.4345 x 1.04 + 1.50 + 2.00 = 38.47; the delivery text gives 7.721031 x (100 - 0.45 + 0.10 + 0.15) / 100 x 1.0075 = 7.7634 and 38.47 x 7.7634 = 298.66, available Monday 2026-09-21. Same objects, order and numbers as gold.\n\nDIFFICULTY-LEVEL CLOSING. Union of scopes = {late refund, recall fee, shortfall credit, shortfall delivery} = every extended policy; scopes and tools pairwise disjoint; both trees have one prerequisite (the draw), one value_input edge each, one owner=user write each; prerequisite sentences in both directions.\n\nREWORK ROUND 2 (audit env_0030_money_transfer_service/audits/policy_task/bank_deposit_transfers). T1-F1 / F-1 (shortfall_valuation labelled method but only substituting a rate): symptom - the credit computation had no honest method factor; root cause - the three tiers were one formula shortfall / R with a different R; change - the factor is now valuation_rate (effect parameter, deciding a new binding valuation_rate; shortfall_value_usd = shortfall_local / valuation_rate is plumbing), and decision_goodwill became the method factor: a decision 14+ days after the notice accrues 3% per whole week (capped 12%), 7-13 days takes the flat 4%, quicker none - genuinely different computations; this world stays on the flat tier, so the credit is still 38.47 and every factor still moves it (37.55 / 37.12 / 36.97 / 36.47). T1-F2: the locked-rate quotient is 249.98 / 7.6361 = 32.7366 (was misstated 32.7361) - corrected in factor_trace and here. O-4: finding_date now also filters case_type incorrect_amount. O-3: wallet and tenure bonuses are now percentage points of the booking-day reference (0.20/0.10 and 0.30/0.15) instead of absolute rate units -> rate 7.7634, delivery 298.66 (was 7.7691 / 298.88); propagated to computations, gold step 12, tracing, closure and this dossier. O-7: edge effect text no longer asserts the held principal starts at zero. O-5: the two docstrings no longer use 'after'. T1-O1: the seed_consistency rate-lock line now rests only on recorded dates and the booked rate. T1-O2: the resend-cap statement above corrected. Re-run: verification output credit 38.47, delivery 298.66, skip-credit 0.00; full gate block green.",
+    "user_scenario": "You are Rigoberto Chávez Ixcot, a warehouse shift supervisor in Chicago, calling Paloma Remit at the end of your shift. You are direct and a little tired, you mix in the odd Spanish word, and you want this settled today, but you stay polite. On August 24 you sent your mother, Juana Ixcot Tum in Quetzaltenango, $1,240 through a Bank Deposit transfer to her Banco Industrial account for her rent and her medicine; the app promised her 9,468.76 quetzales, but her bank statement shows only 9,218.78 came in. You reported the wrong amount through the app at the end of August, and Paloma's message last week said they had looked into it and found the mistake was on their side. Your reason for calling: you want the quetzales your mother is missing sent to her bank account, the same Banco Industrial account, because she needs the money there, not back with you. You say that plainly at the start, without numbers beyond the two amounts above. You do not know how Paloma calculates anything or what has to happen on their side, and you do not guess or ask about it. You give identifying details only when asked, one or two at a time: your mobile number is 7735550134, your date of birth is 1979-11-02, your ZIP code is 60623, your email is rigo.chavez.ixcot@yahoo.com and the last four characters of your ID are 2T91. If the agent asks which transfer, you read out confirmation number PB-260824-23164 and the date August 24. If the agent asks whether you reported anything before, you remember that on the morning of August 27 you also complained that the money had not arrived, and it showed up later that same day. If the agent offers you a choice between getting the missing amount back yourself and having it delivered to your mother, you choose delivery to her account; you never ask for both. If the agent says Paloma first has to put the money on its side of the transfer before anything goes out, you say go ahead. When the agent tells you that choosing the delivery is something you do yourself and hands it to you, you submit it with exactly the details the agent reads out to you, without changing any of them, and you read back what the app shows. If the agent tells you how many quetzales your mother will get or when, you are glad and do not question the figure. Once you see that the delivery to your mother is on its way, you thank the agent and hang up.",
+    "initial_state": {
+        "customers": {
+            "8f4970d6-489b-46d9-a305-674f0084b5a5": {
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "full_name": "Rigoberto Chávez Ixcot",
+                "phone": "7735550134",
+                "email": "rigo.chavez.ixcot@yahoo.com",
+                "date_of_birth": "1979-11-02",
+                "zip_code": "60623",
+                "id_document_last4": "2T91",
+                "state_of_residence": "IL",
+                "profile_created_date": "2022-01-18"
+            }
+        },
+        "sender_accounts": {
+            "b2ce42e5-fc99-4ebb-a965-1a87f08a7b35": {
+                "sender_account_id": "b2ce42e5-fc99-4ebb-a965-1a87f08a7b35",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "variant_name": "Paloma Verified Plus",
+                "status": "active",
+                "opened_date": "2022-01-20",
+                "closed_date": "",
+                "level_effective_date": "2025-03-04",
+                "next_review_due_date": "2027-03-04",
+                "signup_channel": "app",
+                "lock_reason": "none",
+                "locked_at": "",
+                "restriction_reason": "none",
+                "suspended_date": "",
+                "closure_reason": "none"
+            }
+        },
+        "recipients": {
+            "6da62b10-b25f-440e-9926-4db609c33a95": {
+                "recipient_id": "6da62b10-b25f-440e-9926-4db609c33a95",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "full_name": "Juana Ixcot Tum",
+                "corridor": "GT-GTQ",
+                "relationship": "parent",
+                "status": "active",
+                "bank_name": "Banco Industrial",
+                "bank_account_number": "0300154872",
+                "mobile_wallet_provider": "tigo_money",
+                "mobile_wallet_number": "+502 5512 3390",
+                "phone": "+502 5512 3390",
+                "city": "Quetzaltenango",
+                "added_date": "2022-02-01"
+            }
+        },
+        "bank_transfers": {
+            "8c674512-e08c-4020-9e88-1788262aa3b3": {
+                "bank_transfer_id": "8c674512-e08c-4020-9e88-1788262aa3b3",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "sender_account_id": "b2ce42e5-fc99-4ebb-a965-1a87f08a7b35",
+                "recipient_id": "6da62b10-b25f-440e-9926-4db609c33a95",
+                "variant_name": "Bank Deposit Standard",
+                "status": "deposited",
+                "corridor": "GT-GTQ",
+                "confirmation_number": "PB-260824-23164",
+                "send_amount_usd": 1240.0,
+                "transfer_fee_usd": 3.99,
+                "surcharge_usd": 0.0,
+                "fx_rate": 7.6361,
+                "receive_amount": 9468.76,
+                "funding_method": "ach_debit",
+                "swift_charge_option": "not_applicable",
+                "transfer_purpose": "family_support",
+                "beneficiary_name": "Juana Ixcot Tum",
+                "beneficiary_bank_name": "Banco Industrial",
+                "beneficiary_account_number": "0300154872",
+                "booked_at": "2026-08-24T10:05:00",
+                "date_available": "2026-08-27",
+                "deposited_date": "2026-08-27",
+                "cancelled_at": "",
+                "closed_date": "2026-08-27",
+                "hold_reason": "none",
+                "held_at": "",
+                "principal_held_usd": 0.0,
+                "fees_held_usd": 0.0
+            }
+        },
+        "bank_ledger": {
+            "ef38660f-87d5-4b0e-886e-9a5dc87e4973": {
+                "ledger_entry_id": "ef38660f-87d5-4b0e-886e-9a5dc87e4973",
+                "bank_transfer_id": "8c674512-e08c-4020-9e88-1788262aa3b3",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "bank_funds_received",
+                "entry_date": "2026-08-26",
+                "amount_usd": 1240.0,
+                "fee_type": "none",
+                "fee_refund_reason": "none",
+                "payout_attempt": 0,
+                "receive_amount": "",
+                "fx_rate_applied": "",
+                "return_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            },
+            "7e552b1c-e197-4045-a09f-e2973c6ad8f9": {
+                "ledger_entry_id": "7e552b1c-e197-4045-a09f-e2973c6ad8f9",
+                "bank_transfer_id": "8c674512-e08c-4020-9e88-1788262aa3b3",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "bank_fee_charged",
+                "entry_date": "2026-08-26",
+                "amount_usd": 3.99,
+                "fee_type": "transfer_fee",
+                "fee_refund_reason": "none",
+                "payout_attempt": 1,
+                "receive_amount": "",
+                "fx_rate_applied": "",
+                "return_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            },
+            "7fd1e3d8-df37-4bd1-916d-18138d8a05af": {
+                "ledger_entry_id": "7fd1e3d8-df37-4bd1-916d-18138d8a05af",
+                "bank_transfer_id": "8c674512-e08c-4020-9e88-1788262aa3b3",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "bank_payout_sent",
+                "entry_date": "2026-08-26",
+                "amount_usd": 1240.0,
+                "fee_type": "none",
+                "fee_refund_reason": "none",
+                "payout_attempt": 1,
+                "receive_amount": 9218.78,
+                "fx_rate_applied": 7.4345,
+                "return_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            },
+            "d0e3201d-6ecf-47d5-9fae-690a5920afcb": {
+                "ledger_entry_id": "d0e3201d-6ecf-47d5-9fae-690a5920afcb",
+                "bank_transfer_id": "8c674512-e08c-4020-9e88-1788262aa3b3",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "bank_fee_refunded",
+                "entry_date": "2026-09-11",
+                "amount_usd": 3.99,
+                "fee_type": "none",
+                "fee_refund_reason": "paloma_error",
+                "payout_attempt": 0,
+                "receive_amount": "",
+                "fx_rate_applied": "",
+                "return_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": "7e552b1c-e197-4045-a09f-e2973c6ad8f9"
+            }
+        },
+        "bank_cases": {
+            "aaf1b84f-3ad5-4ec2-903c-aa2e5ad39929": {
+                "case_id": "aaf1b84f-3ad5-4ec2-903c-aa2e5ad39929",
+                "bank_transfer_id": "8c674512-e08c-4020-9e88-1788262aa3b3",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "bank_error_notice_filed",
+                "case_date": "2026-08-27",
+                "case_type": "not_received_by_date",
+                "rfi_topic": "none",
+                "doc_reference": "",
+                "related_case_id": "",
+                "case_outcome": "open",
+                "remedy_choice": "not_applicable",
+                "resolution_due_date": "2026-11-25"
+            },
+            "66e27a8e-6fe7-4343-a8de-de0b11aefd06": {
+                "case_id": "66e27a8e-6fe7-4343-a8de-de0b11aefd06",
+                "bank_transfer_id": "8c674512-e08c-4020-9e88-1788262aa3b3",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "bank_error_decided",
+                "case_date": "2026-08-28",
+                "case_type": "not_received_by_date",
+                "rfi_topic": "none",
+                "doc_reference": "",
+                "related_case_id": "aaf1b84f-3ad5-4ec2-903c-aa2e5ad39929",
+                "case_outcome": "no_error",
+                "remedy_choice": "not_applicable",
+                "resolution_due_date": ""
+            },
+            "655f4b72-2a38-4019-9dfa-0fc69dd22c0a": {
+                "case_id": "655f4b72-2a38-4019-9dfa-0fc69dd22c0a",
+                "bank_transfer_id": "8c674512-e08c-4020-9e88-1788262aa3b3",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "bank_error_notice_filed",
+                "case_date": "2026-08-31",
+                "case_type": "incorrect_amount",
+                "rfi_topic": "none",
+                "doc_reference": "",
+                "related_case_id": "",
+                "case_outcome": "open",
+                "remedy_choice": "not_applicable",
+                "resolution_due_date": "2026-11-29"
+            },
+            "e2a72ddb-85f3-489a-8cb2-30fe0ba82d2a": {
+                "case_id": "e2a72ddb-85f3-489a-8cb2-30fe0ba82d2a",
+                "bank_transfer_id": "8c674512-e08c-4020-9e88-1788262aa3b3",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "bank_error_decided",
+                "case_date": "2026-09-11",
+                "case_type": "incorrect_amount",
+                "rfi_topic": "none",
+                "doc_reference": "",
+                "related_case_id": "655f4b72-2a38-4019-9dfa-0fc69dd22c0a",
+                "case_outcome": "error_found",
+                "remedy_choice": "not_applicable",
+                "resolution_due_date": ""
+            }
+        },
+        "wallet_transfers": {
+            "536d79f1-5d0b-415c-ae03-c0d6c397afb6": {
+                "wallet_transfer_id": "536d79f1-5d0b-415c-ae03-c0d6c397afb6",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "sender_account_id": "b2ce42e5-fc99-4ebb-a965-1a87f08a7b35",
+                "recipient_id": "6da62b10-b25f-440e-9926-4db609c33a95",
+                "variant_name": "Mobile Wallet Economy",
+                "status": "credited",
+                "corridor": "GT-GTQ",
+                "confirmation_number": "PW-250908-24180",
+                "send_amount_usd": 150.0,
+                "transfer_fee_usd": 1.99,
+                "card_fee_usd": 0.0,
+                "fx_rate": 7.6512,
+                "receive_amount": 1147.68,
+                "funding_method": "ach_debit",
+                "transfer_purpose": "family_support",
+                "wallet_provider": "tigo_money",
+                "wallet_number": "+502 5512 3390",
+                "wallet_holder_name": "Juana Ixcot Tum",
+                "booked_at": "2025-09-08T19:10:00",
+                "date_available": "2025-09-12",
+                "released_at": "2025-09-10T09:00:00",
+                "credited_at": "2025-09-12T08:15:00",
+                "failed_at": "",
+                "cancelled_at": "",
+                "closed_date": "2025-09-12",
+                "hold_reason": "none",
+                "held_at": "",
+                "principal_held_usd": 0.0,
+                "fees_held_usd": 1.99
+            },
+            "30442bb6-2736-494e-92f8-965561a34a30": {
+                "wallet_transfer_id": "30442bb6-2736-494e-92f8-965561a34a30",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "sender_account_id": "b2ce42e5-fc99-4ebb-a965-1a87f08a7b35",
+                "recipient_id": "6da62b10-b25f-440e-9926-4db609c33a95",
+                "variant_name": "Mobile Wallet Economy",
+                "status": "credited",
+                "corridor": "GT-GTQ",
+                "confirmation_number": "PW-251201-24725",
+                "send_amount_usd": 150.0,
+                "transfer_fee_usd": 1.99,
+                "card_fee_usd": 0.0,
+                "fx_rate": 7.633,
+                "receive_amount": 1144.95,
+                "funding_method": "ach_debit",
+                "transfer_purpose": "family_support",
+                "wallet_provider": "tigo_money",
+                "wallet_number": "+502 5512 3390",
+                "wallet_holder_name": "Juana Ixcot Tum",
+                "booked_at": "2025-12-01T19:10:00",
+                "date_available": "2025-12-05",
+                "released_at": "2025-12-03T09:00:00",
+                "credited_at": "2025-12-05T08:15:00",
+                "failed_at": "",
+                "cancelled_at": "",
+                "closed_date": "2025-12-05",
+                "hold_reason": "none",
+                "held_at": "",
+                "principal_held_usd": 0.0,
+                "fees_held_usd": 1.99
+            },
+            "889bd450-f566-4a95-a053-b435e2f75d1b": {
+                "wallet_transfer_id": "889bd450-f566-4a95-a053-b435e2f75d1b",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "sender_account_id": "b2ce42e5-fc99-4ebb-a965-1a87f08a7b35",
+                "recipient_id": "6da62b10-b25f-440e-9926-4db609c33a95",
+                "variant_name": "Mobile Wallet Economy",
+                "status": "credited",
+                "corridor": "GT-GTQ",
+                "confirmation_number": "PW-260202-25106",
+                "send_amount_usd": 150.0,
+                "transfer_fee_usd": 1.99,
+                "card_fee_usd": 0.0,
+                "fx_rate": 7.6208,
+                "receive_amount": 1143.12,
+                "funding_method": "ach_debit",
+                "transfer_purpose": "family_support",
+                "wallet_provider": "tigo_money",
+                "wallet_number": "+502 5512 3390",
+                "wallet_holder_name": "Juana Ixcot Tum",
+                "booked_at": "2026-02-02T19:10:00",
+                "date_available": "2026-02-06",
+                "released_at": "2026-02-04T09:00:00",
+                "credited_at": "2026-02-06T08:15:00",
+                "failed_at": "",
+                "cancelled_at": "",
+                "closed_date": "2026-02-06",
+                "hold_reason": "none",
+                "held_at": "",
+                "principal_held_usd": 0.0,
+                "fees_held_usd": 1.99
+            },
+            "6d58c572-df0c-4d10-a4ed-614b4f89ceea": {
+                "wallet_transfer_id": "6d58c572-df0c-4d10-a4ed-614b4f89ceea",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "sender_account_id": "b2ce42e5-fc99-4ebb-a965-1a87f08a7b35",
+                "recipient_id": "6da62b10-b25f-440e-9926-4db609c33a95",
+                "variant_name": "Mobile Wallet Economy",
+                "status": "credited",
+                "corridor": "GT-GTQ",
+                "confirmation_number": "PW-260504-25871",
+                "send_amount_usd": 150.0,
+                "transfer_fee_usd": 1.99,
+                "card_fee_usd": 0.0,
+                "fx_rate": 7.6154,
+                "receive_amount": 1142.31,
+                "funding_method": "ach_debit",
+                "transfer_purpose": "family_support",
+                "wallet_provider": "tigo_money",
+                "wallet_number": "+502 5512 3390",
+                "wallet_holder_name": "Juana Ixcot Tum",
+                "booked_at": "2026-05-04T19:10:00",
+                "date_available": "2026-05-08",
+                "released_at": "2026-05-06T09:00:00",
+                "credited_at": "2026-05-08T08:15:00",
+                "failed_at": "",
+                "cancelled_at": "",
+                "closed_date": "2026-05-08",
+                "hold_reason": "none",
+                "held_at": "",
+                "principal_held_usd": 0.0,
+                "fees_held_usd": 1.99
+            },
+            "f71bce4e-bbab-48ff-a0f7-be8a6f77f73a": {
+                "wallet_transfer_id": "f71bce4e-bbab-48ff-a0f7-be8a6f77f73a",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "sender_account_id": "b2ce42e5-fc99-4ebb-a965-1a87f08a7b35",
+                "recipient_id": "6da62b10-b25f-440e-9926-4db609c33a95",
+                "variant_name": "Mobile Wallet Economy",
+                "status": "credited",
+                "corridor": "GT-GTQ",
+                "confirmation_number": "PW-260727-26390",
+                "send_amount_usd": 150.0,
+                "transfer_fee_usd": 1.99,
+                "card_fee_usd": 0.0,
+                "fx_rate": 7.6402,
+                "receive_amount": 1146.03,
+                "funding_method": "ach_debit",
+                "transfer_purpose": "family_support",
+                "wallet_provider": "tigo_money",
+                "wallet_number": "+502 5512 3390",
+                "wallet_holder_name": "Juana Ixcot Tum",
+                "booked_at": "2026-07-27T19:10:00",
+                "date_available": "2026-07-31",
+                "released_at": "2026-07-29T09:00:00",
+                "credited_at": "2026-07-31T08:15:00",
+                "failed_at": "",
+                "cancelled_at": "",
+                "closed_date": "2026-07-31",
+                "hold_reason": "none",
+                "held_at": "",
+                "principal_held_usd": 0.0,
+                "fees_held_usd": 1.99
+            }
+        },
+        "wallet_ledger": {
+            "76120425-78cf-45c1-844b-a5ba34d626e7": {
+                "ledger_entry_id": "76120425-78cf-45c1-844b-a5ba34d626e7",
+                "wallet_transfer_id": "536d79f1-5d0b-415c-ae03-c0d6c397afb6",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "wallet_funds_received",
+                "entry_date": "2025-09-10",
+                "amount_usd": 150.0,
+                "fee_type": "none",
+                "fee_seq": 0,
+                "fee_refund_reason": "none",
+                "credit_attempt": 0,
+                "receive_amount": "",
+                "fx_rate_applied": "",
+                "failure_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            },
+            "f3cc7af5-8fd2-45a6-8de2-6a4d9d5fd6eb": {
+                "ledger_entry_id": "f3cc7af5-8fd2-45a6-8de2-6a4d9d5fd6eb",
+                "wallet_transfer_id": "536d79f1-5d0b-415c-ae03-c0d6c397afb6",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "wallet_fee_charged",
+                "entry_date": "2025-09-10",
+                "amount_usd": 1.99,
+                "fee_type": "transfer_fee",
+                "fee_seq": 1,
+                "fee_refund_reason": "none",
+                "credit_attempt": 0,
+                "receive_amount": "",
+                "fx_rate_applied": "",
+                "failure_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            },
+            "963cd95a-6479-4624-9682-fa6e406fa999": {
+                "ledger_entry_id": "963cd95a-6479-4624-9682-fa6e406fa999",
+                "wallet_transfer_id": "536d79f1-5d0b-415c-ae03-c0d6c397afb6",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "wallet_credit_sent",
+                "entry_date": "2025-09-12",
+                "amount_usd": 150.0,
+                "fee_type": "none",
+                "fee_seq": 0,
+                "fee_refund_reason": "none",
+                "credit_attempt": 1,
+                "receive_amount": 1147.68,
+                "fx_rate_applied": 7.6512,
+                "failure_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            },
+            "84444a06-198c-4d03-b16b-13558807f35d": {
+                "ledger_entry_id": "84444a06-198c-4d03-b16b-13558807f35d",
+                "wallet_transfer_id": "30442bb6-2736-494e-92f8-965561a34a30",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "wallet_funds_received",
+                "entry_date": "2025-12-03",
+                "amount_usd": 150.0,
+                "fee_type": "none",
+                "fee_seq": 0,
+                "fee_refund_reason": "none",
+                "credit_attempt": 0,
+                "receive_amount": "",
+                "fx_rate_applied": "",
+                "failure_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            },
+            "2f772b84-3bc8-4bfa-86be-118a5cbd90f1": {
+                "ledger_entry_id": "2f772b84-3bc8-4bfa-86be-118a5cbd90f1",
+                "wallet_transfer_id": "30442bb6-2736-494e-92f8-965561a34a30",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "wallet_fee_charged",
+                "entry_date": "2025-12-03",
+                "amount_usd": 1.99,
+                "fee_type": "transfer_fee",
+                "fee_seq": 1,
+                "fee_refund_reason": "none",
+                "credit_attempt": 0,
+                "receive_amount": "",
+                "fx_rate_applied": "",
+                "failure_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            },
+            "8c3e0ebe-6079-476c-a3a0-3cb24a29da9c": {
+                "ledger_entry_id": "8c3e0ebe-6079-476c-a3a0-3cb24a29da9c",
+                "wallet_transfer_id": "30442bb6-2736-494e-92f8-965561a34a30",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "wallet_credit_sent",
+                "entry_date": "2025-12-05",
+                "amount_usd": 150.0,
+                "fee_type": "none",
+                "fee_seq": 0,
+                "fee_refund_reason": "none",
+                "credit_attempt": 1,
+                "receive_amount": 1144.95,
+                "fx_rate_applied": 7.633,
+                "failure_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            },
+            "8ae897be-a1ed-4a4b-bd42-a6cd2c07cb52": {
+                "ledger_entry_id": "8ae897be-a1ed-4a4b-bd42-a6cd2c07cb52",
+                "wallet_transfer_id": "889bd450-f566-4a95-a053-b435e2f75d1b",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "wallet_funds_received",
+                "entry_date": "2026-02-04",
+                "amount_usd": 150.0,
+                "fee_type": "none",
+                "fee_seq": 0,
+                "fee_refund_reason": "none",
+                "credit_attempt": 0,
+                "receive_amount": "",
+                "fx_rate_applied": "",
+                "failure_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            },
+            "3fda7cbe-1d41-4549-86dd-bc93e0747c8f": {
+                "ledger_entry_id": "3fda7cbe-1d41-4549-86dd-bc93e0747c8f",
+                "wallet_transfer_id": "889bd450-f566-4a95-a053-b435e2f75d1b",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "wallet_fee_charged",
+                "entry_date": "2026-02-04",
+                "amount_usd": 1.99,
+                "fee_type": "transfer_fee",
+                "fee_seq": 1,
+                "fee_refund_reason": "none",
+                "credit_attempt": 0,
+                "receive_amount": "",
+                "fx_rate_applied": "",
+                "failure_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            },
+            "c72523de-b2b8-4891-a84c-dd7ac547df4c": {
+                "ledger_entry_id": "c72523de-b2b8-4891-a84c-dd7ac547df4c",
+                "wallet_transfer_id": "889bd450-f566-4a95-a053-b435e2f75d1b",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "wallet_credit_sent",
+                "entry_date": "2026-02-06",
+                "amount_usd": 150.0,
+                "fee_type": "none",
+                "fee_seq": 0,
+                "fee_refund_reason": "none",
+                "credit_attempt": 1,
+                "receive_amount": 1143.12,
+                "fx_rate_applied": 7.6208,
+                "failure_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            },
+            "58db8e47-eca9-4b99-8ed0-8cc3dc381b86": {
+                "ledger_entry_id": "58db8e47-eca9-4b99-8ed0-8cc3dc381b86",
+                "wallet_transfer_id": "6d58c572-df0c-4d10-a4ed-614b4f89ceea",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "wallet_funds_received",
+                "entry_date": "2026-05-06",
+                "amount_usd": 150.0,
+                "fee_type": "none",
+                "fee_seq": 0,
+                "fee_refund_reason": "none",
+                "credit_attempt": 0,
+                "receive_amount": "",
+                "fx_rate_applied": "",
+                "failure_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            },
+            "4d2b9656-664a-4a78-ab73-8a639528d60f": {
+                "ledger_entry_id": "4d2b9656-664a-4a78-ab73-8a639528d60f",
+                "wallet_transfer_id": "6d58c572-df0c-4d10-a4ed-614b4f89ceea",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "wallet_fee_charged",
+                "entry_date": "2026-05-06",
+                "amount_usd": 1.99,
+                "fee_type": "transfer_fee",
+                "fee_seq": 1,
+                "fee_refund_reason": "none",
+                "credit_attempt": 0,
+                "receive_amount": "",
+                "fx_rate_applied": "",
+                "failure_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            },
+            "be754459-9edb-4db8-a054-a2bcf6b6c91d": {
+                "ledger_entry_id": "be754459-9edb-4db8-a054-a2bcf6b6c91d",
+                "wallet_transfer_id": "6d58c572-df0c-4d10-a4ed-614b4f89ceea",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "wallet_credit_sent",
+                "entry_date": "2026-05-08",
+                "amount_usd": 150.0,
+                "fee_type": "none",
+                "fee_seq": 0,
+                "fee_refund_reason": "none",
+                "credit_attempt": 1,
+                "receive_amount": 1142.31,
+                "fx_rate_applied": 7.6154,
+                "failure_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            },
+            "11aef146-3467-4c76-ace9-2cdac452814a": {
+                "ledger_entry_id": "11aef146-3467-4c76-ace9-2cdac452814a",
+                "wallet_transfer_id": "f71bce4e-bbab-48ff-a0f7-be8a6f77f73a",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "wallet_funds_received",
+                "entry_date": "2026-07-29",
+                "amount_usd": 150.0,
+                "fee_type": "none",
+                "fee_seq": 0,
+                "fee_refund_reason": "none",
+                "credit_attempt": 0,
+                "receive_amount": "",
+                "fx_rate_applied": "",
+                "failure_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            },
+            "c6a2f815-20e9-4b05-8f89-a68c8e41dac9": {
+                "ledger_entry_id": "c6a2f815-20e9-4b05-8f89-a68c8e41dac9",
+                "wallet_transfer_id": "f71bce4e-bbab-48ff-a0f7-be8a6f77f73a",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "wallet_fee_charged",
+                "entry_date": "2026-07-29",
+                "amount_usd": 1.99,
+                "fee_type": "transfer_fee",
+                "fee_seq": 1,
+                "fee_refund_reason": "none",
+                "credit_attempt": 0,
+                "receive_amount": "",
+                "fx_rate_applied": "",
+                "failure_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            },
+            "ea37709c-610d-47ec-aa5d-1044d636c4f3": {
+                "ledger_entry_id": "ea37709c-610d-47ec-aa5d-1044d636c4f3",
+                "wallet_transfer_id": "f71bce4e-bbab-48ff-a0f7-be8a6f77f73a",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "wallet_credit_sent",
+                "entry_date": "2026-07-31",
+                "amount_usd": 150.0,
+                "fee_type": "none",
+                "fee_seq": 0,
+                "fee_refund_reason": "none",
+                "credit_attempt": 1,
+                "receive_amount": 1146.03,
+                "fx_rate_applied": 7.6402,
+                "failure_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            }
+        }
+    },
+    "db_closure": {
+        "bank_cases": {
+            "655f4b72-2a38-4019-9dfa-0fc69dd22c0a": {
+                "case_id": "655f4b72-2a38-4019-9dfa-0fc69dd22c0a",
+                "bank_transfer_id": "8c674512-e08c-4020-9e88-1788262aa3b3",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "bank_error_notice_filed",
+                "case_date": "2026-08-31",
+                "case_type": "incorrect_amount",
+                "rfi_topic": "none",
+                "doc_reference": "",
+                "related_case_id": "",
+                "case_outcome": "open",
+                "remedy_choice": "not_applicable",
+                "resolution_due_date": "2026-11-29"
+            },
+            "e2a72ddb-85f3-489a-8cb2-30fe0ba82d2a": {
+                "case_id": "e2a72ddb-85f3-489a-8cb2-30fe0ba82d2a",
+                "bank_transfer_id": "8c674512-e08c-4020-9e88-1788262aa3b3",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "bank_error_decided",
+                "case_date": "2026-09-11",
+                "case_type": "incorrect_amount",
+                "rfi_topic": "none",
+                "doc_reference": "",
+                "related_case_id": "655f4b72-2a38-4019-9dfa-0fc69dd22c0a",
+                "case_outcome": "error_found",
+                "remedy_choice": "not_applicable",
+                "resolution_due_date": ""
+            },
+            "66e27a8e-6fe7-4343-a8de-de0b11aefd06": {
+                "case_id": "66e27a8e-6fe7-4343-a8de-de0b11aefd06",
+                "bank_transfer_id": "8c674512-e08c-4020-9e88-1788262aa3b3",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "bank_error_decided",
+                "case_date": "2026-08-28",
+                "case_type": "not_received_by_date",
+                "rfi_topic": "none",
+                "doc_reference": "",
+                "related_case_id": "aaf1b84f-3ad5-4ec2-903c-aa2e5ad39929",
+                "case_outcome": "no_error",
+                "remedy_choice": "not_applicable",
+                "resolution_due_date": ""
+            },
+            "aaf1b84f-3ad5-4ec2-903c-aa2e5ad39929": {
+                "case_id": "aaf1b84f-3ad5-4ec2-903c-aa2e5ad39929",
+                "bank_transfer_id": "8c674512-e08c-4020-9e88-1788262aa3b3",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "bank_error_notice_filed",
+                "case_date": "2026-08-27",
+                "case_type": "not_received_by_date",
+                "rfi_topic": "none",
+                "doc_reference": "",
+                "related_case_id": "",
+                "case_outcome": "open",
+                "remedy_choice": "not_applicable",
+                "resolution_due_date": "2026-11-25"
+            }
+        },
+        "wallet_ledger": {
+            "8ae897be-a1ed-4a4b-bd42-a6cd2c07cb52": {
+                "ledger_entry_id": "8ae897be-a1ed-4a4b-bd42-a6cd2c07cb52",
+                "wallet_transfer_id": "889bd450-f566-4a95-a053-b435e2f75d1b",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "wallet_funds_received",
+                "entry_date": "2026-02-04",
+                "amount_usd": 150.0,
+                "fee_type": "none",
+                "fee_seq": 0,
+                "fee_refund_reason": "none",
+                "credit_attempt": 0,
+                "receive_amount": "",
+                "fx_rate_applied": "",
+                "failure_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            },
+            "76120425-78cf-45c1-844b-a5ba34d626e7": {
+                "ledger_entry_id": "76120425-78cf-45c1-844b-a5ba34d626e7",
+                "wallet_transfer_id": "536d79f1-5d0b-415c-ae03-c0d6c397afb6",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "wallet_funds_received",
+                "entry_date": "2025-09-10",
+                "amount_usd": 150.0,
+                "fee_type": "none",
+                "fee_seq": 0,
+                "fee_refund_reason": "none",
+                "credit_attempt": 0,
+                "receive_amount": "",
+                "fx_rate_applied": "",
+                "failure_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            },
+            "f3cc7af5-8fd2-45a6-8de2-6a4d9d5fd6eb": {
+                "ledger_entry_id": "f3cc7af5-8fd2-45a6-8de2-6a4d9d5fd6eb",
+                "wallet_transfer_id": "536d79f1-5d0b-415c-ae03-c0d6c397afb6",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "wallet_fee_charged",
+                "entry_date": "2025-09-10",
+                "amount_usd": 1.99,
+                "fee_type": "transfer_fee",
+                "fee_seq": 1,
+                "fee_refund_reason": "none",
+                "credit_attempt": 0,
+                "receive_amount": "",
+                "fx_rate_applied": "",
+                "failure_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            },
+            "4d2b9656-664a-4a78-ab73-8a639528d60f": {
+                "ledger_entry_id": "4d2b9656-664a-4a78-ab73-8a639528d60f",
+                "wallet_transfer_id": "6d58c572-df0c-4d10-a4ed-614b4f89ceea",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "wallet_fee_charged",
+                "entry_date": "2026-05-06",
+                "amount_usd": 1.99,
+                "fee_type": "transfer_fee",
+                "fee_seq": 1,
+                "fee_refund_reason": "none",
+                "credit_attempt": 0,
+                "receive_amount": "",
+                "fx_rate_applied": "",
+                "failure_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            },
+            "ea37709c-610d-47ec-aa5d-1044d636c4f3": {
+                "ledger_entry_id": "ea37709c-610d-47ec-aa5d-1044d636c4f3",
+                "wallet_transfer_id": "f71bce4e-bbab-48ff-a0f7-be8a6f77f73a",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "wallet_credit_sent",
+                "entry_date": "2026-07-31",
+                "amount_usd": 150.0,
+                "fee_type": "none",
+                "fee_seq": 0,
+                "fee_refund_reason": "none",
+                "credit_attempt": 1,
+                "receive_amount": 1146.03,
+                "fx_rate_applied": 7.6402,
+                "failure_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            },
+            "11aef146-3467-4c76-ace9-2cdac452814a": {
+                "ledger_entry_id": "11aef146-3467-4c76-ace9-2cdac452814a",
+                "wallet_transfer_id": "f71bce4e-bbab-48ff-a0f7-be8a6f77f73a",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "wallet_funds_received",
+                "entry_date": "2026-07-29",
+                "amount_usd": 150.0,
+                "fee_type": "none",
+                "fee_seq": 0,
+                "fee_refund_reason": "none",
+                "credit_attempt": 0,
+                "receive_amount": "",
+                "fx_rate_applied": "",
+                "failure_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            },
+            "58db8e47-eca9-4b99-8ed0-8cc3dc381b86": {
+                "ledger_entry_id": "58db8e47-eca9-4b99-8ed0-8cc3dc381b86",
+                "wallet_transfer_id": "6d58c572-df0c-4d10-a4ed-614b4f89ceea",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "wallet_funds_received",
+                "entry_date": "2026-05-06",
+                "amount_usd": 150.0,
+                "fee_type": "none",
+                "fee_seq": 0,
+                "fee_refund_reason": "none",
+                "credit_attempt": 0,
+                "receive_amount": "",
+                "fx_rate_applied": "",
+                "failure_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            },
+            "2f772b84-3bc8-4bfa-86be-118a5cbd90f1": {
+                "ledger_entry_id": "2f772b84-3bc8-4bfa-86be-118a5cbd90f1",
+                "wallet_transfer_id": "30442bb6-2736-494e-92f8-965561a34a30",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "wallet_fee_charged",
+                "entry_date": "2025-12-03",
+                "amount_usd": 1.99,
+                "fee_type": "transfer_fee",
+                "fee_seq": 1,
+                "fee_refund_reason": "none",
+                "credit_attempt": 0,
+                "receive_amount": "",
+                "fx_rate_applied": "",
+                "failure_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            },
+            "c6a2f815-20e9-4b05-8f89-a68c8e41dac9": {
+                "ledger_entry_id": "c6a2f815-20e9-4b05-8f89-a68c8e41dac9",
+                "wallet_transfer_id": "f71bce4e-bbab-48ff-a0f7-be8a6f77f73a",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "wallet_fee_charged",
+                "entry_date": "2026-07-29",
+                "amount_usd": 1.99,
+                "fee_type": "transfer_fee",
+                "fee_seq": 1,
+                "fee_refund_reason": "none",
+                "credit_attempt": 0,
+                "receive_amount": "",
+                "fx_rate_applied": "",
+                "failure_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            },
+            "3fda7cbe-1d41-4549-86dd-bc93e0747c8f": {
+                "ledger_entry_id": "3fda7cbe-1d41-4549-86dd-bc93e0747c8f",
+                "wallet_transfer_id": "889bd450-f566-4a95-a053-b435e2f75d1b",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "wallet_fee_charged",
+                "entry_date": "2026-02-04",
+                "amount_usd": 1.99,
+                "fee_type": "transfer_fee",
+                "fee_seq": 1,
+                "fee_refund_reason": "none",
+                "credit_attempt": 0,
+                "receive_amount": "",
+                "fx_rate_applied": "",
+                "failure_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            },
+            "84444a06-198c-4d03-b16b-13558807f35d": {
+                "ledger_entry_id": "84444a06-198c-4d03-b16b-13558807f35d",
+                "wallet_transfer_id": "30442bb6-2736-494e-92f8-965561a34a30",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "wallet_funds_received",
+                "entry_date": "2025-12-03",
+                "amount_usd": 150.0,
+                "fee_type": "none",
+                "fee_seq": 0,
+                "fee_refund_reason": "none",
+                "credit_attempt": 0,
+                "receive_amount": "",
+                "fx_rate_applied": "",
+                "failure_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            },
+            "c72523de-b2b8-4891-a84c-dd7ac547df4c": {
+                "ledger_entry_id": "c72523de-b2b8-4891-a84c-dd7ac547df4c",
+                "wallet_transfer_id": "889bd450-f566-4a95-a053-b435e2f75d1b",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "wallet_credit_sent",
+                "entry_date": "2026-02-06",
+                "amount_usd": 150.0,
+                "fee_type": "none",
+                "fee_seq": 0,
+                "fee_refund_reason": "none",
+                "credit_attempt": 1,
+                "receive_amount": 1143.12,
+                "fx_rate_applied": 7.6208,
+                "failure_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            },
+            "be754459-9edb-4db8-a054-a2bcf6b6c91d": {
+                "ledger_entry_id": "be754459-9edb-4db8-a054-a2bcf6b6c91d",
+                "wallet_transfer_id": "6d58c572-df0c-4d10-a4ed-614b4f89ceea",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "wallet_credit_sent",
+                "entry_date": "2026-05-08",
+                "amount_usd": 150.0,
+                "fee_type": "none",
+                "fee_seq": 0,
+                "fee_refund_reason": "none",
+                "credit_attempt": 1,
+                "receive_amount": 1142.31,
+                "fx_rate_applied": 7.6154,
+                "failure_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            },
+            "8c3e0ebe-6079-476c-a3a0-3cb24a29da9c": {
+                "ledger_entry_id": "8c3e0ebe-6079-476c-a3a0-3cb24a29da9c",
+                "wallet_transfer_id": "30442bb6-2736-494e-92f8-965561a34a30",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "wallet_credit_sent",
+                "entry_date": "2025-12-05",
+                "amount_usd": 150.0,
+                "fee_type": "none",
+                "fee_seq": 0,
+                "fee_refund_reason": "none",
+                "credit_attempt": 1,
+                "receive_amount": 1144.95,
+                "fx_rate_applied": 7.633,
+                "failure_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            },
+            "963cd95a-6479-4624-9682-fa6e406fa999": {
+                "ledger_entry_id": "963cd95a-6479-4624-9682-fa6e406fa999",
+                "wallet_transfer_id": "536d79f1-5d0b-415c-ae03-c0d6c397afb6",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "wallet_credit_sent",
+                "entry_date": "2025-09-12",
+                "amount_usd": 150.0,
+                "fee_type": "none",
+                "fee_seq": 0,
+                "fee_refund_reason": "none",
+                "credit_attempt": 1,
+                "receive_amount": 1147.68,
+                "fx_rate_applied": 7.6512,
+                "failure_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            }
+        },
+        "wallet_transfers": {
+            "f71bce4e-bbab-48ff-a0f7-be8a6f77f73a": {
+                "wallet_transfer_id": "f71bce4e-bbab-48ff-a0f7-be8a6f77f73a",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "sender_account_id": "b2ce42e5-fc99-4ebb-a965-1a87f08a7b35",
+                "recipient_id": "6da62b10-b25f-440e-9926-4db609c33a95",
+                "variant_name": "Mobile Wallet Economy",
+                "status": "credited",
+                "corridor": "GT-GTQ",
+                "confirmation_number": "PW-260727-26390",
+                "send_amount_usd": 150.0,
+                "transfer_fee_usd": 1.99,
+                "card_fee_usd": 0.0,
+                "fx_rate": 7.6402,
+                "receive_amount": 1146.03,
+                "funding_method": "ach_debit",
+                "transfer_purpose": "family_support",
+                "wallet_provider": "tigo_money",
+                "wallet_number": "+502 5512 3390",
+                "wallet_holder_name": "Juana Ixcot Tum",
+                "booked_at": "2026-07-27T19:10:00",
+                "date_available": "2026-07-31",
+                "released_at": "2026-07-29T09:00:00",
+                "credited_at": "2026-07-31T08:15:00",
+                "failed_at": "",
+                "cancelled_at": "",
+                "closed_date": "2026-07-31",
+                "hold_reason": "none",
+                "held_at": "",
+                "principal_held_usd": 0.0,
+                "fees_held_usd": 1.99
+            },
+            "6d58c572-df0c-4d10-a4ed-614b4f89ceea": {
+                "wallet_transfer_id": "6d58c572-df0c-4d10-a4ed-614b4f89ceea",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "sender_account_id": "b2ce42e5-fc99-4ebb-a965-1a87f08a7b35",
+                "recipient_id": "6da62b10-b25f-440e-9926-4db609c33a95",
+                "variant_name": "Mobile Wallet Economy",
+                "status": "credited",
+                "corridor": "GT-GTQ",
+                "confirmation_number": "PW-260504-25871",
+                "send_amount_usd": 150.0,
+                "transfer_fee_usd": 1.99,
+                "card_fee_usd": 0.0,
+                "fx_rate": 7.6154,
+                "receive_amount": 1142.31,
+                "funding_method": "ach_debit",
+                "transfer_purpose": "family_support",
+                "wallet_provider": "tigo_money",
+                "wallet_number": "+502 5512 3390",
+                "wallet_holder_name": "Juana Ixcot Tum",
+                "booked_at": "2026-05-04T19:10:00",
+                "date_available": "2026-05-08",
+                "released_at": "2026-05-06T09:00:00",
+                "credited_at": "2026-05-08T08:15:00",
+                "failed_at": "",
+                "cancelled_at": "",
+                "closed_date": "2026-05-08",
+                "hold_reason": "none",
+                "held_at": "",
+                "principal_held_usd": 0.0,
+                "fees_held_usd": 1.99
+            },
+            "536d79f1-5d0b-415c-ae03-c0d6c397afb6": {
+                "wallet_transfer_id": "536d79f1-5d0b-415c-ae03-c0d6c397afb6",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "sender_account_id": "b2ce42e5-fc99-4ebb-a965-1a87f08a7b35",
+                "recipient_id": "6da62b10-b25f-440e-9926-4db609c33a95",
+                "variant_name": "Mobile Wallet Economy",
+                "status": "credited",
+                "corridor": "GT-GTQ",
+                "confirmation_number": "PW-250908-24180",
+                "send_amount_usd": 150.0,
+                "transfer_fee_usd": 1.99,
+                "card_fee_usd": 0.0,
+                "fx_rate": 7.6512,
+                "receive_amount": 1147.68,
+                "funding_method": "ach_debit",
+                "transfer_purpose": "family_support",
+                "wallet_provider": "tigo_money",
+                "wallet_number": "+502 5512 3390",
+                "wallet_holder_name": "Juana Ixcot Tum",
+                "booked_at": "2025-09-08T19:10:00",
+                "date_available": "2025-09-12",
+                "released_at": "2025-09-10T09:00:00",
+                "credited_at": "2025-09-12T08:15:00",
+                "failed_at": "",
+                "cancelled_at": "",
+                "closed_date": "2025-09-12",
+                "hold_reason": "none",
+                "held_at": "",
+                "principal_held_usd": 0.0,
+                "fees_held_usd": 1.99
+            },
+            "30442bb6-2736-494e-92f8-965561a34a30": {
+                "wallet_transfer_id": "30442bb6-2736-494e-92f8-965561a34a30",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "sender_account_id": "b2ce42e5-fc99-4ebb-a965-1a87f08a7b35",
+                "recipient_id": "6da62b10-b25f-440e-9926-4db609c33a95",
+                "variant_name": "Mobile Wallet Economy",
+                "status": "credited",
+                "corridor": "GT-GTQ",
+                "confirmation_number": "PW-251201-24725",
+                "send_amount_usd": 150.0,
+                "transfer_fee_usd": 1.99,
+                "card_fee_usd": 0.0,
+                "fx_rate": 7.633,
+                "receive_amount": 1144.95,
+                "funding_method": "ach_debit",
+                "transfer_purpose": "family_support",
+                "wallet_provider": "tigo_money",
+                "wallet_number": "+502 5512 3390",
+                "wallet_holder_name": "Juana Ixcot Tum",
+                "booked_at": "2025-12-01T19:10:00",
+                "date_available": "2025-12-05",
+                "released_at": "2025-12-03T09:00:00",
+                "credited_at": "2025-12-05T08:15:00",
+                "failed_at": "",
+                "cancelled_at": "",
+                "closed_date": "2025-12-05",
+                "hold_reason": "none",
+                "held_at": "",
+                "principal_held_usd": 0.0,
+                "fees_held_usd": 1.99
+            },
+            "889bd450-f566-4a95-a053-b435e2f75d1b": {
+                "wallet_transfer_id": "889bd450-f566-4a95-a053-b435e2f75d1b",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "sender_account_id": "b2ce42e5-fc99-4ebb-a965-1a87f08a7b35",
+                "recipient_id": "6da62b10-b25f-440e-9926-4db609c33a95",
+                "variant_name": "Mobile Wallet Economy",
+                "status": "credited",
+                "corridor": "GT-GTQ",
+                "confirmation_number": "PW-260202-25106",
+                "send_amount_usd": 150.0,
+                "transfer_fee_usd": 1.99,
+                "card_fee_usd": 0.0,
+                "fx_rate": 7.6208,
+                "receive_amount": 1143.12,
+                "funding_method": "ach_debit",
+                "transfer_purpose": "family_support",
+                "wallet_provider": "tigo_money",
+                "wallet_number": "+502 5512 3390",
+                "wallet_holder_name": "Juana Ixcot Tum",
+                "booked_at": "2026-02-02T19:10:00",
+                "date_available": "2026-02-06",
+                "released_at": "2026-02-04T09:00:00",
+                "credited_at": "2026-02-06T08:15:00",
+                "failed_at": "",
+                "cancelled_at": "",
+                "closed_date": "2026-02-06",
+                "hold_reason": "none",
+                "held_at": "",
+                "principal_held_usd": 0.0,
+                "fees_held_usd": 1.99
+            }
+        },
+        "bank_ledger": {
+            "7e552b1c-e197-4045-a09f-e2973c6ad8f9": {
+                "ledger_entry_id": "7e552b1c-e197-4045-a09f-e2973c6ad8f9",
+                "bank_transfer_id": "8c674512-e08c-4020-9e88-1788262aa3b3",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "bank_fee_charged",
+                "entry_date": "2026-08-26",
+                "amount_usd": 3.99,
+                "fee_type": "transfer_fee",
+                "fee_refund_reason": "none",
+                "payout_attempt": 1,
+                "receive_amount": "",
+                "fx_rate_applied": "",
+                "return_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            },
+            "ef38660f-87d5-4b0e-886e-9a5dc87e4973": {
+                "ledger_entry_id": "ef38660f-87d5-4b0e-886e-9a5dc87e4973",
+                "bank_transfer_id": "8c674512-e08c-4020-9e88-1788262aa3b3",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "bank_funds_received",
+                "entry_date": "2026-08-26",
+                "amount_usd": 1240.0,
+                "fee_type": "none",
+                "fee_refund_reason": "none",
+                "payout_attempt": 0,
+                "receive_amount": "",
+                "fx_rate_applied": "",
+                "return_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            },
+            "7fd1e3d8-df37-4bd1-916d-18138d8a05af": {
+                "ledger_entry_id": "7fd1e3d8-df37-4bd1-916d-18138d8a05af",
+                "bank_transfer_id": "8c674512-e08c-4020-9e88-1788262aa3b3",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "bank_payout_sent",
+                "entry_date": "2026-08-26",
+                "amount_usd": 1240.0,
+                "fee_type": "none",
+                "fee_refund_reason": "none",
+                "payout_attempt": 1,
+                "receive_amount": 9218.78,
+                "fx_rate_applied": 7.4345,
+                "return_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": ""
+            },
+            "d0e3201d-6ecf-47d5-9fae-690a5920afcb": {
+                "ledger_entry_id": "d0e3201d-6ecf-47d5-9fae-690a5920afcb",
+                "bank_transfer_id": "8c674512-e08c-4020-9e88-1788262aa3b3",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "event_type": "bank_fee_refunded",
+                "entry_date": "2026-09-11",
+                "amount_usd": 3.99,
+                "fee_type": "none",
+                "fee_refund_reason": "paloma_error",
+                "payout_attempt": 0,
+                "receive_amount": "",
+                "fx_rate_applied": "",
+                "return_reason": "none",
+                "refund_basis": "none",
+                "credit_reason": "none",
+                "related_entry_id": "7e552b1c-e197-4045-a09f-e2973c6ad8f9"
+            }
+        },
+        "recipients": {
+            "6da62b10-b25f-440e-9926-4db609c33a95": {
+                "recipient_id": "6da62b10-b25f-440e-9926-4db609c33a95",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "full_name": "Juana Ixcot Tum",
+                "corridor": "GT-GTQ",
+                "relationship": "parent",
+                "status": "active",
+                "bank_name": "Banco Industrial",
+                "bank_account_number": "0300154872",
+                "mobile_wallet_provider": "tigo_money",
+                "mobile_wallet_number": "+502 5512 3390",
+                "phone": "+502 5512 3390",
+                "city": "Quetzaltenango",
+                "added_date": "2022-02-01"
+            }
+        },
+        "bank_transfers": {
+            "8c674512-e08c-4020-9e88-1788262aa3b3": {
+                "bank_transfer_id": "8c674512-e08c-4020-9e88-1788262aa3b3",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "sender_account_id": "b2ce42e5-fc99-4ebb-a965-1a87f08a7b35",
+                "recipient_id": "6da62b10-b25f-440e-9926-4db609c33a95",
+                "variant_name": "Bank Deposit Standard",
+                "status": "deposited",
+                "corridor": "GT-GTQ",
+                "confirmation_number": "PB-260824-23164",
+                "send_amount_usd": 1240.0,
+                "transfer_fee_usd": 3.99,
+                "surcharge_usd": 0.0,
+                "fx_rate": 7.6361,
+                "receive_amount": 9468.76,
+                "funding_method": "ach_debit",
+                "swift_charge_option": "not_applicable",
+                "transfer_purpose": "family_support",
+                "beneficiary_name": "Juana Ixcot Tum",
+                "beneficiary_bank_name": "Banco Industrial",
+                "beneficiary_account_number": "0300154872",
+                "booked_at": "2026-08-24T10:05:00",
+                "date_available": "2026-08-27",
+                "deposited_date": "2026-08-27",
+                "cancelled_at": "",
+                "closed_date": "2026-08-27",
+                "hold_reason": "none",
+                "held_at": "",
+                "principal_held_usd": 0.0,
+                "fees_held_usd": 0.0
+            }
+        },
+        "customers": {
+            "8f4970d6-489b-46d9-a305-674f0084b5a5": {
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "full_name": "Rigoberto Chávez Ixcot",
+                "phone": "7735550134",
+                "email": "rigo.chavez.ixcot@yahoo.com",
+                "date_of_birth": "1979-11-02",
+                "zip_code": "60623",
+                "id_document_last4": "2T91",
+                "state_of_residence": "IL",
+                "profile_created_date": "2022-01-18"
+            }
+        },
+        "sender_accounts": {
+            "b2ce42e5-fc99-4ebb-a965-1a87f08a7b35": {
+                "sender_account_id": "b2ce42e5-fc99-4ebb-a965-1a87f08a7b35",
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "variant_name": "Paloma Verified Plus",
+                "status": "active",
+                "opened_date": "2022-01-20",
+                "closed_date": "",
+                "level_effective_date": "2025-03-04",
+                "next_review_due_date": "2027-03-04",
+                "signup_channel": "app",
+                "lock_reason": "none",
+                "locked_at": "",
+                "restriction_reason": "none",
+                "suspended_date": "",
+                "closure_reason": "none"
+            }
+        }
+    },
+    "db_closure_matches_initial_state": true,
+    "solvability_contract": {
+        "request_binding_version": 1,
+        "request_alignment": [
+            {
+                "claim": "The customer asks for the quetzales his mother was short-paid on transfer PB-260824-23164 to be sent to her same bank account, now that Paloma found the error on its side.",
+                "evidence": [
+                    "user_scenario:you want the quetzales your mother is missing sent to her bank account, the same Banco Industrial account",
+                    "user_scenario:confirmation number PB-260824-23164",
+                    "initial_state.bank_cases.e2a72ddb-85f3-489a-8cb2-30fe0ba82d2a.case_outcome"
+                ]
+            }
+        ],
+        "gold_actions": [
+            {
+                "step": 10,
+                "business_effect": "Paloma books its make-good credit of 38.47 for the incorrect amount against the short payout of PB-260824-23164, so the transfer holds 38.47 of principal for the delivery.",
+                "request_binding": {
+                    "action_semantics": "A state-due obligation: once error resolution finds an incorrect amount, Paloma owes its make-good credit into the transfer, and the delivery the customer asks for is not made until that credit stands on the ledger. It is the only credit reason that fits: nothing was returned (no exchange shortfall on a return) and the customer did not choose a full refund or redelivery of a misdirected transfer.",
+                    "intent_source": {
+                        "kind": "initial_state",
+                        "evidence": [
+                            "initial_state.bank_cases.e2a72ddb-85f3-489a-8cb2-30fe0ba82d2a.case_outcome",
+                            "initial_state.bank_cases.655f4b72-2a38-4019-9dfa-0fc69dd22c0a.case_type",
+                            "initial_state.bank_ledger.7fd1e3d8-df37-4bd1-916d-18138d8a05af.receive_amount",
+                            "initial_state.bank_transfers.8c674512-e08c-4020-9e88-1788262aa3b3.receive_amount"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "a make-good credit for an incorrect-amount shortfall pointing back to the payout that came up short",
+                        "evidence": [
+                            "initial_state.bank_ledger.7fd1e3d8-df37-4bd1-916d-18138d8a05af.event_type",
+                            "initial_state.bank_cases.655f4b72-2a38-4019-9dfa-0fc69dd22c0a.case_type"
+                        ],
+                        "action_arg": "related_entry_id",
+                        "value": "7fd1e3d8-df37-4bd1-916d-18138d8a05af"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "preexisting_before_conversation",
+                    "fact": "Paloma's error-resolution team decided error_found on the incorrect-amount notice on 2026-09-11, before the call; the credit itself is booked synchronously by this write.",
+                    "evidence": [
+                        "initial_state.bank_cases.e2a72ddb-85f3-489a-8cb2-30fe0ba82d2a",
+                        "initial_state.bank_cases.655f4b72-2a38-4019-9dfa-0fc69dd22c0a"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "bank_evt_returns",
+                        "eligibility_id": "policy_scope",
+                        "condition": "Returns govern Paloma credits for exchange shortfalls on payouts that came back; no payout on this transfer came back, so the returns policy adds no gate to an incorrect-amount credit.",
+                        "evidence": [
+                            "initial_state.bank_ledger.7fd1e3d8-df37-4bd1-916d-18138d8a05af.event_type",
+                            "initial_state.bank_transfers.8c674512-e08c-4020-9e88-1788262aa3b3.status"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "bank_evt_error_resolution",
+                        "eligibility_id": "policy_scope",
+                        "condition": "Error resolution has Paloma credit the shortfall after an incorrect amount is found; the incorrect-amount notice of 2026-08-31 was decided error_found on 2026-09-11.",
+                        "evidence": [
+                            "initial_state.bank_cases.655f4b72-2a38-4019-9dfa-0fc69dd22c0a.case_type",
+                            "initial_state.bank_cases.e2a72ddb-85f3-489a-8cb2-30fe0ba82d2a.case_outcome",
+                            "initial_state.bank_cases.e2a72ddb-85f3-489a-8cb2-30fe0ba82d2a.related_case_id"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 12,
+                "business_effect": "The customer chooses delivery of the shortfall: payout attempt 2 sends 38.47 USD as 298.66 GTQ at 7.7634 to Banco Industrial account 0300154872, the transfer goes back in transit with date of availability 2026-09-21, and the principal held returns to 0.00.",
+                "request_binding": {
+                    "action_semantics": "After an error_found decision on an incorrect-amount notice the customer chooses between having the shortfall delivered or refunded; he asks for it to be sent to his mother's account, which is the delivery remedy, not a refund to him.",
+                    "intent_source": {
+                        "kind": "user_scenario",
+                        "evidence": [
+                            "user_scenario:you want the quetzales your mother is missing sent to her bank account"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "sent to her bank account",
+                        "evidence": [
+                            "user_scenario:you want the quetzales your mother is missing sent to her bank account"
+                        ],
+                        "action_arg": "related_case_id",
+                        "value": "655f4b72-2a38-4019-9dfa-0fc69dd22c0a"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "established_by_prior_tool",
+                    "fact": "The make-good credit the delivery pays out was booked by step 10; the error_found decision pre-exists.",
+                    "evidence": [
+                        "prior_step:10",
+                        "initial_state.bank_cases.e2a72ddb-85f3-489a-8cb2-30fe0ba82d2a"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "bank_evt_error_resolution",
+                        "eligibility_id": "error_found_first",
+                        "condition": "A remedy can be chosen only after a decision of error_found on that notice.",
+                        "evidence": [
+                            "initial_state.bank_cases.e2a72ddb-85f3-489a-8cb2-30fe0ba82d2a.case_id",
+                            "initial_state.bank_cases.e2a72ddb-85f3-489a-8cb2-30fe0ba82d2a.related_case_id",
+                            "initial_state.bank_cases.e2a72ddb-85f3-489a-8cb2-30fe0ba82d2a.case_outcome"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "bank_cases.related_case_id",
+                                "source": "initial_state.bank_cases.e2a72ddb-85f3-489a-8cb2-30fe0ba82d2a.related_case_id",
+                                "action_arg": "related_case_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "bank_evt_release_and_holds",
+                        "eligibility_id": "policy_scope",
+                        "condition": "Release and holds govern payouts; their only gates concern logging answers to a request for information, and this transfer is not on hold, so they add no gate to the new payout.",
+                        "evidence": [
+                            "initial_state.bank_transfers.8c674512-e08c-4020-9e88-1788262aa3b3.hold_reason",
+                            "initial_state.bank_transfers.8c674512-e08c-4020-9e88-1788262aa3b3.status"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    }
+                ]
+            }
+        ],
+        "temporal_feasibility": [],
+        "required_user_inputs": [
+            {
+                "information": "Mobile number used to find the profile and as a verification item",
+                "source": "user_scenario:your mobile number is 7735550134"
+            },
+            {
+                "information": "Date of birth for verification",
+                "source": "user_scenario:your date of birth is 1979-11-02"
+            },
+            {
+                "information": "ZIP code for verification",
+                "source": "user_scenario:your ZIP code is 60623"
+            },
+            {
+                "information": "Which transfer the call is about",
+                "source": "user_scenario:confirmation number PB-260824-23164"
+            },
+            {
+                "information": "His remedy choice: delivery to his mother rather than a refund to him",
+                "source": "user_scenario:you choose delivery to her account"
+            },
+            {
+                "information": "Earlier reports on the transfer, which some agents ask about though no write uses them",
+                "source": "user_scenario:on the morning of August 27 you also complained that the money had not arrived"
+            }
+        ],
+        "seed_consistency": [
+            {
+                "row": "initial_state.bank_transfers.8c674512-e08c-4020-9e88-1788262aa3b3",
+                "policy_id": "bank_evt_pricing",
+                "check": "Standard tier, ACH, principal 1240.00 in the 1000.00-2999.99 band: fee 3.99, no surcharge, margin 1.10 built into the locked rate 7.6361 and 1240.00 x 7.6361 = 9468.76 GTQ; booked Monday 2026-08-24, ACH settled 2026-08-26, released that day before the cutoff, available 2026-08-27 (one Paloma business day) and deposited that day; held principal 0.00 and fees 0.00 agree with the ledger after the Paloma-error fee refund.",
+                "evidence": [
+                    "initial_state.bank_transfers.8c674512-e08c-4020-9e88-1788262aa3b3",
+                    "initial_state.bank_ledger.ef38660f-87d5-4b0e-886e-9a5dc87e4973",
+                    "initial_state.bank_ledger.7e552b1c-e197-4045-a09f-e2973c6ad8f9",
+                    "initial_state.bank_ledger.7fd1e3d8-df37-4bd1-916d-18138d8a05af",
+                    "initial_state.bank_ledger.d0e3201d-6ecf-47d5-9fae-690a5920afcb"
+                ]
+            },
+            {
+                "row": "initial_state.bank_ledger.ef38660f-87d5-4b0e-886e-9a5dc87e4973",
+                "policy_id": "bank_evt_funding_and_rate_lock",
+                "check": "ACH principal 1240.00 collected on the settlement date 2026-08-26 (the ledger records the date only); the transfer row still carries the rate locked at booking, 7.6361, and no re-quote is on record, so the booking rate is the authoritative customer rate.",
+                "evidence": [
+                    "initial_state.bank_ledger.ef38660f-87d5-4b0e-886e-9a5dc87e4973",
+                    "initial_state.bank_transfers.8c674512-e08c-4020-9e88-1788262aa3b3.booked_at"
+                ]
+            },
+            {
+                "row": "initial_state.bank_ledger.7e552b1c-e197-4045-a09f-e2973c6ad8f9",
+                "policy_id": "bank_evt_pricing",
+                "check": "Transfer fee 3.99 collected with the principal, payout_attempt 1.",
+                "evidence": [
+                    "initial_state.bank_ledger.7e552b1c-e197-4045-a09f-e2973c6ad8f9",
+                    "initial_state.bank_transfers.8c674512-e08c-4020-9e88-1788262aa3b3.transfer_fee_usd"
+                ]
+            },
+            {
+                "row": "initial_state.bank_ledger.7fd1e3d8-df37-4bd1-916d-18138d8a05af",
+                "policy_id": "bank_evt_release_and_holds",
+                "check": "First payout of 1240.00 on release 2026-08-26; the partner applied 7.4345 instead of the locked 7.6361 and sent 9218.78 GTQ, 249.98 short of the disclosed 9468.76: the incorrect amount the notice asserted.",
+                "evidence": [
+                    "initial_state.bank_ledger.7fd1e3d8-df37-4bd1-916d-18138d8a05af",
+                    "initial_state.bank_transfers.8c674512-e08c-4020-9e88-1788262aa3b3.fx_rate",
+                    "initial_state.bank_transfers.8c674512-e08c-4020-9e88-1788262aa3b3.receive_amount"
+                ]
+            },
+            {
+                "row": "initial_state.bank_ledger.d0e3201d-6ecf-47d5-9fae-690a5920afcb",
+                "policy_id": "bank_evt_error_resolution",
+                "check": "On the error_found decision of 2026-09-11 every fee collected (the 3.99 transfer fee) was refunded with reason paloma_error, pointing at the fee charge; no on-time refund exists, so nothing stacks.",
+                "evidence": [
+                    "initial_state.bank_ledger.d0e3201d-6ecf-47d5-9fae-690a5920afcb",
+                    "initial_state.bank_cases.e2a72ddb-85f3-489a-8cb2-30fe0ba82d2a"
+                ]
+            },
+            {
+                "row": "initial_state.bank_cases.aaf1b84f-3ad5-4ec2-903c-aa2e5ad39929",
+                "policy_id": "bank_evt_error_resolution",
+                "check": "Not-received notice given on the date of availability 2026-08-27 (inside the 180-day window), due 2026-11-25.",
+                "evidence": [
+                    "initial_state.bank_cases.aaf1b84f-3ad5-4ec2-903c-aa2e5ad39929",
+                    "initial_state.bank_transfers.8c674512-e08c-4020-9e88-1788262aa3b3.date_available"
+                ]
+            },
+            {
+                "row": "initial_state.bank_cases.66e27a8e-6fe7-4343-a8de-de0b11aefd06",
+                "policy_id": "bank_evt_error_resolution",
+                "check": "Decided no_error on 2026-08-28: the money was deposited on 2026-08-27, its date of availability.",
+                "evidence": [
+                    "initial_state.bank_cases.66e27a8e-6fe7-4343-a8de-de0b11aefd06",
+                    "initial_state.bank_transfers.8c674512-e08c-4020-9e88-1788262aa3b3.deposited_date"
+                ]
+            },
+            {
+                "row": "initial_state.bank_cases.655f4b72-2a38-4019-9dfa-0fc69dd22c0a",
+                "policy_id": "bank_evt_error_resolution",
+                "check": "Incorrect-amount notice of 2026-08-31, four days after availability, due 2026-11-29 (notice date plus 90 days); a different case type from the first notice, so the one-open-notice rule is respected.",
+                "evidence": [
+                    "initial_state.bank_cases.655f4b72-2a38-4019-9dfa-0fc69dd22c0a",
+                    "initial_state.bank_transfers.8c674512-e08c-4020-9e88-1788262aa3b3.date_available"
+                ]
+            },
+            {
+                "row": "initial_state.bank_cases.e2a72ddb-85f3-489a-8cb2-30fe0ba82d2a",
+                "policy_id": "bank_evt_error_resolution",
+                "check": "Decided error_found on 2026-09-11, before the 2026-11-29 due date; the cause was the partner's rate, not details the customer supplied.",
+                "evidence": [
+                    "initial_state.bank_cases.e2a72ddb-85f3-489a-8cb2-30fe0ba82d2a",
+                    "initial_state.bank_ledger.7fd1e3d8-df37-4bd1-916d-18138d8a05af.fx_rate_applied"
+                ]
+            }
+        ]
+    },
+    "evaluation_criteria": [
+        {
+            "owner": "agent",
+            "tool": "find_customers",
+            "arguments": {
+                "phone": "7735550134"
+            },
+            "objective": "Locate Rigoberto Chávez Ixcot's profile from the mobile number he states and obtain his customer reference number.",
+            "necessity": "Every later read and both writes are keyed on the customer reference number; the identity check needs it."
+        },
+        {
+            "owner": "agent",
+            "tool": "verify_customer_identity",
+            "arguments": {
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5",
+                "phone": "7735550134",
+                "date_of_birth": "1979-11-02",
+                "zip_code": "60623"
+            },
+            "objective": "Verify the caller with three items he states (mobile number, date of birth, ZIP code) and record the pass.",
+            "necessity": "Identity must be verified before discussing or changing his transfers; the recorded pass is scored state."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_bank_transfers",
+            "arguments": {
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5"
+            },
+            "objective": "Find the Standard transfer PB-260824-23164 to Juana Ixcot Tum: locked rate 7.6361, disclosed 9468.76 GTQ, date of availability 2026-08-27, deposited 2026-08-27, held principal 0.00.",
+            "necessity": "Supplies the disclosed amount and the locked rate for the shortfall and its valuation, the date of availability for the notice credit, and the tier (Standard, batch rail) for the delay uplift and the redelivery date."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_bank_ledger",
+            "arguments": {
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5"
+            },
+            "objective": "Read the transfer's money movements: principal 1240.00 collected, fee 3.99 charged and refunded for Paloma's error on 2026-09-11, and the payout of 1240.00 on 2026-08-26 that sent only 9218.78 GTQ at 7.4345; no make-good credit stands on it.",
+            "necessity": "Finds the unmet prerequisite of the shortfall delivery (no make-good credit on the ledger), the short payout the credit points back to, the shortfall and the partner rate gap, the total the customer paid, the wait since the short payout and the next payout attempt number."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_bank_cases",
+            "arguments": {
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5"
+            },
+            "objective": "Read the case file: a not-received notice of 2026-08-27 decided no_error on 2026-08-28, and the incorrect-amount notice of 2026-08-31 decided error_found on 2026-09-11.",
+            "necessity": "The remedy can be chosen only after an error_found decision on that notice; the goodwill percentage and the notice credit read the incorrect-amount notice and its finding, not the earlier not-received notice."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_sender_accounts",
+            "arguments": {
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5"
+            },
+            "objective": "Read his Personal Sender Account: Paloma Verified Plus, active, opened 2022-01-20 (level effective 2025-03-04).",
+            "necessity": "The valuation rate and the delivery margin are decided from the account level; the tenure rate bonus from the opening date, not from the level date."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_recipients",
+            "arguments": {
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5"
+            },
+            "objective": "Confirm the saved recipient Juana Ixcot Tum, Banco Industrial account 0300154872 and Tigo Money wallet +502 5512 3390.",
+            "necessity": "Confirms the shortfall delivery goes to the same bank account the short payout used and links the Mobile Wallet credits to the same recipient."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_wallet_transfers",
+            "arguments": {
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5"
+            },
+            "objective": "List his Mobile Wallet transfers to his mother's Tigo Money wallet: five credited Mobile Wallet Economy transfers of 150.00.",
+            "necessity": "Shows the wallet credits are completed transfers of this customer, the evidence of the wallet rate bonus."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_wallet_ledger",
+            "arguments": {
+                "customer_id": "8f4970d6-489b-46d9-a305-674f0084b5a5"
+            },
+            "objective": "Read the wallet credits sent on 2025-09-12, 2025-12-05, 2026-02-06, 2026-05-08 and 2026-07-31.",
+            "necessity": "The wallet rate bonus counts Mobile Wallet credits within twelve whole months of the handling date; the 2025-09-12 credit is the near-miss outside the window."
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "book_shortfall_credit_979e59e7"
+            },
+            "objective": "Unlock the make-good credit tool named by the incorrect-amount make-good policy.",
+            "necessity": "First half of the unlock/call pair for the prerequisite problem; no DB effect, unlocked once."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "book_shortfall_credit_979e59e7",
+                "arguments": {
+                    "bank_transfer_id": "8c674512-e08c-4020-9e88-1788262aa3b3",
+                    "related_entry_id": "7fd1e3d8-df37-4bd1-916d-18138d8a05af",
+                    "credit_amount_usd": 38.47
+                }
+            },
+            "objective": "Book Paloma's make-good credit of 38.47 against the short payout of PB-260824-23164, raising the principal held on the transfer from 0.00 to 38.47.",
+            "necessity": "bank_ext_shortfall_credit computes credit_amount_usd; it is owed once the incorrect amount was found, and the shortfall delivery is not made until this credit stands on the ledger.",
+            "argument_uniqueness_tracing": {
+                "credit_amount_usd": "38.47 = RND(shortfall value 33.6243 x (100 + 4) / 100 + notice credit 1.50 + transfer-size credit 2.00). Shortfall value: 249.98 GTQ short (9468.76 disclosed - 9218.78 sent) divided by the partner's rate 7.4345 because the gap 2.64% >= 2 and the account is Verified Plus; goodwill 4% (11 days from the incorrect-amount notice to the finding); notice credit 1.50 (notice 4 days after availability); transfer-size credit 2.00 (1243.99 paid).",
+                "bank_transfer_id": "8c674512-e08c-4020-9e88-1788262aa3b3. Basis: the docstring asks for 'the reference number of the Bank Deposit transfer being made good, as returned by the Bank Deposit transfer lookup for this customer'; find_bank_transfers returns it for PB-260824-23164, the only transfer of this customer. Uniqueness: no other Bank Deposit transfer exists.",
+                "related_entry_id": "7fd1e3d8-df37-4bd1-916d-18138d8a05af. Basis: the rule books the credit 'against the payout that came up short' and the docstring asks for 'the payout money movement that came up short'. Uniqueness: find_bank_ledger shows a single bank_payout_sent row on the transfer (attempt 1, 9218.78 GTQ)."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "choose_shortfall_delivery_49c1959f"
+            },
+            "objective": "Hand the shortfall delivery choice over to the customer, since choosing the remedy is his own act.",
+            "necessity": "The remedy choice belongs to the customer under error resolution; the hand-over has no DB effect and happens once."
+        },
+        {
+            "owner": "user",
+            "tool": "call_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "choose_shortfall_delivery_49c1959f",
+                "arguments": {
+                    "bank_transfer_id": "8c674512-e08c-4020-9e88-1788262aa3b3",
+                    "related_case_id": "655f4b72-2a38-4019-9dfa-0fc69dd22c0a",
+                    "payout_attempt": 2,
+                    "payout_usd": 38.47,
+                    "delivery_rate": 7.7634,
+                    "receive_amount": 298.66,
+                    "date_available": "2026-09-21"
+                }
+            },
+            "objective": "The customer chooses delivery of the shortfall: payout attempt 2 sends 38.47 USD as 298.66 GTQ at 7.7634 to the same Banco Industrial account, available 2026-09-21; the transfer goes back in transit and the principal held returns to 0.00.",
+            "necessity": "bank_ext_shortfall_delivery computes receive_amount at this handling time, after the make-good credit landed; scoring unwraps to choose_shortfall_delivery_49c1959f.",
+            "argument_uniqueness_tracing": {
+                "receive_amount": "298.66 = RND(make-good held 38.47 x delivery rate 7.7634). Rate: booking-day reference 7.6361 / 0.989 = 7.721031, multiplied by (100 - reduced delivery margin 0.45 (Verified Plus) + wallet bonus 0.10 (4 wallet credits in twelve months) + tenure bonus 0.15 (55 months since opening)) / 100 = 7.705589, raised by the delay uplift 0.75% (23 days since the short payout on a batch-rail tier: 3 whole weeks x 0.25%) = 7.763381, rounded to 7.7634.",
+                "delivery_rate": "7.7634: the make-good delivery rate worked out in the same rule ('The make-good delivery rate is the booking-day reference multiplied by one hundred less the delivery margin plus the wallet rate bonus and the tenure rate bonus, all in percentage points, over one hundred, then raised by the delay uplift as a percentage of that result, rounded half up to four decimals'), which the agent computes and reads out; it is the intermediate the receive amount rests on, so any agent that gets the receive amount right has it.",
+                "payout_usd": "38.47. Basis: the delivery 'pays out the whole make-good Paloma holds on the transfer', and 'The make-good held is the principal Paloma holds on the transfer: the principal collected plus Paloma's credits, less the payouts sent and the principal refunds issued' = 1240.00 + 38.47 - 1240.00 - 0 = 38.47, also shown as principal_held_usd in the credit receipt of step 10. Uniqueness: no other credit or refund exists on the transfer.",
+                "bank_transfer_id": "8c674512-e08c-4020-9e88-1788262aa3b3. Basis: the docstring asks for 'the reference number of the Bank Deposit transfer whose shortfall is delivered, as the support agent reads it out from the transfer record'. Uniqueness: the only transfer of this customer, PB-260824-23164.",
+                "related_case_id": "655f4b72-2a38-4019-9dfa-0fc69dd22c0a. Basis: base error resolution: 'A remedy can be chosen only after a decision of error_found on that notice', and the docstring asks for 'the error notice on which the incorrect amount was found'. Uniqueness: of the two notices, only the incorrect-amount notice of 2026-08-31 has an error_found decision; the not-received notice of 2026-08-27 was decided no_error.",
+                "payout_attempt": "2. Basis: the delivery goes out 'as a new payout attempt', and the base payout event numbers attempts '1 for the first payout, 2 and up for each resend'; the ledger holds one payout with attempt 1. Uniqueness: the next attempt number is 2.",
+                "date_available": "2026-09-21. Basis: 'The delivery's date of availability is the choice date plus the tier's redelivery business days, counted in Paloma business days'; the choice date is the handling date 2026-09-18 (a Friday), Standard's redelivery business days are 1, and the next Paloma business day is Monday 2026-09-21 (not a Federal Reserve holiday). Uniqueness: no other counting is stated."
+            }
+        }
+    ],
+    "computations": [
+        {
+            "policy_id": "bank_ext_shortfall_credit",
+            "target_holding_id": "8c674512-e08c-4020-9e88-1788262aa3b3",
+            "step": 10,
+            "arg": "credit_amount_usd",
+            "expected": 38.47,
+            "baseline_result": 32.74,
+            "factor_trace": [
+                "valuation_rate (parameter, cross-difficulty account, multi-source): the latest payout applied 7.4345 against the locked 7.6361, a partner rate gap of 2.64% >= material gap 2, and the Personal Sender Account is Paloma Verified Plus (level 3) -> valuation rate 7.4345, shortfall value = 249.98 / 7.4345 = 33.6243; the baseline valuation rate (the locked 7.6361, shortfall value 249.98 / 7.6361 = 32.7366) gives 37.55.",
+                "decision_goodwill (method): incorrect-amount notice 2026-08-31 to the error_found finding on that notice 2026-09-11 = 11 days, at least the mid-decision 7 but under the slow-decision 14 -> the flat-percentage method, 4%; near-miss: measuring from the earlier not-received notice of 2026-08-27 gives 15 days and the weekly-accrual method (3% x 2 whole weeks = 6%, credit 39.14); the baseline (no goodwill) gives 37.12.",
+                "notice_credit (parameter): date of availability 2026-08-27 to the incorrect-amount notice 2026-08-31 = 4 days <= prompt-notice 7 -> 1.50; the baseline (none) gives 36.97.",
+                "transfer_size_credit (parameter): principal collected 1240.00 + fees collected 3.99 = 1243.99 >= large-transfer amount 1000 -> 2.00; the baseline (none) gives 36.47.",
+                "shortfall_local = 9468.76 disclosed - 9218.78 sent = 249.98 (plain read of the transfer and its latest payout); shortfall_value_usd = shortfall_local / valuation_rate (plumbing).",
+                "result = RND(33.6243 x 104 / 100 + 1.50 + 2.00, 2) = RND(38.4693) = 38.47.",
+                "Fall-back (every factor at its baseline): 249.98 / 7.6361 = 32.7366 -> 32.74."
+            ],
+            "factor_sensitivity": [
+                {
+                    "factor": "valuation_rate",
+                    "tier_taken": "the partner rate gap is at least the material gap and the Personal Sender Account is at Paloma Verified Plus or above",
+                    "baseline_result": 37.55
+                },
+                {
+                    "factor": "decision_goodwill",
+                    "tier_taken": "it came at least the mid-decision count but fewer than the slow-decision count of days after the notice",
+                    "baseline_result": 37.12
+                },
+                {
+                    "factor": "notice_credit",
+                    "tier_taken": "the incorrect-amount notice was given no more than the prompt-notice count of calendar days after the date of availability",
+                    "baseline_result": 36.97
+                },
+                {
+                    "factor": "transfer_size_credit",
+                    "tier_taken": "the principal collected plus the fees collected is at or above the large-transfer amount",
+                    "baseline_result": 36.47
+                }
+            ]
+        },
+        {
+            "policy_id": "bank_ext_shortfall_delivery",
+            "target_holding_id": "8c674512-e08c-4020-9e88-1788262aa3b3",
+            "step": 12,
+            "arg": "receive_amount",
+            "expected": 298.66,
+            "baseline_result": 293.76,
+            "factor_trace": [
+                "delivery_margin (parameter, cross-difficulty account): Paloma Verified Plus -> reduced delivery margin 0.45 percentage points instead of the tier margin 1.10; the baseline margin 1.10 (which with no bonus reproduces the locked rate 7.6361) gives 296.71.",
+                "delay_uplift (method, multi-source): the short payout of 2026-08-26 to the handling date 2026-09-18 = 23 days >= long-wait 21 and Standard pays on a batch rail (1 delivery business day) -> weekly accrual 0.25% x 3 whole weeks = 0.75% (under the 2.00 cap); the baseline (no uplift) gives 296.43.",
+                "wallet_rate_bonus (parameter, cross-difficulty wallet): wallet credits sent within twelve whole months of 2026-09-18 are 2025-12-05, 2026-02-06, 2026-05-08 and 2026-07-31 = 4 -> mid wallet bonus 0.10 percentage points; near-miss: the 2025-09-12 credit is 12 whole months back and excluded (counting it gives 5, the high bonus 0.20 and 298.96); the baseline (none) gives 298.36.",
+                "tenure_rate_bonus (parameter, cross-difficulty account): opened 2022-01-20 -> 55 whole months, at least the mid tenure 24 but under 60 -> 0.15 percentage points; near-miss: the level date 2025-03-04 gives 18 months and no bonus; the baseline (none) gives 298.21.",
+                "make_good_held_usd = 1240.00 collected + 38.47 credited (step 10) - 1240.00 paid out - 0 refunds = 38.47; booking_reference_rate = 7.6361 / (1 - 1.10/100) = 7.721031.",
+                "delivery_rate = RND(7.721031 x (100 - 0.45 + 0.10 + 0.15) / 100 x 100.75 / 100, 4) = RND(7.763381) = 7.7634; result = RND(38.47 x 7.7634, 2) = RND(298.6580) = 298.66.",
+                "Fall-back (every factor at its baseline): rate 7.6361, 38.47 x 7.6361 = 293.76."
+            ],
+            "factor_sensitivity": [
+                {
+                    "factor": "delivery_margin",
+                    "tier_taken": "the Personal Sender Account is at Paloma Verified Plus",
+                    "baseline_result": 296.71
+                },
+                {
+                    "factor": "delay_uplift",
+                    "tier_taken": "the wait since the short payout reaches the long-wait count and the tier pays out on a batch rail",
+                    "baseline_result": 296.43
+                },
+                {
+                    "factor": "wallet_rate_bonus",
+                    "tier_taken": "at least the mid wallet count but fewer than the high wallet count",
+                    "baseline_result": 298.36
+                },
+                {
+                    "factor": "tenure_rate_bonus",
+                    "tier_taken": "it has been open at least the mid tenure but less than the long tenure",
+                    "baseline_result": 298.21
+                }
+            ]
+        }
+    ],
+    "prerequisite_closure": {
+        "root_problem": "bank_ext_shortfall_delivery",
+        "edges": [
+            {
+                "from": "bank_ext_shortfall_delivery",
+                "to": "bank_ext_shortfall_credit",
+                "kind": "value_input",
+                "gate": "make_good_held_usd",
+                "form": "state",
+                "condition": "A credit from Paloma for an incorrect-amount shortfall, booked against the payout that came up short, stands on the transfer's ledger, so the principal Paloma holds on the transfer is that make-good.",
+                "policy_source": "The shortfall delivery is not made until the transfer's ledger carries Paloma's make-good credit for the incorrect amount.",
+                "resolved_by": "book_shortfall_credit_979e59e7",
+                "unresolved_at_frozen_time": {
+                    "why_false": "The incorrect amount was found on 2026-09-11, yet the transfer's ledger carries only the funds received, the fee charge, the short payout and the Paloma-error fee refund: no Paloma credit for an incorrect-amount shortfall exists, and the principal Paloma holds on the transfer is 0.00 (1240.00 collected less 1240.00 paid out).",
+                    "evidence": [
+                        "initial_state.bank_transfers.8c674512-e08c-4020-9e88-1788262aa3b3.principal_held_usd = 0.0",
+                        "initial_state.bank_ledger.ef38660f-87d5-4b0e-886e-9a5dc87e4973.amount_usd = 1240.0",
+                        "initial_state.bank_ledger.7fd1e3d8-df37-4bd1-916d-18138d8a05af.amount_usd = 1240.0",
+                        "initial_state.bank_cases.e2a72ddb-85f3-489a-8cb2-30fe0ba82d2a.case_outcome = error_found"
+                    ],
+                    "flips_to_true_by": "The make-good credit write books 38.47 with reason incorrect_amount_shortfall pointing at the short payout; the make-good held (principal collected plus credits less payouts and refunds) rises from 0.00 to 38.47, which the delivery converts at 7.7634 into 298.66 GTQ."
+                }
+            }
+        ],
+        "resolution_order": [
+            "bank_ext_shortfall_credit",
+            "bank_ext_shortfall_delivery"
+        ],
+        "order_uniqueness": "Single edge, no parallel prerequisites. The delivery rule's own sentence pins the order ('The shortfall delivery is not made until the transfer's ledger carries Paloma's make-good credit for the incorrect amount.'): the credit is written first (step 10), the customer's delivery choice second (step 12). Reversed, the delivery reads a make-good held of 0.00 and delivers 0.00 GTQ.",
+        "edge_load_bearing": [
+            {
+                "edge": "bank_ext_shortfall_delivery -> bank_ext_shortfall_credit",
+                "skipped_effect": "Skipping the make-good credit (verification run): make_good_held_usd 38.47 -> 0.00 and receive_amount 298.66 -> 0.00; the terminal ledger also lacks the 38.47 incorrect_amount_shortfall credit and the payout would carry 0.00 GTQ."
+            }
+        ],
+        "no_user_hint": "The persona asks only for the missing quetzales to be sent to his mother's account. It never mentions a credit, Paloma putting in money, valuation, rates or any amount Paloma owes in dollars; its one line about Paloma's side is a passive reaction ('If the agent says Paloma first has to put the money on its side of the transfer before anything goes out, you say go ahead') that fires only after the agent has said so.",
+        "tools_do_not_block": "choose_shortfall_delivery_49c1959f reads the transfer only to copy customer_id and the held principal, then unconditionally records the remedy, books the payout with the amounts it is given and moves the transfer to in_transit; it never checks for a make-good credit, an error_found decision or the held principal, never raises and never returns an error. book_shortfall_credit_979e59e7 likewise books whatever amount it is given."
+    },
+    "charter_scope": {
+        "extended_policies": [
+            "bank_ext_shortfall_credit",
+            "bank_ext_shortfall_delivery"
+        ],
+        "task_tools": [
+            "book_shortfall_credit_979e59e7",
+            "choose_shortfall_delivery_49c1959f"
+        ]
+    },
+    "required_documents": [
+        "bank_ext_shortfall_credit",
+        "bank_ext_shortfall_delivery"
+    ]
+}

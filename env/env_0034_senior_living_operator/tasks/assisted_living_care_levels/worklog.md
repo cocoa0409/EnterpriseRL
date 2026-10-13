@@ -1,0 +1,12 @@
+# worklog — assisted_living_care_levels (M=2)
+
+- Draws (draw_counts.py --tasks 2): task 0 = 3 prerequisite problems, factor_counts [4, 6, 4, 5]; task 1 = 1 prerequisite problem, factor_counts [4, 5].
+- Decision (unattended): the only customer-signed writes in this claim that carry a figure are the apartment change and a card payment (a notice of termination carries none), so task 0's user write is the apartment change and task 1's is the advance card payment.
+- Task 0 tree: apartment transfer fee (root, user, 6 factors) <- level-increase charge (4) and <- late fee (4) <- absence care relief (5). Gold 480.47 / 48.13 / 67.21 / 292.50.
+- Task 1 tree: advance payment (root, user, 5 factors) <- returned payment fee (4). Gold 59.42 / 21579.04.
+- Overrides are declared per policy in `overwrite`; the level-increase charge's override of the plan-discount-credit sentence retires the entrance_agreement_occupied gate for credit writes (declared, intended).
+- Revisions: helper function in task_tools.py inlined (was read as an undiscoverable tool); empty id fields in seeds set to null (FK gate); one solvability evidence path added; one invalid baseline.params key removed.
+- Session was cut once after task 0 closed; resumed with task 1 without redoing task 0.
+- Temporary authoring scripts (_author_seed0.py, _author_gold0.py, _author_seed1.py, _verify.py) and __pycache__ removed at the end.
+- Round 2 (policy-task audit): F1 closed by declaring the level-increase charge's overrides of assisted_monthly_billing s1-s2 and assisted_level_assignment s1; F2 closed by rebuilding included_addon_offset (method: whole included add-on / price-difference / none), plan_discount_inside_charge and plan_reduction (vesting: full / half / none) and addon_recurrence (re-price / resume month-before / repeat latest). O2, O3 (decrease and general discount restated), O4, O5 also closed; O7 and the rounding observation documented. Scored values unchanged; task 0 seed adjusted for vesting (May/June 2026 plan discounts, May late fee and payments).
+- Round 3 (policy-task audit revision_2): F3 closed by declaring, in the level-increase policy, the override of assisted_entrance_and_respite_credits s2 (plan discount percentages now vest: full at 60 whole months of occupancy, half before), which the Entrance charter delegates to the assisted living charter; O8 closed by restating the general billing and level-band rules outside the level-increase charge. No scored value changed.

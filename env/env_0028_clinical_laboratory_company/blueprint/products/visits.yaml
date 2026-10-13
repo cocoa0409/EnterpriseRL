@@ -1,0 +1,927 @@
+category: visits
+display_name: Specimen Collection Appointments
+
+# One holding = one collection visit for one patient: a Patient Service Center (PSC) visit, a
+# timed or pediatric collection, a mobile phlebotomist visit to the patient's home, or a bedside
+# draw at a care facility. The visit collects the specimen for one order (initial collection,
+# recollection after a rejection, or one draw of a standing order).
+binding:
+  holding_table: visits
+  event_tables: [visit_events]
+  status_field: status
+  variant_field: variant_name
+  quantity_fields: {fee_balance: collection_fee_balance}
+
+lifecycle:
+  states: [booked, checked_in, collected, incomplete, cancelled, no_show]
+  transitions:
+    - {from: booked, to: checked_in, by: system, means: The patient arrives (or the phlebotomist arrives at the home or facility) and is checked in.}
+    - {from: checked_in, to: collected, by: system, means: The phlebotomist completes the collection and the specimen leaves for the laboratory.}
+    - {from: checked_in, to: incomplete, by: system, means: The collection could not be completed (unsuccessful draw, patient not fasting, patient left, or no valid order).}
+    - {from: booked, to: cancelled, by: agent, means: The visit is cancelled before check-in at the patient's request or by the laboratory.}
+    - {from: booked, to: no_show, by: system, means: The patient was not present by the end of the arrival grace period.}
+
+accounts:
+  - key: collection_fee_balance
+    unit: USD
+    meaning: Collection-service fees the patient owes on the visit (trip, additional-patient, weekend, late-cancellation and no-show fees); assessments post in, payments and waivers post out, refunds of paid amounts post back in, and fee_balance on the visit is the running sum.
+
+parameter_schema:
+  booking_required: "Boolean; whether the visit type exists only by appointment (false = created at walk-in arrival)."
+  online_booking_available: "Boolean; whether the patient can book this visit type through the online scheduler."
+  provider_scheduling_allowed: "Boolean; whether the ordering provider's office or the care facility can book on the patient's behalf."
+  same_day_booking_allowed: "Boolean; whether a visit may be booked for the booking date itself."
+  booking_horizon_days: "Calendar days ahead of the booking date for which a visit may be booked (0 = no advance booking)."
+  minimum_booking_lead_days: "Calendar days that must separate the booking date from the appointment date."
+  slot_length_minutes: "Length of one bookable slot or arrival window in minutes (0 = no slots)."
+  earliest_slot_time: "HH:MM; earliest appointment (or walk-in) start time."
+  latest_slot_time: "HH:MM; latest appointment (or walk-in) start time."
+  weekend_service_available: "Boolean; whether Saturday and Sunday appointments are offered."
+  weekend_surcharge: "USD; surcharge assessed on a completed visit whose appointment date is a Saturday or Sunday (0.00 = none)."
+  visit_duration_minutes: "Minutes the patient should plan to spend for the collection."
+  patient_must_remain_on_site: "Boolean; whether the patient must stay at the PSC for the whole timed collection."
+  arrival_grace_minutes: "Minutes after the appointment start (or arrival-window start) during which arrival still counts as on time."
+  late_arrival_handling: "Enum (convert_to_walk_in, rebook_required, no_show, not_applicable); what happens to an arrival after the grace period."
+  max_reschedules_per_visit: "Integer; maximum times one visit can be moved to another date or time."
+  free_change_notice_hours: "Hours before the appointment start at or beyond which a patient cancellation or reschedule carries no fee (0 = always free)."
+  late_cancellation_fee: "USD; fee for a patient cancellation, or a reschedule, made with less than free_change_notice_hours notice (0.00 = none)."
+  no_show_fee: "USD; fee assessed when a visit is recorded as no_show (0.00 = none)."
+  courtesy_waivers_per_12_months: "Integer; late-cancellation or no-show fees that may be waived as a first-occurrence courtesy within any rolling 365 days."
+  fee_waiver_request_window_days: "Calendar days after a fee was assessed within which the patient may ask for a courtesy or weather waiver."
+  no_show_restriction_count: "Integer; no-shows within restriction_lookback_days that bar new bookings of this visit type (0 = never restricted)."
+  restriction_lookback_days: "Calendar days counted back from the booking date over which no-shows are counted for the booking restriction."
+  trip_fee_by_zone: "Mapping service zone -> USD trip fee assessed when the visit is collected; PSC and facility visits map their single zone to 0.00."
+  service_zones_offered: "List of service zones the visit type serves (psc_onsite, zone_1 = up to 10 road miles, zone_2 = over 10 to 25, zone_3 = over 25 to 40, facility_onsite)."
+  additional_patient_fee: "USD per additional household member collected at the same home visit."
+  max_additional_patients: "Integer; maximum additional household members per visit."
+  medicare_homebound_trip_fee_waived: "Boolean; whether no trip fee is assessed when the patient is certified Medicare-homebound (collection and travel are billed to Medicare instead)."
+  recollection_visit_fees_waived: "Boolean; whether a visit whose purpose is recollection carries no collection-service fee of any kind."
+  recollection_priority_days: "Calendar days after the request within which a recollection visit is guaranteed a slot (0 = no priority)."
+  fasting_collections_allowed: "Boolean; whether tests needing fasting may be collected on this visit type."
+  fasting_latest_start_time: "HH:MM; latest start time for a collection that includes a test needing fasting."
+  minimum_patient_age_years: "Whole years; youngest patient age on the appointment date the visit type serves."
+  maximum_patient_age_years: "Whole years; oldest patient age on the appointment date the visit type serves."
+  guardian_required_under_age_years: "Whole years; patients younger than this must be accompanied by a parent or legal guardian."
+  max_orders_per_visit: "Integer; maximum orders collected in one visit."
+  max_venipuncture_attempts: "Integer; venipuncture attempts per visit after which the collection is recorded incomplete."
+  incomplete_rebook_fees_waived: "Boolean; whether the visit rebooked after an incomplete collection carries no fee and the incomplete visit itself is assessed nothing."
+  incomplete_rebook_priority_days: "Calendar days after the incomplete visit within which the rebooked visit is guaranteed a slot (0 = no priority)."
+  fee_payment_methods: "List of payment methods accepted for collection-service fees ([] = no patient-paid fees)."
+  fee_due_timing: "Enum (at_completion, not_applicable); when collection-service fees are charged to the card on file."
+  fee_refund_on_laboratory_cancellation: "Boolean; whether every fee paid on a visit the laboratory cancels is refunded."
+  fee_refund_processing_business_days: "Business days within which a fee refund is issued to the original payment method."
+  severe_weather_fee_waiver: "Boolean; whether fees arising from a weather closure day declared by the laboratory are waived."
+  reminder_lead_hours: "Hours before the appointment start at which the reminder text and email are sent (0 = none)."
+  wait_time_target_minutes: "Minutes; published lobby wait target, a service goal and not a guarantee (0 = not applicable)."
+  specimen_drop_off_allowed: "Boolean; whether a patient may drop off a self-collected specimen (urine) at the visit location without a draw."
+  max_open_appointments_per_order: "Integer; booked (not yet checked-in) visits allowed at one time for the same order."
+  standing_series_prebook_max: "Integer; future draws of one standing order that may be booked at the same time (0 = one at a time)."
+  waitlist_available: "Boolean; whether the patient can join a waitlist for an earlier slot."
+
+variants:
+  - name: Patient Service Center Walk-In Visit
+    rank: 1
+    entry_gate: {booking: none, location: psc_onsite, minimum_age_years: 5}
+    parameters:
+      booking_required: false
+      online_booking_available: false
+      provider_scheduling_allowed: false
+      same_day_booking_allowed: true
+      booking_horizon_days: 0
+      minimum_booking_lead_days: 0
+      slot_length_minutes: 0
+      earliest_slot_time: "06:30"
+      latest_slot_time: "16:30"
+      weekend_service_available: true
+      weekend_surcharge: 0.00
+      visit_duration_minutes: 15
+      patient_must_remain_on_site: false
+      arrival_grace_minutes: 0
+      late_arrival_handling: not_applicable
+      max_reschedules_per_visit: 0
+      free_change_notice_hours: 0
+      late_cancellation_fee: 0.00
+      no_show_fee: 0.00
+      courtesy_waivers_per_12_months: 0
+      fee_waiver_request_window_days: 30
+      no_show_restriction_count: 0
+      restriction_lookback_days: 365
+      trip_fee_by_zone: {psc_onsite: 0.00}
+      service_zones_offered: [psc_onsite]
+      additional_patient_fee: 0.00
+      max_additional_patients: 0
+      medicare_homebound_trip_fee_waived: false
+      recollection_visit_fees_waived: true
+      recollection_priority_days: 0
+      fasting_collections_allowed: true
+      fasting_latest_start_time: "10:00"
+      minimum_patient_age_years: 5
+      maximum_patient_age_years: 120
+      guardian_required_under_age_years: 18
+      max_orders_per_visit: 6
+      max_venipuncture_attempts: 2
+      incomplete_rebook_fees_waived: true
+      incomplete_rebook_priority_days: 0
+      fee_payment_methods: [credit_card, debit_card, hsa_fsa_card]
+      fee_due_timing: not_applicable
+      fee_refund_on_laboratory_cancellation: true
+      fee_refund_processing_business_days: 5
+      severe_weather_fee_waiver: true
+      reminder_lead_hours: 0
+      wait_time_target_minutes: 30
+      specimen_drop_off_allowed: true
+      max_open_appointments_per_order: 1
+      standing_series_prebook_max: 0
+      waitlist_available: false
+  - name: Patient Service Center Scheduled Appointment
+    rank: 2
+    entry_gate: {booking: appointment, location: psc_onsite, minimum_age_years: 5}
+    parameters:
+      booking_required: true
+      online_booking_available: true
+      provider_scheduling_allowed: true
+      same_day_booking_allowed: true
+      booking_horizon_days: 30
+      minimum_booking_lead_days: 0
+      slot_length_minutes: 15
+      earliest_slot_time: "06:30"
+      latest_slot_time: "16:30"
+      weekend_service_available: true
+      weekend_surcharge: 0.00
+      visit_duration_minutes: 15
+      patient_must_remain_on_site: false
+      arrival_grace_minutes: 10
+      late_arrival_handling: convert_to_walk_in
+      max_reschedules_per_visit: 3
+      free_change_notice_hours: 0
+      late_cancellation_fee: 0.00
+      no_show_fee: 0.00
+      courtesy_waivers_per_12_months: 0
+      fee_waiver_request_window_days: 30
+      no_show_restriction_count: 0
+      restriction_lookback_days: 365
+      trip_fee_by_zone: {psc_onsite: 0.00}
+      service_zones_offered: [psc_onsite]
+      additional_patient_fee: 0.00
+      max_additional_patients: 0
+      medicare_homebound_trip_fee_waived: false
+      recollection_visit_fees_waived: true
+      recollection_priority_days: 3
+      fasting_collections_allowed: true
+      fasting_latest_start_time: "10:00"
+      minimum_patient_age_years: 5
+      maximum_patient_age_years: 120
+      guardian_required_under_age_years: 18
+      max_orders_per_visit: 6
+      max_venipuncture_attempts: 2
+      incomplete_rebook_fees_waived: true
+      incomplete_rebook_priority_days: 3
+      fee_payment_methods: [credit_card, debit_card, hsa_fsa_card]
+      fee_due_timing: not_applicable
+      fee_refund_on_laboratory_cancellation: true
+      fee_refund_processing_business_days: 5
+      severe_weather_fee_waiver: true
+      reminder_lead_hours: 24
+      wait_time_target_minutes: 15
+      specimen_drop_off_allowed: true
+      max_open_appointments_per_order: 1
+      standing_series_prebook_max: 4
+      waitlist_available: true
+  - name: Fasting Priority Appointment
+    rank: 3
+    entry_gate: {booking: appointment, location: psc_onsite, minimum_age_years: 12, fasting_test_on_order: true}
+    parameters:
+      booking_required: true
+      online_booking_available: true
+      provider_scheduling_allowed: true
+      same_day_booking_allowed: false
+      booking_horizon_days: 30
+      minimum_booking_lead_days: 1
+      slot_length_minutes: 15
+      earliest_slot_time: "06:30"
+      latest_slot_time: "09:30"
+      weekend_service_available: true
+      weekend_surcharge: 0.00
+      visit_duration_minutes: 15
+      patient_must_remain_on_site: false
+      arrival_grace_minutes: 10
+      late_arrival_handling: convert_to_walk_in
+      max_reschedules_per_visit: 3
+      free_change_notice_hours: 0
+      late_cancellation_fee: 0.00
+      no_show_fee: 0.00
+      courtesy_waivers_per_12_months: 0
+      fee_waiver_request_window_days: 30
+      no_show_restriction_count: 0
+      restriction_lookback_days: 365
+      trip_fee_by_zone: {psc_onsite: 0.00}
+      service_zones_offered: [psc_onsite]
+      additional_patient_fee: 0.00
+      max_additional_patients: 0
+      medicare_homebound_trip_fee_waived: false
+      recollection_visit_fees_waived: true
+      recollection_priority_days: 3
+      fasting_collections_allowed: true
+      fasting_latest_start_time: "09:30"
+      minimum_patient_age_years: 12
+      maximum_patient_age_years: 120
+      guardian_required_under_age_years: 18
+      max_orders_per_visit: 6
+      max_venipuncture_attempts: 2
+      incomplete_rebook_fees_waived: true
+      incomplete_rebook_priority_days: 3
+      fee_payment_methods: [credit_card, debit_card, hsa_fsa_card]
+      fee_due_timing: not_applicable
+      fee_refund_on_laboratory_cancellation: true
+      fee_refund_processing_business_days: 5
+      severe_weather_fee_waiver: true
+      reminder_lead_hours: 24
+      wait_time_target_minutes: 10
+      specimen_drop_off_allowed: true
+      max_open_appointments_per_order: 1
+      standing_series_prebook_max: 4
+      waitlist_available: true
+  - name: Timed Glucose Tolerance Collection
+    rank: 4
+    entry_gate: {booking: appointment, location: psc_onsite, minimum_age_years: 12, fasting_test_on_order: true}
+    parameters:
+      booking_required: true
+      online_booking_available: false
+      provider_scheduling_allowed: true
+      same_day_booking_allowed: false
+      booking_horizon_days: 30
+      minimum_booking_lead_days: 1
+      slot_length_minutes: 180
+      earliest_slot_time: "07:00"
+      latest_slot_time: "10:00"
+      weekend_service_available: false
+      weekend_surcharge: 0.00
+      visit_duration_minutes: 180
+      patient_must_remain_on_site: true
+      arrival_grace_minutes: 15
+      late_arrival_handling: rebook_required
+      max_reschedules_per_visit: 2
+      free_change_notice_hours: 0
+      late_cancellation_fee: 0.00
+      no_show_fee: 0.00
+      courtesy_waivers_per_12_months: 0
+      fee_waiver_request_window_days: 30
+      no_show_restriction_count: 0
+      restriction_lookback_days: 365
+      trip_fee_by_zone: {psc_onsite: 0.00}
+      service_zones_offered: [psc_onsite]
+      additional_patient_fee: 0.00
+      max_additional_patients: 0
+      medicare_homebound_trip_fee_waived: false
+      recollection_visit_fees_waived: true
+      recollection_priority_days: 7
+      fasting_collections_allowed: true
+      fasting_latest_start_time: "10:00"
+      minimum_patient_age_years: 12
+      maximum_patient_age_years: 120
+      guardian_required_under_age_years: 18
+      max_orders_per_visit: 2
+      max_venipuncture_attempts: 2
+      incomplete_rebook_fees_waived: true
+      incomplete_rebook_priority_days: 7
+      fee_payment_methods: [credit_card, debit_card, hsa_fsa_card]
+      fee_due_timing: not_applicable
+      fee_refund_on_laboratory_cancellation: true
+      fee_refund_processing_business_days: 5
+      severe_weather_fee_waiver: true
+      reminder_lead_hours: 48
+      wait_time_target_minutes: 10
+      specimen_drop_off_allowed: false
+      max_open_appointments_per_order: 1
+      standing_series_prebook_max: 0
+      waitlist_available: false
+  - name: Pediatric Collection Appointment
+    rank: 5
+    entry_gate: {booking: appointment, location: psc_onsite, maximum_age_years: 17, guardian_present: true}
+    parameters:
+      booking_required: true
+      online_booking_available: true
+      provider_scheduling_allowed: true
+      same_day_booking_allowed: false
+      booking_horizon_days: 30
+      minimum_booking_lead_days: 1
+      slot_length_minutes: 30
+      earliest_slot_time: "08:00"
+      latest_slot_time: "15:30"
+      weekend_service_available: false
+      weekend_surcharge: 0.00
+      visit_duration_minutes: 30
+      patient_must_remain_on_site: false
+      arrival_grace_minutes: 10
+      late_arrival_handling: rebook_required
+      max_reschedules_per_visit: 3
+      free_change_notice_hours: 0
+      late_cancellation_fee: 0.00
+      no_show_fee: 0.00
+      courtesy_waivers_per_12_months: 0
+      fee_waiver_request_window_days: 30
+      no_show_restriction_count: 0
+      restriction_lookback_days: 365
+      trip_fee_by_zone: {psc_onsite: 0.00}
+      service_zones_offered: [psc_onsite]
+      additional_patient_fee: 0.00
+      max_additional_patients: 0
+      medicare_homebound_trip_fee_waived: false
+      recollection_visit_fees_waived: true
+      recollection_priority_days: 5
+      fasting_collections_allowed: true
+      fasting_latest_start_time: "10:00"
+      minimum_patient_age_years: 0
+      maximum_patient_age_years: 17
+      guardian_required_under_age_years: 18
+      max_orders_per_visit: 4
+      max_venipuncture_attempts: 2
+      incomplete_rebook_fees_waived: true
+      incomplete_rebook_priority_days: 5
+      fee_payment_methods: [credit_card, debit_card, hsa_fsa_card]
+      fee_due_timing: not_applicable
+      fee_refund_on_laboratory_cancellation: true
+      fee_refund_processing_business_days: 5
+      severe_weather_fee_waiver: true
+      reminder_lead_hours: 24
+      wait_time_target_minutes: 15
+      specimen_drop_off_allowed: true
+      max_open_appointments_per_order: 1
+      standing_series_prebook_max: 2
+      waitlist_available: true
+  - name: Mobile In-Home Collection Visit
+    rank: 6
+    entry_gate: {booking: appointment, location: [zone_1, zone_2, zone_3], minimum_age_years: 2}
+    parameters:
+      booking_required: true
+      online_booking_available: true
+      provider_scheduling_allowed: true
+      same_day_booking_allowed: false
+      booking_horizon_days: 45
+      minimum_booking_lead_days: 2
+      slot_length_minutes: 60
+      earliest_slot_time: "07:00"
+      latest_slot_time: "15:00"
+      weekend_service_available: true
+      weekend_surcharge: 35.00
+      visit_duration_minutes: 30
+      patient_must_remain_on_site: false
+      arrival_grace_minutes: 15
+      late_arrival_handling: no_show
+      max_reschedules_per_visit: 2
+      free_change_notice_hours: 24
+      late_cancellation_fee: 40.00
+      no_show_fee: 60.00
+      courtesy_waivers_per_12_months: 1
+      fee_waiver_request_window_days: 30
+      no_show_restriction_count: 2
+      restriction_lookback_days: 365
+      trip_fee_by_zone: {zone_1: 75.00, zone_2: 95.00, zone_3: 125.00}
+      service_zones_offered: [zone_1, zone_2, zone_3]
+      additional_patient_fee: 35.00
+      max_additional_patients: 3
+      medicare_homebound_trip_fee_waived: true
+      recollection_visit_fees_waived: true
+      recollection_priority_days: 5
+      fasting_collections_allowed: true
+      fasting_latest_start_time: "10:00"
+      minimum_patient_age_years: 2
+      maximum_patient_age_years: 120
+      guardian_required_under_age_years: 18
+      max_orders_per_visit: 6
+      max_venipuncture_attempts: 2
+      incomplete_rebook_fees_waived: true
+      incomplete_rebook_priority_days: 5
+      fee_payment_methods: [credit_card, debit_card, hsa_fsa_card]
+      fee_due_timing: at_completion
+      fee_refund_on_laboratory_cancellation: true
+      fee_refund_processing_business_days: 7
+      severe_weather_fee_waiver: true
+      reminder_lead_hours: 48
+      wait_time_target_minutes: 0
+      specimen_drop_off_allowed: false
+      max_open_appointments_per_order: 1
+      standing_series_prebook_max: 2
+      waitlist_available: false
+  - name: Facility Bedside Collection Visit
+    rank: 7
+    entry_gate: {booking: appointment, location: facility_onsite, scheduler: care_facility_or_provider, minimum_age_years: 18}
+    parameters:
+      booking_required: true
+      online_booking_available: false
+      provider_scheduling_allowed: true
+      same_day_booking_allowed: false
+      booking_horizon_days: 60
+      minimum_booking_lead_days: 1
+      slot_length_minutes: 240
+      earliest_slot_time: "05:00"
+      latest_slot_time: "09:00"
+      weekend_service_available: true
+      weekend_surcharge: 0.00
+      visit_duration_minutes: 15
+      patient_must_remain_on_site: false
+      arrival_grace_minutes: 0
+      late_arrival_handling: not_applicable
+      max_reschedules_per_visit: 2
+      free_change_notice_hours: 12
+      late_cancellation_fee: 0.00
+      no_show_fee: 0.00
+      courtesy_waivers_per_12_months: 0
+      fee_waiver_request_window_days: 30
+      no_show_restriction_count: 0
+      restriction_lookback_days: 365
+      trip_fee_by_zone: {facility_onsite: 0.00}
+      service_zones_offered: [facility_onsite]
+      additional_patient_fee: 0.00
+      max_additional_patients: 0
+      medicare_homebound_trip_fee_waived: true
+      recollection_visit_fees_waived: true
+      recollection_priority_days: 2
+      fasting_collections_allowed: true
+      fasting_latest_start_time: "09:00"
+      minimum_patient_age_years: 18
+      maximum_patient_age_years: 120
+      guardian_required_under_age_years: 18
+      max_orders_per_visit: 6
+      max_venipuncture_attempts: 2
+      incomplete_rebook_fees_waived: true
+      incomplete_rebook_priority_days: 2
+      fee_payment_methods: []
+      fee_due_timing: not_applicable
+      fee_refund_on_laboratory_cancellation: true
+      fee_refund_processing_business_days: 7
+      severe_weather_fee_waiver: true
+      reminder_lead_hours: 24
+      wait_time_target_minutes: 0
+      specimen_drop_off_allowed: false
+      max_open_appointments_per_order: 1
+      standing_series_prebook_max: 12
+      waitlist_available: false
+
+events:
+  - type: visits_appointment_booked
+    target: visits
+    mutation: create
+    meaning: A collection visit is booked (or opened at walk-in arrival) for one order.
+    grain: one row per visit
+    fields:
+      customer_id: The patient to be collected.
+      variant_name: The visit type.
+      order_id: The order whose specimen the visit collects.
+      collection_purpose: Initial collection, recollection after a rejection, or a standing-order draw.
+      location_code: The PSC or facility site code, or MOBILE for a home visit.
+      service_zone: Service zone of the visit address.
+      booking_channel: How the visit was booked.
+      booked_date: Date the booking was made.
+      appointment_date: Date of the visit.
+      appointment_time: Start of the slot or arrival window.
+      homebound_status: Medicare homebound certification on file for the patient.
+      additional_household_patients: Additional household members to be collected at the same home visit.
+      reschedule_count: Starts at 0.
+    triggers: []
+  - type: visits_appointment_rescheduled
+    target: visits
+    mutation: update
+    meaning: A booked visit moves to another date, time or location.
+    grain: one row per transaction
+    fields:
+      appointment_date: New visit date.
+      appointment_time: New start time.
+      location_code: New site, when it changes.
+      reschedule_count: Incremented by one.
+    triggers: []
+  - type: visits_checked_in
+    target: visits
+    mutation: {transition: {from: booked, to: checked_in}}
+    meaning: The patient is checked in for collection.
+    grain: one row per transaction
+    fields:
+      checked_in_time: Check-in time.
+      fasting_confirmed: The patient's fasting statement at check-in (not_required when no fasting test is on the order).
+    triggers: []
+  - type: visits_collection_completed
+    target: visits
+    mutation: {transition: {from: checked_in, to: collected}}
+    meaning: The specimen is collected and sent to the laboratory.
+    grain: one row per transaction
+    fields:
+      collected_date: Date of collection.
+    triggers:
+      - event: orders:orders_specimen_accessioned
+        map: {collection_date: collected_date}
+  - type: visits_collection_incomplete
+    target: visits
+    mutation: {transition: {from: checked_in, to: incomplete}}
+    meaning: The collection could not be completed during the visit.
+    grain: one row per transaction
+    fields:
+      incomplete_reason: Why the collection failed.
+    triggers: []
+  - type: visits_appointment_cancelled
+    target: visits
+    mutation: {transition: {from: booked, to: cancelled}}
+    meaning: A booked visit is cancelled before check-in.
+    grain: one row per transaction
+    fields:
+      cancelled_at: Moment the cancellation was recorded.
+      cancel_initiator: Whether the patient (or their provider or facility) or the laboratory cancelled.
+    triggers:
+      - event: visits:visits_fee_assessed
+        when: {cancel_initiator: patient}
+        map: {fee_type: late_cancellation_fee}
+  - type: visits_no_show_recorded
+    target: visits
+    mutation: {transition: {from: booked, to: no_show}}
+    meaning: The patient was not present by the end of the arrival grace period.
+    grain: one row per transaction
+    fields:
+      appointment_date: The missed visit date (unchanged).
+    triggers:
+      - event: visits:visits_fee_assessed
+        map: {fee_type: no_show_fee, event_date: appointment_date}
+  - type: visits_fee_assessed
+    target: visit_events
+    meaning: A collection-service fee is assessed on the visit.
+    grain: one row per fee type per visit
+    distinguish_by: [fee_type]
+    fields:
+      event_date: Date the fee was assessed.
+      fee_type: Which fee.
+      fee_amount: Fee amount; positive.
+    account: collection_fee_balance
+    direction: in
+    triggers: []
+  - type: visits_fee_waived
+    target: visit_events
+    meaning: An assessed fee is waived in full.
+    grain: one row per waived fee
+    distinguish_by: [assessed_event_id]
+    fields:
+      event_date: Date of the waiver.
+      fee_type: Type of the waived fee.
+      fee_amount: Amount waived; equals the assessed amount; positive.
+      waiver_reason: Why the fee was waived.
+      assessed_event_id: The fee assessment being waived.
+    account: collection_fee_balance
+    direction: out
+    triggers: []
+  - type: visits_fee_paid
+    target: visit_events
+    meaning: The patient pays an assessed fee by card.
+    grain: one row per fee payment
+    distinguish_by: [assessed_event_id]
+    fields:
+      event_date: Date of payment.
+      fee_type: Type of the fee paid.
+      fee_amount: Amount paid; positive.
+      payment_method: Card used.
+      assessed_event_id: The fee assessment being paid.
+    account: collection_fee_balance
+    direction: out
+    triggers: []
+  - type: visits_fee_refunded
+    target: visit_events
+    meaning: A paid fee that was later waived is refunded to the original card.
+    grain: one row per refunded payment
+    distinguish_by: [paid_event_id]
+    fields:
+      event_date: Date the refund was issued.
+      fee_type: Type of the refunded fee.
+      fee_amount: Amount refunded; equals the payment; positive.
+      paid_event_id: The fee payment being refunded.
+    account: collection_fee_balance
+    direction: in
+    triggers: []
+
+measures:
+  - id: visits_msr_no_shows_lookback
+    window: the restriction_lookback_days calendar days before the booking date, the booking date excluded
+    measure: count of the customer's visits of the same visit type with status no_show whose appointment_date falls in the window
+  - id: visits_msr_courtesy_waivers_12m
+    window: the 365 calendar days before today (frozen date), today included
+    measure: count of the customer's visits_fee_waived rows with waiver_reason first_occurrence_courtesy whose event_date falls in the window
+  - id: visits_msr_open_appointments
+    window: current state
+    measure: count of the customer's visits with status booked, overall and per order_id
+
+policies:
+  - id: visits_agg_multi_holding
+    subject: [visits_appointment_booked]
+    rule: A patient accumulates any number of visits over time, one per collection attempt; the total number of visits held is not capped, and the limit on concurrently booked visits is set by the open-appointment rule.
+    eligibility: []
+    params: {max_per_customer: null}
+
+  - id: visits_agg_open_appointments
+    subject: [visits_appointment_booked]
+    rule: >-
+      Booked visits are counted across all visit types of the patient (visits_msr_open_appointments). A patient may hold at most max_open_per_customer booked visits at one time across all orders and visit types.
+      For one order there may be at most max_open_appointments_per_order booked visit at a time, except a
+      standing order, whose future draws may be booked up to standing_series_prebook_max at once. A new booking
+      that would exceed a cap is refused until an existing booked visit is collected, cancelled or recorded
+      no_show; rescheduling an existing visit is not a new booking and is not counted again.
+    eligibility:
+      - id: open_cap
+        applies_to: [visits_appointment_booked]
+        kind: authorization
+        condition: A patient may hold at most max_open_per_customer booked visits at one time across all orders and visit types.
+        evidence_fields: [visits.status, visits.customer_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[visits.customer_id]]
+          action_bindings: {visits.customer_id: customer_id}
+    measures: [visits_msr_open_appointments]
+    params: {max_open_per_customer: 3}
+
+  - id: visits_booking_eligibility
+    subject: [visits_appointment_booked]
+    rule: >-
+      A visit can be booked only for an order awaiting its specimen, that is an order whose status is received or info_hold.
+      A visit type whose booking_required is false cannot be booked ahead; the visit is opened when the patient
+      arrives. The appointment date must fall within booking_horizon_days calendar days after the booking date
+      and at least minimum_booking_lead_days calendar days after it (same-day only where same_day_booking_allowed
+      is true); the start time must lie between earliest_slot_time and latest_slot_time; a Saturday or Sunday
+      date requires weekend_service_available. When any test on the order has fasting_hours above 0 in its
+      test_menu, the start time must be no later than fasting_latest_start_time, and the patient is told to fast
+      for that many hours. The patient's age on the appointment date must lie between minimum_patient_age_years and maximum_patient_age_years inclusive.
+      Patients younger than guardian_required_under_age_years must be accompanied by a parent or legal
+      guardian. A mobile visit is booked only for an address in one of the service_zones_offered, with no more
+      than max_additional_patients additional household members; a patient whose no-show count for the same visit type (visits_msr_no_shows_lookback) has reached a
+      non-zero no_show_restriction_count cannot book that visit type and is offered a PSC visit instead. A visit
+      whose collection_purpose is recollection must have an appointment date no later than the recollect_by_date
+      of the order's latest recollection request, and when recollection_priority_days is above 0 a slot is
+      guaranteed within that many days of the request. A recollection for a service class whose
+      recollection_requires_new_requisition is true is booked against the new order. The patient may book
+      through the online scheduler only where online_booking_available is true, and a provider office or care
+      facility may book for the patient only where provider_scheduling_allowed is true; an agent may book any
+      bookable visit type. Start times fall on slot boundaries of slot_length_minutes, the patient is told to
+      allow visit_duration_minutes, a reminder goes out reminder_lead_hours before the start when that value is
+      above 0, and a waitlist for earlier slots is offered only where waitlist_available is true.
+    eligibility:
+      - id: order_awaiting_specimen
+        applies_to: [visits_appointment_booked]
+        kind: state
+        condition: A visit can be booked only for an order awaiting its specimen, that is an order whose status is received or info_hold.
+        evidence_fields: [orders.status, orders.order_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[orders.order_id]]
+          action_bindings: {orders.order_id: order_id}
+        state_contract:
+          field: orders.status
+          allowed: [received, info_hold]
+      - id: age_range
+        applies_to: [visits_appointment_booked]
+        kind: authorization
+        condition: The patient's age on the appointment date must lie between minimum_patient_age_years and maximum_patient_age_years inclusive.
+        evidence_fields: [customers.date_of_birth, customers.customer_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[customers.customer_id]]
+          action_bindings: {customers.customer_id: customer_id}
+    measures: [visits_msr_no_shows_lookback]
+    params:
+      per_tier:
+        Patient Service Center Walk-In Visit: {booking_horizon_days: "=booking_horizon_days", minimum_booking_lead_days: "=minimum_booking_lead_days", latest_slot_time: "=latest_slot_time", no_show_restriction_count: "=no_show_restriction_count"}
+        Patient Service Center Scheduled Appointment: {booking_horizon_days: "=booking_horizon_days", minimum_booking_lead_days: "=minimum_booking_lead_days", latest_slot_time: "=latest_slot_time", no_show_restriction_count: "=no_show_restriction_count"}
+        Fasting Priority Appointment: {booking_horizon_days: "=booking_horizon_days", minimum_booking_lead_days: "=minimum_booking_lead_days", latest_slot_time: "=latest_slot_time", no_show_restriction_count: "=no_show_restriction_count"}
+        Timed Glucose Tolerance Collection: {booking_horizon_days: "=booking_horizon_days", minimum_booking_lead_days: "=minimum_booking_lead_days", latest_slot_time: "=latest_slot_time", no_show_restriction_count: "=no_show_restriction_count"}
+        Pediatric Collection Appointment: {booking_horizon_days: "=booking_horizon_days", minimum_booking_lead_days: "=minimum_booking_lead_days", latest_slot_time: "=latest_slot_time", no_show_restriction_count: "=no_show_restriction_count"}
+        Mobile In-Home Collection Visit: {booking_horizon_days: "=booking_horizon_days", minimum_booking_lead_days: "=minimum_booking_lead_days", latest_slot_time: "=latest_slot_time", no_show_restriction_count: "=no_show_restriction_count"}
+        Facility Bedside Collection Visit: {booking_horizon_days: "=booking_horizon_days", minimum_booking_lead_days: "=minimum_booking_lead_days", latest_slot_time: "=latest_slot_time", no_show_restriction_count: "=no_show_restriction_count"}
+
+  - id: visits_evt_reschedule
+    subject: [visits_appointment_rescheduled]
+    rule: >-
+      A visit can be rescheduled only while its status is booked. A visit may be rescheduled at most
+      max_reschedules_per_visit times; beyond that the patient cancels and books a new visit. The new date and
+      time must satisfy the booking rule as of the day of the change. A reschedule made at or beyond
+      free_change_notice_hours before the current appointment start is free; a reschedule made with less notice
+      on a visit type whose late_cancellation_fee is above 0.00 assesses that fee once, exactly as a late
+      cancellation would, and the visit keeps its new date. Notice is measured in elapsed hours from the moment
+      the change is recorded to the current appointment date and time, and a change at exactly
+      free_change_notice_hours counts as timely. A visit whose collection_purpose is recollection never carries
+      the fee when recollection_visit_fees_waived is true.
+    eligibility:
+      - id: reschedule_booked_only
+        applies_to: [visits_appointment_rescheduled]
+        kind: state
+        condition: A visit can be rescheduled only while its status is booked.
+        evidence_fields: [visits.status, visits.visit_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[visits.visit_id]]
+          action_bindings: {visits.visit_id: visit_id}
+        state_contract:
+          field: visits.status
+          allowed: [booked]
+    params:
+      per_tier:
+        Patient Service Center Walk-In Visit: {max_reschedules_per_visit: "=max_reschedules_per_visit", free_change_notice_hours: "=free_change_notice_hours"}
+        Patient Service Center Scheduled Appointment: {max_reschedules_per_visit: "=max_reschedules_per_visit", free_change_notice_hours: "=free_change_notice_hours"}
+        Fasting Priority Appointment: {max_reschedules_per_visit: "=max_reschedules_per_visit", free_change_notice_hours: "=free_change_notice_hours"}
+        Timed Glucose Tolerance Collection: {max_reschedules_per_visit: "=max_reschedules_per_visit", free_change_notice_hours: "=free_change_notice_hours"}
+        Pediatric Collection Appointment: {max_reschedules_per_visit: "=max_reschedules_per_visit", free_change_notice_hours: "=free_change_notice_hours"}
+        Mobile In-Home Collection Visit: {max_reschedules_per_visit: "=max_reschedules_per_visit", free_change_notice_hours: "=free_change_notice_hours"}
+        Facility Bedside Collection Visit: {max_reschedules_per_visit: "=max_reschedules_per_visit", free_change_notice_hours: "=free_change_notice_hours"}
+    formula:
+      when_not: reschedule_count >= max_reschedules_per_visit
+
+  - id: visits_evt_cancellation_and_no_show
+    subject: [visits_appointment_cancelled, visits_no_show_recorded]
+    rule: >-
+      The patient, or the provider office or facility that booked the visit, may cancel a booked visit at any
+      time before check-in (cancel_initiator patient); the laboratory cancels for staffing, a closed site or a
+      weather closure (cancel_initiator laboratory). A patient cancellation recorded with less than
+      free_change_notice_hours notice before the appointment start assesses late_cancellation_fee when that fee is
+      above 0.00; notice is measured in elapsed hours from cancelled_at to the appointment date and time, and
+      exactly free_change_notice_hours counts as timely. A visit not checked in by the end of
+      arrival_grace_minutes after its start is recorded no_show and assesses no_show_fee when above 0.00; for a
+      PSC appointment whose late_arrival_handling is convert_to_walk_in, a late arrival is served as a walk-in
+      and the appointment is not a no-show. A laboratory cancellation never assesses a fee. No fee of any kind is
+      assessed on a recollection visit when recollection_visit_fees_waived is true. A cancellation or no-show
+      leaves the order untouched; the order still awaits its specimen and may be booked again.
+    eligibility: []
+    params:
+      per_tier:
+        Patient Service Center Walk-In Visit: {late_cancellation_fee: "=late_cancellation_fee", no_show_fee: "=no_show_fee", arrival_grace_minutes: "=arrival_grace_minutes"}
+        Patient Service Center Scheduled Appointment: {late_cancellation_fee: "=late_cancellation_fee", no_show_fee: "=no_show_fee", arrival_grace_minutes: "=arrival_grace_minutes"}
+        Fasting Priority Appointment: {late_cancellation_fee: "=late_cancellation_fee", no_show_fee: "=no_show_fee", arrival_grace_minutes: "=arrival_grace_minutes"}
+        Timed Glucose Tolerance Collection: {late_cancellation_fee: "=late_cancellation_fee", no_show_fee: "=no_show_fee", arrival_grace_minutes: "=arrival_grace_minutes"}
+        Pediatric Collection Appointment: {late_cancellation_fee: "=late_cancellation_fee", no_show_fee: "=no_show_fee", arrival_grace_minutes: "=arrival_grace_minutes"}
+        Mobile In-Home Collection Visit: {late_cancellation_fee: "=late_cancellation_fee", no_show_fee: "=no_show_fee", arrival_grace_minutes: "=arrival_grace_minutes"}
+        Facility Bedside Collection Visit: {late_cancellation_fee: "=late_cancellation_fee", no_show_fee: "=no_show_fee", arrival_grace_minutes: "=arrival_grace_minutes"}
+
+  - id: visits_evt_fee_assessment
+    subject: [visits_fee_assessed]
+    rule: >-
+      A collection-service fee may be assessed only on a visit whose status is collected, cancelled or no_show.
+      On a collected mobile visit the fees are: the trip fee for the visit's service zone from trip_fee_by_zone,
+      plus additional_patient_fee for each additional household member collected, plus weekend_surcharge when the
+      appointment date is a Saturday or Sunday; each fee type is one line. No trip fee is assessed when the patient's homebound_status is medicare_homebound_certified and medicare_homebound_trip_fee_waived is true, because the collection and travel are billed to Medicare.
+      The late-cancellation and no-show fees follow the cancellation rule; a no-show assesses only the no-show
+      fee, never a trip fee. Nothing is assessed on an incomplete visit when incomplete_rebook_fees_waived is
+      true, and nothing on any visit whose collection_purpose is recollection when recollection_visit_fees_waived
+      is true. A fee type is assessed at most once per visit. Fees are charged to the card on file when
+      fee_due_timing is at_completion; PSC, pediatric, timed and facility visit types carry no patient fees.
+    eligibility:
+      - id: fee_states
+        applies_to: [visits_fee_assessed]
+        kind: state
+        condition: A collection-service fee may be assessed only on a visit whose status is collected, cancelled or no_show.
+        evidence_fields: [visits.status, visits.visit_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[visits.visit_id]]
+          action_bindings: {visits.visit_id: visit_id}
+        state_contract:
+          field: visits.status
+          allowed: [collected, cancelled, no_show]
+      - id: homebound_no_trip_fee
+        applies_to: [visits_fee_assessed]
+        kind: authorization
+        condition: No trip fee is assessed when the patient's homebound_status is medicare_homebound_certified and medicare_homebound_trip_fee_waived is true, because the collection and travel are billed to Medicare.
+        evidence_fields: [visits.homebound_status, visits.visit_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[visits.visit_id]]
+          action_bindings: {visits.visit_id: visit_id}
+    params:
+      per_tier:
+        Patient Service Center Walk-In Visit: {trip_fee_by_zone: "=trip_fee_by_zone", additional_patient_fee: "=additional_patient_fee", weekend_surcharge: "=weekend_surcharge"}
+        Patient Service Center Scheduled Appointment: {trip_fee_by_zone: "=trip_fee_by_zone", additional_patient_fee: "=additional_patient_fee", weekend_surcharge: "=weekend_surcharge"}
+        Fasting Priority Appointment: {trip_fee_by_zone: "=trip_fee_by_zone", additional_patient_fee: "=additional_patient_fee", weekend_surcharge: "=weekend_surcharge"}
+        Timed Glucose Tolerance Collection: {trip_fee_by_zone: "=trip_fee_by_zone", additional_patient_fee: "=additional_patient_fee", weekend_surcharge: "=weekend_surcharge"}
+        Pediatric Collection Appointment: {trip_fee_by_zone: "=trip_fee_by_zone", additional_patient_fee: "=additional_patient_fee", weekend_surcharge: "=weekend_surcharge"}
+        Mobile In-Home Collection Visit: {trip_fee_by_zone: "=trip_fee_by_zone", additional_patient_fee: "=additional_patient_fee", weekend_surcharge: "=weekend_surcharge"}
+        Facility Bedside Collection Visit: {trip_fee_by_zone: "=trip_fee_by_zone", additional_patient_fee: "=additional_patient_fee", weekend_surcharge: "=weekend_surcharge"}
+    formula:
+      fee_amount_additional_patients: additional_patient_fee * additional_household_patients
+
+  - id: visits_evt_check_in_and_collection
+    subject: [visits_checked_in, visits_collection_completed, visits_collection_incomplete]
+    rule: >-
+      Check-in is recorded when the patient arrives at the PSC within the arrival grace period, or when the
+      phlebotomist reaches the home or facility and the patient is present. When a test on the order needs
+      fasting, the patient states at check-in whether they fasted for the required hours; a patient who has not
+      fasted is not drawn and the visit is recorded incomplete with reason not_fasting. A collection is recorded
+      incomplete with reason unsuccessful_venipuncture after max_venipuncture_attempts attempts, with reason
+      patient_left_before_collection when a timed collection is abandoned while patient_must_remain_on_site is
+      true, and with reason missing_valid_order when the order is on hold, cancelled or past its requisition
+      validity at check-in. An incomplete visit is not a no-show and assesses nothing when
+      incomplete_rebook_fees_waived is true; the patient rebooks, with a slot guaranteed within
+      incomplete_rebook_priority_days calendar days when that value is above 0. A collected visit sends the
+      specimen to the laboratory, where the order is accessioned under the orders rules. A self-collected urine
+      specimen may be dropped off without a draw only where specimen_drop_off_allowed is true. The lobby wait
+      target wait_time_target_minutes is a service goal and never earns a fee credit.
+    eligibility: []
+    params:
+      per_tier:
+        Patient Service Center Walk-In Visit: {max_venipuncture_attempts: "=max_venipuncture_attempts", incomplete_rebook_priority_days: "=incomplete_rebook_priority_days"}
+        Patient Service Center Scheduled Appointment: {max_venipuncture_attempts: "=max_venipuncture_attempts", incomplete_rebook_priority_days: "=incomplete_rebook_priority_days"}
+        Fasting Priority Appointment: {max_venipuncture_attempts: "=max_venipuncture_attempts", incomplete_rebook_priority_days: "=incomplete_rebook_priority_days"}
+        Timed Glucose Tolerance Collection: {max_venipuncture_attempts: "=max_venipuncture_attempts", incomplete_rebook_priority_days: "=incomplete_rebook_priority_days"}
+        Pediatric Collection Appointment: {max_venipuncture_attempts: "=max_venipuncture_attempts", incomplete_rebook_priority_days: "=incomplete_rebook_priority_days"}
+        Mobile In-Home Collection Visit: {max_venipuncture_attempts: "=max_venipuncture_attempts", incomplete_rebook_priority_days: "=incomplete_rebook_priority_days"}
+        Facility Bedside Collection Visit: {max_venipuncture_attempts: "=max_venipuncture_attempts", incomplete_rebook_priority_days: "=incomplete_rebook_priority_days"}
+
+  - id: visits_evt_fee_waiver
+    subject: [visits_fee_waived]
+    rule: >-
+      An assessed fee is waived in full, never in part, for exactly one reason. laboratory_initiated_cancellation
+      applies to any fee on a visit the laboratory cancelled; severe_weather_closure applies to a fee arising on a
+      day the laboratory declared a weather closure for the site's area when severe_weather_fee_waiver is true;
+      recollection_visit applies to a fee assessed in error on a recollection visit. first_occurrence_courtesy
+      applies only to a late_cancellation_fee or no_show_fee, only when the patient asks, and only while the
+      count of courtesy waivers in the last 365 days (visits_msr_courtesy_waivers_12m) is below
+      courtesy_waivers_per_12_months. A courtesy or weather waiver must be requested no later than fee_waiver_request_window_days calendar days after the fee was assessed.
+      The request window counts calendar days with the assessment date as day 0, and a request on the last day is on time.
+      Trip, additional-patient and weekend fees on a collected visit are never waived as a courtesy. A fee may be waived at most once.
+      When the waived fee was already paid, the payment is refunded under the refund rule.
+    eligibility:
+      - id: waiver_window
+        applies_to: [visits_fee_waived]
+        kind: time
+        condition: A courtesy or weather waiver must be requested no later than fee_waiver_request_window_days calendar days after the fee was assessed.
+        evidence_fields: [visit_events.event_date, visit_events.visit_event_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[visit_events.visit_event_id]]
+          action_bindings: {visit_events.visit_event_id: assessed_event_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the fee was assessed
+          anchor_source: visit_events.event_date
+          relation: not_after
+          duration_source: variants.fee_waiver_request_window_days
+          unit: calendar_days
+          counting_rule: The request window counts calendar days with the assessment date as day 0, and a request on the last day is on time.
+          boundary: inclusive
+      - id: waive_once
+        applies_to: [visits_fee_waived]
+        kind: dedup
+        condition: A fee may be waived at most once.
+        evidence_fields: [visit_events.assessed_event_id, visit_events.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[visit_events.assessed_event_id]]
+          action_bindings: {visit_events.assessed_event_id: assessed_event_id}
+        dedup_contract:
+          table: visit_events
+          mode: separate_record
+          object_bindings: {assessed_event_id: assessed_event_id}
+          duplicate_filters: {event_type: [visits_fee_waived]}
+          distinct_fields: []
+    measures: [visits_msr_courtesy_waivers_12m]
+    params:
+      per_tier:
+        Patient Service Center Walk-In Visit: {courtesy_waivers_per_12_months: "=courtesy_waivers_per_12_months", fee_waiver_request_window_days: "=fee_waiver_request_window_days"}
+        Patient Service Center Scheduled Appointment: {courtesy_waivers_per_12_months: "=courtesy_waivers_per_12_months", fee_waiver_request_window_days: "=fee_waiver_request_window_days"}
+        Fasting Priority Appointment: {courtesy_waivers_per_12_months: "=courtesy_waivers_per_12_months", fee_waiver_request_window_days: "=fee_waiver_request_window_days"}
+        Timed Glucose Tolerance Collection: {courtesy_waivers_per_12_months: "=courtesy_waivers_per_12_months", fee_waiver_request_window_days: "=fee_waiver_request_window_days"}
+        Pediatric Collection Appointment: {courtesy_waivers_per_12_months: "=courtesy_waivers_per_12_months", fee_waiver_request_window_days: "=fee_waiver_request_window_days"}
+        Mobile In-Home Collection Visit: {courtesy_waivers_per_12_months: "=courtesy_waivers_per_12_months", fee_waiver_request_window_days: "=fee_waiver_request_window_days"}
+        Facility Bedside Collection Visit: {courtesy_waivers_per_12_months: "=courtesy_waivers_per_12_months", fee_waiver_request_window_days: "=fee_waiver_request_window_days"}
+
+  - id: visits_evt_fee_payment_and_refund
+    subject: [visits_fee_paid, visits_fee_refunded]
+    rule: >-
+      A fee is paid in full in one payment with a method listed in fee_payment_methods; a visit type whose list is
+      empty carries no patient-paid fees. A paid fee that is later waived is refunded in full to the original
+      payment method within fee_refund_processing_business_days business days; every fee paid on a visit the
+      laboratory cancelled is refunded when fee_refund_on_laboratory_cancellation is true. A payment may be refunded at most once.
+      Collection-service fees are separate from test charges: they never appear on a test invoice, are not
+      eligible for payment plans, and are not reduced by financial assistance.
+    eligibility:
+      - id: refund_once
+        applies_to: [visits_fee_refunded]
+        kind: dedup
+        condition: A payment may be refunded at most once.
+        evidence_fields: [visit_events.paid_event_id, visit_events.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[visit_events.paid_event_id]]
+          action_bindings: {visit_events.paid_event_id: paid_event_id}
+        dedup_contract:
+          table: visit_events
+          mode: separate_record
+          object_bindings: {paid_event_id: paid_event_id}
+          duplicate_filters: {event_type: [visits_fee_refunded]}
+          distinct_fields: []
+    params:
+      per_tier:
+        Patient Service Center Walk-In Visit: {fee_payment_methods: "=fee_payment_methods", fee_refund_processing_business_days: "=fee_refund_processing_business_days"}
+        Patient Service Center Scheduled Appointment: {fee_payment_methods: "=fee_payment_methods", fee_refund_processing_business_days: "=fee_refund_processing_business_days"}
+        Fasting Priority Appointment: {fee_payment_methods: "=fee_payment_methods", fee_refund_processing_business_days: "=fee_refund_processing_business_days"}
+        Timed Glucose Tolerance Collection: {fee_payment_methods: "=fee_payment_methods", fee_refund_processing_business_days: "=fee_refund_processing_business_days"}
+        Pediatric Collection Appointment: {fee_payment_methods: "=fee_payment_methods", fee_refund_processing_business_days: "=fee_refund_processing_business_days"}
+        Mobile In-Home Collection Visit: {fee_payment_methods: "=fee_payment_methods", fee_refund_processing_business_days: "=fee_refund_processing_business_days"}
+        Facility Bedside Collection Visit: {fee_payment_methods: "=fee_payment_methods", fee_refund_processing_business_days: "=fee_refund_processing_business_days"}

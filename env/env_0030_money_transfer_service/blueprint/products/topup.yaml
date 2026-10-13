@@ -1,0 +1,960 @@
+# Paloma Remit — product charter: Paloma Top-Up & Bill Pay.
+# Customers pay for things back home directly instead of sending cash: prepaid airtime and data for
+# a relative's phone, prepaid electricity tokens, and bills of utilities, pay-TV providers and
+# schools. Each order is one holding: one product, one destination (phone number, meter number or
+# biller account), one value in local currency, paid by the customer in USD. Orders are delivered by
+# the operator or biller in minutes (top-ups, tokens) or posted within business days (bills); they
+# can fail, be retried or corrected, be disputed, and be refunded under this charter. Top-ups and
+# bill payments are not remittance transfers and carry no Regulation E remittance rights.
+
+category: topup
+display_name: Paloma Top-Up & Bill Pay
+
+binding:
+  holding_table: topup_orders
+  event_tables: [topup_ledger, topup_cases]
+  status_field: status
+  variant_field: variant_name
+  quantity_fields: {principal_held_usd: order_funds, fees_held_usd: fees_held}
+
+lifecycle:
+  states: [submitted, processing, delivered, failed, cancelled, refunded]
+  transitions:
+    - {from: submitted, to: processing, by: system, means: "Payment is collected, the destination is validated and the order is sent to the operator or biller."}
+    - {from: submitted, to: cancelled, by: user, means: "The customer cancels a bill payment before it is sent to the biller."}
+    - {from: processing, to: delivered, by: system, means: "The operator confirms the top-up or token, or the biller confirms the payment posted."}
+    - {from: processing, to: failed, by: system, means: "The operator or biller rejects the order after any automatic retries and its value comes back to Paloma."}
+    - {from: failed, to: processing, by: agent, means: "A failed order is sent again at the customer's request, to the same or a corrected destination."}
+    - {from: failed, to: refunded, by: agent, means: "The value and fees of a failed order are refunded."}
+    - {from: cancelled, to: refunded, by: agent, means: "The payment for a cancelled order is refunded."}
+    - {from: delivered, to: refunded, by: agent, means: "A dispute is upheld on an order recorded as delivered and the customer is refunded."}
+
+accounts:
+  - key: order_funds
+    unit: USD
+    meaning: "USD value of the order Paloma holds: payment collected and reversed values in; value sent to the operator or biller and refunds out."
+  - key: fees_held
+    unit: USD
+    meaning: "Service and card fees Paloma holds on the order: fee charges in, fee refunds out."
+
+parameter_schema:
+  corridors_served: "Corridors where this product can be ordered (list)."
+  operators_by_corridor: "Operators or billers Paloma pays for this product in each corridor (mapping corridor -> list)."
+  denomination_type: "fixed (choose one of fixed_denominations_usd) or open_range (any value between min and max)."
+  fixed_denominations_usd: "Values (USD) offered when denomination_type is fixed (list; empty for open_range)."
+  min_value_usd: "Smallest order value (USD)."
+  max_value_usd: "Largest order value (USD)."
+  service_fee_usd: "Flat service fee (USD) per order."
+  service_fee_pct: "Service fee as a percentage of the order value, added to the flat fee (percent)."
+  fx_margin_pct: "Exchange-rate margin below mid-market used to convert the local value (percent)."
+  funding_methods_allowed: "Ways the customer may pay (list)."
+  credit_card_fee_pct: "Card funding fee as a percentage of the order value for credit-card payment (percent; 0 when not accepted or free)."
+  max_orders_per_destination_24h: "Most orders of this product to one destination in a rolling 24 hours (count)."
+  max_orders_per_customer_30d: "Most orders of this product per customer in a rolling 30 calendar days (count)."
+  max_value_per_customer_30d_usd: "Most order value (USD) of this product per customer in a rolling 30 calendar days."
+  duplicate_order_window_hours: "Hours within which a second order with the same destination and value is treated as a duplicate and not placed."
+  delivery_sla_minutes: "Minutes within which a top-up or token is delivered after submission (0 = not applicable)."
+  posting_business_days: "Paloma business days within which a bill payment posts to the biller (0 = not applicable)."
+  biller_submission_cutoff_ct: "Latest US Central time on a business day for submission to the biller that day (HH:MM, or 24x7)."
+  cancel_before_submission_allowed: "Whether the customer may cancel before the order is sent to the biller (boolean)."
+  auto_retry_attempts: "Automatic re-sends after a technical failure before the order is failed (count)."
+  auto_retry_interval_minutes: "Minutes between automatic re-sends."
+  customer_retries_allowed: "Customer-requested retries of a failed order (count)."
+  retry_fee_usd: "Fee (USD) per customer-requested retry."
+  destination_correction_allowed: "Whether the destination of a failed order may be corrected before retry (boolean)."
+  max_destination_corrections: "Most destination corrections per order (count)."
+  failed_refund_business_days: "Paloma business days within which a failed or cancelled order is refunded once refund is due."
+  failed_auto_refund_days: "Calendar days after failure after which a failed order not retried is refunded automatically."
+  fee_refund_on_failure: "Whether fees are refunded when a failed order is refunded (boolean)."
+  refundable_after_delivery: "Whether a delivered order can be refunded other than through an upheld dispute (boolean)."
+  dispute_window_days: "Calendar days after delivered_at within which a dispute may be filed."
+  dispute_investigation_days: "Calendar days after a dispute within which Paloma decides it."
+  account_number_validation: "Whether the destination account or meter number is validated with the biller before submission (boolean)."
+  holder_name_required: "Whether the destination holder's name must be given (boolean)."
+  token_delivered: "Whether delivery produces a token code that is sent to the customer (boolean)."
+  token_resend_limit: "Most re-sends of a token code to the customer (count)."
+  token_digits: "Digits in a delivered token code (count; 0 = no token)."
+  min_account_level: "Lowest Personal Sender Account level (official name) that may order this product."
+  rewards_eligible: "Whether a delivered order can earn Paloma Rewards points (boolean)."
+  late_posting_fee_refund: "Whether the service fee is refunded when a bill posts later than posting_business_days (boolean)."
+  partial_payment_allowed: "Whether less than the bill's amount due may be paid (boolean)."
+  overpayment_allowed: "Whether more than the bill's amount due may be paid (boolean)."
+  bill_lookup_required: "Whether the amount due is looked up from the biller before payment (boolean)."
+  weekend_processing: "Whether orders are processed on weekends and holidays (boolean)."
+  new_destination_hold_minutes: "Minutes a first order to a new destination is held for screening (minutes)."
+  new_destination_limit_usd: "Largest value (USD) of a first order to a new destination."
+  data_validity_days: "Days a data bundle stays usable after delivery (days; 0 = not applicable)."
+  student_reference_required: "Whether a student reference number must be given (boolean)."
+  business_use_allowed: "Whether orders may be paid from a Paloma Business account (boolean)."
+
+variants:
+  - name: Paloma Airtime Top-Up
+    rank: 1
+    entry_gate: {min_account_level: Paloma Starter}
+    parameters:
+      corridors_served: [MX-MXN, GT-GTQ, SV-USD, HN-HNL, DO-DOP, CO-COP, PH-PHP, IN-INR, VN-VND, BD-BDT, NG-NGN, KE-KES, GH-GHS]
+      operators_by_corridor: {MX-MXN: [telcel, att_mexico, movistar_mx], GT-GTQ: [tigo_gt, claro_gt], SV-USD: [tigo_sv, claro_sv], HN-HNL: [tigo_hn, claro_hn], DO-DOP: [claro_do, altice_do], CO-COP: [claro_co, movistar_co, tigo_co], PH-PHP: [globe, smart, dito], IN-INR: [jio, airtel_in, vi], VN-VND: [viettel, vinaphone, mobifone], BD-BDT: [grameenphone, robi, banglalink], NG-NGN: [mtn_ng, airtel_ng, glo], KE-KES: [safaricom, airtel_ke], GH-GHS: [mtn_gh, telecel_gh, at_gh]}
+      denomination_type: open_range
+      fixed_denominations_usd: []
+      min_value_usd: 1.00
+      max_value_usd: 100.00
+      service_fee_usd: 0.00
+      service_fee_pct: 0.00
+      fx_margin_pct: 3.00
+      funding_methods_allowed: [debit_card, credit_card, pay_by_bank]
+      credit_card_fee_pct: 0.00
+      max_orders_per_destination_24h: 5
+      max_orders_per_customer_30d: 60
+      max_value_per_customer_30d_usd: 500.00
+      duplicate_order_window_hours: 1
+      delivery_sla_minutes: 5
+      posting_business_days: 0
+      biller_submission_cutoff_ct: 24x7
+      cancel_before_submission_allowed: false
+      auto_retry_attempts: 3
+      auto_retry_interval_minutes: 5
+      customer_retries_allowed: 1
+      retry_fee_usd: 0.00
+      destination_correction_allowed: true
+      max_destination_corrections: 1
+      failed_refund_business_days: 1
+      failed_auto_refund_days: 3
+      fee_refund_on_failure: true
+      refundable_after_delivery: false
+      dispute_window_days: 30
+      dispute_investigation_days: 10
+      account_number_validation: false
+      holder_name_required: false
+      token_delivered: false
+      token_resend_limit: 0
+      token_digits: 0
+      min_account_level: Paloma Starter
+      rewards_eligible: true
+      late_posting_fee_refund: false
+      partial_payment_allowed: false
+      overpayment_allowed: false
+      bill_lookup_required: false
+      weekend_processing: true
+      new_destination_hold_minutes: 0
+      new_destination_limit_usd: 50.00
+      data_validity_days: 0
+      student_reference_required: false
+      business_use_allowed: false
+  - name: Paloma Data Bundle
+    rank: 2
+    entry_gate: {min_account_level: Paloma Starter}
+    parameters:
+      corridors_served: [MX-MXN, GT-GTQ, SV-USD, HN-HNL, DO-DOP, CO-COP, PH-PHP, IN-INR, VN-VND, BD-BDT, NG-NGN, KE-KES, GH-GHS]
+      operators_by_corridor: {MX-MXN: [telcel, att_mexico, movistar_mx], GT-GTQ: [tigo_gt, claro_gt], SV-USD: [tigo_sv, claro_sv], HN-HNL: [tigo_hn, claro_hn], DO-DOP: [claro_do, altice_do], CO-COP: [claro_co, movistar_co, tigo_co], PH-PHP: [globe, smart, dito], IN-INR: [jio, airtel_in, vi], VN-VND: [viettel, vinaphone, mobifone], BD-BDT: [grameenphone, robi, banglalink], NG-NGN: [mtn_ng, airtel_ng, glo], KE-KES: [safaricom, airtel_ke], GH-GHS: [mtn_gh, telecel_gh, at_gh]}
+      denomination_type: fixed
+      fixed_denominations_usd: [3.00, 5.00, 10.00, 15.00, 25.00]
+      min_value_usd: 3.00
+      max_value_usd: 25.00
+      service_fee_usd: 0.00
+      service_fee_pct: 0.00
+      fx_margin_pct: 3.00
+      funding_methods_allowed: [debit_card, credit_card, pay_by_bank]
+      credit_card_fee_pct: 0.00
+      max_orders_per_destination_24h: 5
+      max_orders_per_customer_30d: 60
+      max_value_per_customer_30d_usd: 500.00
+      duplicate_order_window_hours: 1
+      delivery_sla_minutes: 5
+      posting_business_days: 0
+      biller_submission_cutoff_ct: 24x7
+      cancel_before_submission_allowed: false
+      auto_retry_attempts: 3
+      auto_retry_interval_minutes: 5
+      customer_retries_allowed: 1
+      retry_fee_usd: 0.00
+      destination_correction_allowed: true
+      max_destination_corrections: 1
+      failed_refund_business_days: 1
+      failed_auto_refund_days: 3
+      fee_refund_on_failure: true
+      refundable_after_delivery: false
+      dispute_window_days: 30
+      dispute_investigation_days: 10
+      account_number_validation: false
+      holder_name_required: false
+      token_delivered: false
+      token_resend_limit: 0
+      token_digits: 0
+      min_account_level: Paloma Starter
+      rewards_eligible: true
+      late_posting_fee_refund: false
+      partial_payment_allowed: false
+      overpayment_allowed: false
+      bill_lookup_required: false
+      weekend_processing: true
+      new_destination_hold_minutes: 0
+      new_destination_limit_usd: 25.00
+      data_validity_days: 30
+      student_reference_required: false
+      business_use_allowed: false
+  - name: Paloma Electricity Token
+    rank: 3
+    entry_gate: {min_account_level: Paloma Starter, validated_meter: true}
+    parameters:
+      corridors_served: [KE-KES, NG-NGN, GH-GHS]
+      operators_by_corridor: {KE-KES: [kplc_prepaid], NG-NGN: [ikeja_electric, eko_disco, abuja_disco], GH-GHS: [ecg_prepaid]}
+      denomination_type: open_range
+      fixed_denominations_usd: []
+      min_value_usd: 5.00
+      max_value_usd: 300.00
+      service_fee_usd: 1.49
+      service_fee_pct: 0.00
+      fx_margin_pct: 2.00
+      funding_methods_allowed: [debit_card, credit_card, pay_by_bank]
+      credit_card_fee_pct: 3.00
+      max_orders_per_destination_24h: 3
+      max_orders_per_customer_30d: 20
+      max_value_per_customer_30d_usd: 1000.00
+      duplicate_order_window_hours: 2
+      delivery_sla_minutes: 15
+      posting_business_days: 0
+      biller_submission_cutoff_ct: 24x7
+      cancel_before_submission_allowed: false
+      auto_retry_attempts: 2
+      auto_retry_interval_minutes: 10
+      customer_retries_allowed: 1
+      retry_fee_usd: 0.00
+      destination_correction_allowed: true
+      max_destination_corrections: 1
+      failed_refund_business_days: 1
+      failed_auto_refund_days: 3
+      fee_refund_on_failure: true
+      refundable_after_delivery: false
+      dispute_window_days: 30
+      dispute_investigation_days: 15
+      account_number_validation: true
+      holder_name_required: true
+      token_delivered: true
+      token_resend_limit: 3
+      token_digits: 20
+      min_account_level: Paloma Starter
+      rewards_eligible: true
+      late_posting_fee_refund: false
+      partial_payment_allowed: false
+      overpayment_allowed: false
+      bill_lookup_required: false
+      weekend_processing: true
+      new_destination_hold_minutes: 30
+      new_destination_limit_usd: 100.00
+      data_validity_days: 0
+      student_reference_required: false
+      business_use_allowed: false
+  - name: Paloma Bill Pay Utilities
+    rank: 4
+    entry_gate: {min_account_level: Paloma Verified, validated_account: true}
+    parameters:
+      corridors_served: [MX-MXN, GT-GTQ, SV-USD, HN-HNL, DO-DOP, CO-COP, PH-PHP]
+      operators_by_corridor: {MX-MXN: [cfe, telmex], GT-GTQ: [eegsa, empagua], SV-USD: [caess, anda], HN-HNL: [enee], DO-DOP: [edenorte, edesur], CO-COP: [epm, enel_colombia], PH-PHP: [meralco, maynilad, manila_water]}
+      denomination_type: open_range
+      fixed_denominations_usd: []
+      min_value_usd: 5.00
+      max_value_usd: 1500.00
+      service_fee_usd: 1.99
+      service_fee_pct: 0.00
+      fx_margin_pct: 1.50
+      funding_methods_allowed: [ach_debit, debit_card, pay_by_bank]
+      credit_card_fee_pct: 0.00
+      max_orders_per_destination_24h: 2
+      max_orders_per_customer_30d: 20
+      max_value_per_customer_30d_usd: 3000.00
+      duplicate_order_window_hours: 24
+      delivery_sla_minutes: 0
+      posting_business_days: 2
+      biller_submission_cutoff_ct: "14:00"
+      cancel_before_submission_allowed: true
+      auto_retry_attempts: 1
+      auto_retry_interval_minutes: 60
+      customer_retries_allowed: 1
+      retry_fee_usd: 0.00
+      destination_correction_allowed: true
+      max_destination_corrections: 1
+      failed_refund_business_days: 3
+      failed_auto_refund_days: 7
+      fee_refund_on_failure: true
+      refundable_after_delivery: false
+      dispute_window_days: 60
+      dispute_investigation_days: 30
+      account_number_validation: true
+      holder_name_required: true
+      token_delivered: false
+      token_resend_limit: 0
+      token_digits: 0
+      min_account_level: Paloma Verified
+      rewards_eligible: true
+      late_posting_fee_refund: true
+      partial_payment_allowed: true
+      overpayment_allowed: false
+      bill_lookup_required: true
+      weekend_processing: false
+      new_destination_hold_minutes: 60
+      new_destination_limit_usd: 500.00
+      data_validity_days: 0
+      student_reference_required: false
+      business_use_allowed: false
+  - name: Paloma Bill Pay Television
+    rank: 5
+    entry_gate: {min_account_level: Paloma Starter, validated_account: true}
+    parameters:
+      corridors_served: [MX-MXN, CO-COP, PH-PHP, NG-NGN, GH-GHS, KE-KES]
+      operators_by_corridor: {MX-MXN: [sky_mexico], CO-COP: [directv_co], PH-PHP: [cignal], NG-NGN: [dstv_ng, gotv_ng], GH-GHS: [dstv_gh], KE-KES: [dstv_ke]}
+      denomination_type: fixed
+      fixed_denominations_usd: [5.00, 10.00, 15.00, 25.00, 40.00]
+      min_value_usd: 5.00
+      max_value_usd: 40.00
+      service_fee_usd: 0.99
+      service_fee_pct: 0.00
+      fx_margin_pct: 2.00
+      funding_methods_allowed: [debit_card, credit_card, pay_by_bank]
+      credit_card_fee_pct: 3.00
+      max_orders_per_destination_24h: 2
+      max_orders_per_customer_30d: 10
+      max_value_per_customer_30d_usd: 600.00
+      duplicate_order_window_hours: 24
+      delivery_sla_minutes: 0
+      posting_business_days: 1
+      biller_submission_cutoff_ct: "16:00"
+      cancel_before_submission_allowed: true
+      auto_retry_attempts: 1
+      auto_retry_interval_minutes: 60
+      customer_retries_allowed: 1
+      retry_fee_usd: 0.00
+      destination_correction_allowed: true
+      max_destination_corrections: 1
+      failed_refund_business_days: 2
+      failed_auto_refund_days: 7
+      fee_refund_on_failure: true
+      refundable_after_delivery: false
+      dispute_window_days: 60
+      dispute_investigation_days: 30
+      account_number_validation: true
+      holder_name_required: true
+      token_delivered: false
+      token_resend_limit: 0
+      token_digits: 0
+      min_account_level: Paloma Starter
+      rewards_eligible: true
+      late_posting_fee_refund: true
+      partial_payment_allowed: false
+      overpayment_allowed: false
+      bill_lookup_required: true
+      weekend_processing: true
+      new_destination_hold_minutes: 60
+      new_destination_limit_usd: 40.00
+      data_validity_days: 0
+      student_reference_required: false
+      business_use_allowed: false
+  - name: Paloma Bill Pay School Fees
+    rank: 6
+    entry_gate: {min_account_level: Paloma Verified Plus, student_reference: true}
+    parameters:
+      corridors_served: [PH-PHP, IN-INR, NG-NGN]
+      operators_by_corridor: {PH-PHP: [bayad_schools], IN-INR: [bbps_education], NG-NGN: [remita_education]}
+      denomination_type: open_range
+      fixed_denominations_usd: []
+      min_value_usd: 20.00
+      max_value_usd: 5000.00
+      service_fee_usd: 3.99
+      service_fee_pct: 0.50
+      fx_margin_pct: 1.25
+      funding_methods_allowed: [ach_debit, debit_card, pay_by_bank]
+      credit_card_fee_pct: 0.00
+      max_orders_per_destination_24h: 2
+      max_orders_per_customer_30d: 10
+      max_value_per_customer_30d_usd: 10000.00
+      duplicate_order_window_hours: 24
+      delivery_sla_minutes: 0
+      posting_business_days: 3
+      biller_submission_cutoff_ct: "13:00"
+      cancel_before_submission_allowed: true
+      auto_retry_attempts: 1
+      auto_retry_interval_minutes: 60
+      customer_retries_allowed: 1
+      retry_fee_usd: 0.00
+      destination_correction_allowed: true
+      max_destination_corrections: 1
+      failed_refund_business_days: 3
+      failed_auto_refund_days: 7
+      fee_refund_on_failure: true
+      refundable_after_delivery: false
+      dispute_window_days: 90
+      dispute_investigation_days: 30
+      account_number_validation: true
+      holder_name_required: true
+      token_delivered: false
+      token_resend_limit: 0
+      token_digits: 0
+      min_account_level: Paloma Verified Plus
+      rewards_eligible: false
+      late_posting_fee_refund: true
+      partial_payment_allowed: true
+      overpayment_allowed: false
+      bill_lookup_required: false
+      weekend_processing: false
+      new_destination_hold_minutes: 120
+      new_destination_limit_usd: 1000.00
+      data_validity_days: 0
+      student_reference_required: true
+      business_use_allowed: false
+
+events:
+  - type: topup_ordered
+    target: topup_orders
+    mutation: create
+    meaning: "The customer orders and pays for a top-up, token or bill payment."
+    grain: "One row per order."
+    fields:
+      customer_id: "The ordering customer."
+      sender_account_id: "Personal Sender Account the order is placed under."
+      variant_name: "Product ordered."
+      corridor: "Destination corridor."
+      operator: "Operator or biller paid."
+      destination_number: "Phone, meter or biller account number, exactly as the customer gives it."
+      destination_holder_name: "Name on the destination account, or the student's name; empty when not required."
+      student_reference: "Student reference for school fees; empty otherwise."
+      order_reference: "Order reference shown on the customer's receipt."
+      face_value_local: "Value delivered in local currency."
+      principal_usd: "USD value of the order."
+      service_fee_usd: "Service fee charged."
+      card_fee_usd: "Credit-card funding fee charged; 0.00 when none."
+      fx_rate: "Rate used to convert the local value."
+      funding_method: "How the customer paid."
+      ordered_at: "Moment of the order."
+    triggers:
+      - event: topup:topup_payment_collected
+        map: {amount_usd: principal_usd}
+      - event: topup:topup_fee_charged
+        when: {service_fee_usd: {not: 0.0}}
+        map: {fee_type: service_fee, amount_usd: service_fee_usd}
+      - event: topup:topup_fee_charged
+        when: {funding_method: credit_card, card_fee_usd: {not: 0.0}}
+        map: {fee_type: card_funding_fee, amount_usd: card_fee_usd}
+  - type: topup_submitted
+    target: topup_orders
+    mutation: {transition: {from: submitted, to: processing}}
+    meaning: "The order is validated and sent to the operator or biller."
+    grain: "One row per first submission."
+    fields:
+      submitted_at: "Moment the order was sent."
+    triggers:
+      - event: topup:topup_value_sent
+        map: {attempt: 1}
+  - type: topup_delivered
+    target: topup_orders
+    mutation: {transition: {from: processing, to: delivered}}
+    meaning: "The operator confirms the top-up or token, or the biller confirms the payment posted."
+    grain: "One row per delivery."
+    fields:
+      delivered_at: "Moment of confirmation."
+      delivery_token: "Electricity token code; empty for other products."
+      closed_date: "Date part of delivered_at."
+    triggers:
+      - event: rewards:rewards_points_earned
+        map: {source_transfer_id: topup_order_id, source_category: topup}
+  - type: topup_failed_marked
+    target: topup_orders
+    mutation: {transition: {from: processing, to: failed}}
+    meaning: "The operator or biller rejects the order after any automatic retries."
+    grain: "One row per failure."
+    fields:
+      failed_at: "Moment the failure was confirmed."
+    triggers: []
+  - type: topup_retried
+    target: topup_orders
+    mutation: {transition: {from: failed, to: processing}}
+    meaning: "A failed order is sent again at the customer's request."
+    grain: "One row per customer retry."
+    fields:
+      retry_count: "Customer retries on the order including this one."
+      submitted_at: "Moment the retry was sent."
+    triggers:
+      - event: topup:topup_value_sent
+        map: {}
+  - type: topup_cancelled
+    target: topup_orders
+    mutation: {transition: {from: submitted, to: cancelled}}
+    meaning: "The customer cancels a bill payment before it is sent to the biller."
+    grain: "One row per cancellation."
+    fields:
+      cancelled_at: "Moment of cancellation."
+    triggers: []
+  - type: topup_refunded
+    target: topup_orders
+    mutation: {transition: [{from: failed, to: refunded}, {from: cancelled, to: refunded}, {from: delivered, to: refunded}]}
+    meaning: "The order's money is refunded and the order is closed."
+    grain: "One row per closing refund."
+    fields:
+      closed_date: "Date of the refund."
+    triggers: []
+  - type: topup_destination_corrected
+    target: topup_orders
+    mutation: update
+    meaning: "The destination of a failed order is replaced by a corrected number."
+    grain: "One row per correction."
+    fields:
+      destination_number: "Corrected destination, exactly as the customer gives it."
+    triggers: []
+  - type: topup_payment_collected
+    target: topup_ledger
+    meaning: "The customer's payment for the order value is collected."
+    grain: "One row per order."
+    distinguish_by: [entry_date]
+    fields:
+      amount_usd: "Order value collected (positive)."
+      entry_date: "Date collected."
+    account: order_funds
+    direction: in
+    triggers: []
+  - type: topup_fee_charged
+    target: topup_ledger
+    meaning: "A service fee, card funding fee or retry fee is collected."
+    grain: "One row per fee type per attempt."
+    distinguish_by: [fee_type, attempt]
+    fields:
+      fee_type: "Kind of fee."
+      amount_usd: "Fee collected (positive)."
+      attempt: "1 for order fees; the retry's attempt number for a retry fee."
+      entry_date: "Date collected."
+    account: fees_held
+    direction: in
+    triggers: []
+  - type: topup_fee_refunded
+    target: topup_ledger
+    meaning: "A collected fee is refunded."
+    grain: "One row per refunded fee charge."
+    distinguish_by: [related_entry_id]
+    fields:
+      related_entry_id: "topup_entry_id of the fee charge refunded."
+      amount_usd: "Amount refunded (positive)."
+      fee_refund_reason: "Why the fee is refunded."
+      entry_date: "Date refunded."
+    account: fees_held
+    direction: out
+    triggers: []
+  - type: topup_value_sent
+    target: topup_ledger
+    meaning: "The order value is paid to the operator or biller."
+    grain: "One row per attempt."
+    distinguish_by: [attempt]
+    fields:
+      amount_usd: "USD value sent (positive)."
+      attempt: "1 for the first submission, 2 for a customer retry."
+      entry_date: "Date sent."
+    account: order_funds
+    direction: out
+    triggers: []
+  - type: topup_value_reversed
+    target: topup_ledger
+    meaning: "The operator or biller rejects an attempt and its value comes back in full."
+    grain: "One row per failed attempt."
+    distinguish_by: [attempt]
+    fields:
+      amount_usd: "USD value back (positive)."
+      failure_reason: "Why the attempt was rejected."
+      attempt: "The attempt rejected."
+      entry_date: "Date of the rejection."
+    account: order_funds
+    direction: in
+    triggers:
+      - event: topup:topup_failed_marked
+        map: {}
+  - type: topup_refund_issued
+    target: topup_ledger
+    meaning: "The order value owed back is refunded to the original payment method."
+    grain: "One row per refund basis."
+    distinguish_by: [refund_basis]
+    fields:
+      amount_usd: "Value refunded (positive)."
+      refund_basis: "Why the refund is owed."
+      entry_date: "Date refunded."
+    account: order_funds
+    direction: out
+    triggers:
+      - event: topup:topup_refunded
+        map: {closed_date: entry_date}
+  - type: topup_destination_correction_logged
+    target: topup_cases
+    meaning: "The customer gives a corrected destination for a failed order."
+    grain: "One row per correction."
+    distinguish_by: [correction_seq]
+    fields:
+      corrected_destination: "Corrected number, exactly as the customer gives it."
+      correction_seq: "1 for the first correction on the order."
+      case_date: "Date logged."
+    triggers:
+      - event: topup:topup_destination_corrected
+        map: {destination_number: corrected_destination}
+  - type: topup_token_resent
+    target: topup_cases
+    meaning: "A delivered electricity token code is sent to the customer again."
+    grain: "One row per re-send."
+    distinguish_by: [resend_seq]
+    fields:
+      resend_seq: "1 for the first re-send, and so on."
+      case_date: "Date re-sent."
+    triggers: []
+  - type: topup_dispute_filed
+    target: topup_cases
+    meaning: "The customer disputes an order recorded as delivered."
+    grain: "One row per dispute."
+    distinguish_by: [case_type, case_date]
+    fields:
+      case_type: "What the customer says went wrong."
+      case_date: "Date filed."
+      resolution_due_date: "Last day for Paloma's decision."
+    triggers: []
+  - type: topup_dispute_decided
+    target: topup_cases
+    meaning: "Paloma records its finding on a dispute after checking with the operator or biller."
+    grain: "One row per decision."
+    distinguish_by: [related_case_id]
+    fields:
+      related_case_id: "case id of the dispute."
+      case_outcome: "upheld or rejected."
+      case_date: "Date decided."
+    triggers:
+      - event: topup:topup_refund_issued
+        when: {case_outcome: upheld}
+        map: {refund_basis: dispute_upheld}
+
+measures:
+  - id: topup_msr_destination_orders_24h
+    window: "Rolling 24 hours ending at frozen_time."
+    measure: "Count of topup_orders of the same product and destination_number, excluding status cancelled or refunded."
+  - id: topup_msr_customer_orders_30d
+    window: "Rolling 30 calendar days ending on the handling date."
+    measure: "Count of the customer's topup_orders of the same product, excluding status cancelled or refunded."
+  - id: topup_msr_customer_value_30d
+    window: "Rolling 30 calendar days ending on the handling date."
+    measure: "Sum of principal_usd over the same orders."
+  - id: topup_msr_corrections
+    window: "The life of one order."
+    measure: "Count of topup_destination_correction_logged rows on the order."
+  - id: topup_msr_token_resends
+    window: "The life of one order."
+    measure: "Count of topup_token_resent rows on the order."
+
+policies:
+  - id: topup_agg_multi_holding
+    subject: [topup_ordered]
+    rule: >-
+      A customer may place any number of orders; each order is its own holding with its own
+      reference, value, destination, delivery and refund, and orders are never merged or netted.
+      What bounds them is topup_agg_order_caps. Order values never count toward personal sending
+      limits.
+    eligibility: []
+    params:
+      max_per_customer: null
+
+  - id: topup_agg_order_caps
+    subject: [topup_ordered]
+    rule: >-
+      The orders of one customer are aggregated per product: no more than
+      max_orders_per_destination_24h orders to one destination (topup_msr_destination_orders_24h),
+      no more than max_orders_per_customer_30d orders (topup_msr_customer_orders_30d) and no more than
+      max_value_per_customer_30d_usd of order value (topup_msr_customer_value_30d), each counted
+      including the new order and excluding cancelled or refunded orders. A second order of the same
+      product, destination and value placed within duplicate_order_window_hours of the first is
+      treated as a duplicate and not placed. An order over any cap is not placed.
+    eligibility:
+      - id: not_a_duplicate
+        applies_to: [topup_ordered]
+        kind: dedup
+        condition: "A second order of the same product, destination and value placed within duplicate_order_window_hours of the first is treated as a duplicate and not placed."
+        evidence_fields: [topup_orders.customer_id, topup_orders.destination_number, topup_orders.variant_name, topup_orders.principal_usd, topup_orders.ordered_at]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [topup_orders.destination_number]
+          action_bindings:
+            topup_orders.destination_number: destination_number
+        dedup_contract:
+          table: topup_orders
+          mode: separate_record
+          object_bindings: {destination_number: destination_number, variant_name: variant_name, principal_usd: principal_usd}
+          duplicate_filters: {status: [submitted, processing, delivered]}
+          distinct_fields: [ordered_at]
+    params:
+      per_tier:
+        Paloma Airtime Top-Up: {max_orders_per_destination_24h: "=max_orders_per_destination_24h", max_orders_per_customer_30d: "=max_orders_per_customer_30d", max_value_per_customer_30d_usd: "=max_value_per_customer_30d_usd", duplicate_order_window_hours: "=duplicate_order_window_hours"}
+        Paloma Data Bundle: {max_orders_per_destination_24h: "=max_orders_per_destination_24h", max_orders_per_customer_30d: "=max_orders_per_customer_30d", max_value_per_customer_30d_usd: "=max_value_per_customer_30d_usd", duplicate_order_window_hours: "=duplicate_order_window_hours"}
+        Paloma Electricity Token: {max_orders_per_destination_24h: "=max_orders_per_destination_24h", max_orders_per_customer_30d: "=max_orders_per_customer_30d", max_value_per_customer_30d_usd: "=max_value_per_customer_30d_usd", duplicate_order_window_hours: "=duplicate_order_window_hours"}
+        Paloma Bill Pay Utilities: {max_orders_per_destination_24h: "=max_orders_per_destination_24h", max_orders_per_customer_30d: "=max_orders_per_customer_30d", max_value_per_customer_30d_usd: "=max_value_per_customer_30d_usd", duplicate_order_window_hours: "=duplicate_order_window_hours"}
+        Paloma Bill Pay Television: {max_orders_per_destination_24h: "=max_orders_per_destination_24h", max_orders_per_customer_30d: "=max_orders_per_customer_30d", max_value_per_customer_30d_usd: "=max_value_per_customer_30d_usd", duplicate_order_window_hours: "=duplicate_order_window_hours"}
+        Paloma Bill Pay School Fees: {max_orders_per_destination_24h: "=max_orders_per_destination_24h", max_orders_per_customer_30d: "=max_orders_per_customer_30d", max_value_per_customer_30d_usd: "=max_value_per_customer_30d_usd", duplicate_order_window_hours: "=duplicate_order_window_hours"}
+    measures: [topup_msr_destination_orders_24h, topup_msr_customer_orders_30d, topup_msr_customer_value_30d]
+
+  - id: topup_evt_ordering
+    subject: [topup_ordered]
+    rule: >-
+      An order is placed only under the customer's own Personal Sender Account and only while that
+      account's status is active; Paloma Business accounts cannot order (business_use_allowed is
+      false). The account level must be at or above min_account_level. The corridor must be in
+      corridors_served and the operator listed for it in operators_by_corridor. The value must lie
+      between min_value_usd and max_value_usd, and be one of fixed_denominations_usd when
+      denomination_type is fixed. The destination holder's name is required when
+      holder_name_required is true, and a student reference when student_reference_required is true.
+      When account_number_validation is true the destination is validated with the biller before
+      submission; when bill_lookup_required is true the amount due is fetched first, a lower amount
+      is accepted only when partial_payment_allowed is true, and a higher one never
+      (overpayment_allowed is false). A first order to a destination the customer has not paid before
+      may not exceed new_destination_limit_usd and is held new_destination_hold_minutes before
+      submission. Ordering is the customer's own authorisation of payment.
+    eligibility:
+      - id: sender_account_active
+        applies_to: [topup_ordered]
+        kind: state
+        condition: "An order is placed only under the customer's own Personal Sender Account and only while that account's status is active"
+        evidence_fields: [sender_accounts.sender_account_id, sender_accounts.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [sender_accounts.sender_account_id]
+          action_bindings:
+            sender_accounts.sender_account_id: sender_account_id
+        state_contract:
+          field: sender_accounts.status
+          allowed: [active]
+    params:
+      per_tier:
+        Paloma Airtime Top-Up: {business_use_allowed: "=business_use_allowed", min_account_level: "=min_account_level", corridors_served: "=corridors_served", operators_by_corridor: "=operators_by_corridor", min_value_usd: "=min_value_usd", max_value_usd: "=max_value_usd", denomination_type: "=denomination_type", fixed_denominations_usd: "=fixed_denominations_usd", holder_name_required: "=holder_name_required", student_reference_required: "=student_reference_required", account_number_validation: "=account_number_validation", bill_lookup_required: "=bill_lookup_required", partial_payment_allowed: "=partial_payment_allowed", overpayment_allowed: "=overpayment_allowed", new_destination_limit_usd: "=new_destination_limit_usd", new_destination_hold_minutes: "=new_destination_hold_minutes"}
+        Paloma Data Bundle: {business_use_allowed: "=business_use_allowed", min_account_level: "=min_account_level", corridors_served: "=corridors_served", operators_by_corridor: "=operators_by_corridor", min_value_usd: "=min_value_usd", max_value_usd: "=max_value_usd", denomination_type: "=denomination_type", fixed_denominations_usd: "=fixed_denominations_usd", holder_name_required: "=holder_name_required", student_reference_required: "=student_reference_required", account_number_validation: "=account_number_validation", bill_lookup_required: "=bill_lookup_required", partial_payment_allowed: "=partial_payment_allowed", overpayment_allowed: "=overpayment_allowed", new_destination_limit_usd: "=new_destination_limit_usd", new_destination_hold_minutes: "=new_destination_hold_minutes"}
+        Paloma Electricity Token: {business_use_allowed: "=business_use_allowed", min_account_level: "=min_account_level", corridors_served: "=corridors_served", operators_by_corridor: "=operators_by_corridor", min_value_usd: "=min_value_usd", max_value_usd: "=max_value_usd", denomination_type: "=denomination_type", fixed_denominations_usd: "=fixed_denominations_usd", holder_name_required: "=holder_name_required", student_reference_required: "=student_reference_required", account_number_validation: "=account_number_validation", bill_lookup_required: "=bill_lookup_required", partial_payment_allowed: "=partial_payment_allowed", overpayment_allowed: "=overpayment_allowed", new_destination_limit_usd: "=new_destination_limit_usd", new_destination_hold_minutes: "=new_destination_hold_minutes"}
+        Paloma Bill Pay Utilities: {business_use_allowed: "=business_use_allowed", min_account_level: "=min_account_level", corridors_served: "=corridors_served", operators_by_corridor: "=operators_by_corridor", min_value_usd: "=min_value_usd", max_value_usd: "=max_value_usd", denomination_type: "=denomination_type", fixed_denominations_usd: "=fixed_denominations_usd", holder_name_required: "=holder_name_required", student_reference_required: "=student_reference_required", account_number_validation: "=account_number_validation", bill_lookup_required: "=bill_lookup_required", partial_payment_allowed: "=partial_payment_allowed", overpayment_allowed: "=overpayment_allowed", new_destination_limit_usd: "=new_destination_limit_usd", new_destination_hold_minutes: "=new_destination_hold_minutes"}
+        Paloma Bill Pay Television: {business_use_allowed: "=business_use_allowed", min_account_level: "=min_account_level", corridors_served: "=corridors_served", operators_by_corridor: "=operators_by_corridor", min_value_usd: "=min_value_usd", max_value_usd: "=max_value_usd", denomination_type: "=denomination_type", fixed_denominations_usd: "=fixed_denominations_usd", holder_name_required: "=holder_name_required", student_reference_required: "=student_reference_required", account_number_validation: "=account_number_validation", bill_lookup_required: "=bill_lookup_required", partial_payment_allowed: "=partial_payment_allowed", overpayment_allowed: "=overpayment_allowed", new_destination_limit_usd: "=new_destination_limit_usd", new_destination_hold_minutes: "=new_destination_hold_minutes"}
+        Paloma Bill Pay School Fees: {business_use_allowed: "=business_use_allowed", min_account_level: "=min_account_level", corridors_served: "=corridors_served", operators_by_corridor: "=operators_by_corridor", min_value_usd: "=min_value_usd", max_value_usd: "=max_value_usd", denomination_type: "=denomination_type", fixed_denominations_usd: "=fixed_denominations_usd", holder_name_required: "=holder_name_required", student_reference_required: "=student_reference_required", account_number_validation: "=account_number_validation", bill_lookup_required: "=bill_lookup_required", partial_payment_allowed: "=partial_payment_allowed", overpayment_allowed: "=overpayment_allowed", new_destination_limit_usd: "=new_destination_limit_usd", new_destination_hold_minutes: "=new_destination_hold_minutes"}
+
+  - id: topup_evt_pricing
+    subject: [topup_ordered, topup_payment_collected, topup_fee_charged]
+    rule: >-
+      The service fee is service_fee_usd plus service_fee_pct of the order value, rounded half up to
+      the cent. A credit-card payment adds credit_card_fee_pct of the order value as card_funding_fee.
+      The local value delivered is the order value times the corridor's mid_market_rate in the
+      Paloma rate sheet for the order date times one minus fx_margin_pct over 100, rounded half up
+      to 2 decimals (whole units for VND). Payment must use one of funding_methods_allowed. A retry
+      carries retry_fee_usd when above 0.00. Prices never change after the order is placed.
+    eligibility: []
+    params:
+      per_tier:
+        Paloma Airtime Top-Up: {service_fee_usd: "=service_fee_usd", service_fee_pct: "=service_fee_pct", credit_card_fee_pct: "=credit_card_fee_pct", fx_margin_pct: "=fx_margin_pct", funding_methods_allowed: "=funding_methods_allowed", retry_fee_usd: "=retry_fee_usd"}
+        Paloma Data Bundle: {service_fee_usd: "=service_fee_usd", service_fee_pct: "=service_fee_pct", credit_card_fee_pct: "=credit_card_fee_pct", fx_margin_pct: "=fx_margin_pct", funding_methods_allowed: "=funding_methods_allowed", retry_fee_usd: "=retry_fee_usd"}
+        Paloma Electricity Token: {service_fee_usd: "=service_fee_usd", service_fee_pct: "=service_fee_pct", credit_card_fee_pct: "=credit_card_fee_pct", fx_margin_pct: "=fx_margin_pct", funding_methods_allowed: "=funding_methods_allowed", retry_fee_usd: "=retry_fee_usd"}
+        Paloma Bill Pay Utilities: {service_fee_usd: "=service_fee_usd", service_fee_pct: "=service_fee_pct", credit_card_fee_pct: "=credit_card_fee_pct", fx_margin_pct: "=fx_margin_pct", funding_methods_allowed: "=funding_methods_allowed", retry_fee_usd: "=retry_fee_usd"}
+        Paloma Bill Pay Television: {service_fee_usd: "=service_fee_usd", service_fee_pct: "=service_fee_pct", credit_card_fee_pct: "=credit_card_fee_pct", fx_margin_pct: "=fx_margin_pct", funding_methods_allowed: "=funding_methods_allowed", retry_fee_usd: "=retry_fee_usd"}
+        Paloma Bill Pay School Fees: {service_fee_usd: "=service_fee_usd", service_fee_pct: "=service_fee_pct", credit_card_fee_pct: "=credit_card_fee_pct", fx_margin_pct: "=fx_margin_pct", funding_methods_allowed: "=funding_methods_allowed", retry_fee_usd: "=retry_fee_usd"}
+    formula:
+      service_fee: "round(service_fee_usd + principal_usd * service_fee_pct / 100, 2)"
+
+  - id: topup_evt_delivery
+    subject: [topup_submitted, topup_value_sent, topup_delivered, topup_value_reversed, topup_failed_marked]
+    rule: >-
+      A top-up or token is submitted at once (every day when weekend_processing is true) and is due
+      within delivery_sla_minutes; a bill payment is submitted on the business day it is ordered when
+      ordered by biller_submission_cutoff_ct, otherwise the next business day, and posts within
+      posting_business_days Paloma business days. A technical rejection is re-sent up to
+      auto_retry_attempts times, auto_retry_interval_minutes apart; any other rejection (invalid
+      number, account not found, amount out of range) fails the order at once and its value comes
+      back in full. A delivered token is sent to the customer by SMS and email, with token_digits
+      digits. A delivered data bundle is usable for data_validity_days days. Delivered orders earn
+      Paloma Rewards points when rewards_eligible is true, under the rewards charter.
+    eligibility: []
+    params:
+      per_tier:
+        Paloma Airtime Top-Up: {weekend_processing: "=weekend_processing", delivery_sla_minutes: "=delivery_sla_minutes", biller_submission_cutoff_ct: "=biller_submission_cutoff_ct", posting_business_days: "=posting_business_days", auto_retry_attempts: "=auto_retry_attempts", auto_retry_interval_minutes: "=auto_retry_interval_minutes", token_digits: "=token_digits", data_validity_days: "=data_validity_days", rewards_eligible: "=rewards_eligible", token_delivered: "=token_delivered"}
+        Paloma Data Bundle: {weekend_processing: "=weekend_processing", delivery_sla_minutes: "=delivery_sla_minutes", biller_submission_cutoff_ct: "=biller_submission_cutoff_ct", posting_business_days: "=posting_business_days", auto_retry_attempts: "=auto_retry_attempts", auto_retry_interval_minutes: "=auto_retry_interval_minutes", token_digits: "=token_digits", data_validity_days: "=data_validity_days", rewards_eligible: "=rewards_eligible", token_delivered: "=token_delivered"}
+        Paloma Electricity Token: {weekend_processing: "=weekend_processing", delivery_sla_minutes: "=delivery_sla_minutes", biller_submission_cutoff_ct: "=biller_submission_cutoff_ct", posting_business_days: "=posting_business_days", auto_retry_attempts: "=auto_retry_attempts", auto_retry_interval_minutes: "=auto_retry_interval_minutes", token_digits: "=token_digits", data_validity_days: "=data_validity_days", rewards_eligible: "=rewards_eligible", token_delivered: "=token_delivered"}
+        Paloma Bill Pay Utilities: {weekend_processing: "=weekend_processing", delivery_sla_minutes: "=delivery_sla_minutes", biller_submission_cutoff_ct: "=biller_submission_cutoff_ct", posting_business_days: "=posting_business_days", auto_retry_attempts: "=auto_retry_attempts", auto_retry_interval_minutes: "=auto_retry_interval_minutes", token_digits: "=token_digits", data_validity_days: "=data_validity_days", rewards_eligible: "=rewards_eligible", token_delivered: "=token_delivered"}
+        Paloma Bill Pay Television: {weekend_processing: "=weekend_processing", delivery_sla_minutes: "=delivery_sla_minutes", biller_submission_cutoff_ct: "=biller_submission_cutoff_ct", posting_business_days: "=posting_business_days", auto_retry_attempts: "=auto_retry_attempts", auto_retry_interval_minutes: "=auto_retry_interval_minutes", token_digits: "=token_digits", data_validity_days: "=data_validity_days", rewards_eligible: "=rewards_eligible", token_delivered: "=token_delivered"}
+        Paloma Bill Pay School Fees: {weekend_processing: "=weekend_processing", delivery_sla_minutes: "=delivery_sla_minutes", biller_submission_cutoff_ct: "=biller_submission_cutoff_ct", posting_business_days: "=posting_business_days", auto_retry_attempts: "=auto_retry_attempts", auto_retry_interval_minutes: "=auto_retry_interval_minutes", token_digits: "=token_digits", data_validity_days: "=data_validity_days", rewards_eligible: "=rewards_eligible", token_delivered: "=token_delivered"}
+
+  - id: topup_evt_failure_handling
+    subject: [topup_retried, topup_destination_correction_logged, topup_destination_corrected, topup_fee_charged]
+    rule: >-
+      A failed order may be retried at the customer's request at most customer_retries_allowed times.
+      A destination can be corrected only while the order is failed, only when
+      destination_correction_allowed is true, and at most max_destination_corrections times
+      (topup_msr_corrections); the corrected number is recorded exactly as the customer gives it and
+      is validated again when account_number_validation is true. A retry or correction is accepted
+      only within failed_auto_refund_days calendar days after the order failed. The window is counted
+      in calendar days from the date part of failed_at, and an instruction on the last day is on
+      time. After that window, or when no retry is requested, the order is refunded under
+      topup_evt_refunds.
+    eligibility:
+      - id: failed_only
+        applies_to: [topup_destination_correction_logged]
+        kind: state
+        condition: "A destination can be corrected only while the order is failed"
+        evidence_fields: [topup_orders.topup_order_id, topup_orders.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [topup_orders.topup_order_id]
+          action_bindings:
+            topup_orders.topup_order_id: topup_order_id
+        state_contract:
+          field: topup_orders.status
+          allowed: [failed]
+      - id: retry_window
+        applies_to: [topup_retried, topup_destination_correction_logged]
+        kind: time
+        condition: "A retry or correction is accepted only within failed_auto_refund_days calendar days after the order failed."
+        evidence_fields: [topup_orders.topup_order_id, topup_orders.failed_at]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [topup_orders.topup_order_id]
+          action_bindings:
+            topup_orders.topup_order_id: topup_order_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the order failed"
+          anchor_source: topup_orders.failed_at
+          relation: not_after
+          duration_source: variants.failed_auto_refund_days
+          unit: calendar_days
+          counting_rule: "The window is counted in calendar days from the date part of failed_at, and an instruction on the last day is on time."
+          boundary: inclusive
+    params:
+      per_tier:
+        Paloma Airtime Top-Up: {customer_retries_allowed: "=customer_retries_allowed", destination_correction_allowed: "=destination_correction_allowed", max_destination_corrections: "=max_destination_corrections", failed_auto_refund_days: "=failed_auto_refund_days", account_number_validation: "=account_number_validation"}
+        Paloma Data Bundle: {customer_retries_allowed: "=customer_retries_allowed", destination_correction_allowed: "=destination_correction_allowed", max_destination_corrections: "=max_destination_corrections", failed_auto_refund_days: "=failed_auto_refund_days", account_number_validation: "=account_number_validation"}
+        Paloma Electricity Token: {customer_retries_allowed: "=customer_retries_allowed", destination_correction_allowed: "=destination_correction_allowed", max_destination_corrections: "=max_destination_corrections", failed_auto_refund_days: "=failed_auto_refund_days", account_number_validation: "=account_number_validation"}
+        Paloma Bill Pay Utilities: {customer_retries_allowed: "=customer_retries_allowed", destination_correction_allowed: "=destination_correction_allowed", max_destination_corrections: "=max_destination_corrections", failed_auto_refund_days: "=failed_auto_refund_days", account_number_validation: "=account_number_validation"}
+        Paloma Bill Pay Television: {customer_retries_allowed: "=customer_retries_allowed", destination_correction_allowed: "=destination_correction_allowed", max_destination_corrections: "=max_destination_corrections", failed_auto_refund_days: "=failed_auto_refund_days", account_number_validation: "=account_number_validation"}
+        Paloma Bill Pay School Fees: {customer_retries_allowed: "=customer_retries_allowed", destination_correction_allowed: "=destination_correction_allowed", max_destination_corrections: "=max_destination_corrections", failed_auto_refund_days: "=failed_auto_refund_days", account_number_validation: "=account_number_validation"}
+    measures: [topup_msr_corrections]
+
+  - id: topup_evt_cancellation
+    subject: [topup_cancelled]
+    rule: >-
+      Only the customer cancels an order, and only when cancel_before_submission_allowed is true and
+      the order is still submitted (not yet sent to the biller). Top-ups, data bundles and tokens are
+      sent at once and cannot be cancelled. A cancelled order is refunded in full, fees included,
+      under topup_evt_refunds.
+    eligibility:
+      - id: product_cancellable
+        applies_to: [topup_cancelled]
+        kind: authorization
+        condition: "Only the customer cancels an order, and only when cancel_before_submission_allowed is true and the order is still submitted (not yet sent to the biller)."
+        evidence_fields: [topup_orders.topup_order_id, topup_orders.variant_name, topup_orders.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [topup_orders.topup_order_id]
+          action_bindings:
+            topup_orders.topup_order_id: topup_order_id
+    params:
+      per_tier:
+        Paloma Airtime Top-Up: {cancel_before_submission_allowed: "=cancel_before_submission_allowed"}
+        Paloma Data Bundle: {cancel_before_submission_allowed: "=cancel_before_submission_allowed"}
+        Paloma Electricity Token: {cancel_before_submission_allowed: "=cancel_before_submission_allowed"}
+        Paloma Bill Pay Utilities: {cancel_before_submission_allowed: "=cancel_before_submission_allowed"}
+        Paloma Bill Pay Television: {cancel_before_submission_allowed: "=cancel_before_submission_allowed"}
+        Paloma Bill Pay School Fees: {cancel_before_submission_allowed: "=cancel_before_submission_allowed"}
+
+  - id: topup_evt_refunds
+    subject: [topup_refund_issued, topup_refunded, topup_fee_refunded]
+    rule: >-
+      The order value is refunded only on an order whose status is failed, cancelled or delivered,
+      and on a delivered order only through an upheld dispute, because refundable_after_delivery is
+      false. A failed order is refunded when the customer asks or failed_auto_refund_days after it
+      failed, with fees refunded when fee_refund_on_failure is true (fee_refund_reason
+      order_failed); a cancelled order is refunded in full (fee_refund_reason order_cancelled). A
+      refund is issued within failed_refund_business_days Paloma business days of becoming due, to
+      the original payment method. A bill that posts later than posting_business_days has its service
+      fee refunded when late_posting_fee_refund is true (fee_refund_reason late_posting), without
+      refunding the bill. Each refund basis is paid once.
+    eligibility:
+      - id: refundable_status
+        applies_to: [topup_refund_issued]
+        kind: state
+        condition: "The order value is refunded only on an order whose status is failed, cancelled or delivered, and on a delivered order only through an upheld dispute"
+        evidence_fields: [topup_orders.topup_order_id, topup_orders.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [topup_orders.topup_order_id]
+          action_bindings:
+            topup_orders.topup_order_id: topup_order_id
+        state_contract:
+          field: topup_orders.status
+          allowed: [failed, cancelled, delivered]
+    params:
+      per_tier:
+        Paloma Airtime Top-Up: {refundable_after_delivery: "=refundable_after_delivery", failed_auto_refund_days: "=failed_auto_refund_days", fee_refund_on_failure: "=fee_refund_on_failure", failed_refund_business_days: "=failed_refund_business_days", posting_business_days: "=posting_business_days", late_posting_fee_refund: "=late_posting_fee_refund"}
+        Paloma Data Bundle: {refundable_after_delivery: "=refundable_after_delivery", failed_auto_refund_days: "=failed_auto_refund_days", fee_refund_on_failure: "=fee_refund_on_failure", failed_refund_business_days: "=failed_refund_business_days", posting_business_days: "=posting_business_days", late_posting_fee_refund: "=late_posting_fee_refund"}
+        Paloma Electricity Token: {refundable_after_delivery: "=refundable_after_delivery", failed_auto_refund_days: "=failed_auto_refund_days", fee_refund_on_failure: "=fee_refund_on_failure", failed_refund_business_days: "=failed_refund_business_days", posting_business_days: "=posting_business_days", late_posting_fee_refund: "=late_posting_fee_refund"}
+        Paloma Bill Pay Utilities: {refundable_after_delivery: "=refundable_after_delivery", failed_auto_refund_days: "=failed_auto_refund_days", fee_refund_on_failure: "=fee_refund_on_failure", failed_refund_business_days: "=failed_refund_business_days", posting_business_days: "=posting_business_days", late_posting_fee_refund: "=late_posting_fee_refund"}
+        Paloma Bill Pay Television: {refundable_after_delivery: "=refundable_after_delivery", failed_auto_refund_days: "=failed_auto_refund_days", fee_refund_on_failure: "=fee_refund_on_failure", failed_refund_business_days: "=failed_refund_business_days", posting_business_days: "=posting_business_days", late_posting_fee_refund: "=late_posting_fee_refund"}
+        Paloma Bill Pay School Fees: {refundable_after_delivery: "=refundable_after_delivery", failed_auto_refund_days: "=failed_auto_refund_days", fee_refund_on_failure: "=fee_refund_on_failure", failed_refund_business_days: "=failed_refund_business_days", posting_business_days: "=posting_business_days", late_posting_fee_refund: "=late_posting_fee_refund"}
+
+  - id: topup_evt_disputes
+    subject: [topup_dispute_filed, topup_dispute_decided, topup_token_resent]
+    rule: >-
+      A customer may dispute an order recorded as delivered when the destination says it was not
+      credited, the amount was wrong, a token does not work, or a bill shows unpaid. A dispute can be
+      filed only within dispute_window_days calendar days after the order was delivered. The window
+      is counted in calendar days from the date part of delivered_at, and a dispute on the last day
+      is on time. Only one dispute per order. Paloma checks with the operator or biller and decides
+      within dispute_investigation_days calendar days: upheld refunds the order value and fees,
+      rejected leaves the order delivered. Before a token dispute, the token is re-sent to the
+      customer up to token_resend_limit times (topup_msr_token_resends) when token_delivered is true.
+    eligibility:
+      - id: dispute_window
+        applies_to: [topup_dispute_filed]
+        kind: time
+        condition: "A dispute can be filed only within dispute_window_days calendar days after the order was delivered."
+        evidence_fields: [topup_orders.topup_order_id, topup_orders.delivered_at]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [topup_orders.topup_order_id]
+          action_bindings:
+            topup_orders.topup_order_id: topup_order_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the order was delivered"
+          anchor_source: topup_orders.delivered_at
+          relation: not_after
+          duration_source: variants.dispute_window_days
+          unit: calendar_days
+          counting_rule: "The window is counted in calendar days from the date part of delivered_at, and a dispute on the last day is on time."
+          boundary: inclusive
+      - id: one_dispute
+        applies_to: [topup_dispute_filed]
+        kind: dedup
+        condition: "Only one dispute per order."
+        evidence_fields: [topup_cases.topup_order_id, topup_cases.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [topup_cases.topup_order_id]
+          action_bindings:
+            topup_cases.topup_order_id: topup_order_id
+        dedup_contract:
+          table: topup_cases
+          mode: separate_record
+          object_bindings: {topup_order_id: topup_order_id}
+          duplicate_filters: {event_type: [topup_dispute_filed]}
+          distinct_fields: []
+    params:
+      per_tier:
+        Paloma Airtime Top-Up: {dispute_window_days: "=dispute_window_days", dispute_investigation_days: "=dispute_investigation_days", token_resend_limit: "=token_resend_limit", token_delivered: "=token_delivered"}
+        Paloma Data Bundle: {dispute_window_days: "=dispute_window_days", dispute_investigation_days: "=dispute_investigation_days", token_resend_limit: "=token_resend_limit", token_delivered: "=token_delivered"}
+        Paloma Electricity Token: {dispute_window_days: "=dispute_window_days", dispute_investigation_days: "=dispute_investigation_days", token_resend_limit: "=token_resend_limit", token_delivered: "=token_delivered"}
+        Paloma Bill Pay Utilities: {dispute_window_days: "=dispute_window_days", dispute_investigation_days: "=dispute_investigation_days", token_resend_limit: "=token_resend_limit", token_delivered: "=token_delivered"}
+        Paloma Bill Pay Television: {dispute_window_days: "=dispute_window_days", dispute_investigation_days: "=dispute_investigation_days", token_resend_limit: "=token_resend_limit", token_delivered: "=token_delivered"}
+        Paloma Bill Pay School Fees: {dispute_window_days: "=dispute_window_days", dispute_investigation_days: "=dispute_investigation_days", token_resend_limit: "=token_resend_limit", token_delivered: "=token_delivered"}
+    measures: [topup_msr_token_resends]

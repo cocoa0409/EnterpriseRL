@@ -1,0 +1,2288 @@
+# Product charter: Cardinal Billing Account (pay plan of one auto policy).
+# Path: env/env_0035_personal_auto_insurance_carrier/blueprint/products/billing.yaml
+#
+# Capability matrix (functional closure audit):
+#   open        account opened with the policy; pay plan chosen; down payment and policy fee billed
+#   in term     installment invoices, installment fees, premium changes from endorsements (AP spread or billed now,
+#               RP credited), payments by channel, payment application order, autopay drafts and retries
+#   money       late fee (grace, cap, courtesy waiver), returned-payment (NSF) fee and reversal, certified-funds
+#               restriction, phone-representative payment fee, credits, refunds, small-balance write-off
+#   suspend     notice of cancellation for nonpayment with state notice period and mailing allowance; rescission
+#   exit        cancellation for nonpayment, final earned-premium bill, collections referral, account close
+#   reinstate   reinstatement window, without-lapse window, signed no-loss statement, reinstatement fee, per-term cap
+#   changes     pay plan change, payment method / autopay change, due-day change, SR-22 plan restriction
+#   exceptions  payment after the window, repeated NSF, underpayment within tolerance, overpayment, credit transfer
+
+category: billing
+display_name: Cardinal Billing Account
+
+binding:
+  holding_table: billing_accounts
+  event_tables: [billing_ledger]
+  intake_tables: [billing_reinstatement_requests]
+  status_field: status
+  variant_field: variant_name
+  quantity_fields: {account_balance: account_balance}
+
+lifecycle:
+  states: [current, notice_pending, cancelled_nonpay, collections, closed]
+  transitions:
+    - {from: current, to: notice_pending, by: system, means: A notice of cancellation for nonpayment is mailed and the account waits for the cure or the cancellation effective date.}
+    - {from: notice_pending, to: current, by: system, means: The amount required to rescind is received on or before the cancellation effective date and the notice is rescinded.}
+    - {from: notice_pending, to: cancelled_nonpay, by: system, means: The cancellation effective date passes without the cure and the policy is cancelled for nonpayment.}
+    - {from: cancelled_nonpay, to: current, by: agent, means: The account is reinstated after the reinstatement payment (and, where required, the signed no-loss statement) is received within the window.}
+    - {from: cancelled_nonpay, to: collections, by: system, means: An earned-premium balance left unpaid after cancellation is referred to collections.}
+    - {from: cancelled_nonpay, to: closed, by: system, means: After the reinstatement window, the final balance is zero, refunded or written off and the account closes.}
+    - {from: current, to: closed, by: system, means: The policy ended (insured cancellation, nonrenewal, expiration) and the final balance is settled.}
+    - {from: collections, to: closed, by: system, means: The collections balance is paid or written off and the account closes.}
+
+accounts:
+  - key: account_balance
+    unit: USD
+    meaning: Amount billed and not yet paid on the account; positive means the customer owes, negative means a credit balance owed to the customer.
+
+parameter_schema:
+  down_payment_pct: Percent of the full-term premium billed as the down payment at issue or renewal, percent.
+  min_down_payment_amount: Floor on the down payment; the down payment is the larger of the percentage amount and this floor, capped at the full-term premium, USD.
+  installment_interval_months: Months between installment due dates after the down payment (0 = no installments; the plan is paid in full).
+  installment_fee: Fee added to every installment invoice after the down payment, USD.
+  min_installment_amount: Smallest installment the plan will bill; a remaining balance below it is billed with the previous installment, USD.
+  autopay_required: Boolean switch; whether the plan requires automatic payments.
+  eligible_payment_methods: List of payment methods the plan accepts (check_or_money_order, credit_card, debit_card, bank_eft).
+  pay_plan_discount_pct: Premium discount for the pay plan, entered into the auto rating discount sum, percent.
+  financial_responsibility_plan_allowed: Boolean switch; whether a policy carrying an SR-22 or FR-44 filing may use this plan.
+  invoice_lead_days: Calendar days before each due date on which the invoice (or the autopay draft notice) is issued, integer.
+  autopay_draft_offset_days: Calendar days before the due date on which the automatic payment is drafted (0 = on the due date), integer.
+  autopay_retry_days: Calendar days after a failed draft on which the draft is presented once more, integer (0 = no retry).
+  autopay_retries: Number of re-presentments after a failed draft, integer.
+  autopay_failures_before_plan_change: Failed drafts in the nsf lookback after which autopay is removed and the account moves to the fallback plan, integer (0 = not applicable).
+  autopay_failure_fallback_rank: Rank of the plan the account moves to after too many failed drafts, integer (0 = not applicable).
+  late_fee: Fee charged when an installment remains unpaid after the late-fee grace days, USD.
+  late_fee_grace_days: Calendar days after the due date before the late fee is charged, integer.
+  late_fee_max_per_term: Maximum late fees charged in one policy term, integer.
+  courtesy_late_fee_waivers_per_12_months: Late fees that may be waived on request in a rolling 12 months, integer.
+  nsf_fee: Fee charged for each returned payment, USD.
+  nsf_limit_before_certified_funds: Returned payments in the lookback after which only certified funds are accepted, integer.
+  nsf_lookback_months: Rolling months over which returned payments are counted, integer.
+  certified_funds_months: Months the certified-funds restriction lasts after it is imposed, integer.
+  phone_representative_payment_fee: Fee for a one-time payment taken by a customer service representative by phone, USD (self-service channels are free).
+  payment_posting_cutoff: Local Eastern time after which a same-day payment posts the next calendar day, HH:MM.
+  underpayment_tolerance: Shortfall up to which an installment is treated as paid for late-fee and notice purposes; the shortfall stays on the balance, USD.
+  overpayment_applied_to_next_installment: Boolean switch; whether an overpayment is held as a credit against the next installment rather than refunded.
+  noc_trigger_days_past_due: Calendar days after an installment due date on which a notice of cancellation is issued if the installment is still unpaid, integer.
+  noc_min_past_due: Smallest past-due amount for which a notice of cancellation is issued, USD.
+  cancellation_notice_days_by_state: Mapping state -> minimum calendar days between the notice mail date and the cancellation effective date for nonpayment.
+  mailing_allowance_days: Calendar days added to the state notice period for mailing, integer.
+  cancellation_effective_time: Clock time at which a cancellation or reinstatement takes effect on its date.
+  rescission_cutoff_days: Calendar days after the cancellation effective date by which the rescission payment must be received (0 = on or before the effective date), integer.
+  reinstatement_window_days: Calendar days after the cancellation effective date within which reinstatement is available, integer.
+  reinstatement_without_lapse_days: Calendar days after the cancellation effective date within which a reinstatement payment restores coverage with no lapse, integer (0 = never without lapse).
+  no_loss_statement_required: Boolean switch; whether a reinstatement with a lapse requires the named insured's signed statement of no loss during the lapse.
+  reinstatement_fee: Fee charged on each reinstatement, USD.
+  max_reinstatements_per_term: Maximum reinstatements in one policy term, integer.
+  earned_premium_due_days: Calendar days after cancellation within which the final earned-premium bill is due, integer.
+  collections_referral_days: Calendar days after cancellation after which an unpaid final balance is referred to collections, integer.
+  collections_min_balance: Smallest unpaid final balance that is referred to collections, USD.
+  small_balance_writeoff_max: Largest final balance written off instead of billed or refunded, USD.
+  refund_min_amount: Smallest credit balance refunded at account close; smaller credits are written off, USD.
+  refund_issue_days: Calendar days after the credit arises within which a refund is issued, integer.
+  refund_check_clearing_days: Business days a payment made by check or EFT must clear before it can be refunded, integer.
+  refund_to_original_method: Boolean switch; whether refunds go back to the electronic method that paid (otherwise by check to the mailing address).
+  ap_billing_method: How additional premium is billed (spread_over_remaining_installments or bill_immediately).
+  ap_immediate_due_days: Calendar days after the endorsement on which additional premium billed immediately is due, integer.
+  rp_billing_method: How return premium is applied (reduce_remaining_installments or credit_balance).
+  due_day_change_max_per_term: Due-day changes allowed in one term, integer.
+  due_day_shift_max_days: Maximum calendar days a due day may move in one change, integer.
+  plan_change_allowed_midterm: Boolean switch; whether the account may leave this plan during the term.
+  renewal_bill_lead_days: Calendar days before term expiration on which the renewal down payment is billed, integer.
+
+variants:
+  - name: Cardinal Direct Bill Monthly Plan
+    rank: 1
+    entry_gate:
+      eligible_payment_methods: "=eligible_payment_methods"
+    parameters:
+      down_payment_pct: 20.00
+      min_down_payment_amount: 60.00
+      installment_interval_months: 1
+      installment_fee: 8.00
+      min_installment_amount: 15.00
+      autopay_required: false
+      eligible_payment_methods: [check_or_money_order, credit_card, debit_card, bank_eft]
+      pay_plan_discount_pct: 0
+      financial_responsibility_plan_allowed: false
+      invoice_lead_days: 20
+      autopay_draft_offset_days: 0
+      autopay_retry_days: 0
+      autopay_retries: 0
+      autopay_failures_before_plan_change: 0
+      autopay_failure_fallback_rank: 0
+      late_fee: 15.00
+      late_fee_grace_days: 3
+      late_fee_max_per_term: 3
+      courtesy_late_fee_waivers_per_12_months: 0
+      nsf_fee: 25.00
+      nsf_limit_before_certified_funds: 2
+      nsf_lookback_months: 12
+      certified_funds_months: 12
+      phone_representative_payment_fee: 5.00
+      payment_posting_cutoff: "20:00"
+      underpayment_tolerance: 2.00
+      overpayment_applied_to_next_installment: true
+      noc_trigger_days_past_due: 10
+      noc_min_past_due: 10.00
+      cancellation_notice_days_by_state: {OH: 10, IN: 10, KY: 14, VA: 15, WV: 15}
+      mailing_allowance_days: 5
+      cancellation_effective_time: "12:01 a.m. local time"
+      rescission_cutoff_days: 0
+      reinstatement_window_days: 15
+      reinstatement_without_lapse_days: 0
+      no_loss_statement_required: true
+      reinstatement_fee: 30.00
+      max_reinstatements_per_term: 1
+      earned_premium_due_days: 20
+      collections_referral_days: 45
+      collections_min_balance: 25.00
+      small_balance_writeoff_max: 4.99
+      refund_min_amount: 5.00
+      refund_issue_days: 30
+      refund_check_clearing_days: 10
+      refund_to_original_method: true
+      ap_billing_method: spread_over_remaining_installments
+      ap_immediate_due_days: 20
+      rp_billing_method: reduce_remaining_installments
+      due_day_change_max_per_term: 1
+      due_day_shift_max_days: 10
+      plan_change_allowed_midterm: true
+      renewal_bill_lead_days: 20
+  - name: Cardinal Card Autopay Monthly Plan
+    rank: 2
+    entry_gate:
+      eligible_payment_methods: "=eligible_payment_methods"
+      autopay_required: "=autopay_required"
+    parameters:
+      down_payment_pct: 16.67
+      min_down_payment_amount: 60.00
+      installment_interval_months: 1
+      installment_fee: 5.00
+      min_installment_amount: 15.00
+      autopay_required: true
+      eligible_payment_methods: [credit_card, debit_card]
+      pay_plan_discount_pct: 0
+      financial_responsibility_plan_allowed: true
+      invoice_lead_days: 15
+      autopay_draft_offset_days: 0
+      autopay_retry_days: 3
+      autopay_retries: 1
+      autopay_failures_before_plan_change: 2
+      autopay_failure_fallback_rank: 1
+      late_fee: 10.00
+      late_fee_grace_days: 5
+      late_fee_max_per_term: 3
+      courtesy_late_fee_waivers_per_12_months: 1
+      nsf_fee: 25.00
+      nsf_limit_before_certified_funds: 2
+      nsf_lookback_months: 12
+      certified_funds_months: 12
+      phone_representative_payment_fee: 0.00
+      payment_posting_cutoff: "20:00"
+      underpayment_tolerance: 2.00
+      overpayment_applied_to_next_installment: true
+      noc_trigger_days_past_due: 10
+      noc_min_past_due: 10.00
+      cancellation_notice_days_by_state: {OH: 10, IN: 10, KY: 14, VA: 15, WV: 15}
+      mailing_allowance_days: 5
+      cancellation_effective_time: "12:01 a.m. local time"
+      rescission_cutoff_days: 0
+      reinstatement_window_days: 20
+      reinstatement_without_lapse_days: 3
+      no_loss_statement_required: true
+      reinstatement_fee: 25.00
+      max_reinstatements_per_term: 1
+      earned_premium_due_days: 20
+      collections_referral_days: 45
+      collections_min_balance: 25.00
+      small_balance_writeoff_max: 4.99
+      refund_min_amount: 5.00
+      refund_issue_days: 30
+      refund_check_clearing_days: 10
+      refund_to_original_method: true
+      ap_billing_method: spread_over_remaining_installments
+      ap_immediate_due_days: 20
+      rp_billing_method: reduce_remaining_installments
+      due_day_change_max_per_term: 1
+      due_day_shift_max_days: 10
+      plan_change_allowed_midterm: true
+      renewal_bill_lead_days: 20
+  - name: Cardinal EFT Autopay Monthly Plan
+    rank: 3
+    entry_gate:
+      eligible_payment_methods: "=eligible_payment_methods"
+      autopay_required: "=autopay_required"
+    parameters:
+      down_payment_pct: 16.67
+      min_down_payment_amount: 60.00
+      installment_interval_months: 1
+      installment_fee: 2.00
+      min_installment_amount: 15.00
+      autopay_required: true
+      eligible_payment_methods: [bank_eft]
+      pay_plan_discount_pct: 3
+      financial_responsibility_plan_allowed: true
+      invoice_lead_days: 10
+      autopay_draft_offset_days: 0
+      autopay_retry_days: 3
+      autopay_retries: 1
+      autopay_failures_before_plan_change: 2
+      autopay_failure_fallback_rank: 1
+      late_fee: 10.00
+      late_fee_grace_days: 5
+      late_fee_max_per_term: 3
+      courtesy_late_fee_waivers_per_12_months: 1
+      nsf_fee: 25.00
+      nsf_limit_before_certified_funds: 2
+      nsf_lookback_months: 12
+      certified_funds_months: 12
+      phone_representative_payment_fee: 0.00
+      payment_posting_cutoff: "20:00"
+      underpayment_tolerance: 0.00
+      overpayment_applied_to_next_installment: true
+      noc_trigger_days_past_due: 10
+      noc_min_past_due: 10.00
+      cancellation_notice_days_by_state: {OH: 10, IN: 10, KY: 14, VA: 15, WV: 15}
+      mailing_allowance_days: 5
+      cancellation_effective_time: "12:01 a.m. local time"
+      rescission_cutoff_days: 0
+      reinstatement_window_days: 20
+      reinstatement_without_lapse_days: 3
+      no_loss_statement_required: true
+      reinstatement_fee: 25.00
+      max_reinstatements_per_term: 1
+      earned_premium_due_days: 20
+      collections_referral_days: 45
+      collections_min_balance: 25.00
+      small_balance_writeoff_max: 4.99
+      refund_min_amount: 5.00
+      refund_issue_days: 15
+      refund_check_clearing_days: 10
+      refund_to_original_method: true
+      ap_billing_method: spread_over_remaining_installments
+      ap_immediate_due_days: 20
+      rp_billing_method: reduce_remaining_installments
+      due_day_change_max_per_term: 2
+      due_day_shift_max_days: 15
+      plan_change_allowed_midterm: true
+      renewal_bill_lead_days: 20
+  - name: Cardinal Three-Pay Plan
+    rank: 4
+    entry_gate:
+      eligible_payment_methods: "=eligible_payment_methods"
+    parameters:
+      down_payment_pct: 33.34
+      min_down_payment_amount: 0.00
+      installment_interval_months: 2
+      installment_fee: 5.00
+      min_installment_amount: 15.00
+      autopay_required: false
+      eligible_payment_methods: [check_or_money_order, credit_card, debit_card, bank_eft]
+      pay_plan_discount_pct: 0
+      financial_responsibility_plan_allowed: true
+      invoice_lead_days: 20
+      autopay_draft_offset_days: 0
+      autopay_retry_days: 0
+      autopay_retries: 0
+      autopay_failures_before_plan_change: 0
+      autopay_failure_fallback_rank: 0
+      late_fee: 15.00
+      late_fee_grace_days: 5
+      late_fee_max_per_term: 2
+      courtesy_late_fee_waivers_per_12_months: 1
+      nsf_fee: 25.00
+      nsf_limit_before_certified_funds: 2
+      nsf_lookback_months: 12
+      certified_funds_months: 12
+      phone_representative_payment_fee: 5.00
+      payment_posting_cutoff: "20:00"
+      underpayment_tolerance: 2.00
+      overpayment_applied_to_next_installment: true
+      noc_trigger_days_past_due: 12
+      noc_min_past_due: 10.00
+      cancellation_notice_days_by_state: {OH: 10, IN: 10, KY: 14, VA: 15, WV: 15}
+      mailing_allowance_days: 5
+      cancellation_effective_time: "12:01 a.m. local time"
+      rescission_cutoff_days: 0
+      reinstatement_window_days: 30
+      reinstatement_without_lapse_days: 5
+      no_loss_statement_required: true
+      reinstatement_fee: 25.00
+      max_reinstatements_per_term: 2
+      earned_premium_due_days: 20
+      collections_referral_days: 45
+      collections_min_balance: 25.00
+      small_balance_writeoff_max: 4.99
+      refund_min_amount: 5.00
+      refund_issue_days: 30
+      refund_check_clearing_days: 10
+      refund_to_original_method: true
+      ap_billing_method: spread_over_remaining_installments
+      ap_immediate_due_days: 20
+      rp_billing_method: reduce_remaining_installments
+      due_day_change_max_per_term: 1
+      due_day_shift_max_days: 10
+      plan_change_allowed_midterm: true
+      renewal_bill_lead_days: 25
+  - name: Cardinal Two-Pay Plan
+    rank: 5
+    entry_gate:
+      eligible_payment_methods: "=eligible_payment_methods"
+    parameters:
+      down_payment_pct: 50.00
+      min_down_payment_amount: 0.00
+      installment_interval_months: 3
+      installment_fee: 5.00
+      min_installment_amount: 15.00
+      autopay_required: false
+      eligible_payment_methods: [check_or_money_order, credit_card, debit_card, bank_eft]
+      pay_plan_discount_pct: 4
+      financial_responsibility_plan_allowed: true
+      invoice_lead_days: 20
+      autopay_draft_offset_days: 0
+      autopay_retry_days: 0
+      autopay_retries: 0
+      autopay_failures_before_plan_change: 0
+      autopay_failure_fallback_rank: 0
+      late_fee: 15.00
+      late_fee_grace_days: 7
+      late_fee_max_per_term: 1
+      courtesy_late_fee_waivers_per_12_months: 1
+      nsf_fee: 25.00
+      nsf_limit_before_certified_funds: 2
+      nsf_lookback_months: 12
+      certified_funds_months: 12
+      phone_representative_payment_fee: 5.00
+      payment_posting_cutoff: "20:00"
+      underpayment_tolerance: 2.00
+      overpayment_applied_to_next_installment: true
+      noc_trigger_days_past_due: 15
+      noc_min_past_due: 10.00
+      cancellation_notice_days_by_state: {OH: 10, IN: 10, KY: 14, VA: 15, WV: 15}
+      mailing_allowance_days: 5
+      cancellation_effective_time: "12:01 a.m. local time"
+      rescission_cutoff_days: 0
+      reinstatement_window_days: 30
+      reinstatement_without_lapse_days: 5
+      no_loss_statement_required: true
+      reinstatement_fee: 20.00
+      max_reinstatements_per_term: 2
+      earned_premium_due_days: 20
+      collections_referral_days: 45
+      collections_min_balance: 25.00
+      small_balance_writeoff_max: 4.99
+      refund_min_amount: 5.00
+      refund_issue_days: 30
+      refund_check_clearing_days: 10
+      refund_to_original_method: true
+      ap_billing_method: spread_over_remaining_installments
+      ap_immediate_due_days: 20
+      rp_billing_method: reduce_remaining_installments
+      due_day_change_max_per_term: 1
+      due_day_shift_max_days: 10
+      plan_change_allowed_midterm: true
+      renewal_bill_lead_days: 25
+  - name: Cardinal Paid-in-Full Plan
+    rank: 6
+    entry_gate:
+      eligible_payment_methods: "=eligible_payment_methods"
+    parameters:
+      down_payment_pct: 100.00
+      min_down_payment_amount: 0.00
+      installment_interval_months: 0
+      installment_fee: 0.00
+      min_installment_amount: 15.00
+      autopay_required: false
+      eligible_payment_methods: [check_or_money_order, credit_card, debit_card, bank_eft]
+      pay_plan_discount_pct: 8
+      financial_responsibility_plan_allowed: true
+      invoice_lead_days: 20
+      autopay_draft_offset_days: 0
+      autopay_retry_days: 0
+      autopay_retries: 0
+      autopay_failures_before_plan_change: 0
+      autopay_failure_fallback_rank: 0
+      late_fee: 10.00
+      late_fee_grace_days: 7
+      late_fee_max_per_term: 1
+      courtesy_late_fee_waivers_per_12_months: 1
+      nsf_fee: 25.00
+      nsf_limit_before_certified_funds: 2
+      nsf_lookback_months: 12
+      certified_funds_months: 12
+      phone_representative_payment_fee: 5.00
+      payment_posting_cutoff: "20:00"
+      underpayment_tolerance: 2.00
+      overpayment_applied_to_next_installment: false
+      noc_trigger_days_past_due: 15
+      noc_min_past_due: 10.00
+      cancellation_notice_days_by_state: {OH: 10, IN: 10, KY: 14, VA: 15, WV: 15}
+      mailing_allowance_days: 5
+      cancellation_effective_time: "12:01 a.m. local time"
+      rescission_cutoff_days: 0
+      reinstatement_window_days: 30
+      reinstatement_without_lapse_days: 5
+      no_loss_statement_required: true
+      reinstatement_fee: 20.00
+      max_reinstatements_per_term: 2
+      earned_premium_due_days: 20
+      collections_referral_days: 45
+      collections_min_balance: 25.00
+      small_balance_writeoff_max: 4.99
+      refund_min_amount: 5.00
+      refund_issue_days: 15
+      refund_check_clearing_days: 10
+      refund_to_original_method: true
+      ap_billing_method: bill_immediately
+      ap_immediate_due_days: 20
+      rp_billing_method: credit_balance
+      due_day_change_max_per_term: 0
+      due_day_shift_max_days: 0
+      plan_change_allowed_midterm: false
+      renewal_bill_lead_days: 30
+
+events:
+  # ---- holding writes (billing_accounts) ----------------------------------------------------
+  - type: billing_account_open
+    target: billing_accounts
+    mutation: create
+    meaning: The billing account for a newly bound policy is opened on the pay plan chosen at bind.
+    grain: One row per policy.
+    fields:
+      billing_account_id: Billing account reference.
+      customer_id: Named insured.
+      policy_id: Policy billed.
+      variant_name: Pay plan chosen.
+      opened_date: Date opened.
+      term_effective_date: Term the account currently bills.
+      payment_method: Method on file.
+      autopay_enrolled: Whether automatic payments are on.
+      installment_due_day: Day of month installments fall due.
+    triggers:
+      - event: billing:billing_fee_charged
+        map: {billing_account_id: billing_account_id, customer_id: customer_id, policy_id: policy_id, term_effective_date: term_effective_date, fee_type: policy_fee}
+  - type: billing_notice_issue
+    target: billing_accounts
+    mutation: {transition: {from: current, to: notice_pending}}
+    meaning: The account moves to notice pending when a notice of cancellation for nonpayment is mailed.
+    grain: One row per transaction.
+    fields:
+      status: Set to notice_pending.
+      policy_id: Policy whose cancellation is now pending.
+    triggers:
+      - event: auto:auto_cancel_pending
+        map: {policy_id: policy_id, end_reason: nonpayment}
+  - type: billing_rescind
+    target: billing_accounts
+    mutation: {transition: {from: notice_pending, to: current}}
+    meaning: The notice of cancellation is rescinded because the amount required to rescind was received in time.
+    grain: One row per transaction.
+    fields:
+      status: Set to current.
+      policy_id: Policy whose pending cancellation is withdrawn.
+    triggers:
+      - event: auto:auto_cancel_rescind
+        map: {policy_id: policy_id}
+  - type: billing_cancel_nonpay
+    target: billing_accounts
+    mutation: {transition: {from: notice_pending, to: cancelled_nonpay}}
+    meaning: The cancellation effective date passes without the cure; the account is cancelled for nonpayment.
+    grain: One row per transaction.
+    fields:
+      status: Set to cancelled_nonpay.
+      policy_id: Policy cancelled.
+    triggers:
+      - event: auto:auto_cancel_effective
+        map: {policy_id: policy_id, end_reason: nonpayment}
+  - type: billing_reinstate
+    target: billing_accounts
+    mutation: {transition: {from: cancelled_nonpay, to: current}}
+    meaning: The account is reinstated within the reinstatement window and the policy is put back in force.
+    grain: One row per transaction.
+    fields:
+      status: Set to current.
+      policy_id: Policy reinstated.
+      billing_account_id: Account reinstated.
+      customer_id: Named insured.
+    triggers:
+      - event: auto:auto_reinstate
+        map: {policy_id: policy_id}
+      - event: billing:billing_fee_charged
+        map: {billing_account_id: billing_account_id, customer_id: customer_id, policy_id: policy_id, fee_type: reinstatement_fee}
+  - type: billing_refer_collections
+    target: billing_accounts
+    mutation: {transition: {from: cancelled_nonpay, to: collections}}
+    meaning: An unpaid earned-premium balance after cancellation is referred to collections.
+    grain: One row per transaction.
+    fields:
+      status: Set to collections.
+    triggers: []
+  - type: billing_close
+    target: billing_accounts
+    mutation:
+      transition:
+        - {from: current, to: closed}
+        - {from: cancelled_nonpay, to: closed}
+        - {from: collections, to: closed}
+    meaning: The account closes once the policy has ended and the final balance is zero, refunded or written off.
+    grain: One row per transaction.
+    fields:
+      status: Set to closed.
+      closed_date: Date closed.
+    triggers: []
+  - type: billing_plan_change
+    target: billing_accounts
+    mutation: update
+    meaning: The pay plan of the account is changed during the term or at renewal.
+    grain: One row per transaction.
+    fields:
+      variant_name: New pay plan.
+      payment_method: Method on file under the new plan.
+      autopay_enrolled: Autopay setting under the new plan.
+    triggers: []
+  - type: billing_payment_setup_update
+    target: billing_accounts
+    mutation: update
+    meaning: The payment method, autopay enrollment or installment due day on file is changed, or a certified-funds restriction is set.
+    grain: One row per transaction.
+    fields:
+      payment_method: Method on file.
+      autopay_enrolled: Whether automatic payments are on.
+      installment_due_day: Day of month installments fall due.
+      certified_funds_until: Last day of a certified-funds restriction, or empty.
+    triggers: []
+  # ---- event-table writes (billing_ledger) ---------------------------------------------------
+  - type: billing_premium_change
+    target: billing_ledger
+    meaning: A premium amount written on the policy (term premium, additional premium or return premium) is received by billing for scheduling.
+    grain: One row per premium transaction of the policy.
+    distinguish_by: [source_transaction_id, premium_change_type]
+    fields:
+      entry_id: Ledger entry reference.
+      billing_account_id: Account.
+      customer_id: Named insured.
+      policy_id: Policy.
+      source_transaction_id: The auto premium transaction received.
+      premium_change_type: term_premium, additional or return.
+      amount: Premium amount, USD, positive.
+      term_effective_date: Term the premium belongs to.
+      posted_date: Date received.
+    triggers: []
+  - type: billing_installment_billed
+    target: billing_ledger
+    meaning: One installment (the down payment counts as installment 1) is invoiced and becomes due.
+    grain: One row per installment of a term.
+    distinguish_by: [term_effective_date, installment_number]
+    fields:
+      entry_id: Ledger entry reference.
+      billing_account_id: Account.
+      customer_id: Named insured.
+      policy_id: Policy.
+      term_effective_date: Term billed.
+      installment_number: 1 for the down payment, then 2, 3, ...
+      invoice_date: Date the invoice was issued.
+      due_date: Due date.
+      amount: Premium portion of the installment, USD.
+      posted_date: Date posted.
+    account: account_balance
+    direction: in
+    triggers:
+      - event: billing:billing_fee_charged
+        when: {installment_number: {not: 1}}
+        map: {billing_account_id: billing_account_id, customer_id: customer_id, policy_id: policy_id, term_effective_date: term_effective_date, installment_number: installment_number, fee_type: installment_fee}
+  - type: billing_fee_charged
+    target: billing_ledger
+    meaning: A fee is charged to the account (policy fee, installment fee, late fee, returned-payment fee, reinstatement fee, endorsement fee, filing fee, device fee or phone payment fee).
+    grain: One row per fee occurrence.
+    distinguish_by: [fee_type, term_effective_date, installment_number, source_transaction_id, original_entry_id, posted_date]
+    fields:
+      entry_id: Ledger entry reference.
+      billing_account_id: Account.
+      customer_id: Named insured.
+      policy_id: Policy.
+      fee_type: Which fee.
+      amount: Fee amount, USD.
+      term_effective_date: Term the fee belongs to.
+      installment_number: Installment a fee is tied to (installment fee, late fee); empty otherwise.
+      source_transaction_id: Endorsement, filing or device transaction the fee is tied to; empty otherwise.
+      original_entry_id: Returned payment or phone payment the fee is tied to; empty otherwise.
+      posted_date: Date charged.
+    account: account_balance
+    direction: in
+    triggers: []
+  - type: billing_payment_received
+    target: billing_ledger
+    meaning: A payment from the customer is posted to the account.
+    grain: One row per payment.
+    distinguish_by: [payment_reference]
+    fields:
+      entry_id: Ledger entry reference.
+      billing_account_id: Account.
+      customer_id: Named insured.
+      policy_id: Policy.
+      payment_reference: Confirmation number of the payment.
+      payment_method: Method used.
+      payment_channel: Channel used.
+      amount: Amount paid, USD.
+      posted_date: Posting date (after the posting cutoff, the next day).
+    account: account_balance
+    direction: out
+    triggers:
+      - event: billing:billing_fee_charged
+        when: {payment_channel: phone_representative}
+        map: {billing_account_id: billing_account_id, customer_id: customer_id, policy_id: policy_id, original_entry_id: entry_id, fee_type: phone_payment_fee}
+  - type: billing_payment_returned
+    target: billing_ledger
+    meaning: A posted payment is returned unpaid by the bank or card issuer and its credit is reversed.
+    grain: One row per returned payment.
+    distinguish_by: [original_entry_id]
+    fields:
+      entry_id: Ledger entry reference.
+      billing_account_id: Account.
+      customer_id: Named insured.
+      policy_id: Policy.
+      original_entry_id: The payment entry returned.
+      return_reason: Bank or issuer reason.
+      amount: Amount reversed, USD.
+      posted_date: Date the return was posted.
+    account: account_balance
+    direction: in
+    triggers:
+      - event: billing:billing_fee_charged
+        map: {billing_account_id: billing_account_id, customer_id: customer_id, policy_id: policy_id, original_entry_id: entry_id, fee_type: nsf_fee}
+  - type: billing_endorsement_charge
+    target: billing_ledger
+    meaning: Additional premium billed at once (paid-in-full plan, or no installment left in the term) rather than spread.
+    grain: One row per additional-premium transaction billed at once.
+    distinguish_by: [source_transaction_id]
+    fields:
+      entry_id: Ledger entry reference.
+      billing_account_id: Account.
+      customer_id: Named insured.
+      policy_id: Policy.
+      source_transaction_id: The auto additional-premium transaction billed.
+      amount: Amount billed, USD.
+      due_date: Due date.
+      posted_date: Date billed.
+    account: account_balance
+    direction: in
+    triggers: []
+  - type: billing_credit_applied
+    target: billing_ledger
+    meaning: Return premium that exceeds what is left unbilled for the term (or any return premium on a paid-in-full plan) is credited against the balance.
+    grain: One row per return-premium transaction credited.
+    distinguish_by: [source_transaction_id]
+    fields:
+      entry_id: Ledger entry reference.
+      billing_account_id: Account.
+      customer_id: Named insured.
+      policy_id: Policy.
+      source_transaction_id: The auto return-premium transaction credited.
+      amount: Amount credited, USD.
+      posted_date: Date credited.
+    account: account_balance
+    direction: out
+    triggers: []
+  - type: billing_fee_waived
+    target: billing_ledger
+    meaning: A charged fee is waived and its amount reversed.
+    grain: One row per waived fee.
+    distinguish_by: [original_entry_id]
+    fields:
+      entry_id: Ledger entry reference.
+      billing_account_id: Account.
+      customer_id: Named insured.
+      policy_id: Policy.
+      original_entry_id: The fee entry waived.
+      fee_type: Type of the fee waived.
+      waiver_reason: Why the fee was waived.
+      amount: Amount reversed, USD.
+      posted_date: Date waived.
+    account: account_balance
+    direction: out
+    triggers: []
+  - type: billing_refund_issued
+    target: billing_ledger
+    meaning: A credit balance is refunded to the customer.
+    grain: One row per refund.
+    distinguish_by: [refund_reference]
+    fields:
+      entry_id: Ledger entry reference.
+      billing_account_id: Account.
+      customer_id: Named insured.
+      policy_id: Policy.
+      refund_reference: Refund reference.
+      payment_method: Method refunded to.
+      amount: Amount refunded, USD.
+      posted_date: Date issued.
+    account: account_balance
+    direction: in
+    triggers: []
+  - type: billing_writeoff
+    target: billing_ledger
+    meaning: A small final balance (owed by or to the customer) is written off at account close, or a collections balance is written off.
+    grain: One row per write-off.
+    distinguish_by: [writeoff_reason, posted_date]
+    fields:
+      entry_id: Ledger entry reference.
+      billing_account_id: Account.
+      customer_id: Named insured.
+      policy_id: Policy.
+      writeoff_reason: small_balance or collections_uncollectible.
+      amount: Amount written off, USD (positive when a debit balance is written off).
+      posted_date: Date written off.
+    account: account_balance
+    direction: out
+    triggers: []
+  - type: billing_notice_of_cancellation
+    target: billing_ledger
+    meaning: A notice of cancellation for nonpayment is mailed for an unpaid installment, stating the cancellation effective date and the amount required to rescind.
+    grain: One row per notice (one per unpaid installment noticed).
+    distinguish_by: [term_effective_date, installment_number]
+    fields:
+      entry_id: Ledger entry reference.
+      billing_account_id: Account.
+      customer_id: Named insured.
+      policy_id: Policy.
+      term_effective_date: Term of the unpaid installment.
+      installment_number: Unpaid installment noticed.
+      notice_mail_date: Date mailed.
+      cancellation_effective_date: Cancellation effective date printed on the notice.
+      minimum_due_to_rescind: Amount required to rescind, USD.
+      posted_date: Date recorded.
+    triggers:
+      - event: billing:billing_notice_issue
+        map: {policy_id: policy_id}
+
+measures:
+  - id: billing_msr_returned_payments
+    window: Rolling nsf_lookback_months calendar months ending on the date of the latest return.
+    measure: Count of billing_payment_returned rows on the account.
+  - id: billing_msr_late_fees_term
+    window: The current policy term (term_effective_date of the account).
+    measure: Count of billing_fee_charged rows with fee_type late_fee for the term.
+  - id: billing_msr_courtesy_waivers
+    window: Rolling 12 calendar months ending on the waiver date.
+    measure: Count of billing_fee_waived rows with waiver_reason courtesy on the account.
+  - id: billing_msr_reinstatements_term
+    window: The current policy term.
+    measure: Count of billing_reinstate transitions on the account during the term.
+  - id: billing_msr_past_due
+    window: As of the evaluation date.
+    measure: Sum of installment premium and fees whose due date has passed less payments and credits posted, on the account.
+  - id: billing_msr_remaining_installments
+    window: The current policy term as of the premium change date.
+    measure: Count of installments of the term not yet billed.
+  - id: billing_msr_failed_drafts
+    window: Rolling nsf_lookback_months calendar months.
+    measure: Count of billing_payment_returned rows on the account whose original payment had payment_channel autopay.
+
+policies:
+  - id: billing_agg_multi_holding
+    subject: [billing_account_open]
+    rule: >-
+      Every auto policy is billed through exactly one billing account, opened when the policy is bound; a customer
+      therefore holds as many billing accounts as auto policies, with no cap of its own. A billing account is opened only
+      for a policy that has no billing account yet. Accounts are never merged.
+    eligibility:
+      - id: one_account_per_policy
+        applies_to: [billing_account_open]
+        kind: dedup
+        condition: "A billing account is opened only for a policy that has no billing account yet."
+        evidence_fields: [billing_accounts.policy_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [billing_accounts.policy_id]
+          action_bindings:
+            billing_accounts.policy_id: policy_id
+        dedup_contract:
+          table: billing_accounts
+          mode: separate_record
+          object_bindings: {policy_id: policy_id}
+          duplicate_filters: {status: [current, notice_pending, cancelled_nonpay, collections, closed]}
+          distinct_fields: []
+    params:
+      max_per_customer: null
+
+  - id: billing_agg_cross_account_payments
+    subject: [billing_payment_received, billing_refund_issued, billing_credit_applied]
+    rule: >-
+      Money is never moved between a customer's billing accounts automatically. A payment is posted to the one account
+      the customer names; a payment that cannot be tied to an account is not posted. A credit balance on one account can
+      be applied to another account of the same customer only when the customer asks for it, and only after the credit
+      has arisen from a posted credit (return premium or overpayment) whose payment has cleared; the transfer is recorded
+      as a refund from the first account and a payment to the second account with the same amount. A credit balance is
+      never used to cure a notice of cancellation on another account unless the customer asks before the cancellation
+      effective date of that notice. A credit can be transferred only when the credit on the giving account is at least
+      the amount transferred on the date of the transfer.
+    eligibility:
+      - id: credit_covers_transfer
+        applies_to: [billing_refund_issued]
+        kind: caller_fact
+        condition: "A credit can be transferred only when the credit on the giving account is at least the amount transferred on the date of the transfer."
+        evidence_fields: [billing_accounts.account_balance, billing_accounts.billing_account_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [billing_accounts.billing_account_id]
+          action_bindings:
+            billing_accounts.billing_account_id: billing_account_id
+
+  - id: billing_evt_installment_schedule
+    subject: [billing_installment_billed, billing_fee_charged, billing_premium_change, billing_endorsement_charge, billing_credit_applied]
+    rule: >-
+      Each term is billed on the account's pay plan. The down payment is installment 1, due on the term effective date:
+      the larger of down_payment_pct of the full-term premium and min_down_payment_amount, never more than the full-term
+      premium, rounded to the cent. The remainder is split evenly over the remaining installments, which fall due every
+      installment_interval_months on the installment_due_day; the number of installments in a term is 1 plus
+      (policy_term_months / installment_interval_months - 1), and a paid-in-full plan has the down payment only. Any cent
+      left by rounding goes on the last installment. A remaining installment smaller than min_installment_amount is
+      combined with the one before it. Invoices are issued invoice_lead_days before each due date. The installment_fee is
+      added to every installment after the down payment and to no other bill. The policy fee of the auto package is billed
+      once per term with the down payment. Additional premium is handled by ap_billing_method: spread_over_remaining_installments
+      divides it evenly over the installments of the term not yet billed, and when none remain it is billed at once due in
+      ap_immediate_due_days; bill_immediately bills it at once due in ap_immediate_due_days. Return premium is handled by
+      rp_billing_method: reduce_remaining_installments lowers the installments not yet billed evenly, and any part above
+      what remains unbilled is credited to the balance at once; credit_balance credits it all at once. The renewal down
+      payment is billed renewal_bill_lead_days before the term expiration date.
+    eligibility: []
+    formula:
+      down_payment: min(max(round(amount * down_payment_pct / 100, 2), min_down_payment_amount), amount)
+    measures: [billing_msr_remaining_installments]
+
+  - id: billing_evt_late_fee
+    subject: [billing_fee_charged, billing_fee_waived]
+    rule: >-
+      A late fee of the plan's late_fee is charged once on an installment that is still unpaid, beyond the
+      underpayment_tolerance, at the end of late_fee_grace_days calendar days after its due date. No late fee is charged
+      on the down payment of a new-business term, on a final earned-premium bill, on an account in notice_pending,
+      cancelled_nonpay, collections or closed status, or once late_fee_max_per_term late fees have been charged in the term
+      (billing_msr_late_fees_term). A late fee is charged only when the installment is still unpaid after
+      late_fee_grace_days calendar days past its due date. The count starts the day after the due_date of the installment
+      invoice, so the fee can post on the first day after the last grace day and never on a grace day. A late fee may
+      be waived as a courtesy on the customer's request when the account has used fewer than
+      courtesy_late_fee_waivers_per_12_months courtesy waivers in the rolling 12 months (billing_msr_courtesy_waivers)
+      and the installment it was charged on has since been paid in full; a late fee charged in error (the payment had
+      posted on or before the end of the grace days) is always reversed with waiver_reason posting_error.
+    eligibility:
+      - id: grace_elapsed
+        applies_to: [billing_fee_charged]
+        kind: time
+        condition: "A late fee is charged only when the installment is still unpaid after late_fee_grace_days calendar days past its due date."
+        evidence_fields: [billing_ledger.due_date, billing_ledger.installment_number]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [billing_ledger.installment_number]
+          action_bindings:
+            billing_ledger.installment_number: installment_number
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: its due date
+          anchor_source: billing_ledger.due_date
+          relation: not_before
+          duration_source: variants.late_fee_grace_days
+          unit: calendar_days
+          counting_rule: "The count starts the day after the due_date of the installment invoice, so the fee can post on the first day after the last grace day and never on a grace day."
+          boundary: exclusive
+      - id: courtesy_waiver_dedup
+        applies_to: [billing_fee_waived]
+        kind: dedup
+        condition: "A late fee may be waived as a courtesy on the customer's request when the account has used fewer than courtesy_late_fee_waivers_per_12_months courtesy waivers in the rolling 12 months (billing_msr_courtesy_waivers) and the installment it was charged on has since been paid in full"
+        evidence_fields: [billing_ledger.original_entry_id, billing_ledger.waiver_reason, billing_ledger.posted_date]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [billing_ledger.original_entry_id]
+          action_bindings:
+            billing_ledger.original_entry_id: original_entry_id
+        dedup_contract:
+          table: billing_ledger
+          mode: separate_record
+          object_bindings: {original_entry_id: original_entry_id}
+          duplicate_filters: {event_type: [billing_fee_waived]}
+          distinct_fields: [posted_date]
+    measures: [billing_msr_late_fees_term, billing_msr_courtesy_waivers]
+    params:
+      per_tier:
+        Cardinal Direct Bill Monthly Plan: {late_fee: "=late_fee", grace_days: "=late_fee_grace_days", cap: "=late_fee_max_per_term"}
+        Cardinal Card Autopay Monthly Plan: {late_fee: "=late_fee", grace_days: "=late_fee_grace_days", cap: "=late_fee_max_per_term"}
+        Cardinal EFT Autopay Monthly Plan: {late_fee: "=late_fee", grace_days: "=late_fee_grace_days", cap: "=late_fee_max_per_term"}
+        Cardinal Three-Pay Plan: {late_fee: "=late_fee", grace_days: "=late_fee_grace_days", cap: "=late_fee_max_per_term"}
+        Cardinal Two-Pay Plan: {late_fee: "=late_fee", grace_days: "=late_fee_grace_days", cap: "=late_fee_max_per_term"}
+        Cardinal Paid-in-Full Plan: {late_fee: "=late_fee", grace_days: "=late_fee_grace_days", cap: "=late_fee_max_per_term"}
+
+  - id: billing_evt_returned_payment
+    subject: [billing_payment_returned, billing_fee_charged, billing_payment_setup_update, billing_plan_change]
+    rule: >-
+      When a posted payment is returned unpaid, its credit is reversed in full and the plan's nsf_fee is charged, tied to
+      the returned payment; each returned payment carries exactly one fee, including a re-presented autopay draft that
+      fails again. A returned payment counts as never received, so a notice rescission or reinstatement that relied on it
+      is undone by the system. When the account reaches nsf_limit_before_certified_funds returned payments within
+      nsf_lookback_months (billing_msr_returned_payments), only certified funds (cashier's check, money order or debit
+      card) are accepted for certified_funds_months from the latest return, recorded as certified_funds_until. On an
+      autopay plan a failed draft is re-presented after autopay_retry_days, autopay_retries times; when failed drafts in
+      the lookback reach autopay_failures_before_plan_change (billing_msr_failed_drafts), autopay is removed and the
+      account moves to the plan of rank autopay_failure_fallback_rank. A returned payment of a payment made by a
+      representative over the phone is handled the same way.
+    eligibility: []
+    measures: [billing_msr_returned_payments, billing_msr_failed_drafts]
+
+  - id: billing_nonpayment_cancellation
+    subject: [billing_notice_of_cancellation, billing_notice_issue, billing_rescind, billing_cancel_nonpay]
+    rule: >-
+      A notice of cancellation for nonpayment is mailed when an installment remains unpaid noc_trigger_days_past_due
+      calendar days after its due date and the past-due amount (billing_msr_past_due) is at least noc_min_past_due; an
+      unpaid amount within the underpayment_tolerance never triggers a notice. A notice is mailed only while the account
+      status is current. The cancellation effective date printed on the notice is the mail date plus the state notice
+      days for the policy_state from cancellation_notice_days_by_state plus mailing_allowance_days, at
+      cancellation_effective_time. The amount required to rescind is the full past-due amount on the mail date,
+      including fees; amounts falling due after the mail date are not part of it. The notice is rescinded only when the
+      amount required to rescind is received no later than rescission_cutoff_days calendar days after the cancellation
+      effective date printed on the notice. Payments are counted by posting date, the cancellation effective date being
+      day 0, so a payment posted on the cancellation effective date itself rescinds the notice. A partial payment
+      does not rescind and leaves the cancellation effective date unchanged. When the cancellation effective date passes
+      without the cure, the policy is cancelled for nonpayment; earned premium is computed pro rata to the cancellation
+      effective date and the return premium is credited to the account, and a final bill for any remaining earned balance
+      is issued due in earned_premium_due_days.
+    eligibility:
+      - id: account_current_for_notice
+        applies_to: [billing_notice_of_cancellation]
+        kind: state
+        condition: "A notice is mailed only while the account status is current."
+        evidence_fields: [billing_accounts.status, billing_accounts.billing_account_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [billing_accounts.billing_account_id]
+          action_bindings:
+            billing_accounts.billing_account_id: billing_account_id
+        state_contract:
+          field: billing_accounts.status
+          allowed: [current]
+      - id: rescission_in_time
+        applies_to: [billing_rescind]
+        kind: time
+        condition: "The notice is rescinded only when the amount required to rescind is received no later than rescission_cutoff_days calendar days after the cancellation effective date printed on the notice."
+        evidence_fields: [billing_ledger.cancellation_effective_date, billing_ledger.entry_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [billing_ledger.entry_id]
+          action_bindings:
+            billing_ledger.entry_id: notice_entry_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the cancellation effective date printed on the notice
+          anchor_source: billing_ledger.cancellation_effective_date
+          relation: not_after
+          duration_source: variants.rescission_cutoff_days
+          unit: calendar_days
+          counting_rule: "Payments are counted by posting date, the cancellation effective date being day 0, so a payment posted on the cancellation effective date itself rescinds the notice."
+          boundary: inclusive
+    measures: [billing_msr_past_due]
+    params:
+      per_tier:
+        Cardinal Direct Bill Monthly Plan: {noc_trigger_days_past_due: "=noc_trigger_days_past_due"}
+        Cardinal Card Autopay Monthly Plan: {noc_trigger_days_past_due: "=noc_trigger_days_past_due"}
+        Cardinal EFT Autopay Monthly Plan: {noc_trigger_days_past_due: "=noc_trigger_days_past_due"}
+        Cardinal Three-Pay Plan: {noc_trigger_days_past_due: "=noc_trigger_days_past_due"}
+        Cardinal Two-Pay Plan: {noc_trigger_days_past_due: "=noc_trigger_days_past_due"}
+        Cardinal Paid-in-Full Plan: {noc_trigger_days_past_due: "=noc_trigger_days_past_due"}
+
+  - id: billing_reinstatement
+    subject: [billing_reinstate, billing_fee_charged, billing_payment_received]
+    rule: >-
+      A policy cancelled for nonpayment can be reinstated through its billing account. Reinstatement is available only
+      when the reinstatement payment is received no later than reinstatement_window_days calendar days after the
+      cancellation effective date of the policy. The window is counted in calendar days from the cancellation effective
+      date, that date being day 0, and a payment posted on the last day of the window is in time. The reinstatement
+      payment is the full past-due amount at cancellation plus the reinstatement_fee; the return premium credited at
+      cancellation is reversed by the reinstatement. When the payment posts no later than reinstatement_without_lapse_days
+      after the cancellation effective date, coverage is restored with no lapse. Otherwise coverage is restored from the
+      reinstatement date with a lapse from the cancellation effective date, and where no_loss_statement_required is true
+      the named insured must first sign a statement that no accident or loss occurred during the lapse; a reinstatement
+      with a lapse is processed only when the signed no-loss statement is on file. A named insured who reports a loss
+      during the lapse cannot sign the statement, and the account is not reinstated. No reinstatement is processed once
+      the term has had max_reinstatements_per_term reinstatements (billing_msr_reinstatements_term), nor after the term
+      expiration date, nor for an account whose cancellation followed a returned reinstatement payment in the same term.
+    eligibility:
+      - id: reinstatement_window
+        applies_to: [billing_reinstate]
+        kind: time
+        condition: "Reinstatement is available only when the reinstatement payment is received no later than reinstatement_window_days calendar days after the cancellation effective date of the policy."
+        evidence_fields: [auto_policies.cancellation_effective_date, auto_policies.policy_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [auto_policies.policy_id]
+          action_bindings:
+            auto_policies.policy_id: policy_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the cancellation effective date of the policy
+          anchor_source: auto_policies.cancellation_effective_date
+          relation: not_after
+          duration_source: variants.reinstatement_window_days
+          unit: calendar_days
+          counting_rule: "The window is counted in calendar days from the cancellation effective date, that date being day 0, and a payment posted on the last day of the window is in time."
+          boundary: inclusive
+      - id: no_loss_statement_signed
+        applies_to: [billing_reinstate]
+        kind: state
+        condition: "a reinstatement with a lapse is processed only when the signed no-loss statement is on file"
+        evidence_fields: [billing_reinstatement_requests.request_status, billing_reinstatement_requests.request_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [billing_reinstatement_requests.request_id]
+          action_bindings:
+            billing_reinstatement_requests.request_id: request_id
+        state_contract:
+          field: billing_reinstatement_requests.request_status
+          allowed: [statement_signed]
+    measures: [billing_msr_reinstatements_term]
+    formula:
+      reinstatement_payment: billing_msr_past_due + reinstatement_fee
+
+  - id: billing_evt_payment_application
+    subject: [billing_payment_received, billing_fee_charged]
+    rule: >-
+      A payment is applied in a fixed order: returned-payment fees, then late fees, then reinstatement fees, then other
+      fees, then the oldest past-due installment premium, then the current installment, then future installments in due
+      order. A payment of a method the plan does not accept is not taken, and while certified_funds_until is on or after
+      today only certified funds are taken. A payment made after payment_posting_cutoff Eastern time posts the next
+      calendar day. A one-time payment taken by a representative over the phone carries the plan's
+      phone_representative_payment_fee, charged once per payment and tied to it; payments made online, by the automated
+      phone line, by mail or by autopay carry no fee, and no fee is charged when the payment cures a notice of cancellation
+      or reinstates the account. An overpayment stays on the account as a credit applied to the next installment where
+      overpayment_applied_to_next_installment is true; otherwise it is refunded under billing_refunds_and_writeoffs. A
+      shortfall up to underpayment_tolerance does not make the installment late but stays on the balance.
+    eligibility: []
+    params:
+      application_order: [nsf_fee, late_fee, reinstatement_fee, other_fees, oldest_past_due_premium, current_installment, future_installments]
+
+  - id: billing_refunds_and_writeoffs
+    subject: [billing_refund_issued, billing_writeoff, billing_refer_collections, billing_close]
+    rule: >-
+      A credit balance is refunded within refund_issue_days after it arises when the policy has ended or when the plan
+      does not hold overpayments; credits of payments by check or EFT are refunded only after refund_check_clearing_days
+      business days from the payment. A refund goes to the electronic method that paid where refund_to_original_method is
+      true and that method is a card or bank account, otherwise by check to the mailing address. At account close a credit
+      below refund_min_amount and a debit up to small_balance_writeoff_max are written off. A final earned-premium balance
+      at or above collections_min_balance that is still unpaid collections_referral_days after the cancellation effective
+      date is referred to collections. A balance in collections that is paid closes the account. An account closes only
+      after the policy has ended and the balance is zero.
+    eligibility: []
+
+  - id: billing_plan_and_method_changes
+    subject: [billing_plan_change, billing_payment_setup_update]
+    rule: >-
+      The pay plan may be changed during the term only where the current plan's plan_change_allowed_midterm is true, and
+      only while the account status is current; a pay plan or due-day change is processed only while the account status is
+      current. On a midterm change, the unbilled premium of the term is re-spread over the new plan's remaining
+      installments from the change date; amounts already billed stay due as billed and no fee is charged for the change.
+      The new plan's autopay_required and eligible_payment_methods must be satisfied by the method on file. A policy
+      carrying a financial-responsibility filing may use a plan only where financial_responsibility_plan_allowed is
+      true. The installment due day may move to any day inside due_day_range, by no more than due_day_shift_max_days in one
+      change and no more than due_day_change_max_per_term times in a term. A change of payment method or autopay
+      enrollment takes effect from the next invoice not yet issued. Plan, method and due-day changes are not available
+      while a certified-funds restriction would be broken by the new method.
+    eligibility:
+      - id: account_current_for_change
+        applies_to: [billing_plan_change, billing_payment_setup_update]
+        kind: state
+        condition: "a pay plan or due-day change is processed only while the account status is current"
+        evidence_fields: [billing_accounts.status, billing_accounts.billing_account_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [billing_accounts.billing_account_id]
+          action_bindings:
+            billing_accounts.billing_account_id: billing_account_id
+        state_contract:
+          field: billing_accounts.status
+          allowed: [current]
+    params:
+      due_day_range: {first: 1, last: 28}
+
+  - id: billing_account_lifecycle
+    subject: [billing_account_open, billing_close, billing_refer_collections]
+    rule: >-
+      The billing account opens with the policy on the pay plan chosen at bind, and the plan's entry gates (accepted
+      payment methods, autopay where required, and the financial-responsibility restriction) must hold on the method on
+      file. The account stays open through renewals of the same policy; each renewal term is billed on the plan on file.
+      The account moves to closed only after the policy has ended and the final balance is settled under
+      billing_refunds_and_writeoffs; an account in collections closes when the collections balance is paid or written off.
+    eligibility: []
+
+# ============================================================================
+# extended_policies: multi-factor billing calculations claimed task by task
+# ============================================================================
+extended_policies:
+  # ---------------------------------------------------------------- task 0
+  - id: billing_ext_late_fee_charge
+    base_policy_refs: [billing_evt_installment_schedule, billing_evt_late_fee, billing_evt_returned_payment, billing_reinstatement, billing_evt_payment_application]
+    overwrite:
+      - base_policy: billing_evt_late_fee
+        superseded_clause: >-
+          A late fee of the plan's late_fee is charged once on an installment that is still unpaid, beyond the
+          underpayment_tolerance, at the end of late_fee_grace_days calendar days after its due date.
+        replaced_by: >-
+          A late fee charge is booked once on an installment of the current term that is still unpaid, beyond the
+          underpayment tolerance, when its grace days have ended, and its amount is worked out as this policy states.
+    trigger: state_due
+    subject: [billing_fee_charged]
+    computes: amount
+    target_tool: charge_late_fee_8c3b3141
+    params:
+      ky_late_fee: 9.50
+      va_wv_late_fee: 12.00
+      small_installment_limit: 100.00
+      small_installment_rate: 0.10
+      loyalty_long_months: 60
+      loyalty_mid_months: 24
+      loyalty_rate_long: 0.50
+      loyalty_rate_mid: 0.75
+      returned_rate_two: 1.50
+      returned_rate_one: 1.25
+      repeat_rate_two: 1.40
+      repeat_rate_one: 1.20
+    rule: >-
+      A late fee charge is booked once on an installment of the current term that is still unpaid, beyond the
+      underpayment tolerance, when its grace days have ended, and its amount is worked out as this policy states. The late fee charge is posted on the first day after the last grace day and is tied to the installment whose grace days have just ended, which is the installment invoiced last in the current term (an earlier installment left unpaid drew its own late fee charge on the first day after its own grace days). The standard late fee charge on an installment is the pay plan's late fee, rounded to the cent. The
+      late-fee amount for the governing state is $9.50 when the governing state of the auto policy is Kentucky, $12.00
+      when that state is Virginia or West Virginia, and the pay plan's late fee when it is any other state. The charged
+      share of the late-fee amount depends on what was paid toward the installment: when the payments posted less than
+      one whole month before the charge date, less the returned payments posted in that same window, are above zero but
+      do not cover the installment total (the installment's premium plus its installment fee), the charged share is the
+      late-fee amount multiplied by the unpaid part of the installment total and divided by the installment total; when
+      nothing was paid in that window and the installment total is under $100.00, the charged share is ten percent of
+      the installment total, in place of the late-fee amount; in every other case the charged share is the whole
+      late-fee amount. A loyalty rate applies to the late fee charge: 0.50 when no notice of cancellation for nonpayment
+      was mailed on the account in the last 12 whole months and the auto policy's original inception date is at least
+      60 whole months before the charge date; 0.75 when no such notice was mailed in the last 12 whole months and the
+      inception date is at least 24 but under 60 whole months before the charge date; 1.00 in every other case. A
+      returned-payment rate applies to the late fee charge: 1.50 when two or more payments on the account were returned
+      in the last 12 whole months, 1.25 when exactly one was, and 1.00 when none was. A repeat-lateness rate applies to
+      the late fee charge: 1.40 when two or more late fees have already been charged in the current term, 1.20 when
+      exactly one has, and 1.00 when none has. The charged share, the loyalty rate, the returned-payment rate and the
+      repeat-lateness rate are multiplied together in one step and only that product is rounded to the cent; no
+      intermediate figure is rounded. A window of the last 12 whole months, or of one whole month, holds every record
+      posted less than that many whole months before the charge date, counted on calendar months.
+    prerequisite: []
+    cross_category:
+      - category: auto
+        as: branch
+        reads: [policy_state, inception_date]
+        note: The governing state of the auto policy sets the late-fee amount for the governing state, and its original inception date sets the Cardinal tenure the loyalty rate reads.
+    compute:
+      - lf_installment_premium: "LATEST('billing_ledger', 'amount', date_field='due_date', event_type='billing_installment_billed', term_effective_date=F('term_effective_date'))"
+      - lf_installment_fee: "LATEST('billing_ledger', 'amount', date_field='posted_date', event_type='billing_fee_charged', fee_type='installment_fee', term_effective_date=F('term_effective_date'))"
+      - lf_installment_total: "lf_installment_premium + lf_installment_fee"
+      - lf_state: "CFIELD('auto', 'policy_state', policy_id=F('policy_id'))"
+      - lf_state_amount: "K('ky_late_fee') if lf_state == 'KY' else (K('va_wv_late_fee') if (lf_state == 'VA' or lf_state == 'WV') else P('late_fee'))"
+      - lf_paid_in_window: "SUM('billing_ledger', 'amount', within_months=1, date_field='posted_date', event_type='billing_payment_received') - SUM('billing_ledger', 'amount', within_months=1, date_field='posted_date', event_type='billing_payment_returned')"
+      - lf_unpaid: "MX(0, lf_installment_total - lf_paid_in_window)"
+      - lf_charged_share: "lf_state_amount * lf_unpaid / lf_installment_total if (lf_paid_in_window > 0 and lf_unpaid > 0) else (lf_installment_total * K('small_installment_rate') if (lf_paid_in_window <= 0 and lf_installment_total < K('small_installment_limit')) else lf_state_amount)"
+      - lf_tenure_months: "MONTHS(CFIELD('auto', 'inception_date', policy_id=F('policy_id')), NOW)"
+      - lf_notices_12: "COUNT('billing_ledger', within_months=12, date_field='posted_date', event_type='billing_notice_of_cancellation')"
+      - lf_loyalty_rate: "K('loyalty_rate_long') if (lf_notices_12 == 0 and lf_tenure_months >= K('loyalty_long_months')) else (K('loyalty_rate_mid') if (lf_notices_12 == 0 and lf_tenure_months >= K('loyalty_mid_months')) else 1)"
+      - lf_returned_12: "COUNT('billing_ledger', within_months=12, date_field='posted_date', event_type='billing_payment_returned')"
+      - lf_returned_rate: "K('returned_rate_two') if lf_returned_12 >= 2 else (K('returned_rate_one') if lf_returned_12 == 1 else 1)"
+      - lf_term_late_fees: "COUNT('billing_ledger', event_type='billing_fee_charged', fee_type='late_fee', term_effective_date=F('term_effective_date'))"
+      - lf_repeat_rate: "K('repeat_rate_two') if lf_term_late_fees >= 2 else (K('repeat_rate_one') if lf_term_late_fees == 1 else 1)"
+      - result: "RND(lf_charged_share * lf_loyalty_rate * lf_returned_rate * lf_repeat_rate, 2)"
+    compute_basis:
+      lf_installment_premium: "The late fee charge is posted on the first day after the last grace day and is tied to the installment whose grace days have just ended, which is the installment invoiced last in the current term (an earlier installment left unpaid drew its own late fee charge on the first day after its own grace days)."
+      lf_installment_fee: "the installment total (the installment's premium plus its installment fee)"
+      lf_state: "when the governing state of the auto policy is Kentucky"
+      lf_state_amount: "The late-fee amount for the governing state is $9.50 when the governing state of the auto policy is Kentucky, $12.00 when that state is Virginia or West Virginia, and the pay plan's late fee when it is any other state."
+      lf_paid_in_window: "the payments posted less than one whole month before the charge date, less the returned payments posted in that same window"
+      lf_unpaid: "the unpaid part of the installment total"
+      lf_charged_share: "when the payments posted less than one whole month before the charge date, less the returned payments posted in that same window, are above zero but do not cover the installment total (the installment's premium plus its installment fee), the charged share is the late-fee amount multiplied by the unpaid part of the installment total and divided by the installment total; when nothing was paid in that window and the installment total is under $100.00, the charged share is ten percent of the installment total, in place of the late-fee amount; in every other case the charged share is the whole late-fee amount."
+      lf_tenure_months: "the auto policy's original inception date is at least 60 whole months before the charge date"
+      lf_notices_12: "no notice of cancellation for nonpayment was mailed on the account in the last 12 whole months"
+      lf_loyalty_rate: "A loyalty rate applies to the late fee charge: 0.50 when no notice of cancellation for nonpayment was mailed on the account in the last 12 whole months and the auto policy's original inception date is at least 60 whole months before the charge date; 0.75 when no such notice was mailed in the last 12 whole months and the inception date is at least 24 but under 60 whole months before the charge date; 1.00 in every other case."
+      lf_returned_12: "two or more payments on the account were returned in the last 12 whole months"
+      lf_returned_rate: "A returned-payment rate applies to the late fee charge: 1.50 when two or more payments on the account were returned in the last 12 whole months, 1.25 when exactly one was, and 1.00 when none was."
+      lf_term_late_fees: "two or more late fees have already been charged in the current term"
+      lf_repeat_rate: "A repeat-lateness rate applies to the late fee charge: 1.40 when two or more late fees have already been charged in the current term, 1.20 when exactly one has, and 1.00 when none has."
+      result: "The charged share, the loyalty rate, the returned-payment rate and the repeat-lateness rate are multiplied together in one step and only that product is rounded to the cent; no intermediate figure is rounded."
+    factors:
+      - id: late_fee_state_amount
+        effect: parameter
+        decides: lf_state_amount
+        bindings: [lf_state, lf_state_amount]
+        ladder:
+          - when: "the governing state of the auto policy is Kentucky"
+            value: "K('ky_late_fee') = $9.50"
+          - when: "the governing state of the auto policy is Virginia or West Virginia"
+            value: "K('va_wv_late_fee') = $12.00"
+          - when: "otherwise"
+            value: "P('late_fee'), the pay plan's late fee"
+        baseline:
+          lf_state_amount: "P('late_fee')"
+        evidence: [cross_category]
+        cross_difficulty: auto
+      - id: late_fee_charged_share
+        effect: method
+        decides: lf_charged_share
+        bindings: [lf_paid_in_window, lf_unpaid, lf_charged_share]
+        ladder:
+          - when: "payments posted in the last whole month, net of returns, are above zero but short of the installment total"
+            method: "the late-fee amount times the unpaid part of the installment total, divided by the installment total"
+          - when: "nothing paid in the last whole month and the installment total is under $100.00"
+            method: "ten percent of the installment total, in place of the late-fee amount"
+          - when: "otherwise"
+            method: "the whole late-fee amount"
+        baseline:
+          lf_charged_share: "lf_state_amount"
+        evidence: [history]
+        cross_difficulty: null
+      - id: late_fee_loyalty_rate
+        effect: parameter
+        decides: lf_loyalty_rate
+        bindings: [lf_tenure_months, lf_notices_12, lf_loyalty_rate]
+        ladder:
+          - when: "no notice of cancellation for nonpayment in the last 12 whole months and inception date at least 60 whole months back"
+            value: "K('loyalty_rate_long') = 0.50"
+          - when: "no such notice in the last 12 whole months and inception date at least 24 but under 60 whole months back"
+            value: "K('loyalty_rate_mid') = 0.75"
+          - when: "otherwise"
+            value: "1.00"
+        baseline:
+          lf_loyalty_rate: "1"
+        evidence: [history, cross_category, date]
+        cross_difficulty: auto
+      - id: late_fee_returned_payment_rate
+        effect: parameter
+        decides: lf_returned_rate
+        bindings: [lf_returned_12, lf_returned_rate]
+        ladder:
+          - when: "two or more payments returned in the last 12 whole months"
+            value: "K('returned_rate_two') = 1.50"
+          - when: "exactly one payment returned in the last 12 whole months"
+            value: "K('returned_rate_one') = 1.25"
+          - when: "otherwise"
+            value: "1.00"
+        baseline:
+          lf_returned_rate: "1"
+        evidence: [history]
+        cross_difficulty: null
+      - id: late_fee_repeat_rate
+        effect: parameter
+        decides: lf_repeat_rate
+        bindings: [lf_term_late_fees, lf_repeat_rate]
+        ladder:
+          - when: "two or more late fees already charged in the current term"
+            value: "K('repeat_rate_two') = 1.40"
+          - when: "exactly one late fee already charged in the current term"
+            value: "K('repeat_rate_one') = 1.20"
+          - when: "otherwise"
+            value: "1.00"
+        baseline:
+          lf_repeat_rate: "1"
+        evidence: [history]
+        cross_difficulty: null
+    baseline:
+      rule: >-
+        The late fee charge is posted on the first day after the last grace day and is tied to the installment whose grace days have just ended, which is the installment invoiced last in the current term (an earlier installment left unpaid drew its own late fee charge on the first day after its own grace days). The standard late fee charge on an installment is the pay plan's late fee, rounded to the cent.
+      params: [late_fee]
+    inputs:
+      history:
+        - {table: billing_ledger, aggregate: latest, field: amount, filters: {event_type: billing_installment_billed}}
+        - {table: billing_ledger, aggregate: sum, field: amount, within_months: 1, filters: {event_type: billing_payment_received}}
+        - {table: billing_ledger, aggregate: count, field: entry_id, within_months: 12, filters: {event_type: billing_notice_of_cancellation}}
+        - {table: billing_ledger, aggregate: count, field: entry_id, within_months: 12, filters: {event_type: billing_payment_returned}}
+        - {table: billing_ledger, aggregate: count, field: entry_id, filters: {event_type: billing_fee_charged, fee_type: late_fee}}
+      cross_category: [auto]
+
+  - id: billing_ext_renewal_down_payment
+    base_policy_refs: [billing_evt_installment_schedule]
+    overwrite:
+      - base_policy: billing_evt_installment_schedule
+        superseded_clause: >-
+          The down payment is installment 1, due on the term effective date: the larger of down_payment_pct of the
+          full-term premium and min_down_payment_amount, never more than the full-term premium, rounded to the cent.
+        replaced_by: >-
+          The renewal down payment is installment 1 of the renewal term, invoiced on the renewal bill date and due on
+          the renewal term's first day, and its amount is worked out as this policy states.
+    trigger: state_due
+    subject: [billing_installment_billed]
+    computes: amount
+    target_tool: bill_renewal_down_payment_49af2eee
+    params:
+      risk_pct_both: 30
+      risk_pct_one: 25
+      tenure_long_months: 96
+      tenure_mid_months: 60
+      tenure_points_long: 5
+      tenure_points_mid: 2.5
+      notice_points_recent: 10
+      notice_points_older: 5
+      eft_points: 3
+      card_points: 1
+      steep_ratio: 1.15
+      mild_ratio: 1.05
+      steep_share: 0.5
+      mild_share: 0.75
+      driver_deposit: 75.00
+      vehicle_deposit: 40.00
+      recent_change_months: 3
+    rule: >-
+      The renewal down payment is installment 1 of the renewal term, invoiced on the renewal bill date and due on the
+      renewal term's first day, and its amount is worked out as this policy states. The down payment of a new-business
+      term stays the larger of the pay plan's down payment percentage of the full-term premium and the pay plan's
+      minimum down payment, never more than the full-term premium, rounded to the cent. The policy fee of the auto
+      package for the renewal term is invoiced with it as a separate charge and is not part of the renewal down
+      payment. The
+      standard renewal down payment is the pay plan's down payment percentage of the renewal full-term premium, which is
+      the term premium received most recently on the account; that product is rounded to the cent, raised to the pay
+      plan's minimum down payment when it falls below it, and lowered to the renewal full-term premium when it would
+      exceed it. The renewal down payment percentage is set by the account's payment record over the last 12 whole
+      months: 30 percent when the account has both a returned payment and a late fee in that window, 25 percent when it
+      has a returned payment or a late fee but not both, and the pay plan's down payment percentage when it has
+      neither. A tenure reduction is subtracted from that percentage: 5 percentage points when the auto policy's
+      original inception date is at least 96 whole months before the bill date, 2.5 percentage points when it is at
+      least 60 but under 96 whole months before, and none otherwise. A notice surcharge is added to that percentage: 10
+      percentage points when a notice of cancellation for nonpayment was mailed on the account in the last 12 whole
+      months, 5 percentage points when none was mailed in the last 12 whole months but one was mailed in the last 24
+      whole months, and none otherwise. A payment-method reduction is subtracted from that percentage: 3 percentage
+      points when the most recent payment posted to the account was made by bank EFT, 1 percentage point when it was
+      made by debit card or credit card, and none when it was made by check, money order or cashier's check. The premium the resulting percentage is applied to depends on how far the renewal full-term premium rose over the expiring full-term premium, which is the full-term premium of the term the account currently bills as last rated: the full-term premium after the change on the latest additional-premium or return-premium transaction of the auto policy effective in that term, or, when that term had no such transaction, the term premium received for that term. When the renewal full-term premium is at least 115
+      percent of the expiring full-term premium, the down payment base is the expiring full-term premium plus one half
+      of the increase; when it is at least 105 percent but under 115 percent, the down payment base is the expiring
+      full-term premium plus three quarters of the increase; otherwise the down payment base is the renewal full-term
+      premium itself. The resulting percentage is applied once to the down payment base, the product is rounded to the
+      cent, and that rounded figure is then bounded below by the pay plan's minimum down payment and above by the
+      renewal full-term premium. A new-driver deposit is added after that bound: $75.00 when a driver was added to the
+      auto policy with an effective date less than 3 whole months before the bill date, $40.00 when no driver but a
+      vehicle was added with an effective date in that window, and none otherwise; the sum is the renewal down payment,
+      rounded to the cent. A window of the last 12 or 24 whole months holds every record posted less than that many
+      whole months before the bill date, counted on calendar months.
+    prerequisite: []
+    cross_category:
+      - category: auto
+        as: history
+        reads: [inception_date, auto_transactions.event_type, auto_transactions.effective_date, auto_transactions.full_term_premium_after]
+        note: The auto policy's inception date sets the tenure reduction, the driver and vehicle additions in the auto transaction history set the new-driver deposit, and the full-term premium after the latest premium-bearing change of the billed term sets the expiring full-term premium the increase base compares against.
+    compute:
+      - dp_renewal_premium: "LATEST('billing_ledger', 'amount', date_field='posted_date', event_type='billing_premium_change', premium_change_type='term_premium')"
+      - dp_returned_12: "COUNT('billing_ledger', within_months=12, date_field='posted_date', event_type='billing_payment_returned')"
+      - dp_late_fees_12: "COUNT('billing_ledger', within_months=12, date_field='posted_date', event_type='billing_fee_charged', fee_type='late_fee')"
+      - dp_risk_pct: "K('risk_pct_both') if (dp_returned_12 >= 1 and dp_late_fees_12 >= 1) else (K('risk_pct_one') if (dp_returned_12 >= 1 or dp_late_fees_12 >= 1) else P('down_payment_pct'))"
+      - dp_tenure_months: "MONTHS(CFIELD('auto', 'inception_date', policy_id=F('policy_id')), NOW)"
+      - dp_tenure_points: "K('tenure_points_long') if dp_tenure_months >= K('tenure_long_months') else (K('tenure_points_mid') if dp_tenure_months >= K('tenure_mid_months') else 0)"
+      - dp_notices_12: "COUNT('billing_ledger', within_months=12, date_field='posted_date', event_type='billing_notice_of_cancellation')"
+      - dp_notices_24: "COUNT('billing_ledger', within_months=24, date_field='posted_date', event_type='billing_notice_of_cancellation')"
+      - dp_notice_points: "K('notice_points_recent') if dp_notices_12 >= 1 else (K('notice_points_older') if dp_notices_24 >= 1 else 0)"
+      - dp_last_method: "LATEST('billing_ledger', 'payment_method', date_field='posted_date', event_type='billing_payment_received')"
+      - dp_method_points: "K('eft_points') if dp_last_method == 'bank_eft' else (K('card_points') if (dp_last_method == 'debit_card' or dp_last_method == 'credit_card') else 0)"
+      - dp_rate_pct: "dp_risk_pct - dp_tenure_points + dp_notice_points - dp_method_points"
+      - dp_term_premium_received: "SUM('billing_ledger', 'amount', event_type='billing_premium_change', premium_change_type='term_premium', term_effective_date=F('term_effective_date'))"
+      - dp_ap_change_date: "XLATEST('auto', 'auto_transactions', 'effective_date', date_field='effective_date', event_type='auto_additional_premium')"
+      - dp_ap_change_premium: "XLATEST('auto', 'auto_transactions', 'full_term_premium_after', date_field='effective_date', event_type='auto_additional_premium')"
+      - dp_rp_change_date: "XLATEST('auto', 'auto_transactions', 'effective_date', date_field='effective_date', event_type='auto_return_premium')"
+      - dp_rp_change_premium: "XLATEST('auto', 'auto_transactions', 'full_term_premium_after', date_field='effective_date', event_type='auto_return_premium')"
+      - dp_expiring_premium: "dp_ap_change_premium if (dp_ap_change_date != None and dp_ap_change_date >= F('term_effective_date') and (dp_rp_change_date == None or dp_ap_change_date >= dp_rp_change_date)) else (dp_rp_change_premium if (dp_rp_change_date != None and dp_rp_change_date >= F('term_effective_date')) else dp_term_premium_received)"
+      - dp_base: "dp_expiring_premium + K('steep_share') * (dp_renewal_premium - dp_expiring_premium) if dp_renewal_premium >= K('steep_ratio') * dp_expiring_premium else (dp_expiring_premium + K('mild_share') * (dp_renewal_premium - dp_expiring_premium) if dp_renewal_premium >= K('mild_ratio') * dp_expiring_premium else dp_renewal_premium)"
+      - dp_percentage_amount: "RND(dp_base * dp_rate_pct / 100, 2)"
+      - dp_bounded: "MN(MX(dp_percentage_amount, P('min_down_payment_amount')), dp_renewal_premium)"
+      - dp_new_drivers: "XCOUNT('auto', 'auto_transactions', within_months=K('recent_change_months'), date_field='effective_date', event_type='auto_driver_add')"
+      - dp_new_vehicles: "XCOUNT('auto', 'auto_transactions', within_months=K('recent_change_months'), date_field='effective_date', event_type='auto_vehicle_add')"
+      - dp_deposit: "K('driver_deposit') if dp_new_drivers >= 1 else (K('vehicle_deposit') if dp_new_vehicles >= 1 else 0)"
+      - result: "RND(dp_bounded + dp_deposit, 2)"
+    compute_basis:
+      dp_renewal_premium: "the renewal full-term premium, which is the term premium received most recently on the account"
+      dp_returned_12: "30 percent when the account has both a returned payment and a late fee in that window"
+      dp_late_fees_12: "25 percent when it has a returned payment or a late fee but not both"
+      dp_risk_pct: "The renewal down payment percentage is set by the account's payment record over the last 12 whole months: 30 percent when the account has both a returned payment and a late fee in that window, 25 percent when it has a returned payment or a late fee but not both, and the pay plan's down payment percentage when it has neither."
+      dp_tenure_months: "the auto policy's original inception date is at least 96 whole months before the bill date"
+      dp_tenure_points: "A tenure reduction is subtracted from that percentage: 5 percentage points when the auto policy's original inception date is at least 96 whole months before the bill date, 2.5 percentage points when it is at least 60 but under 96 whole months before, and none otherwise."
+      dp_notices_12: "a notice of cancellation for nonpayment was mailed on the account in the last 12 whole months"
+      dp_notices_24: "but one was mailed in the last 24 whole months"
+      dp_notice_points: "A notice surcharge is added to that percentage: 10 percentage points when a notice of cancellation for nonpayment was mailed on the account in the last 12 whole months, 5 percentage points when none was mailed in the last 12 whole months but one was mailed in the last 24 whole months, and none otherwise."
+      dp_last_method: "the most recent payment posted to the account"
+      dp_method_points: "A payment-method reduction is subtracted from that percentage: 3 percentage points when the most recent payment posted to the account was made by bank EFT, 1 percentage point when it was made by debit card or credit card, and none when it was made by check, money order or cashier's check."
+      dp_term_premium_received: "the term premium received for that term"
+      dp_ap_change_date: "the change on the latest additional-premium or return-premium transaction of the auto policy effective in that term"
+      dp_ap_change_premium: "the full-term premium after the change on the latest additional-premium or return-premium transaction of the auto policy effective in that term"
+      dp_rp_change_date: "the change on the latest additional-premium or return-premium transaction of the auto policy effective in that term"
+      dp_rp_change_premium: "the full-term premium after the change on the latest additional-premium or return-premium transaction of the auto policy effective in that term"
+      dp_expiring_premium: "the expiring full-term premium, which is the full-term premium of the term the account currently bills as last rated: the full-term premium after the change on the latest additional-premium or return-premium transaction of the auto policy effective in that term, or, when that term had no such transaction, the term premium received for that term."
+      dp_base: "When the renewal full-term premium is at least 115 percent of the expiring full-term premium, the down payment base is the expiring full-term premium plus one half of the increase; when it is at least 105 percent but under 115 percent, the down payment base is the expiring full-term premium plus three quarters of the increase; otherwise the down payment base is the renewal full-term premium itself."
+      dp_percentage_amount: "The resulting percentage is applied once to the down payment base, the product is rounded to the cent"
+      dp_bounded: "that rounded figure is then bounded below by the pay plan's minimum down payment and above by the renewal full-term premium."
+      dp_new_drivers: "a driver was added to the auto policy with an effective date less than 3 whole months before the bill date"
+      dp_new_vehicles: "no driver but a vehicle was added with an effective date in that window"
+      dp_deposit: "A new-driver deposit is added after that bound: $75.00 when a driver was added to the auto policy with an effective date less than 3 whole months before the bill date, $40.00 when no driver but a vehicle was added with an effective date in that window, and none otherwise"
+      result: "the sum is the renewal down payment, rounded to the cent."
+    factors:
+      - id: renewal_down_payment_record_percentage
+        effect: parameter
+        decides: dp_risk_pct
+        bindings: [dp_returned_12, dp_late_fees_12, dp_risk_pct]
+        ladder:
+          - when: "a returned payment AND a late fee on the account in the last 12 whole months"
+            value: "K('risk_pct_both') = 30 percent"
+          - when: "a returned payment OR a late fee in the last 12 whole months, not both"
+            value: "K('risk_pct_one') = 25 percent"
+          - when: "otherwise"
+            value: "P('down_payment_pct'), the pay plan's down payment percentage"
+        baseline:
+          dp_risk_pct: "P('down_payment_pct')"
+        evidence: [history]
+        cross_difficulty: null
+      - id: renewal_down_payment_tenure_reduction
+        effect: parameter
+        decides: dp_tenure_points
+        bindings: [dp_tenure_months, dp_tenure_points]
+        ladder:
+          - when: "auto policy inception date at least 96 whole months before the bill date"
+            value: "K('tenure_points_long') = 5 percentage points"
+          - when: "inception date at least 60 but under 96 whole months before the bill date"
+            value: "K('tenure_points_mid') = 2.5 percentage points"
+          - when: "otherwise"
+            value: "no reduction"
+        baseline:
+          dp_tenure_points: "0"
+        evidence: [cross_category, date]
+        cross_difficulty: auto
+      - id: renewal_down_payment_notice_surcharge
+        effect: parameter
+        decides: dp_notice_points
+        bindings: [dp_notices_12, dp_notices_24, dp_notice_points]
+        ladder:
+          - when: "a notice of cancellation for nonpayment mailed in the last 12 whole months"
+            value: "K('notice_points_recent') = 10 percentage points"
+          - when: "none in the last 12 whole months but one in the last 24 whole months"
+            value: "K('notice_points_older') = 5 percentage points"
+          - when: "otherwise"
+            value: "no surcharge"
+        baseline:
+          dp_notice_points: "0"
+        evidence: [history]
+        cross_difficulty: null
+      - id: renewal_down_payment_method_reduction
+        effect: parameter
+        decides: dp_method_points
+        bindings: [dp_last_method, dp_method_points]
+        ladder:
+          - when: "most recent payment made by bank EFT"
+            value: "K('eft_points') = 3 percentage points"
+          - when: "most recent payment made by debit card or credit card"
+            value: "K('card_points') = 1 percentage point"
+          - when: "otherwise"
+            value: "no reduction"
+        baseline:
+          dp_method_points: "0"
+        evidence: [history]
+        cross_difficulty: null
+      - id: renewal_down_payment_increase_base
+        effect: method
+        decides: dp_base
+        bindings: [dp_term_premium_received, dp_ap_change_date, dp_ap_change_premium, dp_rp_change_date, dp_rp_change_premium, dp_expiring_premium, dp_base]
+        ladder:
+          - when: "renewal full-term premium at least 115 percent of the expiring full-term premium (the billed term's full-term premium as last rated)"
+            method: "base = expiring full-term premium plus one half of the increase"
+          - when: "renewal full-term premium at least 105 but under 115 percent of the expiring full-term premium"
+            method: "base = expiring full-term premium plus three quarters of the increase"
+          - when: "otherwise"
+            method: "base = the renewal full-term premium itself"
+        baseline:
+          dp_base: "dp_renewal_premium"
+        evidence: [history, cross_category]
+        cross_difficulty: auto
+      - id: renewal_down_payment_new_driver_deposit
+        effect: parameter
+        decides: dp_deposit
+        bindings: [dp_new_drivers, dp_new_vehicles, dp_deposit]
+        ladder:
+          - when: "a driver added to the auto policy with an effective date in the last 3 whole months"
+            value: "K('driver_deposit') = $75.00"
+          - when: "no driver but a vehicle added with an effective date in the last 3 whole months"
+            value: "K('vehicle_deposit') = $40.00"
+          - when: "otherwise"
+            value: "no deposit"
+        baseline:
+          dp_deposit: "0"
+        evidence: [cross_category, history]
+        cross_difficulty: auto
+    baseline:
+      rule: >-
+        The renewal down payment is installment 1 of the renewal term, invoiced on the renewal bill date and due on the
+        renewal term's first day, and its amount is worked out as this policy states. The standard renewal down payment
+        is the pay plan's down payment percentage of the renewal full-term premium, which is the term premium received
+        most recently on the account; that product is rounded to the cent, raised to the pay plan's minimum down payment
+        when it falls below it, and lowered to the renewal full-term premium when it would exceed it.
+      params: [down_payment_pct, min_down_payment_amount]
+    inputs:
+      history:
+        - {table: billing_ledger, aggregate: latest, field: amount, filters: {event_type: billing_premium_change, premium_change_type: term_premium}}
+        - {table: billing_ledger, aggregate: count, field: entry_id, within_months: 12, filters: {event_type: billing_payment_returned}}
+        - {table: billing_ledger, aggregate: count, field: entry_id, within_months: 12, filters: {event_type: billing_fee_charged, fee_type: late_fee}}
+        - {table: billing_ledger, aggregate: count, field: entry_id, within_months: 24, filters: {event_type: billing_notice_of_cancellation}}
+        - {table: billing_ledger, aggregate: latest, field: payment_method, filters: {event_type: billing_payment_received}}
+        - {category: auto, table: auto_transactions, aggregate: count, field: transaction_id, within_months: 3, filters: {event_type: auto_driver_add}}
+        - {category: auto, table: auto_transactions, aggregate: latest, field: full_term_premium_after, filters: {event_type: auto_additional_premium}}
+      cross_category: [auto]
+
+  - id: billing_ext_additional_premium_bill
+    base_policy_refs: [billing_evt_installment_schedule]
+    overwrite:
+      - base_policy: billing_evt_installment_schedule
+        superseded_clause: >-
+          The installment_fee is added to every installment after the down payment and to no other bill.
+        replaced_by: >-
+          An additional-premium bill carries an additional-premium billing charge on top of the additional premium.
+    trigger: state_due
+    subject: [billing_endorsement_charge]
+    computes: amount
+    target_tool: bill_additional_premium_a7869908
+    params:
+      ky_charge: 2.50
+      va_wv_charge: 4.00
+      above_threshold: 75.00
+      above_rate: 0.02
+      small_threshold: 20.00
+      small_share: 0.5
+      relief_both: 0.5
+      relief_one: 0.75
+      offset_full_threshold: 10.00
+      offset_full: 1.50
+      offset_partial: 0.75
+    rule: >-
+      An additional premium received after the last installment of its term was invoiced is billed at once as an
+      additional-premium bill, due the pay plan's immediate-bill due days (calendar days) after the bill date. An additional-premium bill
+      carries an additional-premium billing charge on top of the additional premium. The standard additional-premium
+      bill is the additional premium received most recently on the account plus the pay plan's installment fee as its
+      billing charge, rounded to the cent. The state billing charge is $2.50 when the governing state of the auto policy
+      is Kentucky, $4.00 when that state is Virginia or West Virginia, and the pay plan's installment fee when it is any
+      other state. How the billing charge is computed depends on the size of the additional premium: when the
+      additional premium is at least $75.00, the billing charge is the state billing charge plus two percent of the part
+      of the additional premium above $75.00; when it is under $20.00, the billing charge is one half of the state
+      billing charge; otherwise the billing charge is the state billing charge itself. A relief rate multiplies that
+      billing charge: 0.50 when the most recent payment posted to the account was made by debit card, credit card or
+      bank EFT and no payment on the account was returned in the last 12 whole months; 0.75 when exactly one of those two
+      holds; 1.00 when neither holds. An endorsement-fee offset is subtracted from the relieved billing charge: $1.50
+      when the endorsement fees posted to the account less than one whole month before the bill date total at least
+      $10.00, $0.75 when they total more than zero but under $10.00, and none when no endorsement fee was posted in that
+      window; the billing charge never goes below zero. The additional-premium bill is the additional premium plus that
+      billing charge, and only that sum is rounded to the cent. A window of whole months holds every record posted less
+      than that many whole months before the bill date, counted on calendar months.
+    prerequisite: []
+    cross_category:
+      - category: auto
+        as: branch
+        reads: [policy_state]
+        note: The governing state of the auto policy sets the state billing charge.
+    compute:
+      - ab_premium: "LATEST('billing_ledger', 'amount', date_field='posted_date', event_type='billing_premium_change', premium_change_type='additional')"
+      - ab_state: "CFIELD('auto', 'policy_state', policy_id=F('policy_id'))"
+      - ab_state_charge: "K('ky_charge') if ab_state == 'KY' else (K('va_wv_charge') if (ab_state == 'VA' or ab_state == 'WV') else P('installment_fee'))"
+      - ab_charge: "ab_state_charge + K('above_rate') * (ab_premium - K('above_threshold')) if ab_premium >= K('above_threshold') else (ab_state_charge * K('small_share') if ab_premium < K('small_threshold') else ab_state_charge)"
+      - ab_last_method: "LATEST('billing_ledger', 'payment_method', date_field='posted_date', event_type='billing_payment_received')"
+      - ab_returned_12: "COUNT('billing_ledger', within_months=12, date_field='posted_date', event_type='billing_payment_returned')"
+      - ab_relief_rate: "K('relief_both') if ((ab_last_method == 'debit_card' or ab_last_method == 'credit_card' or ab_last_method == 'bank_eft') and ab_returned_12 == 0) else (K('relief_one') if ((ab_last_method == 'debit_card' or ab_last_method == 'credit_card' or ab_last_method == 'bank_eft') or ab_returned_12 == 0) else 1)"
+      - ab_endorsement_fees: "SUM('billing_ledger', 'amount', within_months=1, date_field='posted_date', event_type='billing_fee_charged', fee_type='endorsement_fee')"
+      - ab_offset: "K('offset_full') if ab_endorsement_fees >= K('offset_full_threshold') else (K('offset_partial') if ab_endorsement_fees > 0 else 0)"
+      - ab_billing_charge: "MX(0, ab_charge * ab_relief_rate - ab_offset)"
+      - result: "RND(ab_premium + ab_billing_charge, 2)"
+    compute_basis:
+      ab_premium: "the additional premium received most recently on the account"
+      ab_state: "when the governing state of the auto policy is Kentucky"
+      ab_state_charge: "The state billing charge is $2.50 when the governing state of the auto policy is Kentucky, $4.00 when that state is Virginia or West Virginia, and the pay plan's installment fee when it is any other state."
+      ab_charge: "when the additional premium is at least $75.00, the billing charge is the state billing charge plus two percent of the part of the additional premium above $75.00; when it is under $20.00, the billing charge is one half of the state billing charge; otherwise the billing charge is the state billing charge itself."
+      ab_last_method: "the most recent payment posted to the account was made by debit card, credit card or bank EFT"
+      ab_returned_12: "no payment on the account was returned in the last 12 whole months"
+      ab_relief_rate: "A relief rate multiplies that billing charge: 0.50 when the most recent payment posted to the account was made by debit card, credit card or bank EFT and no payment on the account was returned in the last 12 whole months; 0.75 when exactly one of those two holds; 1.00 when neither holds."
+      ab_endorsement_fees: "the endorsement fees posted to the account less than one whole month before the bill date"
+      ab_offset: "An endorsement-fee offset is subtracted from the relieved billing charge: $1.50 when the endorsement fees posted to the account less than one whole month before the bill date total at least $10.00, $0.75 when they total more than zero but under $10.00, and none when no endorsement fee was posted in that window"
+      ab_billing_charge: "the billing charge never goes below zero."
+      result: "The additional-premium bill is the additional premium plus that billing charge, and only that sum is rounded to the cent."
+    factors:
+      - id: additional_premium_state_charge
+        effect: parameter
+        decides: ab_state_charge
+        bindings: [ab_state, ab_state_charge]
+        ladder:
+          - when: "the governing state of the auto policy is Kentucky"
+            value: "K('ky_charge') = $2.50"
+          - when: "the governing state of the auto policy is Virginia or West Virginia"
+            value: "K('va_wv_charge') = $4.00"
+          - when: "otherwise"
+            value: "P('installment_fee'), the pay plan's installment fee"
+        baseline:
+          ab_state_charge: "P('installment_fee')"
+        evidence: [cross_category]
+        cross_difficulty: auto
+      - id: additional_premium_charge_method
+        effect: method
+        decides: ab_charge
+        bindings: [ab_premium, ab_charge]
+        ladder:
+          - when: "the additional premium is at least $75.00"
+            method: "state billing charge plus two percent of the part of the additional premium above $75.00"
+          - when: "the additional premium is under $20.00"
+            method: "one half of the state billing charge"
+          - when: "otherwise"
+            method: "the state billing charge itself"
+        baseline:
+          ab_charge: "ab_state_charge"
+        evidence: [history]
+        cross_difficulty: null
+      - id: additional_premium_relief_rate
+        effect: parameter
+        decides: ab_relief_rate
+        bindings: [ab_last_method, ab_returned_12, ab_relief_rate]
+        ladder:
+          - when: "most recent payment electronic (debit card, credit card or bank EFT) AND no returned payment in the last 12 whole months"
+            value: "K('relief_both') = 0.50"
+          - when: "most recent payment electronic OR no returned payment in the last 12 whole months, but not both"
+            value: "K('relief_one') = 0.75"
+          - when: "otherwise"
+            value: "1.00"
+        baseline:
+          ab_relief_rate: "1"
+        evidence: [history]
+        cross_difficulty: null
+      - id: additional_premium_endorsement_offset
+        effect: parameter
+        decides: ab_offset
+        bindings: [ab_endorsement_fees, ab_offset]
+        ladder:
+          - when: "endorsement fees posted in the last whole month total at least $10.00"
+            value: "K('offset_full') = $1.50"
+          - when: "endorsement fees posted in the last whole month total more than zero but under $10.00"
+            value: "K('offset_partial') = $0.75"
+          - when: "otherwise"
+            value: "no offset"
+        baseline:
+          ab_offset: "0"
+        evidence: [history]
+        cross_difficulty: null
+    baseline:
+      rule: >-
+        An additional premium received after the last installment of its term was invoiced is billed at once as an
+        additional-premium bill, due the pay plan's immediate-bill due days (calendar days) after the bill date. The standard
+        additional-premium bill is the additional premium received most recently on the account plus the pay plan's
+        installment fee as its billing charge, rounded to the cent.
+      params: [installment_fee, ap_immediate_due_days]
+    inputs:
+      history:
+        - {table: billing_ledger, aggregate: latest, field: amount, filters: {event_type: billing_premium_change, premium_change_type: additional}}
+        - {table: billing_ledger, aggregate: latest, field: payment_method, filters: {event_type: billing_payment_received}}
+        - {table: billing_ledger, aggregate: count, field: entry_id, within_months: 12, filters: {event_type: billing_payment_returned}}
+        - {table: billing_ledger, aggregate: sum, field: amount, within_months: 1, filters: {event_type: billing_fee_charged, fee_type: endorsement_fee}}
+      cross_category: [auto]
+
+  - id: billing_ext_assisted_payment
+    base_policy_refs: [billing_agg_cross_account_payments, billing_reinstatement, billing_evt_payment_application]
+    overwrite:
+      - base_policy: billing_evt_payment_application
+        superseded_clause: >-
+          A one-time payment taken by a representative over the phone carries the plan's
+          phone_representative_payment_fee, charged once per payment and tied to it;
+        replaced_by: >-
+          The representative payment fee is charged once on each assisted payment, tied to it, and is included in the
+          amount the named insured authorizes.
+    trigger: on_request
+    subject: [billing_payment_received]
+    computes: amount
+    target_tool: pay_balance_by_phone_6aa6e134
+    params:
+      ky_fee: 2.00
+      va_wv_fee: 3.50
+      large_threshold: 500.00
+      large_rate: 0.0025
+      small_threshold: 50.00
+      small_share: 0.5
+      loyalty_months: 60
+      loyalty_both: 0.5
+      loyalty_one: 0.8
+      purpose_days: 5
+      renewal_rate: 0.5
+      ap_rate: 0.75
+      frequent_count: 3
+      frequent_rate: 1.5
+      occasional_rate: 1.2
+    rule: >-
+      An assisted payment is a one-time payment that the named insured authorizes from their own card or bank account
+      while a representative is on the line, to settle the whole balance of the billing account. The representative
+      payment fee is charged once on each assisted payment, tied to it, and is included in the amount the named insured
+      authorizes. The assisted payment amount is fixed only after the account carries the late fee owed on every
+      installment of the current term that stayed unpaid past its grace days. The assisted payment amount is not worked
+      out until the account carries the renewal down payment invoice for a renewal term whose renewal bill date has
+      arrived. Before the assisted payment amount is fixed, every additional premium received after the last installment
+      of its term was invoiced must stand on the account as an additional-premium bill. The standard assisted payment is
+      the settled balance plus the pay plan's phone representative payment fee. The settled balance is every
+      installment invoiced, fee charged, returned payment, additional-premium bill and refund posted on the account,
+      less every payment, credit, fee waiver and write-off posted on it. The representative fee for the governing state
+      is $2.00 when the governing state of the auto policy is Kentucky, $3.50 when that state is Virginia or West
+      Virginia, and the pay plan's phone representative payment fee when it is any other state. How the representative
+      fee is computed depends on the settled balance: when the settled balance is at least $500.00, the fee is the
+      representative fee for the governing state plus 0.25 percent of the part of the settled balance above $500.00;
+      when the settled balance is under $50.00, the fee is one half of the representative fee for the governing state;
+      otherwise the fee is the representative fee for the governing state itself. A loyalty rate multiplies the fee:
+      0.50 when the auto policy's original inception date is at least 60 whole months before the payment date and no
+      payment on the account was returned in the last 12 whole months; 0.80 when exactly one of those two holds; 1.00
+      when neither holds. A purpose rate multiplies the fee: 0.50 when a renewal down payment invoice (installment 1 of
+      a term) was posted on the account no more than 5 calendar days before the payment date; 0.75 when no such invoice
+      was posted in that span but an additional-premium bill was; 1.00 otherwise. A frequency rate multiplies the fee:
+      1.50 when three or more assisted payments were posted on the account in the last 12 whole months, 1.20 when one
+      or two were, and 1.00 when none was. The fee, the loyalty rate, the purpose rate and the frequency rate are
+      multiplied together in one step and that product is rounded to the cent to give the representative payment fee;
+      the assisted payment amount is the settled balance plus that fee, rounded to the cent. No fee is charged when the
+      payment cures a notice of cancellation or reinstates the account. A window of the last 12 whole months holds every
+      record posted less than 12 whole months before the payment date, counted on calendar months.
+    prerequisite:
+      - problem: billing_ext_late_fee_charge
+        kind: value_input
+        gate: as_balance
+        form: state
+        policy_source: >-
+          The assisted payment amount is fixed only after the account carries the late fee owed on every installment of
+          the current term that stayed unpaid past its grace days.
+        condition: >-
+          The billing ledger carries a late fee entry (billing_fee_charged, fee_type late_fee) for every installment of
+          the current term whose grace days have ended while it is still unpaid beyond the underpayment tolerance.
+        resolved_by: charge_late_fee_8c3b3141
+        effect: >-
+          The late fee entry raises the settled balance by the late fee charge, so the assisted payment amount rises by
+          that fee.
+      - problem: billing_ext_renewal_down_payment
+        kind: value_input
+        gate: as_balance
+        form: state
+        policy_source: >-
+          The assisted payment amount is not worked out until the account carries the renewal down payment invoice for a
+          renewal term whose renewal bill date has arrived.
+        condition: >-
+          The billing ledger carries installment 1 (billing_installment_billed) of the renewal term, with its policy fee,
+          whenever the renewal bill date (renewal_bill_lead_days before the term expiration date) is on or before today.
+        resolved_by: bill_renewal_down_payment_49af2eee
+        effect: >-
+          The renewal down payment invoice and its policy fee raise the settled balance, and the fresh installment 1
+          invoice puts the payment on the 0.50 purpose rate.
+      - problem: billing_ext_additional_premium_bill
+        kind: value_input
+        gate: as_balance
+        form: state
+        policy_source: >-
+          Before the assisted payment amount is fixed, every additional premium received after the last installment of
+          its term was invoiced must stand on the account as an additional-premium bill.
+        condition: >-
+          Every billing_premium_change entry of type additional received after the term's last installment invoice has a
+          billing_endorsement_charge entry carrying its source transaction.
+        resolved_by: bill_additional_premium_a7869908
+        effect: >-
+          The additional-premium bill raises the settled balance by the additional premium plus its billing charge.
+    cross_category:
+      - category: auto
+        as: branch
+        reads: [policy_state, inception_date]
+        note: The governing state of the auto policy sets the representative fee for the governing state, and its inception date sets the tenure the loyalty rate reads.
+    compute:
+      - as_balance: "SUM('billing_ledger', 'amount', event_type='billing_installment_billed') + SUM('billing_ledger', 'amount', event_type='billing_fee_charged') + SUM('billing_ledger', 'amount', event_type='billing_payment_returned') + SUM('billing_ledger', 'amount', event_type='billing_endorsement_charge') + SUM('billing_ledger', 'amount', event_type='billing_refund_issued') - SUM('billing_ledger', 'amount', event_type='billing_payment_received') - SUM('billing_ledger', 'amount', event_type='billing_credit_applied') - SUM('billing_ledger', 'amount', event_type='billing_fee_waived') - SUM('billing_ledger', 'amount', event_type='billing_writeoff')"
+      - as_state: "CFIELD('auto', 'policy_state', policy_id=F('policy_id'))"
+      - as_state_fee: "K('ky_fee') if as_state == 'KY' else (K('va_wv_fee') if (as_state == 'VA' or as_state == 'WV') else P('phone_representative_payment_fee'))"
+      - as_fee_method: "as_state_fee + K('large_rate') * (as_balance - K('large_threshold')) if as_balance >= K('large_threshold') else (as_state_fee * K('small_share') if as_balance < K('small_threshold') else as_state_fee)"
+      - as_tenure_months: "MONTHS(CFIELD('auto', 'inception_date', policy_id=F('policy_id')), NOW)"
+      - as_returned_12: "COUNT('billing_ledger', within_months=12, date_field='posted_date', event_type='billing_payment_returned')"
+      - as_loyalty_rate: "K('loyalty_both') if (as_tenure_months >= K('loyalty_months') and as_returned_12 == 0) else (K('loyalty_one') if (as_tenure_months >= K('loyalty_months') or as_returned_12 == 0) else 1)"
+      - as_last_down_invoice: "LATEST('billing_ledger', 'posted_date', date_field='posted_date', event_type='billing_installment_billed', installment_number=1)"
+      - as_last_ap_bill: "LATEST('billing_ledger', 'posted_date', date_field='posted_date', event_type='billing_endorsement_charge')"
+      - as_purpose_rate: "K('renewal_rate') if (as_last_down_invoice != None and DAYS(as_last_down_invoice, NOW) <= K('purpose_days')) else (K('ap_rate') if (as_last_ap_bill != None and DAYS(as_last_ap_bill, NOW) <= K('purpose_days')) else 1)"
+      - as_assisted_12: "COUNT('billing_ledger', within_months=12, date_field='posted_date', event_type='billing_payment_received', payment_channel='phone_representative')"
+      - as_frequency_rate: "K('frequent_rate') if as_assisted_12 >= K('frequent_count') else (K('occasional_rate') if as_assisted_12 >= 1 else 1)"
+      - as_fee_due: "0 if (F('status') == 'notice_pending' or F('status') == 'cancelled_nonpay') else 1"
+      - as_fee: "RND(as_fee_method * as_loyalty_rate * as_purpose_rate * as_frequency_rate * as_fee_due, 2)"
+      - result: "RND(as_balance + as_fee, 2)"
+    compute_basis:
+      as_balance: "The settled balance is every installment invoiced, fee charged, returned payment, additional-premium bill and refund posted on the account, less every payment, credit, fee waiver and write-off posted on it."
+      as_state: "when the governing state of the auto policy is Kentucky"
+      as_state_fee: "The representative fee for the governing state is $2.00 when the governing state of the auto policy is Kentucky, $3.50 when that state is Virginia or West Virginia, and the pay plan's phone representative payment fee when it is any other state."
+      as_fee_method: "when the settled balance is at least $500.00, the fee is the representative fee for the governing state plus 0.25 percent of the part of the settled balance above $500.00; when the settled balance is under $50.00, the fee is one half of the representative fee for the governing state; otherwise the fee is the representative fee for the governing state itself."
+      as_tenure_months: "the auto policy's original inception date is at least 60 whole months before the payment date"
+      as_returned_12: "no payment on the account was returned in the last 12 whole months"
+      as_loyalty_rate: "A loyalty rate multiplies the fee: 0.50 when the auto policy's original inception date is at least 60 whole months before the payment date and no payment on the account was returned in the last 12 whole months; 0.80 when exactly one of those two holds; 1.00 when neither holds."
+      as_last_down_invoice: "a renewal down payment invoice (installment 1 of a term) was posted on the account no more than 5 calendar days before the payment date"
+      as_last_ap_bill: "no such invoice was posted in that span but an additional-premium bill was"
+      as_purpose_rate: "A purpose rate multiplies the fee: 0.50 when a renewal down payment invoice (installment 1 of a term) was posted on the account no more than 5 calendar days before the payment date; 0.75 when no such invoice was posted in that span but an additional-premium bill was; 1.00 otherwise."
+      as_assisted_12: "three or more assisted payments were posted on the account in the last 12 whole months"
+      as_frequency_rate: "A frequency rate multiplies the fee: 1.50 when three or more assisted payments were posted on the account in the last 12 whole months, 1.20 when one or two were, and 1.00 when none was."
+      as_fee_due: "No fee is charged when the payment cures a notice of cancellation or reinstates the account."
+      as_fee: "The fee, the loyalty rate, the purpose rate and the frequency rate are multiplied together in one step and that product is rounded to the cent to give the representative payment fee"
+      result: "the assisted payment amount is the settled balance plus that fee, rounded to the cent."
+    factors:
+      - id: assisted_payment_state_fee
+        effect: parameter
+        decides: as_state_fee
+        bindings: [as_state, as_state_fee]
+        ladder:
+          - when: "the governing state of the auto policy is Kentucky"
+            value: "K('ky_fee') = $2.00"
+          - when: "the governing state of the auto policy is Virginia or West Virginia"
+            value: "K('va_wv_fee') = $3.50"
+          - when: "otherwise"
+            value: "P('phone_representative_payment_fee'), the pay plan's phone representative payment fee"
+        baseline:
+          as_state_fee: "P('phone_representative_payment_fee')"
+        evidence: [cross_category]
+        cross_difficulty: auto
+      - id: assisted_payment_fee_method
+        effect: method
+        decides: as_fee_method
+        bindings: [as_balance, as_fee_method]
+        ladder:
+          - when: "settled balance at least $500.00"
+            method: "representative fee for the governing state plus 0.25 percent of the settled balance above $500.00"
+          - when: "settled balance under $50.00"
+            method: "one half of the representative fee for the governing state"
+          - when: "otherwise"
+            method: "the representative fee for the governing state itself"
+        baseline:
+          as_fee_method: "as_state_fee"
+        evidence: [history]
+        cross_difficulty: null
+      - id: assisted_payment_loyalty_rate
+        effect: parameter
+        decides: as_loyalty_rate
+        bindings: [as_tenure_months, as_returned_12, as_loyalty_rate]
+        ladder:
+          - when: "inception date at least 60 whole months back AND no returned payment in the last 12 whole months"
+            value: "K('loyalty_both') = 0.50"
+          - when: "inception date at least 60 whole months back OR no returned payment in the last 12 whole months, not both"
+            value: "K('loyalty_one') = 0.80"
+          - when: "otherwise"
+            value: "1.00"
+        baseline:
+          as_loyalty_rate: "1"
+        evidence: [history, cross_category, date]
+        cross_difficulty: auto
+      - id: assisted_payment_purpose_rate
+        effect: parameter
+        decides: as_purpose_rate
+        bindings: [as_last_down_invoice, as_last_ap_bill, as_purpose_rate]
+        ladder:
+          - when: "a renewal down payment invoice posted no more than 5 calendar days before the payment date"
+            value: "K('renewal_rate') = 0.50"
+          - when: "no such invoice in that span, but an additional-premium bill posted in it"
+            value: "K('ap_rate') = 0.75"
+          - when: "otherwise"
+            value: "1.00"
+        baseline:
+          as_purpose_rate: "1"
+        evidence: [history, date]
+        cross_difficulty: null
+      - id: assisted_payment_frequency_rate
+        effect: parameter
+        decides: as_frequency_rate
+        bindings: [as_assisted_12, as_frequency_rate]
+        ladder:
+          - when: "three or more assisted payments in the last 12 whole months"
+            value: "K('frequent_rate') = 1.50"
+          - when: "one or two assisted payments in the last 12 whole months"
+            value: "K('occasional_rate') = 1.20"
+          - when: "otherwise"
+            value: "1.00"
+        baseline:
+          as_frequency_rate: "1"
+        evidence: [history]
+        cross_difficulty: null
+    baseline:
+      rule: >-
+        An assisted payment is a one-time payment that the named insured authorizes from their own card or bank account
+        while a representative is on the line, to settle the whole balance of the billing account. The standard
+        assisted payment is the settled balance plus the pay plan's phone representative payment fee. The settled
+        balance is every installment invoiced, fee charged, returned payment, additional-premium bill and refund posted
+        on the account, less every payment, credit, fee waiver and write-off posted on it.
+      params: [phone_representative_payment_fee]
+    inputs:
+      history:
+        - {table: billing_ledger, aggregate: sum, field: amount, filters: {event_type: billing_installment_billed}}
+        - {table: billing_ledger, aggregate: sum, field: amount, filters: {event_type: billing_payment_received}}
+        - {table: billing_ledger, aggregate: count, field: entry_id, within_months: 12, filters: {event_type: billing_payment_returned}}
+        - {table: billing_ledger, aggregate: latest, field: posted_date, filters: {event_type: billing_installment_billed, installment_number: 1}}
+        - {table: billing_ledger, aggregate: count, field: entry_id, within_months: 12, filters: {event_type: billing_payment_received, payment_channel: phone_representative}}
+      cross_category: [auto]
+  # ---------------------------------------------------------------- task 1
+  - id: billing_ext_installment_charge
+    base_policy_refs: [billing_evt_installment_schedule]
+    overwrite:
+      - base_policy: billing_evt_installment_schedule
+        superseded_clause: >-
+          The installment_fee is added to every installment after the down payment and to no other bill.
+        replaced_by: >-
+          Every installment invoice after the down payment carries an installment charge, worked out as this policy
+          states.
+    trigger: state_due
+    subject: [billing_installment_billed]
+    computes: installment_fee
+    target_tool: invoice_installment_259ff7d9
+    params:
+      ky_installment_charge: 4.50
+      va_wv_installment_charge: 6.00
+      full_size_premium: 175.00
+      last_share: 0.5
+      tenure_months: 36
+      relief_both: 0.5
+      relief_one: 0.75
+      returned_add_two: 2.00
+      returned_add_one: 1.00
+      late_add_two: 1.50
+      late_add_one: 0.75
+    rule: >-
+      Each installment of the current term after the down payment is invoiced the pay plan's invoice lead days (calendar days) before its due date; its premium portion follows the installment schedule (the premium of the term not yet invoiced - the
+      term premium plus additional premium less return premium received for the term, less the premium of the
+      installments already invoiced - divided evenly over the installments of the term not yet invoiced and rounded
+      to the cent, the last installment taking whatever remains). Every installment invoice after the down payment
+      carries an installment charge, worked out as this policy states. The standard installment charge is the pay
+      plan's installment fee. The state installment charge is $4.50 when the governing state of the auto policy is
+      Kentucky, $6.00 when that state is Virginia or West Virginia, and the pay plan's installment fee when it is any
+      other state. How the installment charge is computed depends on the installment being invoiced: when its premium
+      portion is under $175.00, the charge is the state installment charge multiplied by the premium portion and
+      divided by $175.00; when it is the last installment of the term and its premium portion is $175.00 or more, the
+      charge is one half of the state installment charge; otherwise the charge is the state installment charge itself.
+      A relief rate multiplies that charge: 0.50 when the most recent payment posted to the account was made by debit
+      card, credit card or bank EFT and the auto policy's original inception date is at least 36 whole months before
+      the invoice date; 0.75 when exactly one of those two holds; 1.00 when neither holds. A returned-payment addition is
+      then added: $2.00 when two or more payments on the account were returned in the last 12 whole months, $1.00 when
+      exactly one was, and none when none was. A late-payment addition is added as well: $1.50 when two or more late
+      fees were charged on the account in the last 12 whole months, $0.75 when exactly one was, and none when none was.
+      The installment charge is the relieved charge plus the two additions, never below zero, rounded to the cent only
+      at the end. A window of the last 12 whole months holds every record posted less than 12 whole months before the
+      invoice date, counted on calendar months.
+    prerequisite: []
+    cross_category:
+      - category: auto
+        as: branch
+        reads: [policy_state, inception_date, policy_term_months]
+        note: The governing state sets the state installment charge, the inception date sets the tenure the relief rate reads, and the package's term length sets how many installments the term has.
+    compute:
+      - iv_term_premium: "SUM('billing_ledger', 'amount', event_type='billing_premium_change', premium_change_type='term_premium', term_effective_date=F('term_effective_date'))"
+      - iv_additional: "SUM('billing_ledger', 'amount', event_type='billing_premium_change', premium_change_type='additional', term_effective_date=F('term_effective_date'))"
+      - iv_return: "SUM('billing_ledger', 'amount', event_type='billing_premium_change', premium_change_type='return', term_effective_date=F('term_effective_date'))"
+      - iv_billed_premium: "SUM('billing_ledger', 'amount', event_type='billing_installment_billed', term_effective_date=F('term_effective_date'))"
+      - iv_billed_count: "COUNT('billing_ledger', event_type='billing_installment_billed', term_effective_date=F('term_effective_date'))"
+      - iv_total_installments: "1 + (CPARAM('auto', 'policy_term_months', policy_id=F('policy_id')) / MX(1, P('installment_interval_months')) - 1)"
+      - iv_remaining: "iv_total_installments - iv_billed_count"
+      - iv_unbilled: "iv_term_premium + iv_additional - iv_return - iv_billed_premium"
+      - iv_premium: "RND(iv_unbilled / iv_remaining, 2) if iv_remaining > 1 else RND(iv_unbilled, 2)"
+      - iv_state: "CFIELD('auto', 'policy_state', policy_id=F('policy_id'))"
+      - iv_state_charge: "K('ky_installment_charge') if iv_state == 'KY' else (K('va_wv_installment_charge') if (iv_state == 'VA' or iv_state == 'WV') else P('installment_fee'))"
+      - iv_charge_method: "iv_state_charge * iv_premium / K('full_size_premium') if iv_premium < K('full_size_premium') else (iv_state_charge * K('last_share') if (iv_remaining == 1 and iv_premium >= K('full_size_premium')) else iv_state_charge)"
+      - iv_last_method: "LATEST('billing_ledger', 'payment_method', date_field='posted_date', event_type='billing_payment_received')"
+      - iv_tenure_months: "MONTHS(CFIELD('auto', 'inception_date', policy_id=F('policy_id')), NOW)"
+      - iv_relief_rate: "K('relief_both') if ((iv_last_method == 'debit_card' or iv_last_method == 'credit_card' or iv_last_method == 'bank_eft') and iv_tenure_months >= K('tenure_months')) else (K('relief_one') if ((iv_last_method == 'debit_card' or iv_last_method == 'credit_card' or iv_last_method == 'bank_eft') or iv_tenure_months >= K('tenure_months')) else 1)"
+      - iv_returned_12: "COUNT('billing_ledger', within_months=12, date_field='posted_date', event_type='billing_payment_returned')"
+      - iv_returned_add: "K('returned_add_two') if iv_returned_12 >= 2 else (K('returned_add_one') if iv_returned_12 == 1 else 0)"
+      - iv_late_12: "COUNT('billing_ledger', within_months=12, date_field='posted_date', event_type='billing_fee_charged', fee_type='late_fee')"
+      - iv_late_add: "K('late_add_two') if iv_late_12 >= 2 else (K('late_add_one') if iv_late_12 == 1 else 0)"
+      - result: "RND(MX(0, iv_charge_method * iv_relief_rate + iv_returned_add + iv_late_add), 2)"
+    compute_basis:
+      iv_term_premium: "the term premium plus additional premium less return premium received for the term"
+      iv_additional: "the term premium plus additional premium less return premium received for the term"
+      iv_return: "the term premium plus additional premium less return premium received for the term"
+      iv_billed_premium: "less the premium of the installments already invoiced"
+      iv_billed_count: "divided evenly over the installments of the term not yet invoiced"
+      iv_total_installments: "divided evenly over the installments of the term not yet invoiced"
+      iv_premium: "divided evenly over the installments of the term not yet invoiced and rounded to the cent, the last installment taking whatever remains"
+      iv_state: "when the governing state of the auto policy is Kentucky"
+      iv_state_charge: "The state installment charge is $4.50 when the governing state of the auto policy is Kentucky, $6.00 when that state is Virginia or West Virginia, and the pay plan's installment fee when it is any other state."
+      iv_charge_method: "when its premium portion is under $175.00, the charge is the state installment charge multiplied by the premium portion and divided by $175.00; when it is the last installment of the term and its premium portion is $175.00 or more, the charge is one half of the state installment charge; otherwise the charge is the state installment charge itself."
+      iv_last_method: "the most recent payment posted to the account was made by debit card, credit card or bank EFT"
+      iv_tenure_months: "the auto policy's original inception date is at least 36 whole months before the invoice date"
+      iv_relief_rate: "A relief rate multiplies that charge: 0.50 when the most recent payment posted to the account was made by debit card, credit card or bank EFT and the auto policy's original inception date is at least 36 whole months before the invoice date; 0.75 when exactly one of those two holds; 1.00 when neither holds."
+      iv_returned_12: "two or more payments on the account were returned in the last 12 whole months"
+      iv_returned_add: "A returned-payment addition is then added: $2.00 when two or more payments on the account were returned in the last 12 whole months, $1.00 when exactly one was, and none when none was."
+      iv_late_12: "two or more late fees were charged on the account in the last 12 whole months"
+      iv_late_add: "A late-payment addition is added as well: $1.50 when two or more late fees were charged on the account in the last 12 whole months, $0.75 when exactly one was, and none when none was."
+      result: "The installment charge is the relieved charge plus the two additions, never below zero, rounded to the cent only at the end."
+    factors:
+      - id: installment_state_charge
+        effect: parameter
+        decides: iv_state_charge
+        bindings: [iv_state, iv_state_charge]
+        ladder:
+          - when: "the governing state of the auto policy is Kentucky"
+            value: "K('ky_installment_charge') = $4.50"
+          - when: "the governing state of the auto policy is Virginia or West Virginia"
+            value: "K('va_wv_installment_charge') = $6.00"
+          - when: "otherwise"
+            value: "P('installment_fee'), the pay plan's installment fee"
+        baseline:
+          iv_state_charge: "P('installment_fee')"
+        evidence: [cross_category]
+        cross_difficulty: auto
+      - id: installment_charge_method
+        effect: method
+        decides: iv_charge_method
+        bindings: [iv_billed_count, iv_billed_premium, iv_charge_method]
+        ladder:
+          - when: "the installment's premium portion is under $175.00"
+            method: "state installment charge times the premium portion, divided by $175.00"
+          - when: "the last installment of the term with a premium portion of $175.00 or more"
+            method: "one half of the state installment charge"
+          - when: "otherwise"
+            method: "the state installment charge itself"
+        baseline:
+          iv_charge_method: "iv_state_charge"
+        evidence: [history]
+        cross_difficulty: null
+      - id: installment_relief_rate
+        effect: parameter
+        decides: iv_relief_rate
+        bindings: [iv_last_method, iv_tenure_months, iv_relief_rate]
+        ladder:
+          - when: "most recent payment electronic (debit card, credit card or bank EFT) AND inception date at least 36 whole months back"
+            value: "K('relief_both') = 0.50"
+          - when: "most recent payment electronic OR inception date at least 36 whole months back, not both"
+            value: "K('relief_one') = 0.75"
+          - when: "otherwise"
+            value: "1.00"
+        baseline:
+          iv_relief_rate: "1"
+        evidence: [history, cross_category, date]
+        cross_difficulty: auto
+      - id: installment_returned_payment_addition
+        effect: parameter
+        decides: iv_returned_add
+        bindings: [iv_returned_12, iv_returned_add]
+        ladder:
+          - when: "two or more payments returned in the last 12 whole months"
+            value: "K('returned_add_two') = $2.00"
+          - when: "exactly one payment returned in the last 12 whole months"
+            value: "K('returned_add_one') = $1.00"
+          - when: "otherwise"
+            value: "no addition"
+        baseline:
+          iv_returned_add: "0"
+        evidence: [history]
+        cross_difficulty: null
+      - id: installment_late_payment_addition
+        effect: parameter
+        decides: iv_late_add
+        bindings: [iv_late_12, iv_late_add]
+        ladder:
+          - when: "two or more late fees charged in the last 12 whole months"
+            value: "K('late_add_two') = $1.50"
+          - when: "exactly one late fee charged in the last 12 whole months"
+            value: "K('late_add_one') = $0.75"
+          - when: "otherwise"
+            value: "no addition"
+        baseline:
+          iv_late_add: "0"
+        evidence: [history]
+        cross_difficulty: null
+    baseline:
+      rule: >-
+        Each installment of the current term after the down payment is invoiced the pay plan's invoice lead days (calendar days) before its due date; its premium portion follows the installment schedule (the premium of the term not yet invoiced -
+        the term premium plus additional premium less return premium received for the term, less the premium of the
+        installments already invoiced - divided evenly over the installments of the term not yet invoiced and rounded
+        to the cent, the last installment taking whatever remains). The standard installment charge is the pay plan's
+        installment fee.
+      params: [installment_fee, invoice_lead_days]
+    inputs:
+      history:
+        - {table: billing_ledger, aggregate: sum, field: amount, filters: {event_type: billing_premium_change}}
+        - {table: billing_ledger, aggregate: sum, field: amount, filters: {event_type: billing_installment_billed}}
+        - {table: billing_ledger, aggregate: latest, field: payment_method, filters: {event_type: billing_payment_received}}
+        - {table: billing_ledger, aggregate: count, field: entry_id, within_months: 12, filters: {event_type: billing_payment_returned}}
+        - {table: billing_ledger, aggregate: count, field: entry_id, within_months: 12, filters: {event_type: billing_fee_charged, fee_type: late_fee}}
+      cross_category: [auto]
+
+  - id: billing_ext_term_payoff
+    base_policy_refs: [billing_agg_cross_account_payments, billing_reinstatement, billing_evt_payment_application]
+    overwrite: []
+    trigger: on_request
+    subject: [billing_payment_received]
+    computes: amount
+    target_tool: pay_term_payoff_2a94a5fa
+    params:
+      standard_rate: 0.01
+      rate_three_or_more: 0.015
+      rate_two: 0.0125
+      far_days: 90
+      mid_days: 45
+      eligibility_one: 0.5
+      tenure_long_months: 60
+      tenure_mid_months: 24
+      tenure_long_rate: 1.25
+      tenure_mid_rate: 1.10
+    rule: >-
+      A term payoff is a single payment that the named insured makes from their own card or bank account through the
+      automated payment line to pay the rest of the current term in advance; the part above the balance stays on the
+      account as a credit that the installments still to come are drawn from, and because installment fees attach only
+      to installments as they are invoiced, the payoff itself carries no installment fee. The term payoff amount is
+      fixed only after the account carries the invoice of every installment of the current term whose invoice date has
+      arrived. The standard term payoff is the posted payoff balance plus the premium still to be invoiced, less the
+      standard prepayment credit. The posted payoff balance is every installment invoiced, fee charged, returned
+      payment, additional-premium bill and refund posted on the account, less every payment, credit, fee waiver and
+      write-off posted on it; the premium still to be invoiced is the term premium plus additional premium less return
+      premium received for the term, less the premium of the installments already invoiced; the installments of the
+      term are one plus the package's term months divided by the plan's installment interval, less one. The standard
+      prepayment credit is 1.0 percent of one even installment share of the premium still to be invoiced (that premium
+      divided by the installments still to be invoiced), rounded to the cent. The prepayment credit rate is 1.5 percent
+      when three or more installments of the term are still to be invoiced, 1.25 percent when exactly two are, and 1.0
+      percent when one or none is. The prepayment credit base is set by how far the term expiration date lies ahead of
+      the payoff date: at least 90 calendar days ahead, it is the whole premium still to be invoiced; at least 45 but
+      under 90 days ahead, it is that premium less one even installment share of it; under 45 days ahead, it is one
+      even installment share. An eligibility rate multiplies the prepayment credit: none of it is given when two or
+      more payments on the account were returned in the last 12 whole months, one half when exactly one was, and all of
+      it when none was. A tenure rate multiplies the prepayment credit as well: 1.25 when the auto policy's original
+      inception date is at least 60 whole months before the payoff date, 1.10 when it is at least 24 but under 60 whole
+      months before, and 1.00 otherwise. The prepayment credit base, the prepayment credit rate, the eligibility rate
+      and the tenure rate are multiplied together and that product is rounded to the cent to give the prepayment
+      credit; the term payoff amount is the posted payoff balance plus the premium still to be invoiced less the
+      prepayment credit, rounded to the cent. A window of the last 12 whole months holds every record posted less than
+      12 whole months before the payoff date, counted on calendar months.
+    prerequisite:
+      - problem: billing_ext_installment_charge
+        kind: value_input
+        gate: po_balance
+        form: state
+        policy_source: >-
+          The term payoff amount is fixed only after the account carries the invoice of every installment of the current
+          term whose invoice date has arrived.
+        condition: >-
+          Every installment of the current term whose invoice date (due date less the plan's invoice lead days) is on or
+          before today has a billing_installment_billed entry, with its installment charge, on the ledger.
+        resolved_by: invoice_installment_259ff7d9
+        effect: >-
+          The invoice moves that installment's premium portion and its installment charge into the posted payoff
+          balance and out of the premium still to be invoiced, and lowers the installments still to be invoiced by one,
+          which changes the prepayment credit rate and the prepayment credit base.
+    cross_category:
+      - category: auto
+        as: branch
+        reads: [inception_date, policy_term_months, term_expiration_date]
+        note: The inception date sets the tenure rate, the package term months set the installment count, and the term expiration date sets the prepayment credit base.
+    compute:
+      - po_balance: "SUM('billing_ledger', 'amount', event_type='billing_installment_billed') + SUM('billing_ledger', 'amount', event_type='billing_fee_charged') + SUM('billing_ledger', 'amount', event_type='billing_payment_returned') + SUM('billing_ledger', 'amount', event_type='billing_endorsement_charge') + SUM('billing_ledger', 'amount', event_type='billing_refund_issued') - SUM('billing_ledger', 'amount', event_type='billing_payment_received') - SUM('billing_ledger', 'amount', event_type='billing_credit_applied') - SUM('billing_ledger', 'amount', event_type='billing_fee_waived') - SUM('billing_ledger', 'amount', event_type='billing_writeoff')"
+      - po_unbilled: "SUM('billing_ledger', 'amount', event_type='billing_premium_change', premium_change_type='term_premium', term_effective_date=F('term_effective_date')) + SUM('billing_ledger', 'amount', event_type='billing_premium_change', premium_change_type='additional', term_effective_date=F('term_effective_date')) - SUM('billing_ledger', 'amount', event_type='billing_premium_change', premium_change_type='return', term_effective_date=F('term_effective_date')) - SUM('billing_ledger', 'amount', event_type='billing_installment_billed', term_effective_date=F('term_effective_date'))"
+      - po_billed_count: "COUNT('billing_ledger', event_type='billing_installment_billed', term_effective_date=F('term_effective_date'))"
+      - po_remaining: "1 + (CPARAM('auto', 'policy_term_months', policy_id=F('policy_id')) / MX(1, P('installment_interval_months')) - 1) - po_billed_count"
+      - po_credit_rate: "K('rate_three_or_more') if po_remaining >= 3 else (K('rate_two') if po_remaining == 2 else K('standard_rate'))"
+      - po_days_ahead: "DAYS(NOW, CFIELD('auto', 'term_expiration_date', policy_id=F('policy_id')))"
+      - po_credit_base: "po_unbilled if po_days_ahead >= K('far_days') else (po_unbilled - po_unbilled / MX(1, po_remaining) if po_days_ahead >= K('mid_days') else po_unbilled / MX(1, po_remaining))"
+      - po_returned_12: "COUNT('billing_ledger', within_months=12, date_field='posted_date', event_type='billing_payment_returned')"
+      - po_eligibility: "0 if po_returned_12 >= 2 else (K('eligibility_one') if po_returned_12 == 1 else 1)"
+      - po_tenure_months: "MONTHS(CFIELD('auto', 'inception_date', policy_id=F('policy_id')), NOW)"
+      - po_tenure_rate: "K('tenure_long_rate') if po_tenure_months >= K('tenure_long_months') else (K('tenure_mid_rate') if po_tenure_months >= K('tenure_mid_months') else 1)"
+      - po_credit: "RND(po_credit_base * po_credit_rate * po_eligibility * po_tenure_rate, 2)"
+      - result: "RND(po_balance + po_unbilled - po_credit, 2)"
+    compute_basis:
+      po_balance: "The posted payoff balance is every installment invoiced, fee charged, returned payment, additional-premium bill and refund posted on the account, less every payment, credit, fee waiver and write-off posted on it"
+      po_unbilled: "the premium still to be invoiced is the term premium plus additional premium less return premium received for the term, less the premium of the installments already invoiced"
+      po_billed_count: "less the premium of the installments already invoiced"
+      po_remaining: "the installments of the term are one plus the package's term months divided by the plan's installment interval, less one."
+      po_credit_rate: "The prepayment credit rate is 1.5 percent when three or more installments of the term are still to be invoiced, 1.25 percent when exactly two are, and 1.0 percent when one or none is."
+      po_days_ahead: "how far the term expiration date lies ahead of the payoff date"
+      po_credit_base: "at least 90 calendar days ahead, it is the whole premium still to be invoiced; at least 45 but under 90 days ahead, it is that premium less one even installment share of it; under 45 days ahead, it is one even installment share."
+      po_returned_12: "two or more payments on the account were returned in the last 12 whole months"
+      po_eligibility: "An eligibility rate multiplies the prepayment credit: none of it is given when two or more payments on the account were returned in the last 12 whole months, one half when exactly one was, and all of it when none was."
+      po_tenure_months: "the auto policy's original inception date is at least 60 whole months before the payoff date"
+      po_tenure_rate: "A tenure rate multiplies the prepayment credit as well: 1.25 when the auto policy's original inception date is at least 60 whole months before the payoff date, 1.10 when it is at least 24 but under 60 whole months before, and 1.00 otherwise."
+      po_credit: "The prepayment credit base, the prepayment credit rate, the eligibility rate and the tenure rate are multiplied together and that product is rounded to the cent to give the prepayment credit"
+      result: "the term payoff amount is the posted payoff balance plus the premium still to be invoiced less the prepayment credit, rounded to the cent."
+    factors:
+      - id: payoff_credit_rate
+        effect: parameter
+        decides: po_credit_rate
+        bindings: [po_billed_count, po_credit_rate]
+        ladder:
+          - when: "three or more installments of the term still to be invoiced"
+            value: "K('rate_three_or_more') = 1.5 percent"
+          - when: "exactly two installments still to be invoiced"
+            value: "K('rate_two') = 1.25 percent"
+          - when: "otherwise"
+            value: "K('standard_rate') = 1.0 percent"
+        baseline:
+          po_credit_rate: "K('standard_rate')"
+        evidence: [history]
+        cross_difficulty: null
+      - id: payoff_credit_base
+        effect: method
+        decides: po_credit_base
+        bindings: [po_days_ahead, po_credit_base]
+        ladder:
+          - when: "term expiration at least 90 calendar days after the payoff date"
+            method: "the whole premium still to be invoiced"
+          - when: "term expiration at least 45 but under 90 calendar days after the payoff date"
+            method: "that premium less one even installment share of it"
+          - when: "otherwise"
+            method: "one even installment share of that premium"
+        baseline:
+          po_credit_base: "po_unbilled / MX(1, po_remaining)"
+        evidence: [cross_category, date]
+        cross_difficulty: auto
+      - id: payoff_credit_eligibility
+        effect: parameter
+        decides: po_eligibility
+        bindings: [po_returned_12, po_eligibility]
+        ladder:
+          - when: "two or more payments returned in the last 12 whole months"
+            value: "no credit (0)"
+          - when: "exactly one payment returned in the last 12 whole months"
+            value: "K('eligibility_one') = one half"
+          - when: "otherwise"
+            value: "the whole credit (1)"
+        baseline:
+          po_eligibility: "1"
+        evidence: [history]
+        cross_difficulty: null
+      - id: payoff_tenure_rate
+        effect: parameter
+        decides: po_tenure_rate
+        bindings: [po_tenure_months, po_tenure_rate]
+        ladder:
+          - when: "auto policy inception date at least 60 whole months before the payoff date"
+            value: "K('tenure_long_rate') = 1.25"
+          - when: "inception date at least 24 but under 60 whole months before the payoff date"
+            value: "K('tenure_mid_rate') = 1.10"
+          - when: "otherwise"
+            value: "1.00"
+        baseline:
+          po_tenure_rate: "1"
+        evidence: [cross_category, date]
+        cross_difficulty: auto
+    baseline:
+      rule: >-
+        A term payoff is a single payment that the named insured makes from their own card or bank account through the
+        automated payment line to pay the rest of the current term in advance; the part above the balance stays on the
+        account as a credit that the installments still to come are drawn from, and because installment fees attach
+        only to installments as they are invoiced, the payoff itself carries no installment fee. The standard term
+        payoff is the posted payoff balance plus the premium still to be invoiced, less the standard prepayment credit.
+        The posted payoff balance is every installment invoiced, fee charged, returned payment, additional-premium bill
+        and refund posted on the account, less every payment, credit, fee waiver and write-off posted on it; the premium
+        still to be invoiced is the term premium plus additional premium less return premium received for the term,
+        less the premium of the installments already invoiced; the installments of the term are one plus the package's
+        term months divided by the plan's installment interval, less one. The standard prepayment credit is 1.0 percent
+        of one even installment share of the premium still to be invoiced (that premium divided by the installments
+        still to be invoiced), rounded to the cent.
+      params: [installment_interval_months, standard_rate]
+    inputs:
+      history:
+        - {table: billing_ledger, aggregate: sum, field: amount, filters: {event_type: billing_installment_billed}}
+        - {table: billing_ledger, aggregate: sum, field: amount, filters: {event_type: billing_premium_change}}
+        - {table: billing_ledger, aggregate: count, field: entry_id, within_months: 12, filters: {event_type: billing_payment_returned}}
+      cross_category: [auto]

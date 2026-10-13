@@ -1,0 +1,2596 @@
+# Paloma Remit — product charter: Cash Pickup transfers.
+# Each personal transfer collected in cash by the recipient at a payout location is one holding:
+# the transfer order the customer booked, at one Cash Pickup tier, carrying its principal, fee,
+# exchange rate (or US-dollar payout), the recipient name the payout is released to, the Paloma
+# Pickup Number the recipient quotes, and a pickup window. The tier decides the payout network
+# (retail agents, bank branches or cardless ATM), the price, the pickup window and how name
+# corrections, expiry, reactivation, cancellations, refunds and error claims are handled. The
+# Remittance Transfer Rule (Regulation E, subpart B) governs cancellation, refunds and errors.
+
+category: cash
+display_name: Cash Pickup
+
+binding:
+  holding_table: cash_transfers
+  event_tables: [cash_ledger, cash_cases]
+  status_field: status
+  variant_field: variant_name
+  quantity_fields: {principal_held_usd: principal_held, fees_held_usd: fees_held}
+
+lifecycle:
+  states: [awaiting_funds, on_hold, ready_for_pickup, paid_out, expired, cancelled, refunded]
+  transitions:
+    - {from: awaiting_funds, to: ready_for_pickup, by: system, means: "Funds are collected (or ACH principal is released early), screening passes and the money is made available at the payout network."}
+    - {from: awaiting_funds, to: on_hold, by: system, means: "A compliance, funding or new-recipient screening hold is placed before the money is made available."}
+    - {from: ready_for_pickup, to: on_hold, by: system, means: "Compliance or repeated refused pickups stop the payout while it is available."}
+    - {from: on_hold, to: ready_for_pickup, by: system, means: "Compliance clears the hold and the money is available again with a fresh pickup window."}
+    - {from: ready_for_pickup, to: paid_out, by: system, means: "The payout location pays the recipient after checking their ID against the recipient name on the transfer."}
+    - {from: ready_for_pickup, to: expired, by: system, means: "The pickup window ends without collection."}
+    - {from: expired, to: ready_for_pickup, by: agent, means: "An expired pickup is reactivated at the customer's request for a new pickup window."}
+    - {from: paid_out, to: ready_for_pickup, by: agent, means: "After an error resolution found in the customer's favour, the money is made available again at no cost under a new Pickup Number."}
+    - {from: awaiting_funds, to: cancelled, by: user, means: "The customer cancels a transfer that has not been made available."}
+    - {from: on_hold, to: cancelled, by: user, means: "The customer cancels a held transfer."}
+    - {from: ready_for_pickup, to: cancelled, by: user, means: "The customer cancels a transfer that has not been collected."}
+    - {from: on_hold, to: cancelled, by: system, means: "Paloma cancels a held transfer whose request for information expired unanswered or that compliance rejected."}
+    - {from: awaiting_funds, to: cancelled, by: system, means: "The customer's payment fails or an inbound wire does not arrive in time."}
+    - {from: cancelled, to: refunded, by: agent, means: "The collected money owed back on a cancelled transfer is refunded."}
+    - {from: expired, to: refunded, by: agent, means: "The money of an expired, uncollected transfer is refunded."}
+    - {from: paid_out, to: refunded, by: agent, means: "After an error resolution, Paloma refunds the customer for a transfer recorded as paid out."}
+
+accounts:
+  - key: principal_held
+    unit: USD
+    meaning: "Customer principal Paloma holds for this transfer: collected funds and Paloma make-good credits in; cash paid out and refunds out."
+  - key: fees_held
+    unit: USD
+    meaning: "Fees Paloma has collected on this transfer net of fee refunds: fee charges in, fee refunds out."
+
+parameter_schema:
+  funding_methods_allowed: "Funding methods the tier accepts (list); the account level may narrow it further."
+  entry_min_account_level: "Lowest Personal Sender Account level (official name) that may book this tier."
+  entry_min_completed_transfers: "Fewest completed personal transfers (account_msr_completed_transfers) needed before booking this tier (count)."
+  corridors_served: "Corridors where this tier pays out cash (list of corridor codes)."
+  payout_network: "Where the recipient collects: retail_agent, bank_branch or atm_cardless."
+  min_send_usd: "Smallest principal (USD) per transfer."
+  max_send_usd: "Largest principal (USD) per transfer, before the account level's per-transfer limit."
+  corridor_cap_usd: "Per-corridor ceiling (USD principal) the payout network can pay in one pickup (mapping corridor -> USD)."
+  max_transfers_per_recipient_24h: "Largest number of Cash Pickup transfers to one recipient in a rolling 24 hours (count)."
+  fee_ladder: "Transfer fee by principal band: list of {from_usd, to_usd, fee_usd}, inclusive at both ends."
+  credit_card_fee_pct: "Card funding fee as a percentage of principal for credit-card funding (percent; 0 when not accepted)."
+  debit_card_fee_usd: "Flat fee (USD) added for debit-card funding."
+  pay_by_bank_fee_discount_usd: "Amount (USD) taken off the ladder fee for pay-by-bank funding, never below 0.00."
+  fx_margin_pct: "Exchange-rate margin below mid-market for local-currency payouts (percent)."
+  margin_reduction_threshold_usd: "Principal (USD) at or above which the reduced margin applies."
+  margin_reduction_pct_points: "Percentage points taken off fx_margin_pct at or above the threshold."
+  rate_lock_hours: "Hours from booked_at for which the quoted rate stays guaranteed while funds are awaited."
+  availability_business_days: "Paloma business days from release to the money being available for pickup (0 = within minutes of release)."
+  booking_cutoff_ct: "Latest US Central time on a business day for release to count from that day (HH:MM, or 24x7)."
+  advance_notice_business_days: "Business days of advance notice the payout branch needs before a large cash payout can be made available (0 = none)."
+  weekend_payout: "Whether the payout network pays on Saturdays, Sundays and local holidays (boolean)."
+  usd_payout_corridors: "Corridors where the recipient may be paid in US dollars instead of local currency (list)."
+  usd_payout_fee_usd: "Fee (USD) added when the payout is in US dollars in a corridor whose local currency is not USD."
+  pickup_window_days: "Calendar days, counted from available_date, during which the money can be collected."
+  reactivation_window_days: "Calendar days after expiry during which an expired pickup can be reactivated (0 = no reactivation)."
+  reactivation_fee_usd: "Fee (USD) for each reactivation of an expired pickup."
+  max_reactivations: "Largest number of reactivations on one transfer (count)."
+  expiry_fee_refund_pct: "Share of the transfer fee refunded when an expired transfer is refunded (percent)."
+  name_correction_max_chars: "Largest number of characters that may differ between the recipient name on the transfer and the corrected name, counted as single-character insertions, deletions or substitutions (count; 0 = no corrections)."
+  free_name_corrections: "Name corrections on one transfer that carry no fee (count)."
+  name_correction_fee_usd: "Fee (USD) for each name correction beyond the free ones."
+  max_name_corrections: "Largest number of name corrections on one transfer (count)."
+  refused_pickups_before_hold: "Refused pickup attempts after which the payout is put on hold for screening (count; 0 = not applicable)."
+  first_transfer_fee_waived: "Whether the transfer fee is waived on the customer's first-ever personal transfer when booked on this tier (boolean)."
+  first_transfer_promo_cap_usd: "Largest principal (USD) a first-transfer promotion covers (USD; 0 = no promotion)."
+  first_transfer_promo_margin_pct: "Margin applied to a first transfer covered by the promotion (percent)."
+  cancel_full_refund_window_hours: "Elapsed hours after booked_at within which a cancellation refunds principal and every fee in full (the Regulation E 30-minute right, in hours)."
+  late_cancel_fee_refund_pct: "Share of each fee refunded when the transfer is cancelled after the full-refund window (percent)."
+  ready_cancel_allowed: "Whether a transfer may be cancelled while it is ready for pickup and not yet collected (boolean)."
+  refund_business_days: "Paloma business days within which a refund owed must be issued, counted from the day it becomes owed."
+  rfi_response_days: "Calendar days to answer a transfer-level request for information before the transfer is cancelled."
+  rfi_expiry_fee_refund_pct: "Share of each fee refunded when Paloma cancels a held transfer (percent)."
+  hold_review_business_days: "Paloma business days compliance takes to clear a hold once its request for information is answered."
+  funding_deadline_hours: "Hours after booked_at within which an inbound wire must arrive (0 = not applicable)."
+  on_time_promise: "Whether Paloma refunds the transfer fee when the money is made available after its disclosed date for a reason on Paloma's side (boolean)."
+  error_notice_window_days: "Calendar days after the disclosed date_available within which an error notice may be given."
+  error_investigation_days: "Calendar days after an error notice within which Paloma must decide it."
+  reissue_business_days: "Paloma business days within which money is made available again after the customer chooses re-issue as a remedy."
+  purpose_code_corridors: "Corridors where a transfer_purpose must be stated at booking (list)."
+
+variants:
+  - name: Cash Pickup Economy
+    rank: 1
+    entry_gate: {min_account_level: Paloma Starter, funding: [ach_debit]}
+    parameters:
+      funding_methods_allowed: [ach_debit]
+      entry_min_account_level: Paloma Starter
+      entry_min_completed_transfers: 0
+      corridors_served: [MX-MXN, GT-GTQ, SV-USD, HN-HNL, DO-DOP, CO-COP, PH-PHP, VN-VND, BD-BDT, NG-NGN, GH-GHS]
+      payout_network: retail_agent
+      min_send_usd: 10.00
+      max_send_usd: 2999.00
+      corridor_cap_usd: {MX-MXN: 2999.00, GT-GTQ: 2500.00, SV-USD: 3000.00, HN-HNL: 2500.00, DO-DOP: 3000.00, CO-COP: 2000.00, PH-PHP: 2600.00, VN-VND: 2500.00, BD-BDT: 2000.00, NG-NGN: 1000.00, GH-GHS: 1500.00}
+      max_transfers_per_recipient_24h: 3
+      fee_ladder: [{from_usd: 10.00, to_usd: 999.99, fee_usd: 2.99}, {from_usd: 1000.00, to_usd: 2999.00, fee_usd: 3.99}]
+      credit_card_fee_pct: 0.00
+      debit_card_fee_usd: 0.00
+      pay_by_bank_fee_discount_usd: 0.00
+      fx_margin_pct: 1.20
+      margin_reduction_threshold_usd: 2000.00
+      margin_reduction_pct_points: 0.10
+      rate_lock_hours: 96
+      availability_business_days: 1
+      booking_cutoff_ct: "15:00"
+      advance_notice_business_days: 0
+      weekend_payout: true
+      usd_payout_corridors: [GT-GTQ, HN-HNL, DO-DOP]
+      usd_payout_fee_usd: 2.00
+      pickup_window_days: 30
+      reactivation_window_days: 30
+      reactivation_fee_usd: 4.99
+      max_reactivations: 1
+      expiry_fee_refund_pct: 0
+      name_correction_max_chars: 2
+      free_name_corrections: 1
+      name_correction_fee_usd: 5.00
+      max_name_corrections: 2
+      refused_pickups_before_hold: 3
+      first_transfer_fee_waived: true
+      first_transfer_promo_cap_usd: 1000.00
+      first_transfer_promo_margin_pct: 0.00
+      cancel_full_refund_window_hours: 0.50
+      late_cancel_fee_refund_pct: 100
+      ready_cancel_allowed: true
+      refund_business_days: 3
+      rfi_response_days: 10
+      rfi_expiry_fee_refund_pct: 100
+      hold_review_business_days: 2
+      funding_deadline_hours: 0
+      on_time_promise: true
+      error_notice_window_days: 180
+      error_investigation_days: 90
+      reissue_business_days: 1
+      purpose_code_corridors: [BD-BDT, NG-NGN, VN-VND]
+  - name: Cash Pickup Express
+    rank: 2
+    entry_gate: {min_account_level: Paloma Starter, funding: [debit_card, credit_card, pay_by_bank]}
+    parameters:
+      funding_methods_allowed: [debit_card, credit_card, pay_by_bank]
+      entry_min_account_level: Paloma Starter
+      entry_min_completed_transfers: 0
+      corridors_served: [MX-MXN, GT-GTQ, SV-USD, HN-HNL, DO-DOP, CO-COP, PH-PHP, VN-VND, BD-BDT, NG-NGN, GH-GHS]
+      payout_network: retail_agent
+      min_send_usd: 10.00
+      max_send_usd: 2999.00
+      corridor_cap_usd: {MX-MXN: 2999.00, GT-GTQ: 2500.00, SV-USD: 3000.00, HN-HNL: 2500.00, DO-DOP: 3000.00, CO-COP: 2000.00, PH-PHP: 2600.00, VN-VND: 2500.00, BD-BDT: 2000.00, NG-NGN: 1000.00, GH-GHS: 1500.00}
+      max_transfers_per_recipient_24h: 5
+      fee_ladder: [{from_usd: 10.00, to_usd: 499.99, fee_usd: 3.99}, {from_usd: 500.00, to_usd: 999.99, fee_usd: 4.99}, {from_usd: 1000.00, to_usd: 2999.00, fee_usd: 5.99}]
+      credit_card_fee_pct: 3.00
+      debit_card_fee_usd: 0.00
+      pay_by_bank_fee_discount_usd: 1.00
+      fx_margin_pct: 1.75
+      margin_reduction_threshold_usd: 1500.00
+      margin_reduction_pct_points: 0.10
+      rate_lock_hours: 24
+      availability_business_days: 0
+      booking_cutoff_ct: 24x7
+      advance_notice_business_days: 0
+      weekend_payout: true
+      usd_payout_corridors: [GT-GTQ, HN-HNL, DO-DOP]
+      usd_payout_fee_usd: 2.00
+      pickup_window_days: 30
+      reactivation_window_days: 30
+      reactivation_fee_usd: 4.99
+      max_reactivations: 1
+      expiry_fee_refund_pct: 0
+      name_correction_max_chars: 2
+      free_name_corrections: 1
+      name_correction_fee_usd: 5.00
+      max_name_corrections: 2
+      refused_pickups_before_hold: 3
+      first_transfer_fee_waived: true
+      first_transfer_promo_cap_usd: 500.00
+      first_transfer_promo_margin_pct: 0.00
+      cancel_full_refund_window_hours: 0.50
+      late_cancel_fee_refund_pct: 0
+      ready_cancel_allowed: true
+      refund_business_days: 1
+      rfi_response_days: 7
+      rfi_expiry_fee_refund_pct: 100
+      hold_review_business_days: 1
+      funding_deadline_hours: 0
+      on_time_promise: true
+      error_notice_window_days: 180
+      error_investigation_days: 90
+      reissue_business_days: 1
+      purpose_code_corridors: [BD-BDT, NG-NGN, VN-VND]
+  - name: Cash Pickup Express Plus
+    rank: 3
+    entry_gate: {min_account_level: Paloma Verified Plus, min_completed_transfers: 5, funding: [debit_card, credit_card, pay_by_bank]}
+    parameters:
+      funding_methods_allowed: [debit_card, credit_card, pay_by_bank]
+      entry_min_account_level: Paloma Verified Plus
+      entry_min_completed_transfers: 5
+      corridors_served: [MX-MXN, GT-GTQ, SV-USD, HN-HNL, DO-DOP, CO-COP, PH-PHP, VN-VND, BD-BDT, NG-NGN, GH-GHS]
+      payout_network: retail_agent
+      min_send_usd: 50.00
+      max_send_usd: 5000.00
+      corridor_cap_usd: {MX-MXN: 5000.00, GT-GTQ: 4000.00, SV-USD: 5000.00, HN-HNL: 4000.00, DO-DOP: 5000.00, CO-COP: 3500.00, PH-PHP: 4000.00, VN-VND: 4000.00, BD-BDT: 3000.00, NG-NGN: 1500.00, GH-GHS: 2500.00}
+      max_transfers_per_recipient_24h: 5
+      fee_ladder: [{from_usd: 50.00, to_usd: 999.99, fee_usd: 3.49}, {from_usd: 1000.00, to_usd: 2999.99, fee_usd: 4.49}, {from_usd: 3000.00, to_usd: 5000.00, fee_usd: 5.49}]
+      credit_card_fee_pct: 3.00
+      debit_card_fee_usd: 0.00
+      pay_by_bank_fee_discount_usd: 1.00
+      fx_margin_pct: 1.35
+      margin_reduction_threshold_usd: 3000.00
+      margin_reduction_pct_points: 0.10
+      rate_lock_hours: 24
+      availability_business_days: 0
+      booking_cutoff_ct: 24x7
+      advance_notice_business_days: 0
+      weekend_payout: true
+      usd_payout_corridors: [GT-GTQ, HN-HNL, DO-DOP]
+      usd_payout_fee_usd: 0.00
+      pickup_window_days: 45
+      reactivation_window_days: 45
+      reactivation_fee_usd: 0.00
+      max_reactivations: 2
+      expiry_fee_refund_pct: 100
+      name_correction_max_chars: 2
+      free_name_corrections: 2
+      name_correction_fee_usd: 0.00
+      max_name_corrections: 3
+      refused_pickups_before_hold: 3
+      first_transfer_fee_waived: false
+      first_transfer_promo_cap_usd: 0.00
+      first_transfer_promo_margin_pct: 1.35
+      cancel_full_refund_window_hours: 0.50
+      late_cancel_fee_refund_pct: 50
+      ready_cancel_allowed: true
+      refund_business_days: 1
+      rfi_response_days: 7
+      rfi_expiry_fee_refund_pct: 100
+      hold_review_business_days: 1
+      funding_deadline_hours: 0
+      on_time_promise: true
+      error_notice_window_days: 180
+      error_investigation_days: 90
+      reissue_business_days: 1
+      purpose_code_corridors: [BD-BDT, NG-NGN, VN-VND]
+  - name: Cash Pickup Bank Branch
+    rank: 4
+    entry_gate: {min_account_level: Paloma Verified, funding: [ach_debit, debit_card, pay_by_bank]}
+    parameters:
+      funding_methods_allowed: [ach_debit, debit_card, pay_by_bank]
+      entry_min_account_level: Paloma Verified
+      entry_min_completed_transfers: 0
+      corridors_served: [MX-MXN, GT-GTQ, SV-USD, HN-HNL, DO-DOP, CO-COP, PH-PHP, VN-VND, BD-BDT, NG-NGN, GH-GHS]
+      payout_network: bank_branch
+      min_send_usd: 10.00
+      max_send_usd: 7500.00
+      corridor_cap_usd: {MX-MXN: 7500.00, GT-GTQ: 5000.00, SV-USD: 7500.00, HN-HNL: 5000.00, DO-DOP: 6000.00, CO-COP: 5000.00, PH-PHP: 5000.00, VN-VND: 5000.00, BD-BDT: 4000.00, NG-NGN: 2000.00, GH-GHS: 3000.00}
+      max_transfers_per_recipient_24h: 3
+      fee_ladder: [{from_usd: 10.00, to_usd: 999.99, fee_usd: 3.49}, {from_usd: 1000.00, to_usd: 4999.99, fee_usd: 4.99}, {from_usd: 5000.00, to_usd: 7500.00, fee_usd: 6.99}]
+      credit_card_fee_pct: 0.00
+      debit_card_fee_usd: 0.00
+      pay_by_bank_fee_discount_usd: 1.00
+      fx_margin_pct: 1.15
+      margin_reduction_threshold_usd: 3000.00
+      margin_reduction_pct_points: 0.15
+      rate_lock_hours: 48
+      availability_business_days: 0
+      booking_cutoff_ct: "13:00"
+      advance_notice_business_days: 0
+      weekend_payout: false
+      usd_payout_corridors: [GT-GTQ, HN-HNL, DO-DOP]
+      usd_payout_fee_usd: 0.00
+      pickup_window_days: 30
+      reactivation_window_days: 30
+      reactivation_fee_usd: 4.99
+      max_reactivations: 1
+      expiry_fee_refund_pct: 0
+      name_correction_max_chars: 2
+      free_name_corrections: 1
+      name_correction_fee_usd: 5.00
+      max_name_corrections: 2
+      refused_pickups_before_hold: 2
+      first_transfer_fee_waived: false
+      first_transfer_promo_cap_usd: 0.00
+      first_transfer_promo_margin_pct: 1.15
+      cancel_full_refund_window_hours: 0.50
+      late_cancel_fee_refund_pct: 100
+      ready_cancel_allowed: true
+      refund_business_days: 2
+      rfi_response_days: 10
+      rfi_expiry_fee_refund_pct: 100
+      hold_review_business_days: 2
+      funding_deadline_hours: 0
+      on_time_promise: true
+      error_notice_window_days: 180
+      error_investigation_days: 90
+      reissue_business_days: 1
+      purpose_code_corridors: [BD-BDT, NG-NGN, VN-VND]
+  - name: Cash Pickup Cardless ATM
+    rank: 5
+    entry_gate: {min_account_level: Paloma Verified, funding: [debit_card, pay_by_bank], corridors: [MX-MXN, CO-COP, PH-PHP]}
+    parameters:
+      funding_methods_allowed: [debit_card, pay_by_bank]
+      entry_min_account_level: Paloma Verified
+      entry_min_completed_transfers: 0
+      corridors_served: [MX-MXN, CO-COP, PH-PHP]
+      payout_network: atm_cardless
+      min_send_usd: 10.00
+      max_send_usd: 500.00
+      corridor_cap_usd: {MX-MXN: 450.00, CO-COP: 400.00, PH-PHP: 350.00}
+      max_transfers_per_recipient_24h: 2
+      fee_ladder: [{from_usd: 10.00, to_usd: 500.00, fee_usd: 2.49}]
+      credit_card_fee_pct: 0.00
+      debit_card_fee_usd: 0.00
+      pay_by_bank_fee_discount_usd: 0.50
+      fx_margin_pct: 1.60
+      margin_reduction_threshold_usd: 500.00
+      margin_reduction_pct_points: 0.00
+      rate_lock_hours: 24
+      availability_business_days: 0
+      booking_cutoff_ct: 24x7
+      advance_notice_business_days: 0
+      weekend_payout: true
+      usd_payout_corridors: []
+      usd_payout_fee_usd: 0.00
+      pickup_window_days: 7
+      reactivation_window_days: 0
+      reactivation_fee_usd: 0.00
+      max_reactivations: 0
+      expiry_fee_refund_pct: 100
+      name_correction_max_chars: 0
+      free_name_corrections: 0
+      name_correction_fee_usd: 0.00
+      max_name_corrections: 0
+      refused_pickups_before_hold: 0
+      first_transfer_fee_waived: false
+      first_transfer_promo_cap_usd: 0.00
+      first_transfer_promo_margin_pct: 1.60
+      cancel_full_refund_window_hours: 0.50
+      late_cancel_fee_refund_pct: 0
+      ready_cancel_allowed: true
+      refund_business_days: 1
+      rfi_response_days: 7
+      rfi_expiry_fee_refund_pct: 100
+      hold_review_business_days: 1
+      funding_deadline_hours: 0
+      on_time_promise: true
+      error_notice_window_days: 180
+      error_investigation_days: 90
+      reissue_business_days: 1
+      purpose_code_corridors: []
+  - name: Cash Pickup Large Amount
+    rank: 6
+    entry_gate: {min_account_level: Paloma Enhanced, min_completed_transfers: 5, min_send_usd: 3000.00, funding: [wire, pay_by_bank]}
+    parameters:
+      funding_methods_allowed: [wire, pay_by_bank]
+      entry_min_account_level: Paloma Enhanced
+      entry_min_completed_transfers: 5
+      corridors_served: [MX-MXN, GT-GTQ, DO-DOP, CO-COP, PH-PHP, VN-VND]
+      payout_network: bank_branch
+      min_send_usd: 3000.00
+      max_send_usd: 15000.00
+      corridor_cap_usd: {MX-MXN: 15000.00, GT-GTQ: 10000.00, DO-DOP: 12000.00, CO-COP: 10000.00, PH-PHP: 10000.00, VN-VND: 10000.00}
+      max_transfers_per_recipient_24h: 1
+      fee_ladder: [{from_usd: 3000.00, to_usd: 9999.99, fee_usd: 12.99}, {from_usd: 10000.00, to_usd: 15000.00, fee_usd: 19.99}]
+      credit_card_fee_pct: 0.00
+      debit_card_fee_usd: 0.00
+      pay_by_bank_fee_discount_usd: 0.00
+      fx_margin_pct: 0.85
+      margin_reduction_threshold_usd: 10000.00
+      margin_reduction_pct_points: 0.10
+      rate_lock_hours: 48
+      availability_business_days: 0
+      booking_cutoff_ct: "12:00"
+      advance_notice_business_days: 1
+      weekend_payout: false
+      usd_payout_corridors: [GT-GTQ, DO-DOP]
+      usd_payout_fee_usd: 0.00
+      pickup_window_days: 15
+      reactivation_window_days: 15
+      reactivation_fee_usd: 9.99
+      max_reactivations: 1
+      expiry_fee_refund_pct: 0
+      name_correction_max_chars: 2
+      free_name_corrections: 1
+      name_correction_fee_usd: 10.00
+      max_name_corrections: 2
+      refused_pickups_before_hold: 2
+      first_transfer_fee_waived: false
+      first_transfer_promo_cap_usd: 0.00
+      first_transfer_promo_margin_pct: 0.85
+      cancel_full_refund_window_hours: 0.50
+      late_cancel_fee_refund_pct: 100
+      ready_cancel_allowed: true
+      refund_business_days: 2
+      rfi_response_days: 14
+      rfi_expiry_fee_refund_pct: 100
+      hold_review_business_days: 3
+      funding_deadline_hours: 48
+      on_time_promise: true
+      error_notice_window_days: 180
+      error_investigation_days: 90
+      reissue_business_days: 2
+      purpose_code_corridors: [MX-MXN, GT-GTQ, DO-DOP, CO-COP, PH-PHP, VN-VND]
+
+events:
+  # ---- holding writes (cash_transfers) ----
+  - type: cash_transfer_booked
+    target: cash_transfers
+    mutation: create
+    meaning: "The customer books and pays for a Cash Pickup transfer after seeing the pre-payment disclosure."
+    grain: "One row per transfer order."
+    fields:
+      customer_id: "The sending customer."
+      sender_account_id: "Personal Sender Account the transfer is booked under."
+      recipient_id: "The saved recipient who will collect the cash."
+      variant_name: "The Cash Pickup tier chosen."
+      corridor: "Destination corridor."
+      confirmation_number: "Confirmation number on the customer's receipt."
+      send_amount_usd: "Principal in USD."
+      transfer_fee_usd: "Transfer fee disclosed, after any promotion or pay-by-bank discount."
+      card_fee_usd: "Credit-card funding fee disclosed; 0.00 when none."
+      usd_payout_charge_usd: "US-dollar payout fee disclosed; 0.00 when none."
+      fx_rate: "Customer exchange rate (1.0000 for a US-dollar payout)."
+      payout_currency: "local or usd."
+      receive_amount: "Cash amount the recipient collects."
+      funding_method: "How the customer pays."
+      transfer_purpose: "Stated purpose of the transfer."
+      recipient_name_on_transfer: "Name the cash is released to, copied from the saved recipient."
+      booked_at: "Moment the customer authorised payment."
+      date_available: "Disclosed date the cash will be available."
+    triggers:
+      - event: cash:cash_funds_received
+        when: {funding_method: [debit_card, credit_card, pay_by_bank]}
+        map: {amount_usd: send_amount_usd}
+      - event: cash:cash_fee_charged
+        when: {funding_method: [debit_card, credit_card, pay_by_bank], transfer_fee_usd: {not: 0.0}}
+        map: {fee_type: transfer_fee, amount_usd: transfer_fee_usd, fee_seq: 1}
+      - event: cash:cash_fee_charged
+        when: {funding_method: credit_card}
+        map: {fee_type: card_funding_fee, amount_usd: card_fee_usd, fee_seq: 1}
+      - event: cash:cash_fee_charged
+        when: {funding_method: [debit_card, credit_card, pay_by_bank], usd_payout_charge_usd: {not: 0.0}}
+        map: {fee_type: usd_payout_fee, amount_usd: usd_payout_charge_usd, fee_seq: 1}
+  - type: cash_rate_requoted
+    target: cash_transfers
+    mutation: update
+    meaning: "Funds arrive after the rate lock lapsed and the rate, cash amount and date available are re-disclosed."
+    grain: "One row per re-quote."
+    fields:
+      fx_rate: "New customer exchange rate."
+      receive_amount: "New cash amount."
+      date_available: "Re-disclosed date available."
+    triggers: []
+  - type: cash_made_available
+    target: cash_transfers
+    mutation: {transition: {from: awaiting_funds, to: ready_for_pickup}}
+    meaning: "The money is made available at the payout network and the Pickup Number becomes valid."
+    grain: "One row per first availability."
+    fields:
+      pickup_reference: "Paloma Pickup Number the recipient quotes at the counter."
+      available_date: "Date the cash became collectable."
+      pickup_expiry_date: "Last day the cash can be collected."
+    triggers: []
+  - type: cash_hold_placed
+    target: cash_transfers
+    mutation: {transition: [{from: awaiting_funds, to: on_hold}, {from: ready_for_pickup, to: on_hold}]}
+    meaning: "Compliance, funding review, screening after refused pickups or new-recipient cooling-off stops the transfer."
+    grain: "One row per hold."
+    fields:
+      hold_reason: "Why the transfer is held."
+      held_at: "Moment the hold was placed."
+    triggers: []
+  - type: cash_hold_released
+    target: cash_transfers
+    mutation: {transition: {from: on_hold, to: ready_for_pickup}}
+    meaning: "Compliance clears the hold and the cash is available with a fresh pickup window."
+    grain: "One row per hold release."
+    fields:
+      hold_reason: "Reset to none."
+      available_date: "Date the cash became collectable again."
+      pickup_expiry_date: "New last day of collection."
+      pickup_reference: "Pickup Number, issued now when the hold came before first availability."
+    triggers: []
+  - type: cash_paid_out
+    target: cash_transfers
+    mutation: {transition: {from: ready_for_pickup, to: paid_out}}
+    meaning: "The recipient collects the cash at a payout location."
+    grain: "One row per collection."
+    fields:
+      paid_out_date: "Date the cash was collected."
+      closed_date: "Same as paid_out_date."
+    triggers:
+      - event: rewards:rewards_points_earned
+        map: {source_transfer_id: cash_transfer_id, source_category: cash}
+  - type: cash_pickup_expired
+    target: cash_transfers
+    mutation: {transition: {from: ready_for_pickup, to: expired}}
+    meaning: "The pickup window ends without the cash being collected."
+    grain: "One row per expiry."
+    fields:
+      expired_date: "Date the pickup expired (the day after pickup_expiry_date)."
+    triggers: []
+  - type: cash_pickup_reactivated
+    target: cash_transfers
+    mutation: {transition: {from: expired, to: ready_for_pickup}}
+    meaning: "An expired pickup is made collectable again for a new window at the customer's request."
+    grain: "One row per reactivation."
+    fields:
+      available_date: "Date of reactivation."
+      pickup_expiry_date: "New last day of collection."
+      reactivation_count: "Reactivations on this transfer including this one."
+      expired_date: "Cleared on reactivation."
+    triggers: []
+  - type: cash_reissued
+    target: cash_transfers
+    mutation: {transition: {from: paid_out, to: ready_for_pickup}}
+    meaning: "After an error was found on a pickup recorded as paid, the money is made available again under a new Pickup Number at no cost."
+    grain: "One row per re-issue."
+    fields:
+      pickup_reference: "New Paloma Pickup Number; the old one is void."
+      available_date: "Date of re-issue."
+      pickup_expiry_date: "Last day of collection for the re-issue."
+      paid_out_date: "Cleared."
+      closed_date: "Cleared."
+    triggers: []
+  - type: cash_transfer_cancelled
+    target: cash_transfers
+    mutation: {transition: [{from: awaiting_funds, to: cancelled}, {from: on_hold, to: cancelled}, {from: ready_for_pickup, to: cancelled}]}
+    meaning: "The customer cancels their own transfer before the cash is collected."
+    grain: "One row per customer cancellation."
+    fields:
+      cancelled_at: "Moment the customer confirmed the cancellation."
+    triggers: []
+  - type: cash_transfer_auto_cancelled
+    target: cash_transfers
+    mutation: {transition: [{from: on_hold, to: cancelled}, {from: awaiting_funds, to: cancelled}]}
+    meaning: "Paloma cancels the transfer: an unanswered or rejected request for information, a compliance rejection, or a failed or late payment."
+    grain: "One row per Paloma-initiated cancellation."
+    fields:
+      cancelled_at: "Moment Paloma cancelled it."
+      hold_reason: "The reason that led to the cancellation."
+    triggers: []
+  - type: cash_transfer_refunded
+    target: cash_transfers
+    mutation: {transition: [{from: cancelled, to: refunded}, {from: expired, to: refunded}, {from: paid_out, to: refunded}]}
+    meaning: "The money owed back has been refunded and the transfer is closed."
+    grain: "One row per closing refund."
+    fields:
+      closed_date: "Date of the closing refund."
+    triggers: []
+  - type: cash_recipient_name_updated
+    target: cash_transfers
+    mutation: update
+    meaning: "The recipient name the cash is released to is replaced by a corrected spelling."
+    grain: "One row per name update."
+    fields:
+      recipient_name_on_transfer: "Corrected name, exactly as the customer gives it."
+    triggers: []
+  # ---- ledger writes (cash_ledger) ----
+  - type: cash_funds_received
+    target: cash_ledger
+    meaning: "The customer's payment for the principal is collected."
+    grain: "One row per principal collection on a transfer."
+    distinguish_by: [entry_date]
+    fields:
+      amount_usd: "Principal collected (positive)."
+      entry_date: "Date collected."
+    account: principal_held
+    direction: in
+    triggers: []
+  - type: cash_fee_charged
+    target: cash_ledger
+    meaning: "A fee is collected: transfer fee, card funding fee, US-dollar payout fee, name correction fee or reactivation fee."
+    grain: "One row per fee type per sequence number."
+    distinguish_by: [fee_type, fee_seq]
+    fields:
+      fee_type: "Kind of fee."
+      amount_usd: "Fee collected (positive)."
+      fee_seq: "1 for booking fees; the correction number for a name correction fee; the reactivation number for a reactivation fee."
+      entry_date: "Date collected."
+    account: fees_held
+    direction: in
+    triggers: []
+  - type: cash_fee_refunded
+    target: cash_ledger
+    meaning: "All or part of one collected fee is refunded."
+    grain: "One row per refunded fee charge."
+    distinguish_by: [related_entry_id]
+    fields:
+      related_entry_id: "ledger_entry_id of the cash_fee_charged row refunded."
+      amount_usd: "Amount refunded (positive)."
+      fee_refund_reason: "Why the fee is refunded."
+      entry_date: "Date refunded."
+    account: fees_held
+    direction: out
+    triggers: []
+  - type: cash_payout_made
+    target: cash_ledger
+    meaning: "The payout location hands the cash to the recipient."
+    grain: "One row per cash payout."
+    distinguish_by: [payout_seq]
+    fields:
+      amount_usd: "USD principal paid out (positive)."
+      receive_amount: "Cash handed over."
+      payout_currency: "local or usd."
+      fx_rate_applied: "Rate used."
+      payout_location: "Name of the payout location as reported by the network."
+      payout_seq: "1 for the first payout; 2 for a payout after a re-issue."
+      entry_date: "Date paid."
+    account: principal_held
+    direction: out
+    triggers:
+      - event: cash:cash_paid_out
+        map: {paid_out_date: entry_date, closed_date: entry_date}
+  - type: cash_paloma_credit
+    target: cash_ledger
+    meaning: "Paloma funds a re-issue or refund after an error found on a pickup recorded as paid."
+    grain: "One row per make-good credit per source entry."
+    distinguish_by: [credit_reason, related_entry_id]
+    fields:
+      credit_reason: "error_reissue, error_refund or incorrect_amount_shortfall."
+      amount_usd: "Amount Paloma puts in (positive)."
+      related_entry_id: "The cash_payout_made row the error concerned."
+      entry_date: "Date credited."
+    account: principal_held
+    direction: in
+    triggers: []
+  - type: cash_refund_issued
+    target: cash_ledger
+    meaning: "Principal owed back to the customer is refunded to the original funding method."
+    grain: "One row per principal refund per basis and source entry."
+    distinguish_by: [refund_basis, related_entry_id]
+    fields:
+      amount_usd: "Principal refunded (positive)."
+      refund_basis: "Why the refund is owed."
+      related_entry_id: "The ledger entry the refund pays back (the cash_funds_received row, or the Paloma credit on an error refund)."
+      entry_date: "Date refunded."
+    account: principal_held
+    direction: out
+    triggers:
+      - event: cash:cash_transfer_refunded
+        when: {refund_basis: {not: error_shortfall}}
+        map: {closed_date: entry_date}
+  # ---- case writes (cash_cases) ----
+  - type: cash_pickup_refused
+    target: cash_cases
+    meaning: "A payout location refuses to pay the person who came to collect."
+    grain: "One row per refused attempt."
+    distinguish_by: [case_date, payout_location, refusal_reason]
+    fields:
+      refusal_reason: "Why the counter refused."
+      payout_location: "Location that refused."
+      case_date: "Date of the attempt."
+    triggers: []
+  - type: cash_name_corrected
+    target: cash_cases
+    meaning: "A spelling correction to the recipient name on the transfer is recorded."
+    grain: "One row per correction."
+    distinguish_by: [correction_seq]
+    fields:
+      previous_name: "Recipient name on the transfer before the correction."
+      corrected_name: "Corrected name, exactly as the customer gives it."
+      correction_seq: "1 for the first correction on the transfer, 2 for the second, and so on."
+      case_date: "Date of the correction."
+    triggers:
+      - event: cash:cash_recipient_name_updated
+        map: {recipient_name_on_transfer: corrected_name}
+  - type: cash_rfi_answer_logged
+    target: cash_cases
+    meaning: "The customer's answer to a transfer-level request for information is logged."
+    grain: "One row per uploaded answer."
+    distinguish_by: [doc_reference]
+    fields:
+      rfi_topic: "What the request asked."
+      doc_reference: "Upload reference of the answer document, as the app shows it."
+      case_date: "Date logged."
+    triggers: []
+  - type: cash_error_notice_filed
+    target: cash_cases
+    meaning: "The customer gives notice of an error on a cash transfer under the Remittance Transfer Rule."
+    grain: "One row per error notice."
+    distinguish_by: [case_type, case_date]
+    fields:
+      case_type: "Kind of error asserted."
+      case_date: "Date of the notice."
+      resolution_due_date: "Last day for Paloma's decision."
+    triggers: []
+  - type: cash_error_decided
+    target: cash_cases
+    meaning: "Paloma's error-resolution team records its finding on one notice."
+    grain: "One row per decision."
+    distinguish_by: [related_case_id]
+    fields:
+      related_case_id: "case_id of the notice."
+      case_outcome: "error_found or no_error."
+      case_date: "Date decided."
+    triggers: []
+  - type: cash_remedy_chosen
+    target: cash_cases
+    meaning: "After an error is found, the customer chooses a refund or a re-issue at no cost."
+    grain: "One row per choice."
+    distinguish_by: [related_case_id]
+    fields:
+      related_case_id: "case_id of the notice."
+      remedy_choice: "refund or reissue for a payment to the wrong person; refund_shortfall or reissue_shortfall for an incorrect amount."
+      case_date: "Date chosen."
+    triggers:
+      - event: cash:cash_refund_issued
+        when: {remedy_choice: refund}
+        map: {refund_basis: error_resolution}
+      - event: cash:cash_refund_issued
+        when: {remedy_choice: refund_shortfall}
+        map: {refund_basis: error_shortfall}
+      - event: cash:cash_reissued
+        when: {remedy_choice: [reissue, reissue_shortfall]}
+        map: {}
+
+measures:
+  - id: cash_msr_transfers_to_recipient_24h
+    window: "Rolling 24 hours ending at frozen_time: booked_at strictly later than frozen_time minus 24 hours."
+    measure: "Count of cash_transfers on the same recipient_id, excluding status cancelled or refunded."
+  - id: cash_msr_name_corrections
+    window: "The life of one transfer."
+    measure: "Count of cash_name_corrected rows on this cash_transfer_id."
+  - id: cash_msr_refused_pickups
+    window: "From the transfer's current available_date up to frozen_time."
+    measure: "Count of cash_pickup_refused rows on this cash_transfer_id with case_date on or after available_date."
+
+policies:
+  - id: cash_agg_multi_holding
+    subject: [cash_transfer_booked]
+    rule: >-
+      A customer may hold any number of Cash Pickup transfers at once; each booking has its own
+      confirmation number, Pickup Number, principal, fees, rate and pickup window. They are bounded
+      only by the aggregate sending limits of the customer's Personal Sender Account and the
+      per-recipient frequency cap (cash_agg_sending_limits). Transfers are never combined into one
+      pickup: a recipient collecting two transfers presents each Pickup Number separately, and a
+      refund, correction or reactivation on one transfer never touches another.
+    eligibility: []
+    params:
+      max_per_customer: null
+
+  - id: cash_agg_sending_limits
+    subject: [cash_transfer_booked]
+    rule: >-
+      A Cash Pickup transfer is booked only under the customer's own Personal Sender Account, and
+      only while that account's status is active. Its principal must fit every ceiling of
+      account_sending_limits for the account's level at the moment of booking, aggregated over all of
+      the customer's personal transfers in Bank Deposit, Cash Pickup and Mobile Wallet. The principal
+      must also lie between the tier's min_send_usd and max_send_usd, both inclusive, and may not
+      exceed the corridor's entry in corridor_cap_usd, which is the most the payout network pays in
+      one pickup. No more than max_transfers_per_recipient_24h Cash Pickup transfers to one
+      recipient may be booked as counted by cash_msr_transfers_to_recipient_24h including the new
+      one. The binding ceiling for one transfer is the lowest of the account level's
+      per_transfer_limit_usd, the tier's max_send_usd and the corridor cap. A booking over any
+      ceiling is not made; Paloma never splits one requested amount into several pickups.
+    eligibility:
+      - id: sender_account_active
+        applies_to: [cash_transfer_booked]
+        kind: state
+        condition: "A Cash Pickup transfer is booked only under the customer's own Personal Sender Account, and only while that account's status is active."
+        evidence_fields: [sender_accounts.sender_account_id, sender_accounts.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [sender_accounts.sender_account_id]
+          action_bindings:
+            sender_accounts.sender_account_id: sender_account_id
+        state_contract:
+          field: sender_accounts.status
+          allowed: [active]
+    params:
+      per_tier:
+        Cash Pickup Economy: {min_send_usd: "=min_send_usd", max_send_usd: "=max_send_usd", corridor_cap_usd: "=corridor_cap_usd", max_transfers_per_recipient_24h: "=max_transfers_per_recipient_24h"}
+        Cash Pickup Express: {min_send_usd: "=min_send_usd", max_send_usd: "=max_send_usd", corridor_cap_usd: "=corridor_cap_usd", max_transfers_per_recipient_24h: "=max_transfers_per_recipient_24h"}
+        Cash Pickup Express Plus: {min_send_usd: "=min_send_usd", max_send_usd: "=max_send_usd", corridor_cap_usd: "=corridor_cap_usd", max_transfers_per_recipient_24h: "=max_transfers_per_recipient_24h"}
+        Cash Pickup Bank Branch: {min_send_usd: "=min_send_usd", max_send_usd: "=max_send_usd", corridor_cap_usd: "=corridor_cap_usd", max_transfers_per_recipient_24h: "=max_transfers_per_recipient_24h"}
+        Cash Pickup Cardless ATM: {min_send_usd: "=min_send_usd", max_send_usd: "=max_send_usd", corridor_cap_usd: "=corridor_cap_usd", max_transfers_per_recipient_24h: "=max_transfers_per_recipient_24h"}
+        Cash Pickup Large Amount: {min_send_usd: "=min_send_usd", max_send_usd: "=max_send_usd", corridor_cap_usd: "=corridor_cap_usd", max_transfers_per_recipient_24h: "=max_transfers_per_recipient_24h"}
+    measures: [cash_msr_transfers_to_recipient_24h]
+
+  - id: cash_evt_booking_eligibility
+    subject: [cash_transfer_booked]
+    rule: >-
+      Booking is the customer's own authorisation of payment: the agent may quote and explain, and
+      the customer books. A tier may be booked only when the account's level is at or above the
+      tier's entry_min_account_level (by level_number) and account_msr_completed_transfers is at
+      least the tier's entry_min_completed_transfers. The funding method must be in the tier's
+      funding_methods_allowed and also allowed by the account level; the narrower wins. The corridor
+      must be in corridors_served. The recipient must be a saved recipient of the same customer whose
+      status is active and whose corridor equals the transfer's corridor, and
+      recipient_name_on_transfer is that recipient's full_name exactly as saved. The cash is
+      released only to a person whose government ID shows exactly recipient_name_on_transfer and who
+      quotes the Pickup Number; a cardless ATM payout needs only the Pickup Number and the one-time
+      code sent to the recipient's phone. payout_currency is usd only in a corridor listed in
+      usd_payout_corridors and only when the customer asks for it, and local otherwise; SV-USD pays
+      in US dollars as its local currency. In a corridor listed in purpose_code_corridors a
+      transfer_purpose must be stated. The recipient must be at least 18 years old to collect.
+    eligibility:
+      - id: tier_entry
+        applies_to: [cash_transfer_booked]
+        kind: authorization
+        condition: "A tier may be booked only when the account's level is at or above the tier's entry_min_account_level (by level_number) and account_msr_completed_transfers is at least the tier's entry_min_completed_transfers."
+        evidence_fields: [sender_accounts.sender_account_id, sender_accounts.variant_name]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [sender_accounts.sender_account_id]
+          action_bindings:
+            sender_accounts.sender_account_id: sender_account_id
+      - id: recipient_on_file
+        applies_to: [cash_transfer_booked]
+        kind: authorization
+        condition: "The recipient must be a saved recipient of the same customer whose status is active and whose corridor equals the transfer's corridor"
+        evidence_fields: [recipients.recipient_id, recipients.customer_id, recipients.status, recipients.corridor, recipients.full_name]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [recipients.recipient_id]
+          action_bindings:
+            recipients.recipient_id: recipient_id
+    params:
+      recipient_min_age_years: 18
+      per_tier:
+        Cash Pickup Economy: {entry_min_account_level: "=entry_min_account_level", entry_min_completed_transfers: "=entry_min_completed_transfers", funding_methods_allowed: "=funding_methods_allowed", corridors_served: "=corridors_served", payout_network: "=payout_network", usd_payout_corridors: "=usd_payout_corridors", purpose_code_corridors: "=purpose_code_corridors"}
+        Cash Pickup Express: {entry_min_account_level: "=entry_min_account_level", entry_min_completed_transfers: "=entry_min_completed_transfers", funding_methods_allowed: "=funding_methods_allowed", corridors_served: "=corridors_served", payout_network: "=payout_network", usd_payout_corridors: "=usd_payout_corridors", purpose_code_corridors: "=purpose_code_corridors"}
+        Cash Pickup Express Plus: {entry_min_account_level: "=entry_min_account_level", entry_min_completed_transfers: "=entry_min_completed_transfers", funding_methods_allowed: "=funding_methods_allowed", corridors_served: "=corridors_served", payout_network: "=payout_network", usd_payout_corridors: "=usd_payout_corridors", purpose_code_corridors: "=purpose_code_corridors"}
+        Cash Pickup Bank Branch: {entry_min_account_level: "=entry_min_account_level", entry_min_completed_transfers: "=entry_min_completed_transfers", funding_methods_allowed: "=funding_methods_allowed", corridors_served: "=corridors_served", payout_network: "=payout_network", usd_payout_corridors: "=usd_payout_corridors", purpose_code_corridors: "=purpose_code_corridors"}
+        Cash Pickup Cardless ATM: {entry_min_account_level: "=entry_min_account_level", entry_min_completed_transfers: "=entry_min_completed_transfers", funding_methods_allowed: "=funding_methods_allowed", corridors_served: "=corridors_served", payout_network: "=payout_network", usd_payout_corridors: "=usd_payout_corridors", purpose_code_corridors: "=purpose_code_corridors"}
+        Cash Pickup Large Amount: {entry_min_account_level: "=entry_min_account_level", entry_min_completed_transfers: "=entry_min_completed_transfers", funding_methods_allowed: "=funding_methods_allowed", corridors_served: "=corridors_served", payout_network: "=payout_network", usd_payout_corridors: "=usd_payout_corridors", purpose_code_corridors: "=purpose_code_corridors"}
+
+  - id: cash_evt_pricing
+    subject: [cash_transfer_booked, cash_fee_charged]
+    rule: >-
+      The transfer fee is the fee_usd of the fee_ladder band containing the principal, less
+      pay_by_bank_fee_discount_usd when funded by pay_by_bank (never below 0.00). A first personal
+      transfer (no other personal transfer on the sender account in any delivery method except ones
+      whose status is cancelled or refunded) booked on a tier whose first_transfer_fee_waived is true
+      with principal at or below first_transfer_promo_cap_usd has a 0.00 transfer fee and the margin
+      first_transfer_promo_margin_pct; above the cap the regular price applies to the whole
+      transfer, and the promotion never stacks with the pay-by-bank discount. card_fee_usd is
+      credit_card_fee_pct of the principal, rounded half up to the cent, for credit-card funding and
+      debit_card_fee_usd for debit-card funding. A US-dollar payout in a corridor whose local
+      currency is not USD carries usd_payout_fee_usd as usd_payout_charge_usd, has fx_rate 1.0000
+      and no margin, and receive_amount equals the principal. A local-currency payout uses the margin
+      fx_margin_pct, less margin_reduction_pct_points when the principal is at or above
+      margin_reduction_threshold_usd (the promotional margin replaces both); fx_rate is the
+      corridor's mid_market_rate in the Paloma rate sheet for the booking date times one minus the
+      margin over 100, rounded half up to 4 decimals, and receive_amount is the principal times
+      fx_rate rounded half up to 2 decimals (whole units for VND). date_available is the release
+      day, counted from booking_cutoff_ct as for Bank Deposit, plus advance_notice_business_days and
+      availability_business_days Paloma business days; on a tier whose weekend_payout is false the
+      date moves to the next Paloma business day when it falls on a weekend or holiday. Fees are
+      collected with the principal as cash_fee_charged rows with fee_seq 1.
+    eligibility: []
+    params:
+      per_tier:
+        Cash Pickup Economy: {fee_ladder: "=fee_ladder", pay_by_bank_fee_discount_usd: "=pay_by_bank_fee_discount_usd", first_transfer_fee_waived: "=first_transfer_fee_waived", first_transfer_promo_cap_usd: "=first_transfer_promo_cap_usd", first_transfer_promo_margin_pct: "=first_transfer_promo_margin_pct", credit_card_fee_pct: "=credit_card_fee_pct", debit_card_fee_usd: "=debit_card_fee_usd", usd_payout_fee_usd: "=usd_payout_fee_usd", fx_margin_pct: "=fx_margin_pct", margin_reduction_threshold_usd: "=margin_reduction_threshold_usd", margin_reduction_pct_points: "=margin_reduction_pct_points", booking_cutoff_ct: "=booking_cutoff_ct", advance_notice_business_days: "=advance_notice_business_days", availability_business_days: "=availability_business_days", weekend_payout: "=weekend_payout"}
+        Cash Pickup Express: {fee_ladder: "=fee_ladder", pay_by_bank_fee_discount_usd: "=pay_by_bank_fee_discount_usd", first_transfer_fee_waived: "=first_transfer_fee_waived", first_transfer_promo_cap_usd: "=first_transfer_promo_cap_usd", first_transfer_promo_margin_pct: "=first_transfer_promo_margin_pct", credit_card_fee_pct: "=credit_card_fee_pct", debit_card_fee_usd: "=debit_card_fee_usd", usd_payout_fee_usd: "=usd_payout_fee_usd", fx_margin_pct: "=fx_margin_pct", margin_reduction_threshold_usd: "=margin_reduction_threshold_usd", margin_reduction_pct_points: "=margin_reduction_pct_points", booking_cutoff_ct: "=booking_cutoff_ct", advance_notice_business_days: "=advance_notice_business_days", availability_business_days: "=availability_business_days", weekend_payout: "=weekend_payout"}
+        Cash Pickup Express Plus: {fee_ladder: "=fee_ladder", pay_by_bank_fee_discount_usd: "=pay_by_bank_fee_discount_usd", first_transfer_fee_waived: "=first_transfer_fee_waived", first_transfer_promo_cap_usd: "=first_transfer_promo_cap_usd", first_transfer_promo_margin_pct: "=first_transfer_promo_margin_pct", credit_card_fee_pct: "=credit_card_fee_pct", debit_card_fee_usd: "=debit_card_fee_usd", usd_payout_fee_usd: "=usd_payout_fee_usd", fx_margin_pct: "=fx_margin_pct", margin_reduction_threshold_usd: "=margin_reduction_threshold_usd", margin_reduction_pct_points: "=margin_reduction_pct_points", booking_cutoff_ct: "=booking_cutoff_ct", advance_notice_business_days: "=advance_notice_business_days", availability_business_days: "=availability_business_days", weekend_payout: "=weekend_payout"}
+        Cash Pickup Bank Branch: {fee_ladder: "=fee_ladder", pay_by_bank_fee_discount_usd: "=pay_by_bank_fee_discount_usd", first_transfer_fee_waived: "=first_transfer_fee_waived", first_transfer_promo_cap_usd: "=first_transfer_promo_cap_usd", first_transfer_promo_margin_pct: "=first_transfer_promo_margin_pct", credit_card_fee_pct: "=credit_card_fee_pct", debit_card_fee_usd: "=debit_card_fee_usd", usd_payout_fee_usd: "=usd_payout_fee_usd", fx_margin_pct: "=fx_margin_pct", margin_reduction_threshold_usd: "=margin_reduction_threshold_usd", margin_reduction_pct_points: "=margin_reduction_pct_points", booking_cutoff_ct: "=booking_cutoff_ct", advance_notice_business_days: "=advance_notice_business_days", availability_business_days: "=availability_business_days", weekend_payout: "=weekend_payout"}
+        Cash Pickup Cardless ATM: {fee_ladder: "=fee_ladder", pay_by_bank_fee_discount_usd: "=pay_by_bank_fee_discount_usd", first_transfer_fee_waived: "=first_transfer_fee_waived", first_transfer_promo_cap_usd: "=first_transfer_promo_cap_usd", first_transfer_promo_margin_pct: "=first_transfer_promo_margin_pct", credit_card_fee_pct: "=credit_card_fee_pct", debit_card_fee_usd: "=debit_card_fee_usd", usd_payout_fee_usd: "=usd_payout_fee_usd", fx_margin_pct: "=fx_margin_pct", margin_reduction_threshold_usd: "=margin_reduction_threshold_usd", margin_reduction_pct_points: "=margin_reduction_pct_points", booking_cutoff_ct: "=booking_cutoff_ct", advance_notice_business_days: "=advance_notice_business_days", availability_business_days: "=availability_business_days", weekend_payout: "=weekend_payout"}
+        Cash Pickup Large Amount: {fee_ladder: "=fee_ladder", pay_by_bank_fee_discount_usd: "=pay_by_bank_fee_discount_usd", first_transfer_fee_waived: "=first_transfer_fee_waived", first_transfer_promo_cap_usd: "=first_transfer_promo_cap_usd", first_transfer_promo_margin_pct: "=first_transfer_promo_margin_pct", credit_card_fee_pct: "=credit_card_fee_pct", debit_card_fee_usd: "=debit_card_fee_usd", usd_payout_fee_usd: "=usd_payout_fee_usd", fx_margin_pct: "=fx_margin_pct", margin_reduction_threshold_usd: "=margin_reduction_threshold_usd", margin_reduction_pct_points: "=margin_reduction_pct_points", booking_cutoff_ct: "=booking_cutoff_ct", advance_notice_business_days: "=advance_notice_business_days", availability_business_days: "=availability_business_days", weekend_payout: "=weekend_payout"}
+    formula:
+      card_fee: "round(send_amount_usd * credit_card_fee_pct / 100, 2)"
+      effective_margin_pct: "fx_margin_pct - margin_reduction_pct_points if send_amount_usd >= margin_reduction_threshold_usd else fx_margin_pct"
+      receive_amount: "round(send_amount_usd * fx_rate, 2)"
+
+  - id: cash_evt_funding_and_rate_lock
+    subject: [cash_funds_received, cash_rate_requoted, cash_transfer_auto_cancelled]
+    rule: >-
+      Card and pay-by-bank payments are collected at booking, an ACH debit when it settles and a wire
+      when it arrives. The quoted rate is guaranteed for rate_lock_hours elapsed hours from booked_at.
+      A rate is re-quoted only when funds are collected more than rate_lock_hours after the transfer
+      was booked. Lock hours are counted as elapsed hours from booked_at to the moment the funds are
+      collected. A re-quote uses the rate sheet for the collection date with the same margin rule,
+      re-discloses fx_rate, receive_amount and date_available, and never changes fees; a US-dollar
+      payout is never re-quoted. On a tier whose funding_deadline_hours is above 0, Paloma cancels a
+      wire-funded booking whose funds have not arrived by booked_at plus
+      funding_deadline_hours elapsed hours. When an ACH debit is returned unpaid before release or a
+      card capture fails, Paloma cancels the transfer with hold_reason funding_failed. Nothing is
+      owed back on a cancellation for missing or failed funding, and the transfer stays cancelled.
+    eligibility:
+      - id: rate_lock_lapsed
+        applies_to: [cash_rate_requoted]
+        kind: time
+        condition: "A rate is re-quoted only when funds are collected more than rate_lock_hours after the transfer was booked."
+        evidence_fields: [cash_transfers.cash_transfer_id, cash_transfers.booked_at]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [cash_transfers.cash_transfer_id]
+          action_bindings:
+            cash_transfers.cash_transfer_id: cash_transfer_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the transfer was booked"
+          anchor_source: cash_transfers.booked_at
+          relation: not_before
+          duration_source: variants.rate_lock_hours
+          unit: elapsed_hours
+          counting_rule: "Lock hours are counted as elapsed hours from booked_at to the moment the funds are collected."
+          boundary: exclusive
+    params:
+      per_tier:
+        Cash Pickup Economy: {rate_lock_hours: "=rate_lock_hours", funding_deadline_hours: "=funding_deadline_hours"}
+        Cash Pickup Express: {rate_lock_hours: "=rate_lock_hours", funding_deadline_hours: "=funding_deadline_hours"}
+        Cash Pickup Express Plus: {rate_lock_hours: "=rate_lock_hours", funding_deadline_hours: "=funding_deadline_hours"}
+        Cash Pickup Bank Branch: {rate_lock_hours: "=rate_lock_hours", funding_deadline_hours: "=funding_deadline_hours"}
+        Cash Pickup Cardless ATM: {rate_lock_hours: "=rate_lock_hours", funding_deadline_hours: "=funding_deadline_hours"}
+        Cash Pickup Large Amount: {rate_lock_hours: "=rate_lock_hours", funding_deadline_hours: "=funding_deadline_hours"}
+
+  - id: cash_evt_availability_and_holds
+    subject: [cash_made_available, cash_hold_placed, cash_hold_released, cash_payout_made, cash_paid_out, cash_pickup_refused, cash_rfi_answer_logged, cash_transfer_auto_cancelled]
+    rule: >-
+      Once its principal is collected (or ACH principal is released early within the account's
+      allowance) and any new-recipient cooling-off has run, the money is made available: a Paloma
+      Pickup Number is issued, available_date is set, and pickup_expiry_date is available_date plus
+      pickup_window_days calendar days. The cash can be collected on any day through
+      pickup_expiry_date at a location of the tier's payout_network. A payout location refuses
+      payment when the ID name does not match recipient_name_on_transfer exactly, the ID is expired,
+      no valid ID is shown, the Pickup Number is wrong, or the location lacks cash; each refusal is
+      recorded. When cash_msr_refused_pickups reaches refused_pickups_before_hold on a tier where it
+      is above 0, the payout is put on hold with hold_reason refused_pickups for screening.
+      Compliance may hold a transfer before or after it is made available; a hold with hold_reason
+      rfi_transfer asks the customer for information. An answer is logged only while the transfer is
+      on_hold with hold_reason rfi_transfer. Each upload reference is logged once. Only compliance
+      releases a hold, within hold_review_business_days Paloma business days of a complete answer;
+      on release the cash is available again with available_date the release date and a fresh
+      pickup_expiry_date. A held transfer is cancelled by Paloma when its request for information
+      goes unanswered for more than rfi_response_days calendar days after held_at, or when compliance
+      rejects it. When the cash is handed over the payout is booked and the transfer is paid_out,
+      earning Paloma Rewards points.
+    eligibility:
+      - id: rfi_hold_open
+        applies_to: [cash_rfi_answer_logged]
+        kind: state
+        condition: "An answer is logged only while the transfer is on_hold with hold_reason rfi_transfer."
+        evidence_fields: [cash_transfers.cash_transfer_id, cash_transfers.status, cash_transfers.hold_reason]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [cash_transfers.cash_transfer_id]
+          action_bindings:
+            cash_transfers.cash_transfer_id: cash_transfer_id
+        state_contract:
+          field: cash_transfers.status
+          allowed: [on_hold]
+      - id: one_log_per_upload
+        applies_to: [cash_rfi_answer_logged]
+        kind: dedup
+        condition: "Each upload reference is logged once."
+        evidence_fields: [cash_cases.doc_reference, cash_cases.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [cash_cases.doc_reference]
+          action_bindings:
+            cash_cases.doc_reference: doc_reference
+        dedup_contract:
+          table: cash_cases
+          mode: separate_record
+          object_bindings: {doc_reference: doc_reference}
+          duplicate_filters: {event_type: [cash_rfi_answer_logged]}
+          distinct_fields: []
+    params:
+      per_tier:
+        Cash Pickup Economy: {pickup_window_days: "=pickup_window_days", payout_network: "=payout_network", refused_pickups_before_hold: "=refused_pickups_before_hold", hold_review_business_days: "=hold_review_business_days", rfi_response_days: "=rfi_response_days"}
+        Cash Pickup Express: {pickup_window_days: "=pickup_window_days", payout_network: "=payout_network", refused_pickups_before_hold: "=refused_pickups_before_hold", hold_review_business_days: "=hold_review_business_days", rfi_response_days: "=rfi_response_days"}
+        Cash Pickup Express Plus: {pickup_window_days: "=pickup_window_days", payout_network: "=payout_network", refused_pickups_before_hold: "=refused_pickups_before_hold", hold_review_business_days: "=hold_review_business_days", rfi_response_days: "=rfi_response_days"}
+        Cash Pickup Bank Branch: {pickup_window_days: "=pickup_window_days", payout_network: "=payout_network", refused_pickups_before_hold: "=refused_pickups_before_hold", hold_review_business_days: "=hold_review_business_days", rfi_response_days: "=rfi_response_days"}
+        Cash Pickup Cardless ATM: {pickup_window_days: "=pickup_window_days", payout_network: "=payout_network", refused_pickups_before_hold: "=refused_pickups_before_hold", hold_review_business_days: "=hold_review_business_days", rfi_response_days: "=rfi_response_days"}
+        Cash Pickup Large Amount: {pickup_window_days: "=pickup_window_days", payout_network: "=payout_network", refused_pickups_before_hold: "=refused_pickups_before_hold", hold_review_business_days: "=hold_review_business_days", rfi_response_days: "=rfi_response_days"}
+    measures: [cash_msr_refused_pickups]
+
+  - id: cash_evt_name_correction
+    subject: [cash_name_corrected, cash_recipient_name_updated, cash_fee_charged]
+    rule: >-
+      The recipient name on a transfer can be corrected only for spelling, so that it matches the
+      recipient's government ID; paying a different person requires cancelling and booking again. A
+      name correction can be made only while the transfer is awaiting_funds, on_hold or
+      ready_for_pickup; an expired pickup must first be reactivated, and a paid_out, cancelled or
+      refunded transfer can no longer be corrected. The corrected name may differ from the current
+      recipient_name_on_transfer by at most name_correction_max_chars characters, counted as
+      single-character insertions, deletions or substitutions, letter case ignored; a correction of
+      more characters is a different person. A transfer may receive at most max_name_corrections
+      corrections in total, as counted by cash_msr_name_corrections including the new one. The first
+      free_name_corrections corrections are free and each later one carries name_correction_fee_usd
+      as fee_type name_correction_fee with fee_seq equal to its correction_seq. The corrected name is
+      recorded exactly as the customer gives it and replaces recipient_name_on_transfer at once;
+      the Pickup Number and pickup window do not change. The customer's saved recipient record is
+      updated by the customer in the app, never by the correction.
+    eligibility:
+      - id: correctable_status
+        applies_to: [cash_name_corrected]
+        kind: state
+        condition: "A name correction can be made only while the transfer is awaiting_funds, on_hold or ready_for_pickup; an expired pickup must first be reactivated, and a paid_out, cancelled or refunded transfer can no longer be corrected."
+        evidence_fields: [cash_transfers.cash_transfer_id, cash_transfers.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [cash_transfers.cash_transfer_id]
+          action_bindings:
+            cash_transfers.cash_transfer_id: cash_transfer_id
+        state_contract:
+          field: cash_transfers.status
+          allowed: [awaiting_funds, on_hold, ready_for_pickup]
+      - id: spelling_only
+        applies_to: [cash_name_corrected]
+        kind: authorization
+        condition: "The corrected name may differ from the current recipient_name_on_transfer by at most name_correction_max_chars characters, counted as single-character insertions, deletions or substitutions, letter case ignored; a correction of more characters is a different person."
+        evidence_fields: [cash_transfers.cash_transfer_id, cash_transfers.recipient_name_on_transfer, cash_transfers.variant_name]
+        evidence_contract:
+          authority: mixed
+          timing: pre_action
+          correlation_keys:
+            - [cash_transfers.cash_transfer_id]
+          action_bindings:
+            cash_transfers.cash_transfer_id: cash_transfer_id
+      - id: correction_cap
+        applies_to: [cash_name_corrected]
+        kind: authorization
+        condition: "A transfer may receive at most max_name_corrections corrections in total, as counted by cash_msr_name_corrections including the new one."
+        evidence_fields: [cash_cases.cash_transfer_id, cash_cases.event_type, cash_cases.correction_seq]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [cash_cases.cash_transfer_id]
+          action_bindings:
+            cash_cases.cash_transfer_id: cash_transfer_id
+    params:
+      per_tier:
+        Cash Pickup Economy: {name_correction_max_chars: "=name_correction_max_chars", max_name_corrections: "=max_name_corrections", free_name_corrections: "=free_name_corrections", name_correction_fee_usd: "=name_correction_fee_usd"}
+        Cash Pickup Express: {name_correction_max_chars: "=name_correction_max_chars", max_name_corrections: "=max_name_corrections", free_name_corrections: "=free_name_corrections", name_correction_fee_usd: "=name_correction_fee_usd"}
+        Cash Pickup Express Plus: {name_correction_max_chars: "=name_correction_max_chars", max_name_corrections: "=max_name_corrections", free_name_corrections: "=free_name_corrections", name_correction_fee_usd: "=name_correction_fee_usd"}
+        Cash Pickup Bank Branch: {name_correction_max_chars: "=name_correction_max_chars", max_name_corrections: "=max_name_corrections", free_name_corrections: "=free_name_corrections", name_correction_fee_usd: "=name_correction_fee_usd"}
+        Cash Pickup Cardless ATM: {name_correction_max_chars: "=name_correction_max_chars", max_name_corrections: "=max_name_corrections", free_name_corrections: "=free_name_corrections", name_correction_fee_usd: "=name_correction_fee_usd"}
+        Cash Pickup Large Amount: {name_correction_max_chars: "=name_correction_max_chars", max_name_corrections: "=max_name_corrections", free_name_corrections: "=free_name_corrections", name_correction_fee_usd: "=name_correction_fee_usd"}
+    measures: [cash_msr_name_corrections]
+
+  - id: cash_evt_cancellation
+    subject: [cash_transfer_cancelled, cash_fee_refunded]
+    rule: >-
+      Only the customer can cancel their own transfer; the agent explains what will be refunded and
+      the customer confirms. A transfer can be cancelled while awaiting_funds, on_hold, or
+      ready_for_pickup on a tier whose ready_cancel_allowed is true; once the cash is collected it
+      can never be cancelled, and an expired transfer is refunded instead of cancelled. A fee is
+      refunded in full on cancellation only when the customer confirms the cancellation within
+      cancel_full_refund_window_hours elapsed hours after the transfer was booked. The window is
+      measured in elapsed hours from booked_at to cancelled_at, and a cancellation at exactly the end
+      of the window is inside it. Inside the window every fee collected is refunded with
+      fee_refund_reason cancellation_in_window. After the window each booking fee collected
+      (transfer fee, card funding fee, US-dollar payout fee) is refunded at
+      late_cancel_fee_refund_pct of its amount, rounded half up to the cent, with fee_refund_reason
+      cancellation_post_window; name correction and reactivation fees are never refunded on a
+      cancellation after the window. The principal is always refunded in full under
+      cash_evt_refunds. Each fee charge is refunded at most once.
+    eligibility:
+      - id: full_refund_window
+        applies_to: [cash_fee_refunded]
+        kind: time
+        condition: "A fee is refunded in full on cancellation only when the customer confirms the cancellation within cancel_full_refund_window_hours elapsed hours after the transfer was booked."
+        evidence_fields: [cash_transfers.cash_transfer_id, cash_transfers.booked_at, cash_transfers.cancelled_at]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [cash_transfers.cash_transfer_id]
+          action_bindings:
+            cash_transfers.cash_transfer_id: cash_transfer_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the transfer was booked"
+          anchor_source: cash_transfers.booked_at
+          relation: not_after
+          duration_source: variants.cancel_full_refund_window_hours
+          unit: elapsed_hours
+          counting_rule: "The window is measured in elapsed hours from booked_at to cancelled_at, and a cancellation at exactly the end of the window is inside it."
+          boundary: inclusive
+      - id: fee_refunded_once
+        applies_to: [cash_fee_refunded]
+        kind: dedup
+        condition: "Each fee charge is refunded at most once."
+        evidence_fields: [cash_ledger.related_entry_id, cash_ledger.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [cash_ledger.related_entry_id]
+          action_bindings:
+            cash_ledger.related_entry_id: related_entry_id
+        dedup_contract:
+          table: cash_ledger
+          mode: separate_record
+          object_bindings: {related_entry_id: related_entry_id}
+          duplicate_filters: {event_type: [cash_fee_refunded]}
+          distinct_fields: []
+    params:
+      per_tier:
+        Cash Pickup Economy: {cancel_full_refund_window_hours: "=cancel_full_refund_window_hours", late_cancel_fee_refund_pct: "=late_cancel_fee_refund_pct", ready_cancel_allowed: "=ready_cancel_allowed"}
+        Cash Pickup Express: {cancel_full_refund_window_hours: "=cancel_full_refund_window_hours", late_cancel_fee_refund_pct: "=late_cancel_fee_refund_pct", ready_cancel_allowed: "=ready_cancel_allowed"}
+        Cash Pickup Express Plus: {cancel_full_refund_window_hours: "=cancel_full_refund_window_hours", late_cancel_fee_refund_pct: "=late_cancel_fee_refund_pct", ready_cancel_allowed: "=ready_cancel_allowed"}
+        Cash Pickup Bank Branch: {cancel_full_refund_window_hours: "=cancel_full_refund_window_hours", late_cancel_fee_refund_pct: "=late_cancel_fee_refund_pct", ready_cancel_allowed: "=ready_cancel_allowed"}
+        Cash Pickup Cardless ATM: {cancel_full_refund_window_hours: "=cancel_full_refund_window_hours", late_cancel_fee_refund_pct: "=late_cancel_fee_refund_pct", ready_cancel_allowed: "=ready_cancel_allowed"}
+        Cash Pickup Large Amount: {cancel_full_refund_window_hours: "=cancel_full_refund_window_hours", late_cancel_fee_refund_pct: "=late_cancel_fee_refund_pct", ready_cancel_allowed: "=ready_cancel_allowed"}
+    formula:
+      late_fee_refund: "round(amount_usd * late_cancel_fee_refund_pct / 100, 2)"
+
+  - id: cash_evt_expiry_and_reactivation
+    subject: [cash_pickup_expired, cash_pickup_reactivated, cash_fee_charged]
+    rule: >-
+      A pickup expires only after pickup_expiry_date has passed without collection, that is once
+      more than pickup_window_days calendar days have passed since the money was made available.
+      The pickup window is counted in calendar days from available_date, so the cash can still be
+      collected on pickup_expiry_date and the pickup expires the day after. The customer may have an
+      expired pickup reactivated; it is the customer's request about their own money and the agent
+      carries it out. An expired pickup can be reactivated only within reactivation_window_days
+      calendar days after it expired. The window is counted in calendar days from expired_date, and
+      a reactivation on expired_date plus the window days is on time. A transfer may be reactivated
+      at most max_reactivations times, as shown by its reactivation_count; a tier whose
+      max_reactivations is 0 cannot be reactivated at all. Reactivation sets available_date to the
+      reactivation date and pickup_expiry_date to that date plus pickup_window_days, keeps the Pickup
+      Number, rate and amount, increases reactivation_count by one, and carries reactivation_fee_usd
+      as fee_type reactivation_fee with fee_seq equal to the new reactivation_count when that fee is
+      above 0.00. An expired transfer that is not reactivated is refunded under cash_evt_refunds:
+      the principal in full and the transfer fee at expiry_fee_refund_pct with fee_refund_reason
+      expiry; other fees are not refunded.
+    eligibility:
+      - id: window_ended
+        applies_to: [cash_pickup_expired]
+        kind: time
+        condition: "A pickup expires only after pickup_expiry_date has passed without collection, that is once more than pickup_window_days calendar days have passed since the money was made available."
+        evidence_fields: [cash_transfers.cash_transfer_id, cash_transfers.available_date, cash_transfers.pickup_expiry_date]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [cash_transfers.cash_transfer_id]
+          action_bindings:
+            cash_transfers.cash_transfer_id: cash_transfer_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the money was made available"
+          anchor_source: cash_transfers.available_date
+          relation: not_before
+          duration_source: variants.pickup_window_days
+          unit: calendar_days
+          counting_rule: "The pickup window is counted in calendar days from available_date, so the cash can still be collected on pickup_expiry_date and the pickup expires the day after."
+          boundary: exclusive
+      - id: reactivation_window
+        applies_to: [cash_pickup_reactivated]
+        kind: time
+        condition: "An expired pickup can be reactivated only within reactivation_window_days calendar days after it expired."
+        evidence_fields: [cash_transfers.cash_transfer_id, cash_transfers.expired_date]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [cash_transfers.cash_transfer_id]
+          action_bindings:
+            cash_transfers.cash_transfer_id: cash_transfer_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "it expired"
+          anchor_source: cash_transfers.expired_date
+          relation: not_after
+          duration_source: variants.reactivation_window_days
+          unit: calendar_days
+          counting_rule: "The window is counted in calendar days from expired_date, and a reactivation on expired_date plus the window days is on time."
+          boundary: inclusive
+      - id: reactivation_cap
+        applies_to: [cash_pickup_reactivated]
+        kind: authorization
+        condition: "A transfer may be reactivated at most max_reactivations times, as shown by its reactivation_count; a tier whose max_reactivations is 0 cannot be reactivated at all."
+        evidence_fields: [cash_transfers.cash_transfer_id, cash_transfers.reactivation_count, cash_transfers.variant_name]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [cash_transfers.cash_transfer_id]
+          action_bindings:
+            cash_transfers.cash_transfer_id: cash_transfer_id
+    params:
+      per_tier:
+        Cash Pickup Economy: {pickup_window_days: "=pickup_window_days", reactivation_window_days: "=reactivation_window_days", max_reactivations: "=max_reactivations", reactivation_fee_usd: "=reactivation_fee_usd", expiry_fee_refund_pct: "=expiry_fee_refund_pct"}
+        Cash Pickup Express: {pickup_window_days: "=pickup_window_days", reactivation_window_days: "=reactivation_window_days", max_reactivations: "=max_reactivations", reactivation_fee_usd: "=reactivation_fee_usd", expiry_fee_refund_pct: "=expiry_fee_refund_pct"}
+        Cash Pickup Express Plus: {pickup_window_days: "=pickup_window_days", reactivation_window_days: "=reactivation_window_days", max_reactivations: "=max_reactivations", reactivation_fee_usd: "=reactivation_fee_usd", expiry_fee_refund_pct: "=expiry_fee_refund_pct"}
+        Cash Pickup Bank Branch: {pickup_window_days: "=pickup_window_days", reactivation_window_days: "=reactivation_window_days", max_reactivations: "=max_reactivations", reactivation_fee_usd: "=reactivation_fee_usd", expiry_fee_refund_pct: "=expiry_fee_refund_pct"}
+        Cash Pickup Cardless ATM: {pickup_window_days: "=pickup_window_days", reactivation_window_days: "=reactivation_window_days", max_reactivations: "=max_reactivations", reactivation_fee_usd: "=reactivation_fee_usd", expiry_fee_refund_pct: "=expiry_fee_refund_pct"}
+        Cash Pickup Large Amount: {pickup_window_days: "=pickup_window_days", reactivation_window_days: "=reactivation_window_days", max_reactivations: "=max_reactivations", reactivation_fee_usd: "=reactivation_fee_usd", expiry_fee_refund_pct: "=expiry_fee_refund_pct"}
+
+  - id: cash_evt_refunds
+    subject: [cash_refund_issued, cash_transfer_refunded, cash_fee_refunded]
+    rule: >-
+      Principal is refunded only on a transfer whose status is cancelled, expired or paid_out, and on
+      a paid_out transfer only as an error-resolution remedy. The amount follows the refund basis:
+      cancellation and expiry refund the principal collected (the cash_funds_received amount);
+      rfi_expiry and compliance_rejection refund the principal collected, and each booking fee
+      collected is refunded at rfi_expiry_fee_refund_pct with fee_refund_reason
+      compliance_cancellation; error_resolution and error_shortfall refund what
+      cash_evt_error_resolution sets. Each
+      refund basis is paid once against its source entry. A refund is issued within
+      refund_business_days Paloma business days of the day it became owed, to the original funding
+      method (a wire is refunded by ACH credit to the account it came from). For a customer whose
+      state_of_residence is CA, a refund requested in writing is issued within
+      california_refund_calendar_days calendar days of the request when the money has not been paid
+      out, if that is sooner. Once the principal refund is booked the transfer moves to refunded,
+      except that a shortfall refund (error_shortfall) leaves a paid_out transfer paid_out.
+    eligibility:
+      - id: refundable_status
+        applies_to: [cash_refund_issued]
+        kind: state
+        condition: "Principal is refunded only on a transfer whose status is cancelled, expired or paid_out, and on a paid_out transfer only as an error-resolution remedy."
+        evidence_fields: [cash_transfers.cash_transfer_id, cash_transfers.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [cash_transfers.cash_transfer_id]
+          action_bindings:
+            cash_transfers.cash_transfer_id: cash_transfer_id
+        state_contract:
+          field: cash_transfers.status
+          allowed: [cancelled, expired, paid_out]
+      - id: refund_once_per_basis
+        applies_to: [cash_refund_issued]
+        kind: dedup
+        condition: "Each refund basis is paid once against its source entry."
+        evidence_fields: [cash_ledger.cash_transfer_id, cash_ledger.refund_basis, cash_ledger.related_entry_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [cash_ledger.cash_transfer_id, cash_ledger.related_entry_id]
+          action_bindings:
+            cash_ledger.cash_transfer_id: cash_transfer_id
+            cash_ledger.related_entry_id: related_entry_id
+        dedup_contract:
+          table: cash_ledger
+          mode: separate_record
+          object_bindings: {cash_transfer_id: cash_transfer_id, related_entry_id: related_entry_id}
+          duplicate_filters: {event_type: [cash_refund_issued]}
+          distinct_fields: [refund_basis]
+    params:
+      california_refund_calendar_days: 10
+      per_tier:
+        Cash Pickup Economy: {refund_business_days: "=refund_business_days", rfi_expiry_fee_refund_pct: "=rfi_expiry_fee_refund_pct", expiry_fee_refund_pct: "=expiry_fee_refund_pct"}
+        Cash Pickup Express: {refund_business_days: "=refund_business_days", rfi_expiry_fee_refund_pct: "=rfi_expiry_fee_refund_pct", expiry_fee_refund_pct: "=expiry_fee_refund_pct"}
+        Cash Pickup Express Plus: {refund_business_days: "=refund_business_days", rfi_expiry_fee_refund_pct: "=rfi_expiry_fee_refund_pct", expiry_fee_refund_pct: "=expiry_fee_refund_pct"}
+        Cash Pickup Bank Branch: {refund_business_days: "=refund_business_days", rfi_expiry_fee_refund_pct: "=rfi_expiry_fee_refund_pct", expiry_fee_refund_pct: "=expiry_fee_refund_pct"}
+        Cash Pickup Cardless ATM: {refund_business_days: "=refund_business_days", rfi_expiry_fee_refund_pct: "=rfi_expiry_fee_refund_pct", expiry_fee_refund_pct: "=expiry_fee_refund_pct"}
+        Cash Pickup Large Amount: {refund_business_days: "=refund_business_days", rfi_expiry_fee_refund_pct: "=rfi_expiry_fee_refund_pct", expiry_fee_refund_pct: "=expiry_fee_refund_pct"}
+
+  - id: cash_evt_error_resolution
+    subject: [cash_error_notice_filed, cash_error_decided, cash_remedy_chosen, cash_paloma_credit, cash_reissued, cash_fee_refunded]
+    rule: >-
+      Under the Remittance Transfer Rule the customer may give notice of an error: the cash was not
+      available by date_available (not_available_by_date), the cash was recorded as paid to someone
+      other than the recipient (paid_to_wrong_person), or the recipient was handed less than the
+      disclosed receive_amount (incorrect_amount). The notice is the customer's own assertion and the
+      customer gives it. A notice can be given only within error_notice_window_days calendar days
+      after the disclosed date of availability. The window is counted in calendar days from
+      date_available, and a notice on date_available plus the window days is on time. Only one
+      notice of each case_type may be open on a transfer at a time. resolution_due_date is the notice
+      date plus error_investigation_days calendar days. The team decides no_error when the cause
+      lies with the customer (for example the customer shared the Pickup Number with the person who
+      collected) and error_found otherwise. On error_found every fee collected is refunded with
+      fee_refund_reason paloma_error unless already refunded under the on-time promise. A remedy can
+      be chosen only after a decision of error_found on that notice. For paid_to_wrong_person the
+      customer chooses a refund of the principal or a re-issue under a new Pickup Number at no cost,
+      funded by Paloma (cash_paloma_credit, credit_reason error_refund or error_reissue); the choice
+      is the customer's own. For incorrect_amount Paloma credits the shortfall (credit_reason
+      incorrect_amount_shortfall) and the customer chooses to have it collected under a re-issue for
+      the shortfall alone (reissue_shortfall) or refunded (refund_shortfall, booked with refund_basis
+      error_shortfall); for not_available_by_date the remedy is the fee refund. A refund is issued within
+      refund_business_days and a re-issue made available within reissue_business_days Paloma
+      business days of the choice.
+    eligibility:
+      - id: notice_window
+        applies_to: [cash_error_notice_filed]
+        kind: time
+        condition: "A notice can be given only within error_notice_window_days calendar days after the disclosed date of availability."
+        evidence_fields: [cash_transfers.cash_transfer_id, cash_transfers.date_available]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [cash_transfers.cash_transfer_id]
+          action_bindings:
+            cash_transfers.cash_transfer_id: cash_transfer_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the disclosed date of availability"
+          anchor_source: cash_transfers.date_available
+          relation: not_after
+          duration_source: variants.error_notice_window_days
+          unit: calendar_days
+          counting_rule: "The window is counted in calendar days from date_available, and a notice on date_available plus the window days is on time."
+          boundary: inclusive
+      - id: one_open_notice_per_type
+        applies_to: [cash_error_notice_filed]
+        kind: dedup
+        condition: "Only one notice of each case_type may be open on a transfer at a time."
+        evidence_fields: [cash_cases.cash_transfer_id, cash_cases.case_type, cash_cases.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [cash_cases.cash_transfer_id]
+          action_bindings:
+            cash_cases.cash_transfer_id: cash_transfer_id
+        dedup_contract:
+          table: cash_cases
+          mode: separate_record
+          object_bindings: {cash_transfer_id: cash_transfer_id, case_type: case_type}
+          duplicate_filters: {event_type: [cash_error_notice_filed]}
+          distinct_fields: [case_date]
+      - id: error_found_first
+        applies_to: [cash_remedy_chosen]
+        kind: authorization
+        condition: "A remedy can be chosen only after a decision of error_found on that notice."
+        evidence_fields: [cash_cases.related_case_id, cash_cases.case_outcome]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [cash_cases.related_case_id]
+          action_bindings:
+            cash_cases.related_case_id: related_case_id
+    params:
+      per_tier:
+        Cash Pickup Economy: {error_notice_window_days: "=error_notice_window_days", error_investigation_days: "=error_investigation_days", refund_business_days: "=refund_business_days", reissue_business_days: "=reissue_business_days"}
+        Cash Pickup Express: {error_notice_window_days: "=error_notice_window_days", error_investigation_days: "=error_investigation_days", refund_business_days: "=refund_business_days", reissue_business_days: "=reissue_business_days"}
+        Cash Pickup Express Plus: {error_notice_window_days: "=error_notice_window_days", error_investigation_days: "=error_investigation_days", refund_business_days: "=refund_business_days", reissue_business_days: "=reissue_business_days"}
+        Cash Pickup Bank Branch: {error_notice_window_days: "=error_notice_window_days", error_investigation_days: "=error_investigation_days", refund_business_days: "=refund_business_days", reissue_business_days: "=reissue_business_days"}
+        Cash Pickup Cardless ATM: {error_notice_window_days: "=error_notice_window_days", error_investigation_days: "=error_investigation_days", refund_business_days: "=refund_business_days", reissue_business_days: "=reissue_business_days"}
+        Cash Pickup Large Amount: {error_notice_window_days: "=error_notice_window_days", error_investigation_days: "=error_investigation_days", refund_business_days: "=refund_business_days", reissue_business_days: "=reissue_business_days"}
+
+  - id: cash_evt_on_time_promise
+    subject: [cash_fee_refunded]
+    rule: >-
+      On a tier whose on_time_promise is true, Paloma refunds the transfer fee in full, with
+      fee_refund_reason late_delivery, when the cash was made available after its date_available as
+      last disclosed. Lateness caused by the customer (a request for information answered late, a
+      funding failure, a name that had to be corrected) is not covered. The promise covers the
+      transfer fee only, can be claimed from an agent without an error notice, and never stacks with
+      an error-resolution fee refund: the transfer fee is refunded at most once. Time the cash then
+      waits uncollected at the counter is never lateness.
+    eligibility:
+      - id: available_late
+        applies_to: [cash_fee_refunded]
+        kind: authorization
+        condition: "On a tier whose on_time_promise is true, Paloma refunds the transfer fee in full, with fee_refund_reason late_delivery, when the cash was made available after its date_available as last disclosed."
+        evidence_fields: [cash_transfers.cash_transfer_id, cash_transfers.available_date, cash_transfers.date_available, cash_transfers.variant_name]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [cash_transfers.cash_transfer_id]
+          action_bindings:
+            cash_transfers.cash_transfer_id: cash_transfer_id
+    params:
+      per_tier:
+        Cash Pickup Economy: {on_time_promise: "=on_time_promise"}
+        Cash Pickup Express: {on_time_promise: "=on_time_promise"}
+        Cash Pickup Express Plus: {on_time_promise: "=on_time_promise"}
+        Cash Pickup Bank Branch: {on_time_promise: "=on_time_promise"}
+        Cash Pickup Cardless ATM: {on_time_promise: "=on_time_promise"}
+        Cash Pickup Large Amount: {on_time_promise: "=on_time_promise"}
+
+
+extended_policies:
+  - id: cash_ext_shortfall_reissue_window
+    base_policy_refs: [cash_evt_error_resolution, cash_evt_availability_and_holds]
+    overwrite:
+      - base_policy: cash_evt_availability_and_holds
+        superseded_clause: >-
+          and pickup_expiry_date is available_date plus pickup_window_days calendar days.
+        replaced_by: >-
+          the window of a re-issue of a shortfall is the re-issue window base plus the re-issue network days, the
+          re-issue loyalty days and the re-issue tenure days, each part decided as set out below, and when none of the
+          situations set out below applies to a part, that part is the standard one: the full tier
+          window as the re-issue window base and no days for each of the other three parts.
+    trigger: on_request
+    subject: [cash_remedy_chosen, cash_reissued]
+    computes: reissue_window_days
+    target_tool: choose_shortfall_reissue_92bb83b1
+    params:
+      keep_threshold_days: 15
+      topup_days: 15
+      network_two_days: 7
+      network_one_day: 3
+      loyalty_high_days: 10
+      loyalty_mid_days: 5
+      tenure_long_months: 36
+      tenure_mid_months: 12
+      tenure_long_days: 7
+      tenure_mid_days: 3
+    rule: >-
+      After Paloma's error-resolution team has found that the payout location handed the recipient
+      less cash than the disclosed amount, the customer may choose to have the missing cash collected
+      under a re-issue of the shortfall; the choice is the customer's own, and it is recorded on the
+      notice together with the re-issue, which makes the cash collectable again from the day of the
+      choice under a new Pickup Number. A re-issue of a shortfall is given the full pickup window of the
+      transfer's tier, in whole calendar days counted from the day of the re-issue, and its last day of
+      collection is the re-issue day plus that window. More precisely, the window of a re-issue of a
+      shortfall is the re-issue window base plus the re-issue network days, the re-issue loyalty days and the re-issue tenure days, each
+      part decided as set out below, and when none of the situations set out below applies to a part,
+      that part is the standard one: the full tier window as the re-issue window base and no days for each of the
+      other three parts. The re-issue window base follows the last day of collection of the original pickup
+      window, with the days left counted as calendar days from the day of the re-issue to that last day,
+      the re-issue day not counted: when the original window has not passed and still has the keep
+      threshold of days or more left, the re-issue window base is exactly the days left, so the re-issue keeps the
+      original last day; when the original window has not passed but has fewer than the keep threshold of
+      days left, the re-issue window base is the days left plus the top-up days; when the original last day has
+      already passed, the re-issue window base is the full pickup window of the tier. The re-issue network days count the
+      pickups refused on the transfer because the payout location had no cash: two or more such refusals
+      give the re-issue network days for two refusals, exactly one gives the re-issue network days for one refusal, and
+      none gives no re-issue network days; refusals for any other reason do not count. The re-issue loyalty days follow the
+      sender's active Paloma Rewards tier: Gold, Platinum, Diamond or Elite gives the high loyalty days,
+      Blue or Silver gives the middle loyalty days, and a sender with no active membership gets no
+      re-issue loyalty days. The re-issue tenure days follow the sender's active Personal Sender Account: an account open
+      for at least the long tenure months whose level is Paloma Enhanced, Paloma Premier or Paloma
+      Private Client gives the long tenure days, an account open for at least the middle tenure months
+      whose level is Paloma Verified or Paloma Verified Plus gives the middle tenure days, and any other
+      account gives no re-issue tenure days; months open are whole calendar months from the account's opening date
+      to the day of the re-issue. The four parts are added as whole days with no rounding, and the last
+      day of collection of the re-issue is the re-issue day plus their sum.
+    prerequisite: []
+    cross_category:
+      - category: rewards
+        as: branch
+        reads: [variant_name, status]
+        note: The re-issue loyalty days are decided from the tier of the sender's active Paloma Rewards membership.
+      - category: account
+        as: branch
+        reads: [variant_name, status, opened_date]
+        note: The re-issue tenure days are decided from the level and opening date of the sender's active Personal Sender Account.
+    compute:
+      - window_left: "DAYS(NOW, F('pickup_expiry_date'))"
+      - window_base: "window_left if window_left >= K('keep_threshold_days') else (window_left + K('topup_days') if window_left >= 0 else P('pickup_window_days'))"
+      - cash_out_refusals: "COUNT('cash_cases', event_type='cash_pickup_refused', refusal_reason='location_out_of_cash')"
+      - network_days: "K('network_two_days') if cash_out_refusals >= 2 else (K('network_one_day') if cash_out_refusals == 1 else 0)"
+      - rewards_tier: "CFIELD('rewards', 'variant_name', status='active')"
+      - loyalty_days: "K('loyalty_high_days') if (rewards_tier == 'Paloma Rewards Gold' or rewards_tier == 'Paloma Rewards Platinum' or rewards_tier == 'Paloma Rewards Diamond' or rewards_tier == 'Paloma Rewards Elite') else (K('loyalty_mid_days') if (rewards_tier == 'Paloma Rewards Blue' or rewards_tier == 'Paloma Rewards Silver') else 0)"
+      - account_level: "CFIELD('account', 'variant_name', status='active')"
+      - account_months: "MONTHS(CFIELD('account', 'opened_date', status='active'), NOW)"
+      - tenure_days: "K('tenure_long_days') if (account_months >= K('tenure_long_months') and (account_level == 'Paloma Enhanced' or account_level == 'Paloma Premier' or account_level == 'Paloma Private Client')) else (K('tenure_mid_days') if (account_months >= K('tenure_mid_months') and (account_level == 'Paloma Verified' or account_level == 'Paloma Verified Plus')) else 0)"
+      - result: "int(window_base + network_days + loyalty_days + tenure_days)"
+    compute_basis:
+      window_left: "The re-issue window base follows the last day of collection of the original pickup window, with the days left counted as calendar days from the day of the re-issue to that last day, the re-issue day not counted"
+      window_base: "when the original window has not passed and still has the keep threshold of days or more left, the re-issue window base is exactly the days left, so the re-issue keeps the original last day; when the original window has not passed but has fewer than the keep threshold of days left, the re-issue window base is the days left plus the top-up days; when the original last day has already passed, the re-issue window base is the full pickup window of the tier."
+      cash_out_refusals: "The re-issue network days count the pickups refused on the transfer because the payout location had no cash"
+      network_days: "two or more such refusals give the re-issue network days for two refusals, exactly one gives the re-issue network days for one refusal, and none gives no re-issue network days; refusals for any other reason do not count."
+      rewards_tier: "The re-issue loyalty days follow the sender's active Paloma Rewards tier"
+      loyalty_days: "Gold, Platinum, Diamond or Elite gives the high loyalty days, Blue or Silver gives the middle loyalty days, and a sender with no active membership gets no re-issue loyalty days."
+      account_level: "The re-issue tenure days follow the sender's active Personal Sender Account"
+      account_months: "months open are whole calendar months from the account's opening date to the day of the re-issue."
+      tenure_days: "an account open for at least the long tenure months whose level is Paloma Enhanced, Paloma Premier or Paloma Private Client gives the long tenure days, an account open for at least the middle tenure months whose level is Paloma Verified or Paloma Verified Plus gives the middle tenure days, and any other account gives no re-issue tenure days"
+      result: "The four parts are added as whole days with no rounding, and the last day of collection of the re-issue is the re-issue day plus their sum."
+    factors:
+      - id: window_anchor
+        effect: method
+        decides: window_base
+        bindings: [window_left, window_base]
+        ladder:
+          - when: "the original pickup window has not passed and still has the keep threshold of days or more left"
+            method: "the re-issue window base is the days left in the original window, so the original last day of collection is kept"
+          - when: "the original pickup window has not passed but has fewer than the keep threshold of days left"
+            method: "the re-issue window base is the days left in the original window plus the top-up days"
+          - when: "otherwise (the original last day of collection has passed)"
+            method: "the re-issue window base is the full pickup window of the tier, counted afresh from the re-issue day"
+        baseline:
+          window_base: "P('pickup_window_days')"
+        evidence: [date]
+        cross_difficulty: null
+      - id: network_days
+        effect: parameter
+        decides: network_days
+        bindings: [cash_out_refusals, network_days]
+        ladder:
+          - when: "two or more pickups on the transfer were refused because the payout location had no cash"
+            value: "K('network_two_days')"
+          - when: "exactly one pickup on the transfer was refused because the payout location had no cash"
+            value: "K('network_one_day')"
+          - when: "otherwise"
+            value: "0"
+        baseline:
+          network_days: "0"
+        evidence: [history]
+        cross_difficulty: null
+      - id: loyalty_days
+        effect: parameter
+        decides: loyalty_days
+        bindings: [rewards_tier, loyalty_days]
+        ladder:
+          - when: "the sender's active Paloma Rewards tier is Gold, Platinum, Diamond or Elite"
+            value: "K('loyalty_high_days')"
+          - when: "the sender's active Paloma Rewards tier is Blue or Silver"
+            value: "K('loyalty_mid_days')"
+          - when: "otherwise (no active membership)"
+            value: "0"
+        baseline:
+          loyalty_days: "0"
+        evidence: [cross_category]
+        cross_difficulty: null
+      - id: tenure_days
+        effect: parameter
+        decides: tenure_days
+        bindings: [account_level, account_months, tenure_days]
+        ladder:
+          - when: "the sender account has been open at least the long tenure months and its level is Paloma Enhanced, Paloma Premier or Paloma Private Client"
+            value: "K('tenure_long_days')"
+          - when: "the sender account has been open at least the middle tenure months and its level is Paloma Verified or Paloma Verified Plus"
+            value: "K('tenure_mid_days')"
+          - when: "otherwise"
+            value: "0"
+        baseline:
+          tenure_days: "0"
+        evidence: [cross_category, date]
+        cross_difficulty: account
+    baseline:
+      rule: >-
+        A re-issue of a shortfall is given the full pickup window of the transfer's tier, in whole
+        calendar days counted from the day of the re-issue, and its last day of collection is the
+        re-issue day plus that window.
+      params: [pickup_window_days]
+    inputs:
+      history:
+        - {table: cash_cases, aggregate: count, field: case_id, filters: {event_type: cash_pickup_refused, refusal_reason: location_out_of_cash}}
+      cross_category: [rewards, account]
+
+  - id: cash_ext_shortfall_credit
+    base_policy_refs: [cash_evt_error_resolution]
+    overwrite:
+      - base_policy: cash_evt_error_resolution
+        superseded_clause: >-
+          For incorrect_amount Paloma credits the shortfall (credit_reason incorrect_amount_shortfall)
+        replaced_by: >-
+          Beyond that standard amount, Paloma's shortfall credit is the uplifted shortfall value plus the
+          delay amount, the loyalty courtesy, the multi-product courtesy and the prompt-notice courtesy,
+          each decided as set out below
+    trigger: state_due
+    subject: [cash_paloma_credit]
+    computes: amount_usd
+    target_tool: book_shortfall_credit_cb14652e
+    params:
+      uplift_reissue_pct: 8
+      uplift_refund_pct: 4
+      delay_long_days: 14
+      delay_short_days: 8
+      delay_per_day_usd: 0.10
+      delay_flat_usd: 0.75
+      loyalty_high_usd: 3.00
+      loyalty_mid_usd: 1.50
+      bank_many_payouts: 6
+      bank_many_usd: 2.00
+      bank_some_usd: 1.00
+      prompt_fast_days: 7
+      prompt_slow_days: 30
+      prompt_fast_usd: 1.00
+      prompt_slow_usd: 0.50
+    rule: >-
+      When Paloma's error-resolution team has found that the payout location handed the recipient less
+      cash than the disclosed amount, Paloma puts its own money into the transfer as a shortfall credit
+      against the short payout. Paloma's shortfall credit is fixed only after the error notice carries the
+      customer's remedy choice between a refund and a re-issue of the shortfall. Paloma's standard
+      shortfall credit is the shortfall's US-dollar value: the disclosed cash amount, which is the
+      principal times the disclosed exchange rate rounded half up to the cent, less the cash the payout
+      location handed over, divided by the disclosed exchange rate and rounded half up to the cent.
+      Beyond that standard amount, Paloma's shortfall credit is the uplifted shortfall value plus the
+      delay amount, the loyalty courtesy, the multi-product courtesy and the prompt-notice courtesy, each
+      decided as set out below; a part whose situations do not apply is zero, and an uplift that does not
+      apply leaves the shortfall value as it is. The uplift is a percentage of the shortfall's US-dollar
+      value, applied once to that rounded value and the product rounded half up to the cent: when the
+      customer has chosen a re-issue of the shortfall and the payout recorded a rate below the disclosed
+      exchange rate, the uplift is the re-issue uplift; when the customer has chosen a refund of the
+      shortfall and the payout recorded a rate below the disclosed exchange rate, the uplift is the
+      refund uplift; in any other case there is no uplift. The delay amount follows the calendar days from
+      the date of the notice to the date of the finding that an error occurred, the notice day not
+      counted: more than the long delay days is paid per day, as those days times the per-day delay
+      amount rounded half up to the cent; from the short delay days up to the long delay days is paid as
+      the flat delay amount; fewer than the short delay days gives no delay amount. The loyalty courtesy
+      follows the sender's active Paloma Rewards tier: Gold, Platinum, Diamond or Elite gives the high
+      loyalty courtesy, Blue or Silver gives the middle loyalty courtesy, and no active membership gives
+      none. The multi-product courtesy counts the Bank Deposit payouts sent for the sender dated less than
+      twelve whole months before the day of the credit: the many-payouts number or more
+      gives the many-payouts courtesy, at least one but fewer gives the some-payouts courtesy, and none
+      gives no courtesy. The prompt-notice courtesy follows the calendar days from the payout date to the
+      date of the notice, the payout day not counted: up to the fast-notice days gives the fast-notice
+      courtesy, more than that up to the slow-notice days gives the slow-notice courtesy, and a later
+      notice gives none. The uplifted shortfall value and the four amounts are added and the total is
+      rounded half up to the cent.
+    prerequisite:
+      - problem: cash_ext_shortfall_reissue_window
+        kind: value_input
+        gate: uplift_pct
+        form: state
+        policy_source: >-
+          Paloma's shortfall credit is fixed only after the error notice carries the customer's remedy
+          choice between a refund and a re-issue of the shortfall.
+        condition: >-
+          cash_cases holds a cash_remedy_chosen row on the transfer answering the incorrect_amount notice,
+          with remedy_choice reissue_shortfall or refund_shortfall.
+        resolved_by: choose_shortfall_reissue_92bb83b1
+        effect: >-
+          Once a remedy choice stands on the notice, the uplift binding leaves no uplift and, when the
+          payout recorded a rate below the disclosed exchange rate, takes the re-issue uplift or the
+          refund uplift matching that choice, raising the shortfall value entering the credit.
+    cross_category:
+      - category: rewards
+        as: branch
+        reads: [variant_name, status]
+        note: The loyalty courtesy is decided from the tier of the sender's active Paloma Rewards membership.
+      - category: bank
+        as: history
+        reads: [bank_ledger.event_type, bank_ledger.entry_date]
+        note: The multi-product courtesy is decided from the count of Bank Deposit payouts sent for the sender in the last twelve months.
+    compute:
+      - disclosed_cash: "RND(F('send_amount_usd') * F('fx_rate'), 2)"
+      - handed_cash: "LATEST('cash_ledger', 'receive_amount', date_field='entry_date', event_type='cash_payout_made')"
+      - counter_rate: "LATEST('cash_ledger', 'fx_rate_applied', date_field='entry_date', event_type='cash_payout_made')"
+      - shortfall_usd: "RND((disclosed_cash - float(handed_cash)) / F('fx_rate'), 2)"
+      - reissue_choices: "COUNT('cash_cases', event_type='cash_remedy_chosen', remedy_choice='reissue_shortfall')"
+      - refund_choices: "COUNT('cash_cases', event_type='cash_remedy_chosen', remedy_choice='refund_shortfall')"
+      - uplift_pct: "K('uplift_reissue_pct') if (reissue_choices >= 1 and float(counter_rate) < F('fx_rate')) else (K('uplift_refund_pct') if (refund_choices >= 1 and float(counter_rate) < F('fx_rate')) else 0)"
+      - uplifted_usd: "RND(shortfall_usd * (1 + uplift_pct / 100), 2)"
+      - notice_date: "LATEST('cash_cases', 'case_date', date_field='case_date', event_type='cash_error_notice_filed', case_type='incorrect_amount')"
+      - finding_date: "LATEST('cash_cases', 'case_date', date_field='case_date', event_type='cash_error_decided', case_outcome='error_found')"
+      - finding_lag: "DAYS(notice_date, finding_date)"
+      - delay_usd: "RND(finding_lag * K('delay_per_day_usd'), 2) if finding_lag > K('delay_long_days') else (K('delay_flat_usd') if finding_lag >= K('delay_short_days') else 0)"
+      - rewards_tier: "CFIELD('rewards', 'variant_name', status='active')"
+      - loyalty_usd: "K('loyalty_high_usd') if (rewards_tier == 'Paloma Rewards Gold' or rewards_tier == 'Paloma Rewards Platinum' or rewards_tier == 'Paloma Rewards Diamond' or rewards_tier == 'Paloma Rewards Elite') else (K('loyalty_mid_usd') if (rewards_tier == 'Paloma Rewards Blue' or rewards_tier == 'Paloma Rewards Silver') else 0)"
+      - bank_payouts: "XCOUNT('bank', 'bank_ledger', within_months=12, date_field='entry_date', event_type='bank_payout_sent')"
+      - multiproduct_usd: "K('bank_many_usd') if bank_payouts >= K('bank_many_payouts') else (K('bank_some_usd') if bank_payouts >= 1 else 0)"
+      - payout_date: "LATEST('cash_ledger', 'entry_date', date_field='entry_date', event_type='cash_payout_made')"
+      - notice_lead: "DAYS(payout_date, notice_date)"
+      - prompt_usd: "K('prompt_fast_usd') if notice_lead <= K('prompt_fast_days') else (K('prompt_slow_usd') if notice_lead <= K('prompt_slow_days') else 0)"
+      - result: "RND(uplifted_usd + delay_usd + loyalty_usd + multiproduct_usd + prompt_usd, 2)"
+    compute_basis:
+      disclosed_cash: "the disclosed cash amount, which is the principal times the disclosed exchange rate rounded half up to the cent"
+      handed_cash: "less the cash the payout location handed over"
+      counter_rate: "the payout recorded a rate below the disclosed exchange rate"
+      shortfall_usd: "Paloma's standard shortfall credit is the shortfall's US-dollar value: the disclosed cash amount, which is the principal times the disclosed exchange rate rounded half up to the cent, less the cash the payout location handed over, divided by the disclosed exchange rate and rounded half up to the cent."
+      reissue_choices: "when the customer has chosen a re-issue of the shortfall"
+      refund_choices: "when the customer has chosen a refund of the shortfall"
+      uplift_pct: "when the customer has chosen a re-issue of the shortfall and the payout recorded a rate below the disclosed exchange rate, the uplift is the re-issue uplift; when the customer has chosen a refund of the shortfall and the payout recorded a rate below the disclosed exchange rate, the uplift is the refund uplift; in any other case there is no uplift."
+      uplifted_usd: "The uplift is a percentage of the shortfall's US-dollar value, applied once to that rounded value and the product rounded half up to the cent"
+      notice_date: "The delay amount follows the calendar days from the date of the notice to the date of the finding that an error occurred"
+      finding_date: "to the date of the finding that an error occurred, the notice day not counted"
+      finding_lag: "The delay amount follows the calendar days from the date of the notice to the date of the finding that an error occurred, the notice day not counted"
+      delay_usd: "more than the long delay days is paid per day, as those days times the per-day delay amount rounded half up to the cent; from the short delay days up to the long delay days is paid as the flat delay amount; fewer than the short delay days gives no delay amount."
+      rewards_tier: "The loyalty courtesy follows the sender's active Paloma Rewards tier"
+      loyalty_usd: "Gold, Platinum, Diamond or Elite gives the high loyalty courtesy, Blue or Silver gives the middle loyalty courtesy, and no active membership gives none."
+      bank_payouts: "The multi-product courtesy counts the Bank Deposit payouts sent for the sender dated less than twelve whole months before the day of the credit"
+      multiproduct_usd: "the many-payouts number or more gives the many-payouts courtesy, at least one but fewer gives the some-payouts courtesy, and none gives no courtesy."
+      payout_date: "The prompt-notice courtesy follows the calendar days from the payout date to the date of the notice"
+      notice_lead: "The prompt-notice courtesy follows the calendar days from the payout date to the date of the notice, the payout day not counted"
+      prompt_usd: "up to the fast-notice days gives the fast-notice courtesy, more than that up to the slow-notice days gives the slow-notice courtesy, and a later notice gives none."
+      result: "The uplifted shortfall value and the four amounts are added and the total is rounded half up to the cent."
+    factors:
+      - id: shortfall_uplift
+        effect: parameter
+        decides: uplift_pct
+        bindings: [reissue_choices, refund_choices, uplift_pct]
+        ladder:
+          - when: "the customer has chosen a re-issue of the shortfall and the payout recorded a rate below the disclosed exchange rate"
+            value: "K('uplift_reissue_pct')"
+          - when: "the customer has chosen a refund of the shortfall and the payout recorded a rate below the disclosed exchange rate"
+            value: "K('uplift_refund_pct')"
+          - when: "otherwise"
+            value: "0"
+        baseline:
+          uplift_pct: "0"
+        evidence: [history]
+        cross_difficulty: null
+      - id: finding_delay
+        effect: method
+        decides: delay_usd
+        bindings: [finding_date, finding_lag, delay_usd]
+        ladder:
+          - when: "the finding came more than the long delay days after the notice"
+            method: "the delay amount accrues per day: the days from notice to finding times the per-day delay amount, rounded half up to the cent"
+          - when: "the finding came from the short delay days up to the long delay days after the notice"
+            method: "the delay amount is the flat delay amount, whatever the exact number of days"
+          - when: "otherwise"
+            method: "no delay amount is computed"
+        baseline:
+          delay_usd: "0"
+        evidence: [history, date]
+        cross_difficulty: null
+      - id: loyalty_courtesy
+        effect: parameter
+        decides: loyalty_usd
+        bindings: [rewards_tier, loyalty_usd]
+        ladder:
+          - when: "the sender's active Paloma Rewards tier is Gold, Platinum, Diamond or Elite"
+            value: "K('loyalty_high_usd')"
+          - when: "the sender's active Paloma Rewards tier is Blue or Silver"
+            value: "K('loyalty_mid_usd')"
+          - when: "otherwise (no active membership)"
+            value: "0"
+        baseline:
+          loyalty_usd: "0"
+        evidence: [cross_category]
+        cross_difficulty: null
+      - id: multiproduct_courtesy
+        effect: parameter
+        decides: multiproduct_usd
+        bindings: [bank_payouts, multiproduct_usd]
+        ladder:
+          - when: "the many-payouts number or more of Bank Deposit payouts were sent for the sender dated less than twelve whole months before the day of the credit"
+            value: "K('bank_many_usd')"
+          - when: "at least one but fewer than the many-payouts number of Bank Deposit payouts were sent in that window"
+            value: "K('bank_some_usd')"
+          - when: "otherwise"
+            value: "0"
+        baseline:
+          multiproduct_usd: "0"
+        evidence: [cross_category, history]
+        cross_difficulty: bank
+      - id: prompt_notice
+        effect: parameter
+        decides: prompt_usd
+        bindings: [payout_date, notice_lead, prompt_usd]
+        ladder:
+          - when: "the notice was given up to the fast-notice days after the payout"
+            value: "K('prompt_fast_usd')"
+          - when: "the notice was given more than the fast-notice days but up to the slow-notice days after the payout"
+            value: "K('prompt_slow_usd')"
+          - when: "otherwise"
+            value: "0"
+        baseline:
+          prompt_usd: "0"
+        evidence: [history, date]
+        cross_difficulty: null
+    baseline:
+      rule: >-
+        Paloma's standard shortfall credit is the shortfall's US-dollar value: the disclosed cash amount,
+        which is the principal times the disclosed exchange rate rounded half up to the cent, less the
+        cash the payout location handed over, divided by the disclosed exchange rate and rounded half up
+        to the cent.
+      params: []
+    inputs:
+      history:
+        - {table: cash_ledger, aggregate: latest, field: receive_amount, filters: {event_type: cash_payout_made}}
+        - {table: cash_cases, aggregate: count, field: case_id, filters: {event_type: cash_remedy_chosen}}
+        - {table: cash_cases, aggregate: latest, field: case_date, filters: {event_type: cash_error_decided}}
+        - {category: bank, table: bank_ledger, aggregate: count, field: ledger_entry_id, within_months: 12, filters: {event_type: bank_payout_sent}}
+      cross_category: [rewards, bank]
+
+  - id: cash_ext_reactivation_fee
+    base_policy_refs: [cash_evt_pricing, cash_evt_name_correction, cash_evt_expiry_and_reactivation]
+    overwrite:
+      - base_policy: cash_evt_expiry_and_reactivation
+        superseded_clause: >-
+          and carries reactivation_fee_usd as fee_type reactivation_fee with fee_seq equal to the new
+          reactivation_count when that fee is above 0.00.
+        replaced_by: >-
+          the reactivation fee is the network-shared fee plus the reactivation lateness charge, less the
+          reactivation loyalty discount, the reactivation tenure discount and the reactivation principal
+          relief
+    trigger: on_request
+    subject: [cash_fee_charged]
+    computes: amount_usd
+    target_tool: pay_reactivation_fee_6d9bfacd
+    params:
+      network_one_share_pct: 60
+      late_long_days: 21
+      late_mid_days: 8
+      late_per_day_usd: 0.05
+      late_flat_usd: 0.50
+      loyalty_high_usd: 1.00
+      loyalty_mid_usd: 0.50
+      tenure_long_months: 24
+      tenure_mid_months: 12
+      tenure_long_usd: 0.50
+      tenure_mid_usd: 0.25
+      principal_high_usd: 1000.00
+      principal_mid_usd: 500.00
+      relief_high_usd: 0.30
+      relief_mid_usd: 0.15
+    rule: >-
+      The fee for reactivating an expired pickup is paid by the customer's own card authorisation in
+      the app, as one reactivation fee charge numbered with the reactivation it pays for (the
+      transfer's reactivation count plus one); a fee that works out at zero is still booked as a charge
+      of zero. The standard reactivation fee is the full reactivation fee of the transfer's tier,
+      charged as it stands. More precisely, the reactivation fee is the network-shared fee plus the
+      reactivation lateness charge, less the reactivation loyalty discount, the reactivation tenure
+      discount and the reactivation principal relief, and never below zero; when none of the situations
+      set out below applies to a part, the network-shared fee is the whole tier fee and the lateness
+      charge, each discount and the relief are zero. The network-shared fee is the tier's reactivation
+      fee times the network share, rounded half up to the cent. The network share counts the pickups
+      refused on the transfer because the payout location had no cash: two or more such refusals waive
+      the tier fee entirely (a share of zero), exactly one refusal leaves the one-refusal share
+      percentage of it, and none leaves the whole fee; refusals for any other reason do not count. The
+      reactivation lateness charge follows the calendar days from the day the pickup expired to the day
+      of the reactivation, the expiry day not counted, and is worked out in one of three ways: when more
+      than the long lateness days have passed, it accrues by the day, as those days times the per-day
+      lateness charge, rounded half up to the cent; when from the middle lateness days up to the long
+      lateness days have passed, it is the flat lateness charge whatever the exact number of days; and
+      when fewer than the middle lateness days have passed, no lateness charge is worked out. The
+      reactivation loyalty discount follows the sender's active Paloma Rewards tier: Gold, Platinum,
+      Diamond or Elite takes off the high loyalty discount, Blue or Silver takes off the middle loyalty
+      discount, and no active membership takes off nothing. The reactivation tenure discount follows
+      the sender's active Personal Sender Account: open at least the long tenure months at level
+      Paloma Enhanced, Paloma Premier or Paloma Private Client takes off the long tenure discount, open
+      at least the middle tenure months at level Paloma Verified or Paloma Verified Plus takes off the
+      middle tenure discount, and any other account takes off nothing; months open are whole calendar
+      months from the opening date to the day of the reactivation. The reactivation principal relief
+      follows the principal collected on the transfer: at least the high principal amount takes off the
+      high relief, at least the middle principal amount but less than the high one takes off the middle
+      relief, and less takes off nothing. The lateness charge is added to the network-shared fee, the
+      three discounts are taken off that sum together, and the result is rounded half up to the cent.
+    prerequisite: []
+    cross_category:
+      - category: rewards
+        as: branch
+        reads: [variant_name, status]
+        note: The reactivation loyalty discount is decided from the tier of the sender's active Paloma Rewards membership.
+      - category: account
+        as: branch
+        reads: [variant_name, status, opened_date]
+        note: The reactivation tenure discount is decided from the level and opening date of the sender's active Personal Sender Account.
+    compute:
+      - cash_out_refusals: "COUNT('cash_cases', event_type='cash_pickup_refused', refusal_reason='location_out_of_cash')"
+      - network_share_pct: "0 if cash_out_refusals >= 2 else (K('network_one_share_pct') if cash_out_refusals == 1 else 100)"
+      - shared_fee: "RND(P('reactivation_fee_usd') * network_share_pct / 100, 2)"
+      - days_since_expiry: "DAYS(F('expired_date'), NOW)"
+      - lateness_charge: "RND(days_since_expiry * K('late_per_day_usd'), 2) if days_since_expiry > K('late_long_days') else (K('late_flat_usd') if days_since_expiry >= K('late_mid_days') else 0)"
+      - rewards_tier: "CFIELD('rewards', 'variant_name', status='active')"
+      - loyalty_discount: "K('loyalty_high_usd') if (rewards_tier == 'Paloma Rewards Gold' or rewards_tier == 'Paloma Rewards Platinum' or rewards_tier == 'Paloma Rewards Diamond' or rewards_tier == 'Paloma Rewards Elite') else (K('loyalty_mid_usd') if (rewards_tier == 'Paloma Rewards Blue' or rewards_tier == 'Paloma Rewards Silver') else 0)"
+      - account_level: "CFIELD('account', 'variant_name', status='active')"
+      - account_months: "MONTHS(CFIELD('account', 'opened_date', status='active'), NOW)"
+      - tenure_discount: "K('tenure_long_usd') if (account_months >= K('tenure_long_months') and (account_level == 'Paloma Enhanced' or account_level == 'Paloma Premier' or account_level == 'Paloma Private Client')) else (K('tenure_mid_usd') if (account_months >= K('tenure_mid_months') and (account_level == 'Paloma Verified' or account_level == 'Paloma Verified Plus')) else 0)"
+      - principal_collected: "SUM('cash_ledger', 'amount_usd', event_type='cash_funds_received')"
+      - principal_relief: "K('relief_high_usd') if principal_collected >= K('principal_high_usd') else (K('relief_mid_usd') if principal_collected >= K('principal_mid_usd') else 0)"
+      - result: "RND(MX(0, shared_fee + lateness_charge - loyalty_discount - tenure_discount - principal_relief), 2)"
+    compute_basis:
+      cash_out_refusals: "The network share counts the pickups refused on the transfer because the payout location had no cash"
+      network_share_pct: "two or more such refusals waive the tier fee entirely (a share of zero), exactly one refusal leaves the one-refusal share percentage of it, and none leaves the whole fee; refusals for any other reason do not count."
+      shared_fee: "The network-shared fee is the tier's reactivation fee times the network share, rounded half up to the cent."
+      days_since_expiry: "The reactivation lateness charge follows the calendar days from the day the pickup expired to the day of the reactivation, the expiry day not counted"
+      lateness_charge: "when more than the long lateness days have passed, it accrues by the day, as those days times the per-day lateness charge, rounded half up to the cent; when from the middle lateness days up to the long lateness days have passed, it is the flat lateness charge whatever the exact number of days; and when fewer than the middle lateness days have passed, no lateness charge is worked out."
+      rewards_tier: "The reactivation loyalty discount follows the sender's active Paloma Rewards tier"
+      loyalty_discount: "Gold, Platinum, Diamond or Elite takes off the high loyalty discount, Blue or Silver takes off the middle loyalty discount, and no active membership takes off nothing."
+      account_level: "The reactivation tenure discount follows the sender's active Personal Sender Account"
+      account_months: "months open are whole calendar months from the opening date to the day of the reactivation."
+      tenure_discount: "open at least the long tenure months at level Paloma Enhanced, Paloma Premier or Paloma Private Client takes off the long tenure discount, open at least the middle tenure months at level Paloma Verified or Paloma Verified Plus takes off the middle tenure discount, and any other account takes off nothing"
+      principal_collected: "The reactivation principal relief follows the principal collected on the transfer"
+      principal_relief: "at least the high principal amount takes off the high relief, at least the middle principal amount but less than the high one takes off the middle relief, and less takes off nothing."
+      result: "The lateness charge is added to the network-shared fee, the three discounts are taken off that sum together, and the result is rounded half up to the cent."
+    factors:
+      - id: reactivation_network_share
+        effect: parameter
+        decides: network_share_pct
+        bindings: [cash_out_refusals, network_share_pct]
+        ladder:
+          - when: "two or more pickups on the transfer were refused because the payout location had no cash"
+            value: "0 (the tier fee is waived)"
+          - when: "exactly one pickup on the transfer was refused because the payout location had no cash"
+            value: "K('network_one_share_pct')"
+          - when: "otherwise"
+            value: "100 (the whole tier fee)"
+        baseline:
+          network_share_pct: "100"
+        evidence: [history]
+        cross_difficulty: null
+      - id: reactivation_lateness_charge
+        effect: method
+        decides: lateness_charge
+        bindings: [days_since_expiry, lateness_charge]
+        ladder:
+          - when: "more than the long lateness days have passed since the pickup expired"
+            method: "the lateness charge accrues by the day: the days since expiry times the per-day lateness charge, rounded half up to the cent"
+          - when: "from the middle lateness days up to the long lateness days have passed since the pickup expired"
+            method: "the lateness charge is the flat lateness charge, whatever the exact number of days"
+          - when: "otherwise"
+            method: "no lateness charge is worked out"
+        baseline:
+          lateness_charge: "0"
+        evidence: [date]
+        cross_difficulty: null
+      - id: reactivation_loyalty_discount
+        effect: parameter
+        decides: loyalty_discount
+        bindings: [rewards_tier, loyalty_discount]
+        ladder:
+          - when: "the sender's active Paloma Rewards tier is Gold, Platinum, Diamond or Elite"
+            value: "K('loyalty_high_usd')"
+          - when: "the sender's active Paloma Rewards tier is Blue or Silver"
+            value: "K('loyalty_mid_usd')"
+          - when: "otherwise (no active membership)"
+            value: "0"
+        baseline:
+          loyalty_discount: "0"
+        evidence: [cross_category]
+        cross_difficulty: null
+      - id: reactivation_tenure_discount
+        effect: parameter
+        decides: tenure_discount
+        bindings: [account_level, account_months, tenure_discount]
+        ladder:
+          - when: "the sender account has been open at least the long tenure months and its level is Paloma Enhanced, Paloma Premier or Paloma Private Client"
+            value: "K('tenure_long_usd')"
+          - when: "the sender account has been open at least the middle tenure months and its level is Paloma Verified or Paloma Verified Plus"
+            value: "K('tenure_mid_usd')"
+          - when: "otherwise"
+            value: "0"
+        baseline:
+          tenure_discount: "0"
+        evidence: [cross_category, date]
+        cross_difficulty: account
+      - id: reactivation_principal_relief
+        effect: parameter
+        decides: principal_relief
+        bindings: [principal_collected, principal_relief]
+        ladder:
+          - when: "the principal collected on the transfer is at least the high principal amount"
+            value: "K('relief_high_usd')"
+          - when: "the principal collected is at least the middle principal amount but below the high one"
+            value: "K('relief_mid_usd')"
+          - when: "otherwise"
+            value: "0"
+        baseline:
+          principal_relief: "0"
+        evidence: [history]
+        cross_difficulty: null
+    baseline:
+      rule: >-
+        The standard reactivation fee is the full reactivation fee of the transfer's tier, charged as it
+        stands.
+      params: [reactivation_fee_usd]
+    inputs:
+      history:
+        - {table: cash_cases, aggregate: count, field: case_id, filters: {event_type: cash_pickup_refused, refusal_reason: location_out_of_cash}}
+        - {table: cash_ledger, aggregate: sum, field: amount_usd, filters: {event_type: cash_funds_received}}
+      cross_category: [rewards, account]
+
+  - id: cash_ext_reactivation_window
+    base_policy_refs: [cash_evt_expiry_and_reactivation]
+    overwrite:
+      - base_policy: cash_evt_expiry_and_reactivation
+        superseded_clause: >-
+          Reactivation sets available_date to the reactivation date and pickup_expiry_date to that date
+          plus pickup_window_days,
+        replaced_by: >-
+          the reactivated window is the reactivated window base plus the reactivated network days, the
+          reactivated loyalty days, the reactivated tenure days, the reactivated correction days and the
+          reactivated principal days
+    trigger: on_request
+    subject: [cash_pickup_reactivated]
+    computes: pickup_window_days
+    target_tool: reactivate_expired_pickup_d4e94bda
+    params:
+      late_long_days: 21
+      late_mid_days: 8
+      late_grace_days: 7
+      late_flat_days: 7
+      network_two_days: 7
+      network_one_day: 4
+      loyalty_high_days: 4
+      loyalty_mid_days: 2
+      tenure_long_months: 24
+      tenure_mid_months: 12
+      tenure_long_days: 2
+      tenure_mid_days: 1
+      corrections_two_days: 2
+      corrections_one_day: 1
+      principal_high_usd: 1000.00
+      principal_mid_usd: 500.00
+      principal_high_days: 2
+      principal_mid_days: 1
+    rule: >-
+      At the customer's request the agent makes an expired pickup collectable again: the transfer
+      returns to ready for pickup with the same Pickup Number, rate and amount, it is collectable from
+      the day of the reactivation, and its reactivation count rises by one. An expired pickup is not
+      made collectable again until the transfer's ledger carries the reactivation fee charge numbered
+      with that reactivation's number. A reactivated pickup is given the full pickup window of the
+      transfer's tier, in whole calendar days counted from the day of the reactivation, and its last
+      day of collection is the reactivation day plus that window. More precisely, the reactivated
+      window is the reactivated window base plus the reactivated network days, the reactivated loyalty
+      days, the reactivated tenure days, the reactivated correction days and the reactivated principal
+      days, added as whole days; when none of the situations set out below applies to a part, the
+      reactivated window base is the full tier window and every other part is zero days. The
+      reactivated window base follows the calendar days from the day the pickup expired to the day of
+      the reactivation, the expiry day not counted, and is worked out in one of three ways: when more
+      than the long lateness days have passed, the tier window is shortened by the day, one day for
+      every day late beyond the grace days; when from the middle lateness days up to the long lateness
+      days have passed, the tier window is shortened by the flat lateness days whatever the exact number
+      of days; and when fewer than the middle lateness days have passed, the full tier window is
+      given. The reactivated network days
+      count the pickups refused on the transfer because the payout location had no cash: two or more
+      give the two-refusal network days, exactly one gives the one-refusal network days, and none gives
+      none; refusals for any other reason do not count. The reactivated loyalty days follow the
+      sender's active Paloma Rewards tier: Gold, Platinum, Diamond or Elite gives the high loyalty days,
+      Blue or Silver gives the middle loyalty days, and no active membership gives none. The reactivated
+      tenure days follow the sender's active Personal Sender Account: open at least the long tenure
+      months at level Paloma Enhanced, Paloma Premier or Paloma Private Client gives the long tenure
+      days, open at least the middle tenure months at level Paloma Verified or Paloma Verified Plus
+      gives the middle tenure days, and any other account gives none; months open are whole calendar
+      months from the opening date to the day of the reactivation. The reactivated correction days count
+      the name corrections already recorded on the transfer: two or more give the two-correction days,
+      exactly one gives the one-correction days, and none gives none. The reactivated principal days
+      follow the principal collected on the transfer: at least the high principal amount gives the
+      high principal days, at least the middle principal amount but less than the high one gives the
+      middle principal days, and less gives none.
+    prerequisite:
+      - problem: cash_ext_reactivation_fee
+        kind: state_gate
+        gate: cash_ledger.fee_type
+        form: state
+        policy_source: >-
+          An expired pickup is not made collectable again until the transfer's ledger carries the
+          reactivation fee charge numbered with that reactivation's number.
+        condition: >-
+          cash_ledger holds a cash_fee_charged row on the transfer with fee_type reactivation_fee and
+          fee_seq equal to the transfer's reactivation_count plus one.
+        resolved_by: pay_reactivation_fee_6d9bfacd
+        effect: >-
+          Once the customer's reactivation fee charge stands on the ledger, the reactivation may be made:
+          the gate on making the expired pickup collectable again flips from closed to open.
+    cross_category:
+      - category: rewards
+        as: branch
+        reads: [variant_name, status]
+        note: The reactivated loyalty days are decided from the tier of the sender's active Paloma Rewards membership.
+      - category: account
+        as: branch
+        reads: [variant_name, status, opened_date]
+        note: The reactivated tenure days are decided from the level and opening date of the sender's active Personal Sender Account.
+    compute:
+      - days_since_expiry: "DAYS(F('expired_date'), NOW)"
+      - reactivated_base: "P('pickup_window_days') - (days_since_expiry - K('late_grace_days')) if days_since_expiry > K('late_long_days') else (P('pickup_window_days') - K('late_flat_days') if days_since_expiry >= K('late_mid_days') else P('pickup_window_days'))"
+      - cash_out_refusals: "COUNT('cash_cases', event_type='cash_pickup_refused', refusal_reason='location_out_of_cash')"
+      - network_days: "K('network_two_days') if cash_out_refusals >= 2 else (K('network_one_day') if cash_out_refusals == 1 else 0)"
+      - rewards_tier: "CFIELD('rewards', 'variant_name', status='active')"
+      - loyalty_days: "K('loyalty_high_days') if (rewards_tier == 'Paloma Rewards Gold' or rewards_tier == 'Paloma Rewards Platinum' or rewards_tier == 'Paloma Rewards Diamond' or rewards_tier == 'Paloma Rewards Elite') else (K('loyalty_mid_days') if (rewards_tier == 'Paloma Rewards Blue' or rewards_tier == 'Paloma Rewards Silver') else 0)"
+      - account_level: "CFIELD('account', 'variant_name', status='active')"
+      - account_months: "MONTHS(CFIELD('account', 'opened_date', status='active'), NOW)"
+      - tenure_days: "K('tenure_long_days') if (account_months >= K('tenure_long_months') and (account_level == 'Paloma Enhanced' or account_level == 'Paloma Premier' or account_level == 'Paloma Private Client')) else (K('tenure_mid_days') if (account_months >= K('tenure_mid_months') and (account_level == 'Paloma Verified' or account_level == 'Paloma Verified Plus')) else 0)"
+      - corrections_recorded: "COUNT('cash_cases', event_type='cash_name_corrected')"
+      - correction_days: "K('corrections_two_days') if corrections_recorded >= 2 else (K('corrections_one_day') if corrections_recorded == 1 else 0)"
+      - principal_collected: "SUM('cash_ledger', 'amount_usd', event_type='cash_funds_received')"
+      - principal_days: "K('principal_high_days') if principal_collected >= K('principal_high_usd') else (K('principal_mid_days') if principal_collected >= K('principal_mid_usd') else 0)"
+      - result: "int(reactivated_base + network_days + loyalty_days + tenure_days + correction_days + principal_days)"
+    compute_basis:
+      days_since_expiry: "The reactivated window base follows the calendar days from the day the pickup expired to the day of the reactivation, the expiry day not counted"
+      reactivated_base: "when more than the long lateness days have passed, the tier window is shortened by the day, one day for every day late beyond the grace days; when from the middle lateness days up to the long lateness days have passed, the tier window is shortened by the flat lateness days whatever the exact number of days; and when fewer than the middle lateness days have passed, the full tier window is given."
+      cash_out_refusals: "The reactivated network days count the pickups refused on the transfer because the payout location had no cash"
+      network_days: "two or more give the two-refusal network days, exactly one gives the one-refusal network days, and none gives none; refusals for any other reason do not count."
+      rewards_tier: "The reactivated loyalty days follow the sender's active Paloma Rewards tier"
+      loyalty_days: "Gold, Platinum, Diamond or Elite gives the high loyalty days, Blue or Silver gives the middle loyalty days, and no active membership gives none."
+      account_level: "The reactivated tenure days follow the sender's active Personal Sender Account"
+      account_months: "months open are whole calendar months from the opening date to the day of the reactivation."
+      tenure_days: "open at least the long tenure months at level Paloma Enhanced, Paloma Premier or Paloma Private Client gives the long tenure days, open at least the middle tenure months at level Paloma Verified or Paloma Verified Plus gives the middle tenure days, and any other account gives none"
+      corrections_recorded: "The reactivated correction days count the name corrections already recorded on the transfer"
+      correction_days: "two or more give the two-correction days, exactly one gives the one-correction days, and none gives none."
+      principal_collected: "The reactivated principal days follow the principal collected on the transfer"
+      principal_days: "at least the high principal amount gives the high principal days, at least the middle principal amount but less than the high one gives the middle principal days, and less gives none."
+      result: "the reactivated window is the reactivated window base plus the reactivated network days, the reactivated loyalty days, the reactivated tenure days, the reactivated correction days and the reactivated principal days, added as whole days"
+    factors:
+      - id: reactivated_lateness_base
+        effect: method
+        decides: reactivated_base
+        bindings: [days_since_expiry, reactivated_base]
+        ladder:
+          - when: "the reactivation comes more than the long lateness days after the pickup expired"
+            method: "the window base is shortened by the day: the tier window less one day for every day late beyond the grace days"
+          - when: "the reactivation comes from the middle lateness days up to the long lateness days after the pickup expired"
+            method: "the window base is the tier window less the flat lateness days, whatever the exact number of days late"
+          - when: "otherwise"
+            method: "the window base is the full tier window"
+        baseline:
+          reactivated_base: "P('pickup_window_days')"
+        evidence: [date]
+        cross_difficulty: null
+      - id: reactivated_network_days
+        effect: parameter
+        decides: network_days
+        bindings: [cash_out_refusals, network_days]
+        ladder:
+          - when: "two or more pickups on the transfer were refused because the payout location had no cash"
+            value: "K('network_two_days')"
+          - when: "exactly one pickup on the transfer was refused because the payout location had no cash"
+            value: "K('network_one_day')"
+          - when: "otherwise"
+            value: "0"
+        baseline:
+          network_days: "0"
+        evidence: [history]
+        cross_difficulty: null
+      - id: reactivated_loyalty_days
+        effect: parameter
+        decides: loyalty_days
+        bindings: [rewards_tier, loyalty_days]
+        ladder:
+          - when: "the sender's active Paloma Rewards tier is Gold, Platinum, Diamond or Elite"
+            value: "K('loyalty_high_days')"
+          - when: "the sender's active Paloma Rewards tier is Blue or Silver"
+            value: "K('loyalty_mid_days')"
+          - when: "otherwise (no active membership)"
+            value: "0"
+        baseline:
+          loyalty_days: "0"
+        evidence: [cross_category]
+        cross_difficulty: null
+      - id: reactivated_tenure_days
+        effect: parameter
+        decides: tenure_days
+        bindings: [account_level, account_months, tenure_days]
+        ladder:
+          - when: "the sender account has been open at least the long tenure months and its level is Paloma Enhanced, Paloma Premier or Paloma Private Client"
+            value: "K('tenure_long_days')"
+          - when: "the sender account has been open at least the middle tenure months and its level is Paloma Verified or Paloma Verified Plus"
+            value: "K('tenure_mid_days')"
+          - when: "otherwise"
+            value: "0"
+        baseline:
+          tenure_days: "0"
+        evidence: [cross_category, date]
+        cross_difficulty: account
+      - id: reactivated_correction_days
+        effect: parameter
+        decides: correction_days
+        bindings: [corrections_recorded, correction_days]
+        ladder:
+          - when: "two or more name corrections are already recorded on the transfer"
+            value: "K('corrections_two_days')"
+          - when: "exactly one name correction is already recorded on the transfer"
+            value: "K('corrections_one_day')"
+          - when: "otherwise"
+            value: "0"
+        baseline:
+          correction_days: "0"
+        evidence: [history]
+        cross_difficulty: null
+      - id: reactivated_principal_days
+        effect: parameter
+        decides: principal_days
+        bindings: [principal_collected, principal_days]
+        ladder:
+          - when: "the principal collected on the transfer is at least the high principal amount"
+            value: "K('principal_high_days')"
+          - when: "the principal collected is at least the middle principal amount but below the high one"
+            value: "K('principal_mid_days')"
+          - when: "otherwise"
+            value: "0"
+        baseline:
+          principal_days: "0"
+        evidence: [history]
+        cross_difficulty: null
+    baseline:
+      rule: >-
+        A reactivated pickup is given the full pickup window of the transfer's tier, in whole calendar
+        days counted from the day of the reactivation, and its last day of collection is the reactivation
+        day plus that window.
+      params: [pickup_window_days]
+    inputs:
+      history:
+        - {table: cash_cases, aggregate: count, field: case_id, filters: {event_type: cash_pickup_refused, refusal_reason: location_out_of_cash}}
+        - {table: cash_cases, aggregate: count, field: case_id, filters: {event_type: cash_name_corrected}}
+        - {table: cash_ledger, aggregate: sum, field: amount_usd, filters: {event_type: cash_funds_received}}
+      cross_category: [rewards, account]
+
+  - id: cash_ext_correction_fee
+    base_policy_refs: [cash_evt_pricing, cash_evt_name_correction, cash_evt_expiry_and_reactivation]
+    overwrite:
+      - base_policy: cash_evt_name_correction
+        superseded_clause: >-
+          The first free_name_corrections corrections are free and each later one carries
+          name_correction_fee_usd as fee_type name_correction_fee with fee_seq equal to its
+          correction_seq.
+        replaced_by: >-
+          the name-correction fee is the bundle-shared fee plus the correction lateness charge, less the
+          correction loyalty discount and the correction wallet discount
+    trigger: on_request
+    subject: [cash_fee_charged]
+    computes: amount_usd
+    target_tool: pay_name_correction_fee_e426b8ef
+    params:
+      bundle_id_share_pct: 50
+      bundle_plain_share_pct: 75
+      late_long_days: 45
+      late_mid_days: 15
+      late_per_week_usd: 0.05
+      late_flat_usd: 0.25
+      loyalty_high_usd: 0.75
+      loyalty_mid_usd: 0.40
+      wallet_many_credits: 6
+      wallet_many_usd: 0.60
+      wallet_some_usd: 0.30
+    rule: >-
+      The fee for a name correction beyond the tier's free corrections is paid by the customer's own
+      card authorisation in the app, as one name-correction fee charge numbered with the correction it
+      pays for (the corrections already recorded on the transfer plus one). The standard
+      name-correction fee is the full name-correction fee of the transfer's tier, charged as it stands.
+      More precisely, the name-correction fee is the bundle-shared fee plus the correction lateness
+      charge, less the correction loyalty discount and the correction wallet discount, and never below
+      zero; when none of the situations set out below applies to a part, the bundle-shared fee is the
+      whole tier fee and the lateness charge and each discount are zero. The bundle-shared fee is the
+      tier's name-correction fee times the bundle share, rounded half up to the cent. On a pickup that has expired, a name-correction fee
+      is fixed only after the transfer's ledger carries the reactivation fee charge for the
+      reactivation that pickup awaits. The bundle share looks at the transfer's ledger and refusals:
+      when a reactivation fee charge stands on the transfer and at least one pickup was refused because
+      the name on the ID did not match, the share is the ID-mismatch bundle share; when a reactivation
+      fee charge stands on the transfer and no pickup was refused for a name mismatch, the share is the
+      plain bundle share; in any other case the whole fee is due. The correction lateness charge
+      follows the calendar days from the disclosed date of availability to the day of the correction,
+      that date not counted, and is worked out in one of three ways: when more than the long correction
+      lateness days have passed, it accrues by the started week, as the number of started weeks beyond
+      the middle correction lateness days times the per-week lateness charge; when from the middle
+      correction lateness days up to the long ones have passed, it is the flat correction lateness charge
+      whatever the exact number of days; and when fewer have passed, no lateness charge is worked out. The correction loyalty discount follows the
+      sender's active Paloma Rewards tier: Gold, Platinum, Diamond or Elite takes off the high
+      correction loyalty discount, Blue or Silver takes off the middle one, and no active membership
+      takes off nothing. The correction wallet discount counts the Mobile Wallet credits sent for the
+      sender dated less than twelve whole months before the day of the correction: the many-credits
+      number or more takes off the many-credits discount, at least one but fewer takes off the
+      some-credits discount, and none takes off nothing. The lateness charge is added to the
+      bundle-shared fee, the two discounts are taken off that sum together, and the result is rounded
+      half up to the cent.
+    prerequisite:
+      - problem: cash_ext_reactivation_fee
+        kind: value_input
+        gate: bundle_share_pct
+        form: state
+        policy_source: >-
+          On a pickup that has expired, a name-correction fee is fixed only after the transfer's ledger
+          carries the reactivation fee charge for the reactivation that pickup awaits.
+        condition: >-
+          cash_ledger holds at least one cash_fee_charged row on the transfer with fee_type
+          reactivation_fee; on an expired pickup awaiting its reactivation this is the charge with
+          fee_seq equal to the transfer's reactivation_count plus one.
+        resolved_by: pay_reactivation_fee_6d9bfacd
+        effect: >-
+          Once a reactivation fee charge stands, the bundle share binding leaves the whole fee and takes
+          the ID-mismatch bundle share when a name-mismatch refusal is on record, or the plain bundle
+          share when none is.
+    cross_category:
+      - category: rewards
+        as: branch
+        reads: [variant_name, status]
+        note: The correction loyalty discount is decided from the tier of the sender's active Paloma Rewards membership.
+      - category: wallet
+        as: history
+        reads: [wallet_ledger.event_type, wallet_ledger.entry_date]
+        note: The correction wallet discount is decided from the count of Mobile Wallet credits sent for the sender in the last twelve whole months.
+    compute:
+      - reactivation_fee_charges: "COUNT('cash_ledger', event_type='cash_fee_charged', fee_type='reactivation_fee')"
+      - id_mismatch_refusals: "COUNT('cash_cases', event_type='cash_pickup_refused', refusal_reason='id_name_mismatch')"
+      - bundle_share_pct: "K('bundle_id_share_pct') if (reactivation_fee_charges >= 1 and id_mismatch_refusals >= 1) else (K('bundle_plain_share_pct') if (reactivation_fee_charges >= 1 and id_mismatch_refusals == 0) else 100)"
+      - days_since_disclosed: "DAYS(F('date_available'), NOW)"
+      - lateness_charge: "RND(int(-((-(days_since_disclosed - K('late_mid_days')) / 7) // 1)) * K('late_per_week_usd'), 2) if days_since_disclosed > K('late_long_days') else (K('late_flat_usd') if days_since_disclosed >= K('late_mid_days') else 0)"
+      - shared_fee: "RND(P('name_correction_fee_usd') * bundle_share_pct / 100, 2)"
+      - rewards_tier: "CFIELD('rewards', 'variant_name', status='active')"
+      - loyalty_discount: "K('loyalty_high_usd') if (rewards_tier == 'Paloma Rewards Gold' or rewards_tier == 'Paloma Rewards Platinum' or rewards_tier == 'Paloma Rewards Diamond' or rewards_tier == 'Paloma Rewards Elite') else (K('loyalty_mid_usd') if (rewards_tier == 'Paloma Rewards Blue' or rewards_tier == 'Paloma Rewards Silver') else 0)"
+      - wallet_credits: "XCOUNT('wallet', 'wallet_ledger', within_months=12, date_field='entry_date', event_type='wallet_credit_sent')"
+      - wallet_discount: "K('wallet_many_usd') if wallet_credits >= K('wallet_many_credits') else (K('wallet_some_usd') if wallet_credits >= 1 else 0)"
+      - result: "RND(MX(0, shared_fee + lateness_charge - loyalty_discount - wallet_discount), 2)"
+    compute_basis:
+      reactivation_fee_charges: "when a reactivation fee charge stands on the transfer"
+      id_mismatch_refusals: "at least one pickup was refused because the name on the ID did not match"
+      bundle_share_pct: "when a reactivation fee charge stands on the transfer and at least one pickup was refused because the name on the ID did not match, the share is the ID-mismatch bundle share; when a reactivation fee charge stands on the transfer and no pickup was refused for a name mismatch, the share is the plain bundle share; in any other case the whole fee is due."
+      days_since_disclosed: "The correction lateness charge follows the calendar days from the disclosed date of availability to the day of the correction, that date not counted"
+      lateness_charge: "when more than the long correction lateness days have passed, it accrues by the started week, as the number of started weeks beyond the middle correction lateness days times the per-week lateness charge; when from the middle correction lateness days up to the long ones have passed, it is the flat correction lateness charge whatever the exact number of days; and when fewer have passed, no lateness charge is worked out."
+      shared_fee: "The bundle-shared fee is the tier's name-correction fee times the bundle share, rounded half up to the cent."
+      rewards_tier: "The correction loyalty discount follows the sender's active Paloma Rewards tier"
+      loyalty_discount: "Gold, Platinum, Diamond or Elite takes off the high correction loyalty discount, Blue or Silver takes off the middle one, and no active membership takes off nothing."
+      wallet_credits: "The correction wallet discount counts the Mobile Wallet credits sent for the sender dated less than twelve whole months before the day of the correction"
+      wallet_discount: "the many-credits number or more takes off the many-credits discount, at least one but fewer takes off the some-credits discount, and none takes off nothing."
+      result: "The lateness charge is added to the bundle-shared fee, the two discounts are taken off that sum together, and the result is rounded half up to the cent."
+    factors:
+      - id: correction_bundle_share
+        effect: parameter
+        decides: bundle_share_pct
+        bindings: [reactivation_fee_charges, id_mismatch_refusals, bundle_share_pct]
+        ladder:
+          - when: "a reactivation fee charge stands on the transfer and at least one pickup was refused because the name on the ID did not match"
+            value: "K('bundle_id_share_pct')"
+          - when: "a reactivation fee charge stands on the transfer and no pickup was refused for a name mismatch"
+            value: "K('bundle_plain_share_pct')"
+          - when: "otherwise"
+            value: "100 (the whole fee)"
+        baseline:
+          bundle_share_pct: "100"
+        evidence: [history]
+        cross_difficulty: null
+      - id: correction_lateness_charge
+        effect: method
+        decides: lateness_charge
+        bindings: [days_since_disclosed, lateness_charge]
+        ladder:
+          - when: "the correction comes more than the long correction lateness days after the disclosed date of availability"
+            method: "the lateness charge accrues by the started week beyond the middle correction lateness days, at the per-week lateness charge"
+          - when: "the correction comes from the middle up to the long correction lateness days after that date"
+            method: "the lateness charge is the flat correction lateness charge, whatever the exact number of days"
+          - when: "otherwise"
+            method: "no lateness charge is worked out"
+        baseline:
+          lateness_charge: "0"
+        evidence: [date]
+        cross_difficulty: null
+      - id: correction_loyalty_discount
+        effect: parameter
+        decides: loyalty_discount
+        bindings: [rewards_tier, loyalty_discount]
+        ladder:
+          - when: "the sender's active Paloma Rewards tier is Gold, Platinum, Diamond or Elite"
+            value: "K('loyalty_high_usd')"
+          - when: "the sender's active Paloma Rewards tier is Blue or Silver"
+            value: "K('loyalty_mid_usd')"
+          - when: "otherwise (no active membership)"
+            value: "0"
+        baseline:
+          loyalty_discount: "0"
+        evidence: [cross_category]
+        cross_difficulty: null
+      - id: correction_wallet_discount
+        effect: parameter
+        decides: wallet_discount
+        bindings: [wallet_credits, wallet_discount]
+        ladder:
+          - when: "the many-credits number or more of Mobile Wallet credits were sent for the sender in the last twelve whole months"
+            value: "K('wallet_many_usd')"
+          - when: "at least one but fewer Mobile Wallet credits were sent in that window"
+            value: "K('wallet_some_usd')"
+          - when: "otherwise"
+            value: "0"
+        baseline:
+          wallet_discount: "0"
+        evidence: [cross_category, history]
+        cross_difficulty: wallet
+    baseline:
+      rule: >-
+        The standard name-correction fee is the full name-correction fee of the transfer's tier, charged
+        as it stands.
+      params: [name_correction_fee_usd]
+    inputs:
+      history:
+        - {table: cash_ledger, aggregate: count, field: ledger_entry_id, filters: {event_type: cash_fee_charged, fee_type: reactivation_fee}}
+        - {table: cash_cases, aggregate: count, field: case_id, filters: {event_type: cash_pickup_refused, refusal_reason: id_name_mismatch}}
+        - {category: wallet, table: wallet_ledger, aggregate: count, field: ledger_entry_id, within_months: 12, filters: {event_type: wallet_credit_sent}}
+      cross_category: [rewards, wallet]
+
+  - id: cash_ext_correction_extension
+    base_policy_refs: [cash_evt_name_correction]
+    overwrite:
+      - base_policy: cash_evt_name_correction
+        superseded_clause: >-
+          The corrected name may differ from the current recipient_name_on_transfer by at most
+          name_correction_max_chars characters, counted as single-character insertions, deletions or
+          substitutions, letter case ignored; a correction of more characters is a different person.
+        replaced_by: >-
+          The corrected name may differ from the recipient name currently on the transfer by at most the
+          tier's limit of correctable characters, counted as single-character insertions, deletions or
+          substitutions with letter case and accent marks both ignored, so that a letter differing only
+          by its accent is not counted; a correction of more characters is a different person.
+      - base_policy: cash_evt_name_correction
+        superseded_clause: >-
+          the Pickup Number and pickup window do not change.
+        replaced_by: >-
+          the Pickup Number does not change, and the last day of collection moves later by the
+          correction extension days
+    trigger: on_request
+    subject: [cash_name_corrected, cash_recipient_name_updated]
+    computes: extension_days
+    target_tool: record_name_correction_726c5192
+    params:
+      corrections_two_days: 21
+      corrections_one_days: 14
+      loyalty_high_days: 10
+      loyalty_mid_days: 5
+      tenure_long_months: 24
+      tenure_mid_months: 12
+      tenure_long_days: 6
+      tenure_mid_days: 3
+      waited_long_days: 45
+      waited_mid_days: 15
+      waited_long_extra: 7
+      waited_mid_extra: 3
+    rule: >-
+      The agent records a correction of the recipient name on a Cash Pickup transfer exactly as the
+      customer gives it, so that it matches the recipient's government ID; the corrected name replaces
+      the name on the transfer at once. The corrected name may differ from the recipient name currently
+      on the transfer by at most the tier's limit of correctable characters, counted as single-character
+      insertions, deletions or substitutions with letter case and accent marks both ignored, so that a
+      letter differing only by its accent is not counted; a correction of more characters is a different
+      person. A name correction beyond the free corrections is not recorded until the transfer's ledger
+      carries the name-correction fee charge numbered with that correction's number. On a pickup that
+      has expired, the days a name correction adds to the pickup window are fixed only after the pickup
+      stands reactivated, with its reactivation count raised and its last day of collection no earlier
+      than the day of the correction. A name correction keeps the pickup window as it stands and adds no
+      days to it. More precisely, the Pickup Number does not change, and the last day of collection
+      moves later by the correction extension days, worked out from the correction guarantee in
+      whole days and never below zero; the days left are the calendar days from the day of the
+      correction to the current last day of collection, the correction day not counted. The correction
+      guarantee is the sum of four parts, each zero when none of its situations applies: the
+      correction-history days, the correction loyalty days, the correction tenure days and the
+      correction waiting days. How the extension is worked out from the guarantee follows the pickups refused on
+      the transfer because the name on the ID did not match. The top-up is the guarantee less the days
+      left, never below zero; the days lost are the calendar days from the most recent such refusal to
+      the day of the correction, the refusal day not counted. After two or more such refusals the
+      extension is the larger of the top-up and the days lost. After exactly one such refusal the
+      extension is the top-up with the days lost given back on top of it. With no such refusal the
+      extension is the top-up alone, and it is zero when the days left already reach the guarantee. The
+      correction-history days count the name corrections already recorded on the transfer before this
+      one: two or more give the two-correction guarantee days, exactly one gives the one-correction
+      guarantee days, and none gives none. The correction loyalty days follow the sender's active Paloma
+      Rewards tier: Gold, Platinum, Diamond or Elite gives the high correction loyalty days, Blue or
+      Silver gives the middle ones, and no active membership gives none. The correction tenure days
+      follow the sender's active Personal Sender Account: open at least the long tenure months at level
+      Paloma Enhanced, Paloma Premier or Paloma Private Client gives the long correction tenure days,
+      open at least the middle tenure months at level Paloma Verified or Paloma Verified Plus gives the
+      middle ones, and any other account gives none; months open are whole calendar months from the
+      opening date to the day of the correction. The correction waiting days follow the calendar days
+      from the disclosed date of availability to the day of the correction, that date not counted: more
+      than the long waiting days gives the long waiting extra days, from the middle waiting days up to
+      the long ones gives the middle waiting extra days, and fewer gives none.
+    prerequisite:
+      - problem: cash_ext_reactivation_window
+        kind: value_input
+        gate: days_left
+        form: state
+        policy_source: >-
+          On a pickup that has expired, the days a name correction adds to the pickup window are fixed
+          only after the pickup stands reactivated, with its reactivation count raised and its last day
+          of collection no earlier than the day of the correction.
+        condition: >-
+          cash_transfers.status is ready_for_pickup with reactivation_count raised by the reactivation
+          and pickup_expiry_date on or after the correction day.
+        resolved_by: reactivate_expired_pickup_d4e94bda
+        effect: >-
+          Once the pickup stands reactivated, the days-left binding moves from a negative count (the old
+          last day of collection has passed) to the length of the reactivated window, so the top-up to the
+          correction guarantee, and with it the extension days, shrinks by the length of that window.
+      - problem: cash_ext_correction_fee
+        kind: state_gate
+        gate: cash_ledger.fee_type
+        form: state
+        policy_source: >-
+          A name correction beyond the free corrections is not recorded until the transfer's ledger
+          carries the name-correction fee charge numbered with that correction's number.
+        condition: >-
+          cash_ledger holds a cash_fee_charged row on the transfer with fee_type name_correction_fee and
+          fee_seq equal to the corrections already recorded plus one.
+        resolved_by: pay_name_correction_fee_e426b8ef
+        effect: >-
+          Once the customer's name-correction fee charge stands on the ledger, the correction beyond the
+          free corrections may be recorded: the gate on recording it flips from closed to open.
+    cross_category:
+      - category: rewards
+        as: branch
+        reads: [variant_name, status]
+        note: The correction loyalty days are decided from the tier of the sender's active Paloma Rewards membership.
+      - category: account
+        as: branch
+        reads: [variant_name, status, opened_date]
+        note: The correction tenure days are decided from the level and opening date of the sender's active Personal Sender Account.
+    compute:
+      - days_left: "DAYS(NOW, F('pickup_expiry_date'))"
+      - id_mismatch_refusals: "COUNT('cash_cases', event_type='cash_pickup_refused', refusal_reason='id_name_mismatch')"
+      - corrections_recorded: "COUNT('cash_cases', event_type='cash_name_corrected')"
+      - history_days: "K('corrections_two_days') if corrections_recorded >= 2 else (K('corrections_one_days') if corrections_recorded == 1 else 0)"
+      - rewards_tier: "CFIELD('rewards', 'variant_name', status='active')"
+      - loyalty_days: "K('loyalty_high_days') if (rewards_tier == 'Paloma Rewards Gold' or rewards_tier == 'Paloma Rewards Platinum' or rewards_tier == 'Paloma Rewards Diamond' or rewards_tier == 'Paloma Rewards Elite') else (K('loyalty_mid_days') if (rewards_tier == 'Paloma Rewards Blue' or rewards_tier == 'Paloma Rewards Silver') else 0)"
+      - account_level: "CFIELD('account', 'variant_name', status='active')"
+      - account_months: "MONTHS(CFIELD('account', 'opened_date', status='active'), NOW)"
+      - tenure_days: "K('tenure_long_days') if (account_months >= K('tenure_long_months') and (account_level == 'Paloma Enhanced' or account_level == 'Paloma Premier' or account_level == 'Paloma Private Client')) else (K('tenure_mid_days') if (account_months >= K('tenure_mid_months') and (account_level == 'Paloma Verified' or account_level == 'Paloma Verified Plus')) else 0)"
+      - days_since_disclosed: "DAYS(F('date_available'), NOW)"
+      - waiting_days: "K('waited_long_extra') if days_since_disclosed > K('waited_long_days') else (K('waited_mid_extra') if days_since_disclosed >= K('waited_mid_days') else 0)"
+      - guarantee: "history_days + loyalty_days + tenure_days + waiting_days"
+      - gap: "MX(0, guarantee - days_left, DAYS(LATEST('cash_cases', 'case_date', date_field='case_date', event_type='cash_pickup_refused', refusal_reason='id_name_mismatch'), NOW)) if id_mismatch_refusals >= 2 else (MX(0, guarantee - days_left) + DAYS(LATEST('cash_cases', 'case_date', date_field='case_date', event_type='cash_pickup_refused', refusal_reason='id_name_mismatch'), NOW) if id_mismatch_refusals == 1 else MX(0, guarantee - days_left))"
+      - result: "int(gap)"
+    compute_basis:
+      days_left: "the days left are the calendar days from the day of the correction to the current last day of collection, the correction day not counted"
+      id_mismatch_refusals: "How the extension is worked out from the guarantee follows the pickups refused on the transfer because the name on the ID did not match."
+      corrections_recorded: "The correction-history days count the name corrections already recorded on the transfer before this one"
+      history_days: "two or more give the two-correction guarantee days, exactly one gives the one-correction guarantee days, and none gives none."
+      rewards_tier: "The correction loyalty days follow the sender's active Paloma Rewards tier"
+      loyalty_days: "Gold, Platinum, Diamond or Elite gives the high correction loyalty days, Blue or Silver gives the middle ones, and no active membership gives none."
+      account_level: "The correction tenure days follow the sender's active Personal Sender Account"
+      account_months: "months open are whole calendar months from the opening date to the day of the correction."
+      tenure_days: "open at least the long tenure months at level Paloma Enhanced, Paloma Premier or Paloma Private Client gives the long correction tenure days, open at least the middle tenure months at level Paloma Verified or Paloma Verified Plus gives the middle ones, and any other account gives none"
+      days_since_disclosed: "The correction waiting days follow the calendar days from the disclosed date of availability to the day of the correction, that date not counted"
+      waiting_days: "more than the long waiting days gives the long waiting extra days, from the middle waiting days up to the long ones gives the middle waiting extra days, and fewer gives none."
+      guarantee: "The correction guarantee is the sum of four parts, each zero when none of its situations applies: the correction-history days, the correction loyalty days, the correction tenure days and the correction waiting days."
+      gap: "The top-up is the guarantee less the days left, never below zero; the days lost are the calendar days from the most recent such refusal to the day of the correction, the refusal day not counted. After two or more such refusals the extension is the larger of the top-up and the days lost. After exactly one such refusal the extension is the top-up with the days lost given back on top of it. With no such refusal the extension is the top-up alone, and it is zero when the days left already reach the guarantee."
+      result: "the last day of collection moves later by the correction extension days, worked out from the correction guarantee in whole days and never below zero"
+    factors:
+      - id: correction_extension_method
+        effect: method
+        decides: gap
+        bindings: [id_mismatch_refusals, gap]
+        ladder:
+          - when: "two or more pickups on the transfer were refused because the name on the ID did not match"
+            method: "selection: the extension is the larger of the top-up to the guarantee and the days lost since the most recent name refusal"
+          - when: "exactly one pickup on the transfer was refused because the name on the ID did not match"
+            method: "compensation: the extension is the top-up to the guarantee with the days lost since that refusal given back on top"
+          - when: "otherwise"
+            method: "the extension is the top-up of the days left to the guarantee alone"
+        baseline:
+          gap: "MX(0, guarantee - days_left)"
+        evidence: [history]
+        cross_difficulty: null
+      - id: correction_history_days
+        effect: parameter
+        decides: history_days
+        bindings: [corrections_recorded, history_days]
+        ladder:
+          - when: "two or more name corrections are already recorded on the transfer"
+            value: "K('corrections_two_days')"
+          - when: "exactly one name correction is already recorded on the transfer"
+            value: "K('corrections_one_days')"
+          - when: "otherwise"
+            value: "0"
+        baseline:
+          history_days: "0"
+        evidence: [history]
+        cross_difficulty: null
+      - id: correction_loyalty_days
+        effect: parameter
+        decides: loyalty_days
+        bindings: [rewards_tier, loyalty_days]
+        ladder:
+          - when: "the sender's active Paloma Rewards tier is Gold, Platinum, Diamond or Elite"
+            value: "K('loyalty_high_days')"
+          - when: "the sender's active Paloma Rewards tier is Blue or Silver"
+            value: "K('loyalty_mid_days')"
+          - when: "otherwise (no active membership)"
+            value: "0"
+        baseline:
+          loyalty_days: "0"
+        evidence: [cross_category]
+        cross_difficulty: null
+      - id: correction_tenure_days
+        effect: parameter
+        decides: tenure_days
+        bindings: [account_level, account_months, tenure_days]
+        ladder:
+          - when: "the sender account has been open at least the long tenure months and its level is Paloma Enhanced, Paloma Premier or Paloma Private Client"
+            value: "K('tenure_long_days')"
+          - when: "the sender account has been open at least the middle tenure months and its level is Paloma Verified or Paloma Verified Plus"
+            value: "K('tenure_mid_days')"
+          - when: "otherwise"
+            value: "0"
+        baseline:
+          tenure_days: "0"
+        evidence: [cross_category, date]
+        cross_difficulty: account
+      - id: correction_waiting_days
+        effect: parameter
+        decides: waiting_days
+        bindings: [days_since_disclosed, waiting_days]
+        ladder:
+          - when: "the correction comes more than the long waiting days after the disclosed date of availability"
+            value: "K('waited_long_extra')"
+          - when: "the correction comes from the middle up to the long waiting days after that date"
+            value: "K('waited_mid_extra')"
+          - when: "otherwise"
+            value: "0"
+        baseline:
+          waiting_days: "0"
+        evidence: [date]
+        cross_difficulty: null
+    baseline:
+      rule: >-
+        A name correction keeps the pickup window as it stands and adds no days to it.
+      params: []
+    inputs:
+      history:
+        - {table: cash_cases, aggregate: count, field: case_id, filters: {event_type: cash_pickup_refused, refusal_reason: id_name_mismatch}}
+        - {table: cash_cases, aggregate: count, field: case_id, filters: {event_type: cash_name_corrected}}
+      cross_category: [rewards, account]

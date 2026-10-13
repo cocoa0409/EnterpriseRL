@@ -1,0 +1,1132 @@
+{
+    "frozen_time": "2026-10-08 11:25:00 America/Chicago",
+    "design_rationale": "WORKLOG / DOSSIER - task 1 (order_returns_refunds_guarantee), revision for audit round 3\n\n[Step 0 - draw] `draw_counts.py <diff> --task 1` printed {\"task\": 1, \"key\": \"env_0054_ecommerce_marketplace_operator/order_returns_refunds_guarantee/1\", \"prerequisite_problems\": 1, \"problems\": 2, \"factor_counts\": [6, 5]}. Design: replacement charge = 5 factors (prerequisite, paid by the buyer), replacement-charge refund = 6 factors (root); one value_input edge.\n\n[Scope snapshot] Occupied by task 0: late-delivery compensation, guarantee claim amount, guarantee grant and their tools. Claimed here: order_ext_replacement_charge (pay_replacement_charge_b3f7fc80, user) and order_ext_replacement_charge_refund (refund_replacement_charge_bf6a8eb8, agent); the two tasks cover all five policies with disjoint scopes. The user write is a payment because seller-funded refunds trigger writes in other categories, leaving the claim filing (task 0) and a payment on the order as the only numeric buyer-side writes; an unreturned-replacement charge triggers nothing elsewhere.\n\n[Design thesis] Surface goal: \"whatever money is owed back to you for the two coffee makers you returned put back on your card\". Scored core: the replacement-charge refund (89.27). Chain: refund <- (booked only after that charge stands captured on the order) <- replacement charge paid by the buyer (140.64). The buyer does not know a charge is owed; the agent finds from dates that it fell due on 2026-09-25 and is not captured, computes it, hands the payment over, then computes the refund on the world that contains her payment. Breadth: replacement and return rows, scan dates, inspection, return method, option parameters (unreturned replacement days 30, late return grace 15), and her Loop+ plan, status and start date.\n\n[Policies, trigger, lineage]\n- Replacement charge: state_due, subject order_charge, refs order_capture_and_shipping_charge and order_replacement_terms; overwrite of base \"Except for a lost package, the original unit must receive its first carrier scan within the option's unreturned replacement days after the replacement ships; otherwise the buyer is charged the item price of the replaced units ...\" by \"Except for a lost package, when the original unit has no first carrier scan by the unreturned-replacement deadline, the replacement charge falls due and the buyer settles it as a payment on the order ...\" (base 179.98 charged automatically; extended 140.64 paid by the buyer). One deadline anchor: \"the replacement date, the date recorded on the replacement entry, which is the day the replacement ships, plus the option's unreturned replacement days counted in calendar days\"; the replacement entry and the replacement order's ship date are both 2026-08-25.\n- Refund: on_request, subject order_refund, refs every base policy whose subject includes order_refund plus order_replacement_terms; three declared overwrites (funding by Northloop; exclusivity kept for purchase-price refunds while the replacement-charge refund may follow a replacement; the refund's own deductions apply whatever the return reason). The base late-refund request window concerns late-delivery refunds only; nothing here depends on it.\n\n[Factor card - replacement charge, world = opening (step 6)] baseline = item price of the replaced units 179.98 plus their sales tax 18.45 = 198.43.\n 1 condition_share (parameter; LATEST replacement reason): defective -> 0.80 (baseline 1.0 -> 174.93).\n 2 overdue_day_count (method, anchor family; LATEST first scan, LATEST return method): a first scan (2026-10-01) stands after the 2026-09-24 deadline -> the count ends on the scan date = 7 days; tier 2 (carrier pickup with no scan) counts none; fall-through (drop-off with no scan yet) counts to the settlement date; baseline (settlement date, 14 days -> per-day fee 7.00) -> 144.14.\n 3 settlement_fee (method; per-day x days vs flat vs none): 7 overdue days -> flat 3.50 (baseline none -> 137.14).\n 4 plan_courtesy (parameter; multi-source status AND plan; cross-category member): active Loop+ Annual -> 0.10 (baseline -> 155.04).\n 5 tenure_courtesy (parameter; MONTHS start->settlement; cross-category member): 56 months >= 48 -> 0.05 (baseline -> 147.84).\n Plain: sales tax on the charged items 18.45 x 143.98 / 179.98 = 14.76; Loop+ courtesy RND(143.98 x 0.15) = 21.60. result 143.98 - 21.60 + 14.76 + 3.50 = 140.64.\n\n[Factor card - refund, world = + payment of step 6] baseline = the whole captured charge 140.64.\n 1 late_return_rate (method): 7 days past the deadline, later than the 5 late courtesy days and inside the 15-day grace -> per-day 0.02 x 7 = 0.14; tiers: later than the grace (or no scan) forfeits the whole charge; within the courtesy days no rate. Every tier is reachable: every in-scope original is scanned after the deadline, at 1-5 days (fall-through), 6-15 days (per-day) or later (forfeit). Baseline 0 -> 98.87 (the DSL rounds 34.285 down; half up gives 98.86; not scored).\n 2 loop_relief (parameter; multi-source plan AND status AND inside-grace; cross-category member): Annual in good standing -> 0.5, applied rate 0.07 (baseline 1.0 -> 79.67).\n 3 condition_rate (parameter): used or incomplete -> 0.25; near-miss: 0.50 is for damaged_by_buyer (baseline 0 -> 123.55).\n 4 fee_kept (method): the captured charge carried 7 overdue days (deadline to the first scan, which stands before the capture) -> flat 3.50 kept; tiers mirror the charge's overdue count and fee (per-day / flat / none, with a carrier pickup unscanned at capture counting none) (baseline none -> 91.65).\n 5 late_label_fee (parameter): UPS drop-off first-scanned 7 days after the deadline, more than the 3 label validity days -> 5.99; tiers: carrier pickup -> 9.99; drop-off within the 3 days -> none. Every tier is reachable: Fulfilled-by-Northloop originals go back by drop-off or pickup, and a drop-off can be scanned 1-3 days late (baseline 0 -> 95.26).\n 6 delay_courtesy (parameter): receipt 2026-10-05, refund 2026-10-08 = 3 days -> 2.00 (baseline 0 -> 87.27).\n result 137.14 - 43.88 - 5.99 + 2.00 = 89.27; whole baseline 140.64.\n Floors: forcing cross-category reads off changes both results; zeroing history changes both.\n\n[Base-invariant card] Step 6 (order_charge): both governing policies scope-only; the replacement was legal (FBN Standard offers replacements, defective reason, replacement 2026-08-25 within the 30-day window from delivery 2026-08-21, the order's only replacement). Due: deadline 2026-09-24 (a scan on 2026-09-24 would have been in time; it came 2026-10-01). Step 8 (order_refund): one_refund_per_component (no item refund on the coffee maker order; the component wording comes from the towel order's item refund); other policies scope-only. Grace boundary: a scan 15 days past the deadline still takes the per-day rate, 16 days forfeits.\n\n[Business-object card] Target: coffee maker order 76eb6e8d, its defective return efd41e69 (both units), replacement 16fd067d, the scans of that return, and the charge captured at step 6. Excluded: the order-total capture, the zero-priced replacement order 0907ac9c, the closed towel order with its return, scans and refunds. The payment and the refund both carry the return number of the originals.\n\n[Problem-tree card] Root order_ext_replacement_charge_refund; edge to order_ext_replacement_charge, value_input, gate charge_captured, state form. Sentence (affirmative, refund's own rule): \"The refund of a replacement charge is booked only after that charge stands captured on the order.\" Four-point test passes; negated rewrite equivalent. Unique writer pay_replacement_charge_b3f7fc80. Opening: the only capture has reason order_capture, net paid 198.43. Resolved by the user at step 6 after the hand-over at step 5. Deletion: refund 0.00 instead of 89.27, no capture, net paid 198.43 instead of 249.80. user_scenario never mentions a charge; tools validate nothing.\n\n[Why it is a good test] The buyer asks for money back; the policy has her pay first. The agent finds the fallen-due charge from dates, computes a five-factor charge (condition share, overdue days ending at the first scan, flat settlement fee, two Loop+ courtesies), hands it over, then a six-factor refund on the charge it created. Easy errors: no capture before the refund, charging 198.43, counting overdue days to the call date (fee 7.00 -> 144.14), unrelieved late rate (79.67), 0.50 for the inspection, missing the label fee or the courtesy.\n\n[Persona design] Marguerite, busy office manager; volunteers her name, the leaky coffee makers, the working replacements, the late UPS drop-off on October 1 and the arrival on October 5, and the request; email and card last four on request; Loop+ plan and the missing carafe lid only if asked; surprised but cooperative if something must be paid first; pays exactly what she is handed; closes when told the amount coming back.\n\n[Reachability walk] Name -> find_customers; email + card -> verify; find_orders, find_order_activity, find_loop_plus_memberships; KB: refund rule -> captured charge needed; charge rule -> due, five rules; hand over the payment (order, return number, 140.64); she pays; book the 89.27 item refund; she closes. All at 2026-10-08 11:25.\n\n[Verification] Runnable entry point kept with the repo: `skills/erl-task-instantiate/scripts/check_compute.py <diff> --task 1`. Output of this revision: charge step 6 = 140.64, substitutions 174.93 / 144.14 / 137.14 / 155.04 / 147.84, whole baseline 198.43; refund step 8 = 89.27, substitutions 98.87 / 79.67 / 123.55 / 91.65 / 95.26 / 87.27, whole baseline 140.64; skipping the payment gives 0.00. Half-up check on the gold path: 143.98 x 0.15 = 21.597 -> 21.60; 18.45 x 143.98 / 179.98 = 14.7596 -> 14.76; 137.14 x 0.32 = 43.8848 -> 43.88; no tie.\n\n[Policy/GT closure] charge -> pay_replacement_charge_b3f7fc80 -> 140.64 at step 6 (user) -> capture, net paid 339.07; refund -> refund_replacement_charge_bf6a8eb8 -> 89.27 at step 8 -> refund, net paid 249.80; the buyer is 51.37 out of pocket. Automatic clauses: no guaranteed option (no late-delivery compensation), order close (claim window open to 2026-11-22), replacement charge (carried), restock (used or incomplete triggers none), Loop+ annual paid through 2027-02-08, towel order closed. Nothing else lit.\n\n[Draft recomputation from the visible context] From the two rules and the finder outputs a reader obtains 140.64 then 89.27 with the coffee maker return number and component item: identical to gold. Reading risks pinned: one deadline anchor; the overdue count ends at the first scan; the courtesy rates are added and applied once; late rate times relief plus condition rate applied once to the refundable charge.\n\n[Manual value gates] Need, timing, authorisation explicit; no ask outside the claimed policies. Capture and refund exist only after steps 6 and 8. Authority: scans, inspection and membership are system records. Every tier of every ladder, the fall-through included, is reachable by an in-scope customer. Method factors change the functional form (count end date vs none vs settlement date; per-day vs flat vs none; whole-charge forfeiture vs per-day rate vs none); loop_relief is a parameter.\n\n[Revision history] R1 (authoring): unread Loop+ ledger rows removed (replay closure).\nAudit round 2 responses (kept): F1/T1-1, F2/T1-2 closed by declared overwrites; F3/T1-3 closed (one anchor, aligned seed); F5/T1-4 closed (tax a plain rule); F6/T1-5 closed (loop_relief a parameter); O13 closed; O6, O8, O11 answered without change; O12 closed with F5.\nAudit round 3 responses:\n- R2-F1 (late_return_rate and late_label_fee fall-throughs unreachable): closed. late_return_rate now partitions in-scope originals by how late their first scan is: within the late courtesy days -> no rate (fall-through), later but inside the grace -> per-day rate, later than the grace -> whole charge. late_label_fee now partitions by how the late original went back: carrier pickup -> pickup fee, drop-off scanned more than the label validity days after the deadline -> drop-off label fee, drop-off within those days -> none (fall-through). Both fall-throughs are held by in-scope customers.\n- R2-F2 (account-trust share from the buyer's own seller standing): closed by removal. The factor, the standing record, the buyer-and-seller profile and the find_seller_standing read are gone; Marguerite is buyer-only again and the persona no longer mentions a shop. The charge's fifth factor is now the overdue-day count (a method of the anchor family: count to the first scan / none for an unscanned carrier pickup / to the settlement date), a rule the business genuinely applies (a unit already in the carrier's hands stops accruing lateness), and the settlement fee reads that count; the refund's fee kept mirrors it.\n- O1 / cross-difficulty factor reading a claimed category: answered with evidence, no factor added. The DSL scopes every cross-category read to the order's own buyer (`check_compute.py`: `_cross` sets `eq[\"customer_id\"] = CUST`; `_xrows` keeps rows with customer_id CUST or pointing at CUST's own holdings), so the order-level seller records named as examples (fulfillment and stocking in fulfill, funding and debits in payout, the seller's plan and fees in selling) cannot be read by a buyer-side computation; the buyer's own seller records do not genuinely bear on an unreturned-replacement charge or its refund (the realism objection of R2-F2). The task keeps its cross-category factors on her own Loop+ membership (plan courtesy, tenure courtesy, relief factor), where the quantities genuinely turn on it. How the order was fulfilled is read from the order itself (Fulfilled by Northloop Standard sets the replacement and return parameters).\n- R2-O3 (replaced_on basis paraphrase): closed; the basis now quotes the rule verbatim (\"its unreturned-replacement deadline ...\").\n- R2-O4 (\"Four rules\" with five factor rules): closed; the charge rule now says \"Five rules\" and names them.\n- Propagation: steps 6/8 (read node removed), charge 140.64 and refund 89.27 in gold, tracing, computations, solvability (steps, prior_step:6, business effects), prerequisite_closure, persona, this dossier.\n",
+    "user_scenario": "You are Marguerite Abernathy-Solis, an office manager in Wicker Park, Chicago, friendly but pressed for time, calling on your lunch break and introducing yourself by your full name, Marguerite Abernathy-Solis. In August you ordered two Kestrel 12-Cup Programmable Coffee Makers on Northloop, one for home and one for the office; both leaked, so you asked for replacements, and the replacements arrived and work fine. Life got busy and you only dropped the two leaky originals off at a UPS store on October 1, later than you were supposed to; you saw that they reached the Northloop returns center on October 5. You are calling because you want this closed out and whatever money is owed back to you for the two coffee makers you returned put back on your card. When the agent asks to confirm who you are, you give your email address, marguerite.abernathy.solis@outlook.com, and the last four digits of your card, 2084; you do not volunteer anything else about your account. Only if asked, you say you have been on Loop+ Annual since early 2022 and are still a member, and that when you packed the old machines you could not find one of the carafe lids, so one went back without it. You have no idea what any amount should be and you never suggest one. If the agent explains that something has to be paid on the order before anything can come back to you, you are a little surprised but say that is fine, and when the agent hands you the payment to make, you make it right away with exactly the order, return number and amount the agent gives you, using the card on file. You are happy for the agent to do the rest on your behalf. You do not ask for anything else. Once the agent tells you how much is coming back to your card, you thank them and end the call.",
+    "initial_state": {
+        "customers": {
+            "0c9e97e8-2507-4716-aac6-3aa2ad12a700": {
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700",
+                "name": "Marguerite Abernathy-Solis",
+                "email": "marguerite.abernathy.solis@outlook.com",
+                "phone": "3125550163",
+                "billing_zip": "60622",
+                "account_opened_date": "2021-11-03",
+                "payment_card_last4": "2084",
+                "customer_type": "buyer",
+                "business_name": "",
+                "tax_id_last4": ""
+            }
+        },
+        "order_orders": {
+            "76eb6e8d-4fe7-4d3f-b786-9e655144fd31": {
+                "order_id": "76eb6e8d-4fe7-4d3f-b786-9e655144fd31",
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700",
+                "seller_customer_id": "92928e01-5be3-4dd5-a4c6-ea47a7929c3c",
+                "is_gift": false,
+                "payment_last4": "2084",
+                "tracking_status": "valid_tracking",
+                "signature_confirmed": false,
+                "delivery_exception": "none",
+                "cancel_initiator": "none",
+                "closed_date": "",
+                "variant_name": "Fulfilled by Northloop Standard",
+                "status": "delivered",
+                "order_placed_at": "2026-08-17 08:52:00 America/Chicago",
+                "order_date": "2026-08-17",
+                "item_title": "Kestrel 12-Cup Programmable Coffee Maker",
+                "sku": "KST-CM12-BLK",
+                "item_category": "home_kitchen",
+                "item_condition": "new",
+                "quantity": 2,
+                "unit_price": 89.99,
+                "shipping_charge": 0.0,
+                "tax_amount": 18.45,
+                "order_total": 198.43,
+                "promised_delivery_date": "2026-08-24",
+                "shipped_date": "2026-08-18",
+                "delivered_date": "2026-08-21",
+                "delivery_promise_met": "met",
+                "net_paid_amount": 198.43
+            },
+            "0907ac9c-8a6d-43c2-87dd-62985efcb996": {
+                "order_id": "0907ac9c-8a6d-43c2-87dd-62985efcb996",
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700",
+                "seller_customer_id": "92928e01-5be3-4dd5-a4c6-ea47a7929c3c",
+                "is_gift": false,
+                "payment_last4": "2084",
+                "tracking_status": "valid_tracking",
+                "signature_confirmed": false,
+                "delivery_exception": "none",
+                "cancel_initiator": "none",
+                "closed_date": "",
+                "variant_name": "Fulfilled by Northloop Standard",
+                "status": "delivered",
+                "order_placed_at": "2026-08-25 10:05:00 America/Chicago",
+                "order_date": "2026-08-25",
+                "item_title": "Kestrel 12-Cup Programmable Coffee Maker",
+                "sku": "KST-CM12-BLK",
+                "item_category": "home_kitchen",
+                "item_condition": "new",
+                "quantity": 2,
+                "unit_price": 0.0,
+                "shipping_charge": 0.0,
+                "tax_amount": 0.0,
+                "order_total": 0.0,
+                "promised_delivery_date": "2026-09-01",
+                "shipped_date": "2026-08-25",
+                "delivered_date": "2026-08-28",
+                "delivery_promise_met": "met",
+                "net_paid_amount": 0.0
+            },
+            "b6050e0a-6b77-4e98-a506-ab44ac9a4707": {
+                "order_id": "b6050e0a-6b77-4e98-a506-ab44ac9a4707",
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700",
+                "seller_customer_id": "92928e01-5be3-4dd5-a4c6-ea47a7929c3c",
+                "is_gift": false,
+                "payment_last4": "2084",
+                "tracking_status": "valid_tracking",
+                "signature_confirmed": false,
+                "delivery_exception": "none",
+                "cancel_initiator": "none",
+                "closed_date": "2026-03-05",
+                "variant_name": "Fulfilled by Northloop Two-Day",
+                "status": "closed",
+                "order_placed_at": "2025-12-02 21:14:00 America/Chicago",
+                "order_date": "2025-12-02",
+                "item_title": "Larkfield Waffle-Knit Bath Towel Set, 6 Piece",
+                "sku": "LRK-WKT6-SAGE",
+                "item_category": "home_kitchen",
+                "item_condition": "new",
+                "quantity": 1,
+                "unit_price": 39.99,
+                "shipping_charge": 0.0,
+                "tax_amount": 4.1,
+                "order_total": 44.09,
+                "promised_delivery_date": "2025-12-04",
+                "shipped_date": "2025-12-02",
+                "delivered_date": "2025-12-04",
+                "delivery_promise_met": "met",
+                "net_paid_amount": 0.0
+            }
+        },
+        "order_events": {
+            "00973895-8f93-48c8-a5b8-da4f8be3b06d": {
+                "order_event_id": "00973895-8f93-48c8-a5b8-da4f8be3b06d",
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700",
+                "order_id": "76eb6e8d-4fe7-4d3f-b786-9e655144fd31",
+                "event_type": "order_charge",
+                "event_date": "2026-08-18",
+                "amount": 198.43,
+                "charge_reason": "order_capture",
+                "return_id": ""
+            },
+            "58f53b6a-62d8-46a7-a59e-61511185412f": {
+                "order_event_id": "58f53b6a-62d8-46a7-a59e-61511185412f",
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700",
+                "order_id": "76eb6e8d-4fe7-4d3f-b786-9e655144fd31",
+                "event_type": "order_return_request",
+                "event_date": "2026-08-23",
+                "amount": 0.0,
+                "return_id": "efd41e69-8e18-4711-a437-a6fc74f2f3dd",
+                "return_reason": "defective",
+                "return_quantity": 2,
+                "return_method": "ups_dropoff"
+            },
+            "16fd067d-64d7-4d45-81ea-341b87424765": {
+                "order_event_id": "16fd067d-64d7-4d45-81ea-341b87424765",
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700",
+                "order_id": "76eb6e8d-4fe7-4d3f-b786-9e655144fd31",
+                "event_type": "order_replacement",
+                "event_date": "2026-08-25",
+                "amount": 0.0,
+                "return_id": "efd41e69-8e18-4711-a437-a6fc74f2f3dd",
+                "replacement_order_id": "0907ac9c-8a6d-43c2-87dd-62985efcb996",
+                "replacement_reason": "defective"
+            },
+            "ae8563cc-432c-4ce7-8429-a9ecead659ed": {
+                "order_event_id": "ae8563cc-432c-4ce7-8429-a9ecead659ed",
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700",
+                "order_id": "76eb6e8d-4fe7-4d3f-b786-9e655144fd31",
+                "event_type": "order_return_receipt",
+                "event_date": "2026-10-01",
+                "amount": 0.0,
+                "return_id": "efd41e69-8e18-4711-a437-a6fc74f2f3dd",
+                "carrier_scan_type": "first_scan",
+                "return_destination": "northloop_returns_center",
+                "received_condition": "not_inspected"
+            },
+            "08f401db-6971-4c00-b271-67fa572c0812": {
+                "order_event_id": "08f401db-6971-4c00-b271-67fa572c0812",
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700",
+                "order_id": "76eb6e8d-4fe7-4d3f-b786-9e655144fd31",
+                "event_type": "order_return_receipt",
+                "event_date": "2026-10-05",
+                "amount": 0.0,
+                "return_id": "efd41e69-8e18-4711-a437-a6fc74f2f3dd",
+                "carrier_scan_type": "received_at_destination",
+                "return_destination": "northloop_returns_center",
+                "received_condition": "used_or_incomplete"
+            },
+            "dc24e449-22d9-4396-97ec-18487b1d7a53": {
+                "order_event_id": "dc24e449-22d9-4396-97ec-18487b1d7a53",
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700",
+                "order_id": "b6050e0a-6b77-4e98-a506-ab44ac9a4707",
+                "event_type": "order_charge",
+                "event_date": "2025-12-02",
+                "amount": 44.09,
+                "charge_reason": "order_capture",
+                "return_id": ""
+            },
+            "5d817d57-d9ec-48df-831f-89108d449eff": {
+                "order_event_id": "5d817d57-d9ec-48df-831f-89108d449eff",
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700",
+                "order_id": "b6050e0a-6b77-4e98-a506-ab44ac9a4707",
+                "event_type": "order_return_request",
+                "event_date": "2025-12-08",
+                "amount": 0.0,
+                "return_id": "99c270d1-a498-4787-82c8-166a7480db08",
+                "return_reason": "no_longer_needed",
+                "return_quantity": 1,
+                "return_method": "ups_dropoff"
+            },
+            "815621ed-6201-4a6b-9adf-780a951f0a98": {
+                "order_event_id": "815621ed-6201-4a6b-9adf-780a951f0a98",
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700",
+                "order_id": "b6050e0a-6b77-4e98-a506-ab44ac9a4707",
+                "event_type": "order_return_receipt",
+                "event_date": "2025-12-09",
+                "amount": 0.0,
+                "return_id": "99c270d1-a498-4787-82c8-166a7480db08",
+                "carrier_scan_type": "first_scan",
+                "return_destination": "northloop_returns_center",
+                "received_condition": "not_inspected"
+            },
+            "23c8f02d-981b-41ef-983c-23cdf96af785": {
+                "order_event_id": "23c8f02d-981b-41ef-983c-23cdf96af785",
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700",
+                "order_id": "b6050e0a-6b77-4e98-a506-ab44ac9a4707",
+                "event_type": "order_refund",
+                "event_date": "2025-12-09",
+                "amount": 39.99,
+                "refund_component": "item",
+                "return_id": "99c270d1-a498-4787-82c8-166a7480db08",
+                "refund_quantity": 1,
+                "funded_by": "seller",
+                "refund_destination": "original_payment",
+                "restocking_fee_amount": 0.0,
+                "return_shipping_fee_amount": 0.0,
+                "late_return_deduction_amount": 0.0
+            },
+            "f6acb04b-c283-4c83-9991-f77963d096ba": {
+                "order_event_id": "f6acb04b-c283-4c83-9991-f77963d096ba",
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700",
+                "order_id": "b6050e0a-6b77-4e98-a506-ab44ac9a4707",
+                "event_type": "order_refund",
+                "event_date": "2025-12-09",
+                "amount": 4.1,
+                "refund_component": "tax",
+                "return_id": "99c270d1-a498-4787-82c8-166a7480db08",
+                "refund_quantity": 0,
+                "funded_by": "seller",
+                "refund_destination": "original_payment",
+                "restocking_fee_amount": 0.0,
+                "return_shipping_fee_amount": 0.0,
+                "late_return_deduction_amount": 0.0
+            },
+            "bf3fd602-c587-4f81-b15b-ae4d4f33b07f": {
+                "order_event_id": "bf3fd602-c587-4f81-b15b-ae4d4f33b07f",
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700",
+                "order_id": "b6050e0a-6b77-4e98-a506-ab44ac9a4707",
+                "event_type": "order_return_receipt",
+                "event_date": "2025-12-12",
+                "amount": 0.0,
+                "return_id": "99c270d1-a498-4787-82c8-166a7480db08",
+                "carrier_scan_type": "received_at_destination",
+                "return_destination": "northloop_returns_center",
+                "received_condition": "opened_resellable"
+            }
+        },
+        "member_memberships": {
+            "a5557b8a-997d-4f38-8ca5-4ed715fa697d": {
+                "membership_id": "a5557b8a-997d-4f38-8ca5-4ed715fa697d",
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700",
+                "variant_name": "Loop+ Annual",
+                "status": "active",
+                "start_date": "2022-01-10",
+                "trial_end_date": "2022-02-08",
+                "eligibility_verified_date": "",
+                "paid_through_date": "2027-02-08",
+                "next_billing_date": "2027-02-09",
+                "cancel_effective_date": "",
+                "end_date": "",
+                "payment_last4": "2084",
+                "promo_credit_balance": 0.0
+            }
+        }
+    },
+    "db_closure": {
+        "order_events": {
+            "dc24e449-22d9-4396-97ec-18487b1d7a53": {
+                "order_event_id": "dc24e449-22d9-4396-97ec-18487b1d7a53",
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700",
+                "order_id": "b6050e0a-6b77-4e98-a506-ab44ac9a4707",
+                "event_type": "order_charge",
+                "event_date": "2025-12-02",
+                "amount": 44.09,
+                "charge_reason": "order_capture",
+                "return_id": ""
+            },
+            "23c8f02d-981b-41ef-983c-23cdf96af785": {
+                "order_event_id": "23c8f02d-981b-41ef-983c-23cdf96af785",
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700",
+                "order_id": "b6050e0a-6b77-4e98-a506-ab44ac9a4707",
+                "event_type": "order_refund",
+                "event_date": "2025-12-09",
+                "amount": 39.99,
+                "refund_component": "item",
+                "return_id": "99c270d1-a498-4787-82c8-166a7480db08",
+                "refund_quantity": 1,
+                "funded_by": "seller",
+                "refund_destination": "original_payment",
+                "restocking_fee_amount": 0.0,
+                "return_shipping_fee_amount": 0.0,
+                "late_return_deduction_amount": 0.0
+            },
+            "08f401db-6971-4c00-b271-67fa572c0812": {
+                "order_event_id": "08f401db-6971-4c00-b271-67fa572c0812",
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700",
+                "order_id": "76eb6e8d-4fe7-4d3f-b786-9e655144fd31",
+                "event_type": "order_return_receipt",
+                "event_date": "2026-10-05",
+                "amount": 0.0,
+                "return_id": "efd41e69-8e18-4711-a437-a6fc74f2f3dd",
+                "carrier_scan_type": "received_at_destination",
+                "return_destination": "northloop_returns_center",
+                "received_condition": "used_or_incomplete"
+            },
+            "ae8563cc-432c-4ce7-8429-a9ecead659ed": {
+                "order_event_id": "ae8563cc-432c-4ce7-8429-a9ecead659ed",
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700",
+                "order_id": "76eb6e8d-4fe7-4d3f-b786-9e655144fd31",
+                "event_type": "order_return_receipt",
+                "event_date": "2026-10-01",
+                "amount": 0.0,
+                "return_id": "efd41e69-8e18-4711-a437-a6fc74f2f3dd",
+                "carrier_scan_type": "first_scan",
+                "return_destination": "northloop_returns_center",
+                "received_condition": "not_inspected"
+            },
+            "bf3fd602-c587-4f81-b15b-ae4d4f33b07f": {
+                "order_event_id": "bf3fd602-c587-4f81-b15b-ae4d4f33b07f",
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700",
+                "order_id": "b6050e0a-6b77-4e98-a506-ab44ac9a4707",
+                "event_type": "order_return_receipt",
+                "event_date": "2025-12-12",
+                "amount": 0.0,
+                "return_id": "99c270d1-a498-4787-82c8-166a7480db08",
+                "carrier_scan_type": "received_at_destination",
+                "return_destination": "northloop_returns_center",
+                "received_condition": "opened_resellable"
+            },
+            "5d817d57-d9ec-48df-831f-89108d449eff": {
+                "order_event_id": "5d817d57-d9ec-48df-831f-89108d449eff",
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700",
+                "order_id": "b6050e0a-6b77-4e98-a506-ab44ac9a4707",
+                "event_type": "order_return_request",
+                "event_date": "2025-12-08",
+                "amount": 0.0,
+                "return_id": "99c270d1-a498-4787-82c8-166a7480db08",
+                "return_reason": "no_longer_needed",
+                "return_quantity": 1,
+                "return_method": "ups_dropoff"
+            },
+            "58f53b6a-62d8-46a7-a59e-61511185412f": {
+                "order_event_id": "58f53b6a-62d8-46a7-a59e-61511185412f",
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700",
+                "order_id": "76eb6e8d-4fe7-4d3f-b786-9e655144fd31",
+                "event_type": "order_return_request",
+                "event_date": "2026-08-23",
+                "amount": 0.0,
+                "return_id": "efd41e69-8e18-4711-a437-a6fc74f2f3dd",
+                "return_reason": "defective",
+                "return_quantity": 2,
+                "return_method": "ups_dropoff"
+            },
+            "815621ed-6201-4a6b-9adf-780a951f0a98": {
+                "order_event_id": "815621ed-6201-4a6b-9adf-780a951f0a98",
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700",
+                "order_id": "b6050e0a-6b77-4e98-a506-ab44ac9a4707",
+                "event_type": "order_return_receipt",
+                "event_date": "2025-12-09",
+                "amount": 0.0,
+                "return_id": "99c270d1-a498-4787-82c8-166a7480db08",
+                "carrier_scan_type": "first_scan",
+                "return_destination": "northloop_returns_center",
+                "received_condition": "not_inspected"
+            },
+            "f6acb04b-c283-4c83-9991-f77963d096ba": {
+                "order_event_id": "f6acb04b-c283-4c83-9991-f77963d096ba",
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700",
+                "order_id": "b6050e0a-6b77-4e98-a506-ab44ac9a4707",
+                "event_type": "order_refund",
+                "event_date": "2025-12-09",
+                "amount": 4.1,
+                "refund_component": "tax",
+                "return_id": "99c270d1-a498-4787-82c8-166a7480db08",
+                "refund_quantity": 0,
+                "funded_by": "seller",
+                "refund_destination": "original_payment",
+                "restocking_fee_amount": 0.0,
+                "return_shipping_fee_amount": 0.0,
+                "late_return_deduction_amount": 0.0
+            },
+            "16fd067d-64d7-4d45-81ea-341b87424765": {
+                "order_event_id": "16fd067d-64d7-4d45-81ea-341b87424765",
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700",
+                "order_id": "76eb6e8d-4fe7-4d3f-b786-9e655144fd31",
+                "event_type": "order_replacement",
+                "event_date": "2026-08-25",
+                "amount": 0.0,
+                "return_id": "efd41e69-8e18-4711-a437-a6fc74f2f3dd",
+                "replacement_order_id": "0907ac9c-8a6d-43c2-87dd-62985efcb996",
+                "replacement_reason": "defective"
+            },
+            "00973895-8f93-48c8-a5b8-da4f8be3b06d": {
+                "order_event_id": "00973895-8f93-48c8-a5b8-da4f8be3b06d",
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700",
+                "order_id": "76eb6e8d-4fe7-4d3f-b786-9e655144fd31",
+                "event_type": "order_charge",
+                "event_date": "2026-08-18",
+                "amount": 198.43,
+                "charge_reason": "order_capture",
+                "return_id": ""
+            }
+        },
+        "order_orders": {
+            "0907ac9c-8a6d-43c2-87dd-62985efcb996": {
+                "order_id": "0907ac9c-8a6d-43c2-87dd-62985efcb996",
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700",
+                "seller_customer_id": "92928e01-5be3-4dd5-a4c6-ea47a7929c3c",
+                "is_gift": false,
+                "payment_last4": "2084",
+                "tracking_status": "valid_tracking",
+                "signature_confirmed": false,
+                "delivery_exception": "none",
+                "cancel_initiator": "none",
+                "closed_date": "",
+                "variant_name": "Fulfilled by Northloop Standard",
+                "status": "delivered",
+                "order_placed_at": "2026-08-25 10:05:00 America/Chicago",
+                "order_date": "2026-08-25",
+                "item_title": "Kestrel 12-Cup Programmable Coffee Maker",
+                "sku": "KST-CM12-BLK",
+                "item_category": "home_kitchen",
+                "item_condition": "new",
+                "quantity": 2,
+                "unit_price": 0.0,
+                "shipping_charge": 0.0,
+                "tax_amount": 0.0,
+                "order_total": 0.0,
+                "promised_delivery_date": "2026-09-01",
+                "shipped_date": "2026-08-25",
+                "delivered_date": "2026-08-28",
+                "delivery_promise_met": "met",
+                "net_paid_amount": 0.0
+            },
+            "76eb6e8d-4fe7-4d3f-b786-9e655144fd31": {
+                "order_id": "76eb6e8d-4fe7-4d3f-b786-9e655144fd31",
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700",
+                "seller_customer_id": "92928e01-5be3-4dd5-a4c6-ea47a7929c3c",
+                "is_gift": false,
+                "payment_last4": "2084",
+                "tracking_status": "valid_tracking",
+                "signature_confirmed": false,
+                "delivery_exception": "none",
+                "cancel_initiator": "none",
+                "closed_date": "",
+                "variant_name": "Fulfilled by Northloop Standard",
+                "status": "delivered",
+                "order_placed_at": "2026-08-17 08:52:00 America/Chicago",
+                "order_date": "2026-08-17",
+                "item_title": "Kestrel 12-Cup Programmable Coffee Maker",
+                "sku": "KST-CM12-BLK",
+                "item_category": "home_kitchen",
+                "item_condition": "new",
+                "quantity": 2,
+                "unit_price": 89.99,
+                "shipping_charge": 0.0,
+                "tax_amount": 18.45,
+                "order_total": 198.43,
+                "promised_delivery_date": "2026-08-24",
+                "shipped_date": "2026-08-18",
+                "delivered_date": "2026-08-21",
+                "delivery_promise_met": "met",
+                "net_paid_amount": 198.43
+            },
+            "b6050e0a-6b77-4e98-a506-ab44ac9a4707": {
+                "order_id": "b6050e0a-6b77-4e98-a506-ab44ac9a4707",
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700",
+                "seller_customer_id": "92928e01-5be3-4dd5-a4c6-ea47a7929c3c",
+                "is_gift": false,
+                "payment_last4": "2084",
+                "tracking_status": "valid_tracking",
+                "signature_confirmed": false,
+                "delivery_exception": "none",
+                "cancel_initiator": "none",
+                "closed_date": "2026-03-05",
+                "variant_name": "Fulfilled by Northloop Two-Day",
+                "status": "closed",
+                "order_placed_at": "2025-12-02 21:14:00 America/Chicago",
+                "order_date": "2025-12-02",
+                "item_title": "Larkfield Waffle-Knit Bath Towel Set, 6 Piece",
+                "sku": "LRK-WKT6-SAGE",
+                "item_category": "home_kitchen",
+                "item_condition": "new",
+                "quantity": 1,
+                "unit_price": 39.99,
+                "shipping_charge": 0.0,
+                "tax_amount": 4.1,
+                "order_total": 44.09,
+                "promised_delivery_date": "2025-12-04",
+                "shipped_date": "2025-12-02",
+                "delivered_date": "2025-12-04",
+                "delivery_promise_met": "met",
+                "net_paid_amount": 0.0
+            }
+        },
+        "customers": {
+            "0c9e97e8-2507-4716-aac6-3aa2ad12a700": {
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700",
+                "name": "Marguerite Abernathy-Solis",
+                "email": "marguerite.abernathy.solis@outlook.com",
+                "phone": "3125550163",
+                "billing_zip": "60622",
+                "account_opened_date": "2021-11-03",
+                "payment_card_last4": "2084",
+                "customer_type": "buyer",
+                "business_name": "",
+                "tax_id_last4": ""
+            }
+        },
+        "member_memberships": {
+            "a5557b8a-997d-4f38-8ca5-4ed715fa697d": {
+                "membership_id": "a5557b8a-997d-4f38-8ca5-4ed715fa697d",
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700",
+                "variant_name": "Loop+ Annual",
+                "status": "active",
+                "start_date": "2022-01-10",
+                "trial_end_date": "2022-02-08",
+                "eligibility_verified_date": "",
+                "paid_through_date": "2027-02-08",
+                "next_billing_date": "2027-02-09",
+                "cancel_effective_date": "",
+                "end_date": "",
+                "payment_last4": "2084",
+                "promo_credit_balance": 0.0
+            }
+        }
+    },
+    "db_closure_matches_initial_state": true,
+    "solvability_contract": {
+        "request_binding_version": 1,
+        "request_alignment": [
+            {
+                "claim": "The buyer wants the returned originals of her two replaced coffee makers closed out, with whatever is owed back to her put on her card.",
+                "evidence": [
+                    "user_scenario:whatever money is owed back to you for the two coffee makers you returned put back on your card"
+                ]
+            },
+            {
+                "claim": "She will make any payment the agent hands her and lets the agent do the rest.",
+                "evidence": [
+                    "user_scenario:you make it right away with exactly the order, return number and amount the agent gives you",
+                    "user_scenario:You are happy for the agent to do the rest on your behalf."
+                ]
+            }
+        ],
+        "gold_actions": [
+            {
+                "step": 6,
+                "business_effect": "The buyer pays the 140.64 unreturned-replacement charge on the coffee maker order from the card on file; the payment is tied to return efd41e69-8e18-4711-a437-a6fc74f2f3dd and the order's net paid rises from 198.43 to 339.07.",
+                "request_binding": {
+                    "action_semantics": "A replacement was shipped on 2026-08-25 (the replacement entry date, which is also the replacement order's ship date) against the defective-unit return, and the originals had no first carrier scan by the deadline 2026-09-24, so the replacement charge has fallen due (a state-owed charge, not a request); under the charter the buyer settles it as her own payment, and the refund she asks for is booked only after it stands captured.",
+                    "intent_source": {
+                        "kind": "initial_state",
+                        "evidence": [
+                            "initial_state.order_events.16fd067d-64d7-4d45-81ea-341b87424765",
+                            "initial_state.order_events.16fd067d-64d7-4d45-81ea-341b87424765.event_date",
+                            "initial_state.order_events.ae8563cc-432c-4ce7-8429-a9ecead659ed.event_date"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "an unreturned-replacement charge that fell due when the original unit missed its scan deadline",
+                        "evidence": [
+                            "initial_state.order_events.16fd067d-64d7-4d45-81ea-341b87424765.return_id",
+                            "initial_state.order_events.ae8563cc-432c-4ce7-8429-a9ecead659ed.event_date"
+                        ],
+                        "action_arg": "return_id",
+                        "value": "efd41e69-8e18-4711-a437-a6fc74f2f3dd"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "performed_by_this_tool",
+                    "fact": "The charge is paid by the buyer through this synchronous call; the replacement and the late first scan were already recorded at the opening.",
+                    "evidence": [
+                        "initial_state.order_events.16fd067d-64d7-4d45-81ea-341b87424765",
+                        "initial_state.order_events.ae8563cc-432c-4ce7-8429-a9ecead659ed"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "order_capture_and_shipping_charge",
+                        "eligibility_id": "policy_scope",
+                        "condition": "The capture point and shipping rules fix the order-total capture taken at shipment; this payment is a separate unreturned-replacement charge and changes neither.",
+                        "evidence": [
+                            "initial_state.order_events.00973895-8f93-48c8-a5b8-da4f8be3b06d.charge_reason"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "order_replacement_terms",
+                        "eligibility_id": "policy_scope",
+                        "condition": "A replacement was shipped on a Northloop-fulfilled option that offers replacements, against a defective-unit return within the replacement window, and its original had no first carrier scan within the unreturned replacement days.",
+                        "evidence": [
+                            "initial_state.order_events.16fd067d-64d7-4d45-81ea-341b87424765",
+                            "initial_state.order_orders.76eb6e8d-4fe7-4d3f-b786-9e655144fd31.variant_name",
+                            "initial_state.order_events.ae8563cc-432c-4ce7-8429-a9ecead659ed.event_date"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 8,
+                "business_effect": "Northloop refunds 89.27 of the replacement charge to the buyer's card as an item refund tied to return efd41e69-8e18-4711-a437-a6fc74f2f3dd, funded by Northloop; net paid falls to 249.80.",
+                "request_binding": {
+                    "action_semantics": "The buyer asks for whatever is owed back for the returned originals; once the charge stands captured, the only refund the charter gives for originals that came back after the deadline is the replacement-charge refund, booked as an item refund on that return.",
+                    "intent_source": {
+                        "kind": "user_scenario",
+                        "evidence": [
+                            "user_scenario:whatever money is owed back to you for the two coffee makers you returned put back on your card"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "money is owed back to you for the two coffee makers you returned",
+                        "evidence": [
+                            "user_scenario:whatever money is owed back to you for the two coffee makers you returned put back on your card",
+                            "prior_step:6"
+                        ],
+                        "action_arg": "refund_component",
+                        "value": "item"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "established_by_prior_tool",
+                    "fact": "The replacement charge refunded here was captured by the buyer's payment at step 6 of this call; the originals' late first scan and receipt were recorded before the call.",
+                    "evidence": [
+                        "prior_step:6",
+                        "initial_state.order_events.08f401db-6971-4c00-b271-67fa572c0812"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "order_agg_return_history",
+                        "eligibility_id": "policy_scope",
+                        "condition": "The buyer's remorse-return history can only delay first-scan or returnless item refunds of remorse returns; the originals went back for a defect and this is a refund of a replacement charge, so the history changes nothing.",
+                        "evidence": [
+                            "initial_state.order_events.58f53b6a-62d8-46a7-a59e-61511185412f.return_reason"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "order_cancellation",
+                        "eligibility_id": "policy_scope",
+                        "condition": "No cancellation is involved; the order shipped and was delivered.",
+                        "evidence": [
+                            "initial_state.order_orders.76eb6e8d-4fe7-4d3f-b786-9e655144fd31.status"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "order_return_deductions",
+                        "eligibility_id": "policy_scope",
+                        "condition": "Base return deductions apply only to remorse return refunds; the replacement-charge refund's own late-return, condition and late-label deductions are declared in its overwrite of that sentence and apply whatever the return reason.",
+                        "evidence": [
+                            "initial_state.order_events.58f53b6a-62d8-46a7-a59e-61511185412f.return_reason"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "order_refund_amount",
+                        "eligibility_id": "one_refund_per_component",
+                        "condition": "A return refund is booked per component.",
+                        "evidence": [
+                            "initial_state.order_events.58f53b6a-62d8-46a7-a59e-61511185412f.return_id",
+                            "initial_state.order_events.23c8f02d-981b-41ef-983c-23cdf96af785.refund_component",
+                            "initial_state.order_events.23c8f02d-981b-41ef-983c-23cdf96af785.event_type",
+                            "initial_state.order_events.58f53b6a-62d8-46a7-a59e-61511185412f.order_id"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "order_events.return_id",
+                                "source": "initial_state.order_events.58f53b6a-62d8-46a7-a59e-61511185412f.return_id",
+                                "action_arg": "return_id"
+                            },
+                            {
+                                "gate_field": "order_events.refund_component",
+                                "source": "initial_state.order_events.23c8f02d-981b-41ef-983c-23cdf96af785.refund_component",
+                                "action_arg": "refund_component"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "order_refund_timing",
+                        "eligibility_id": "policy_scope",
+                        "condition": "The originals were first-scanned on 2026-10-01 and received on 2026-10-05; nothing in the timing rules holds back a refund of a captured replacement charge.",
+                        "evidence": [
+                            "initial_state.order_events.ae8563cc-432c-4ce7-8429-a9ecead659ed",
+                            "initial_state.order_events.08f401db-6971-4c00-b271-67fa572c0812"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "order_lost_and_undeliverable",
+                        "eligibility_id": "policy_scope",
+                        "condition": "The order was delivered; nothing was lost or undeliverable.",
+                        "evidence": [
+                            "initial_state.order_orders.76eb6e8d-4fe7-4d3f-b786-9e655144fd31.status"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "order_late_delivery",
+                        "eligibility_id": "policy_scope",
+                        "condition": "The order is on a non-guaranteed option and met its promise; its request-window gate, retired by the extended late-delivery compensation rule, does not bound this refund.",
+                        "evidence": [
+                            "initial_state.order_orders.76eb6e8d-4fe7-4d3f-b786-9e655144fd31.delivery_promise_met",
+                            "initial_state.order_orders.76eb6e8d-4fe7-4d3f-b786-9e655144fd31.variant_name"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "order_guarantee_claim",
+                        "eligibility_id": "policy_scope",
+                        "condition": "No guarantee claim exists or is involved on this order.",
+                        "evidence": [
+                            "initial_state.order_orders.76eb6e8d-4fe7-4d3f-b786-9e655144fd31.order_id"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    }
+                ]
+            }
+        ],
+        "temporal_feasibility": [],
+        "required_user_inputs": [
+            {
+                "information": "full name to locate the profile",
+                "source": "user_scenario:Marguerite Abernathy-Solis"
+            },
+            {
+                "information": "email address for identity verification",
+                "source": "user_scenario:marguerite.abernathy.solis@outlook.com"
+            },
+            {
+                "information": "card last four digits for identity verification",
+                "source": "user_scenario:2084"
+            },
+            {
+                "information": "consent to make the payment the agent hands over",
+                "source": "user_scenario:you make it right away with exactly the order, return number and amount the agent gives you"
+            },
+            {
+                "information": "Loop+ plan and the missing carafe lid, given only if asked (never write arguments)",
+                "source": "user_scenario:you have been on Loop+ Annual since early 2022 and are still a member"
+            }
+        ],
+        "seed_consistency": [
+            {
+                "row": "initial_state.order_orders.76eb6e8d-4fe7-4d3f-b786-9e655144fd31",
+                "policy_id": "order_capture_and_shipping_charge",
+                "check": "Fulfilled by Northloop Standard ordered 2026-08-17 by an active Loop+ member, so member shipping 0.00; 2 x 89.99 = 179.98, tax 18.45, total 198.43 = the capture; promised 2026-08-24 = order date + 1 handling + 4 transit business days; delivered 2026-08-21 (met); net paid 198.43 with no charge or refund since.",
+                "evidence": [
+                    "initial_state.order_orders.76eb6e8d-4fe7-4d3f-b786-9e655144fd31.order_total",
+                    "initial_state.order_events.00973895-8f93-48c8-a5b8-da4f8be3b06d.amount",
+                    "initial_state.member_memberships.a5557b8a-997d-4f38-8ca5-4ed715fa697d.status"
+                ]
+            },
+            {
+                "row": "initial_state.order_orders.0907ac9c-8a6d-43c2-87dd-62985efcb996",
+                "policy_id": "order_replacement_terms",
+                "check": "Zero-priced replacement order created by the replacement of 2026-08-25 for 2 units, shipped the same day 2026-08-25 (the date on the replacement entry) and delivered 2026-08-28; it owes and pays nothing.",
+                "evidence": [
+                    "initial_state.order_events.16fd067d-64d7-4d45-81ea-341b87424765.replacement_order_id",
+                    "initial_state.order_orders.0907ac9c-8a6d-43c2-87dd-62985efcb996.order_total"
+                ]
+            },
+            {
+                "row": "initial_state.order_orders.b6050e0a-6b77-4e98-a506-ab44ac9a4707",
+                "policy_id": "order_delivery_and_close",
+                "check": "Two-Day towel order of 2025-12-02 returned as no longer needed, refunded item 39.99 and tax 4.10 at the first scan (net paid 0.00), closed 2026-03-05 after the claim window from the promised date 2025-12-04.",
+                "evidence": [
+                    "initial_state.order_orders.b6050e0a-6b77-4e98-a506-ab44ac9a4707.net_paid_amount",
+                    "initial_state.order_events.23c8f02d-981b-41ef-983c-23cdf96af785.amount",
+                    "initial_state.order_events.f6acb04b-c283-4c83-9991-f77963d096ba.amount"
+                ]
+            },
+            {
+                "row": "initial_state.order_events.00973895-8f93-48c8-a5b8-da4f8be3b06d",
+                "policy_id": "order_capture_and_shipping_charge",
+                "check": "Single order-total capture of 198.43 on the ship date 2026-08-18.",
+                "evidence": [
+                    "initial_state.order_orders.76eb6e8d-4fe7-4d3f-b786-9e655144fd31.shipped_date"
+                ]
+            },
+            {
+                "row": "initial_state.order_events.58f53b6a-62d8-46a7-a59e-61511185412f",
+                "policy_id": "order_return_window",
+                "check": "Defective return of both units on 2026-08-23, 2 days after delivery, inside the 30-day window; UPS drop-off is an allowed method.",
+                "evidence": [
+                    "initial_state.order_orders.76eb6e8d-4fe7-4d3f-b786-9e655144fd31.delivered_date",
+                    "initial_state.order_orders.76eb6e8d-4fe7-4d3f-b786-9e655144fd31.quantity"
+                ]
+            },
+            {
+                "row": "initial_state.order_events.16fd067d-64d7-4d45-81ea-341b87424765",
+                "policy_id": "order_replacement_terms",
+                "check": "Replacement shipped 2026-08-25 against the defective return, within the 30-day replacement request window from delivery, the order's only replacement (maximum 1), on an option that offers replacements.",
+                "evidence": [
+                    "initial_state.order_orders.76eb6e8d-4fe7-4d3f-b786-9e655144fd31.variant_name",
+                    "initial_state.order_events.58f53b6a-62d8-46a7-a59e-61511185412f.event_date"
+                ]
+            },
+            {
+                "row": "initial_state.order_events.ae8563cc-432c-4ce7-8429-a9ecead659ed",
+                "policy_id": "order_refund_timing",
+                "check": "First carrier scan of the originals on 2026-10-01, 37 days after the replacement date: 7 days past the unreturned-replacement deadline 2026-09-24 (2026-08-25 + 30 calendar days), inside the 15-day late grace.",
+                "evidence": [
+                    "initial_state.order_events.16fd067d-64d7-4d45-81ea-341b87424765.event_date"
+                ]
+            },
+            {
+                "row": "initial_state.order_events.08f401db-6971-4c00-b271-67fa572c0812",
+                "policy_id": "order_refund_timing",
+                "check": "Received at the Northloop returns center 2026-10-05 and inspected used or incomplete (a carafe lid missing); no item refund of the purchase price is booked for replaced units, and no restock is triggered for that condition.",
+                "evidence": [
+                    "initial_state.order_events.ae8563cc-432c-4ce7-8429-a9ecead659ed.event_date"
+                ]
+            },
+            {
+                "row": "initial_state.order_events.dc24e449-22d9-4396-97ec-18487b1d7a53",
+                "policy_id": "order_capture_and_shipping_charge",
+                "check": "Order-total capture 44.09 on the ship date 2025-12-02.",
+                "evidence": [
+                    "initial_state.order_orders.b6050e0a-6b77-4e98-a506-ab44ac9a4707.order_total"
+                ]
+            },
+            {
+                "row": "initial_state.order_events.5d817d57-d9ec-48df-831f-89108d449eff",
+                "policy_id": "order_return_window",
+                "check": "No-longer-needed return of 2025-12-08, 4 days after delivery.",
+                "evidence": [
+                    "initial_state.order_orders.b6050e0a-6b77-4e98-a506-ab44ac9a4707.delivered_date"
+                ]
+            },
+            {
+                "row": "initial_state.order_events.815621ed-6201-4a6b-9adf-780a951f0a98",
+                "policy_id": "order_refund_timing",
+                "check": "First scan 2025-12-09 released the refund at first scan (order total under the first-scan maximum, profile older than 90 days, no return-history block).",
+                "evidence": [
+                    "initial_state.order_events.5d817d57-d9ec-48df-831f-89108d449eff.event_date"
+                ]
+            },
+            {
+                "row": "initial_state.order_events.23c8f02d-981b-41ef-983c-23cdf96af785",
+                "policy_id": "order_refund_amount",
+                "check": "Item refund 39.99: remorse return on Fulfilled by Northloop Two-Day carries no return shipping fee and, received opened but resellable, no restocking fee; seller-funded as every return refund.",
+                "evidence": [
+                    "initial_state.order_orders.b6050e0a-6b77-4e98-a506-ab44ac9a4707.unit_price",
+                    "initial_state.order_events.bf3fd602-c587-4f81-b15b-ae4d4f33b07f.received_condition"
+                ]
+            },
+            {
+                "row": "initial_state.order_events.f6acb04b-c283-4c83-9991-f77963d096ba",
+                "policy_id": "order_refund_amount",
+                "check": "Tax refund 4.10 = 4.10 x 39.99 / (39.99 + 0.00), the whole order tax since the only unit came back.",
+                "evidence": [
+                    "initial_state.order_orders.b6050e0a-6b77-4e98-a506-ab44ac9a4707.tax_amount"
+                ]
+            },
+            {
+                "row": "initial_state.order_events.bf3fd602-c587-4f81-b15b-ae4d4f33b07f",
+                "policy_id": "order_refund_timing",
+                "check": "Received 2025-12-12 opened but resellable, after the refund was already released at first scan.",
+                "evidence": [
+                    "initial_state.order_events.815621ed-6201-4a6b-9adf-780a951f0a98.event_date"
+                ]
+            }
+        ]
+    },
+    "evaluation_criteria": [
+        {
+            "owner": "agent",
+            "tool": "find_customers",
+            "arguments": {
+                "name": "Marguerite Abernathy-Solis"
+            },
+            "objective": "Locate the caller's profile by the full name she gives (Marguerite Abernathy-Solis).",
+            "necessity": "Every later read and write is keyed to her customer reference."
+        },
+        {
+            "owner": "agent",
+            "tool": "verify_customer_identity",
+            "arguments": {
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700",
+                "email": "marguerite.abernathy.solis@outlook.com",
+                "payment_card_last4": "2084"
+            },
+            "objective": "Record the in-session identity check with two matching details: email address and card last four 2084.",
+            "necessity": "Identity must be verified before account details are discussed or any payment or refund is taken."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_orders",
+            "arguments": {
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700"
+            },
+            "objective": "Read her orders: the 2026-08-17 Fulfilled by Northloop Standard coffee maker order (2 units at 89.99, shipping 0.00, tax 18.45, total 198.43, net paid 198.43), its zero-priced replacement order and the closed towel order.",
+            "necessity": "Supplies the unit price, quantity, tax and option parameters (unreturned replacement days 30, late return grace 15 days) both computations use, and identifies the replacement order (shipped 2026-08-25, the replacement date)."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_order_activity",
+            "arguments": {
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700"
+            },
+            "objective": "Read the order activity: the capture, the 2026-08-23 defective return of 2 units (UPS drop-off), the 2026-08-25 replacement for a defective unit, the first scan 2026-10-01 and the receipt 2026-10-05 inspected used or incomplete, plus the towel order's return, scans and item and tax refunds.",
+            "necessity": "Shows the charge has fallen due with no capture (the prerequisite of the refund), the replaced units and the replacement reason, the replacement date (deadline), the first scan that ends the overdue-day count and sets the late-return rate, the inspection result, the return method for the late-label fee and the overdue-day rule, and the receipt date for the refund-delay courtesy, plus the item refund wording."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_loop_plus_memberships",
+            "arguments": {
+                "customer_id": "0c9e97e8-2507-4716-aac6-3aa2ad12a700"
+            },
+            "objective": "Read her Loop+ membership: Loop+ Annual, active, started 2022-01-10.",
+            "necessity": "Decides the plan and tenure courtesies of the charge and the Loop+ relief factor of the refund."
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "pay_replacement_charge_b3f7fc80"
+            },
+            "objective": "Hand the replacement-charge payment to the buyer.",
+            "necessity": "Paying the charge is the buyer's own act; the agent unlocks it for her (no DB effect)."
+        },
+        {
+            "owner": "user",
+            "tool": "call_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "pay_replacement_charge_b3f7fc80",
+                "arguments": {
+                    "order_id": "76eb6e8d-4fe7-4d3f-b786-9e655144fd31",
+                    "return_id": "efd41e69-8e18-4711-a437-a6fc74f2f3dd",
+                    "amount": 140.64
+                }
+            },
+            "objective": "The buyer pays the 140.64 replacement charge on the coffee maker order, tied to its return.",
+            "necessity": "The refund of a replacement charge is booked only after that charge stands captured; the replacement-charge policy computes 140.64.",
+            "argument_uniqueness_tracing": {
+                "order_id": "76eb6e8d-4fe7-4d3f-b786-9e655144fd31. Basis: docstring 'the marketplace order number the replacement was shipped for'; the replacement row carries this order. Uniqueness: the replacement order 0907ac9c-8a6d-43c2-87dd-62985efcb996 is zero-priced and is not where the charge is captured; the towel order has no replacement.",
+                "return_id": "efd41e69-8e18-4711-a437-a6fc74f2f3dd. Basis: docstring 'the return number of the original unit the replacement was shipped against'; the replacement row carries return_id efd41e69-8e18-4711-a437-a6fc74f2f3dd. Uniqueness: the towel return 99c270d1-a498-4787-82c8-166a7480db08 had no replacement.",
+                "amount": "140.64 = charged items 143.98 (2 replaced units x 89.99 x defective-unit share 0.80) - Loop+ courtesy 21.60 (annual plan rate 0.10 + tenure rate 0.05 for 56 whole months since 2022-01-10, applied once to 143.98) + sales tax 14.76 (18.45 x 143.98 / 179.98) + settlement fee 3.50 (the overdue-day count runs from the 2026-09-24 deadline to the first carrier scan 2026-10-01 = 7 days, the short-overdue flat fee)."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "refund_replacement_charge_bf6a8eb8"
+            },
+            "objective": "Unlock the replacement-charge refund tool named by the refund policy.",
+            "necessity": "First half of the unlock/call pair, no DB effect."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "refund_replacement_charge_bf6a8eb8",
+                "arguments": {
+                    "order_id": "76eb6e8d-4fe7-4d3f-b786-9e655144fd31",
+                    "return_id": "efd41e69-8e18-4711-a437-a6fc74f2f3dd",
+                    "refund_component": "item",
+                    "amount": 89.27
+                }
+            },
+            "objective": "Refund 89.27 of the charge as a Northloop-funded item refund on the return.",
+            "necessity": "The replacement-charge refund policy computes 89.27 on the world after the payment; this answers the buyer's request.",
+            "argument_uniqueness_tracing": {
+                "order_id": "76eb6e8d-4fe7-4d3f-b786-9e655144fd31. Basis: docstring 'the marketplace order number the replacement charge was collected on'; step 6 captured it there. Uniqueness: no other order carries a replacement charge.",
+                "return_id": "efd41e69-8e18-4711-a437-a6fc74f2f3dd. Basis: rule 'goes to the original payment method as an item refund tied to the return of the original unit'; the originals came back under efd41e69-8e18-4711-a437-a6fc74f2f3dd. Uniqueness: the only return of the order.",
+                "refund_component": "item. Basis: rule 'as an item refund tied to the return of the original unit'; docstring 'item when the refund pays back money collected for units of the item'. Uniqueness: original_shipping, tax and late_delivery_shipping refund other components; the charge was collected for the replaced units.",
+                "amount": "89.27 = refundable charge 137.14 (captured 140.64 less the settlement fee kept 3.50: the charge carried 7 overdue days, deadline to first scan) - deductions 43.88 (rate 0.32 x 137.14: per-day late rate 0.02 x 7 days past the deadline = 0.14, the scan being later than the 5 late courtesy days and inside the 15-day grace, times the annual Loop+ relief factor 0.5 = 0.07, plus the incomplete rate 0.25) - late drop-off label fee 5.99 (UPS drop-off first-scanned 7 days, more than the 3 label validity days, after the deadline) + refund-delay courtesy 2.00 (3 days since the 2026-10-05 receipt)."
+            }
+        }
+    ],
+    "computations": [
+        {
+            "policy_id": "order_ext_replacement_charge",
+            "target_holding_id": "76eb6e8d-4fe7-4d3f-b786-9e655144fd31",
+            "step": 6,
+            "arg": "amount",
+            "expected": 140.64,
+            "factor_trace": [
+                "condition_share (parameter): replacement 16fd067d-64d7-4d45-81ea-341b87424765 shipped for a defective unit -> defective-unit share 0.80; charged items 89.99 x 2 x 0.80 = 143.98; baseline share 1.0 gives 174.93.",
+                "overdue_day_count (method): first carrier scan ae8563cc-432c-4ce7-8429-a9ecead659ed on 2026-10-01 stands after the 2026-09-24 deadline -> the count ends on the scan date: 7 days (tier 2, a carrier pickup with no scan, would count none; the baseline counts to the settlement date 2026-10-08, 14 days, giving the per-day fee 7.00 and 144.14).",
+                "settlement_fee (method): 7 overdue days, at least the short-overdue 7 and fewer than the long-overdue 14 -> one flat fee 3.50 (per-day x days and no fee are the other forms); baseline 0.00 gives 137.14.",
+                "plan_courtesy (parameter, cross-category member, multi-source status AND plan): membership a5557b8a-997d-4f38-8ca5-4ed715fa697d active on Loop+ Annual -> 0.10; baseline 0.0 gives 155.04.",
+                "tenure_courtesy (parameter, cross-category member): start 2022-01-10, 56 whole months to 2026-10-08, at least the long-tenure 48 -> 0.05; baseline 0.0 gives 147.84.",
+                "plain: replaced units 2 from the defective return; sales tax RND(18.45 x 143.98 / 179.98) = 14.76; Loop+ courtesy RND(143.98 x 0.15) = 21.60; result 143.98 - 21.60 + 14.76 + 3.50 = 140.64."
+            ],
+            "baseline_result": 198.43,
+            "factor_sensitivity": [
+                {
+                    "factor": "condition_share",
+                    "tier_taken": "replacement shipped for a defective unit",
+                    "baseline_result": 174.93
+                },
+                {
+                    "factor": "overdue_day_count",
+                    "tier_taken": "a first carrier scan stands after the deadline: count ends on the scan date",
+                    "baseline_result": 144.14
+                },
+                {
+                    "factor": "settlement_fee",
+                    "tier_taken": "at least the short-overdue days but fewer than the long-overdue days: flat fee",
+                    "baseline_result": 137.14
+                },
+                {
+                    "factor": "plan_courtesy",
+                    "tier_taken": "membership in good standing on an annual plan",
+                    "baseline_result": 155.04
+                },
+                {
+                    "factor": "tenure_courtesy",
+                    "tier_taken": "membership in good standing started at least the long-tenure months before",
+                    "baseline_result": 147.84
+                }
+            ]
+        },
+        {
+            "policy_id": "order_ext_replacement_charge_refund",
+            "target_holding_id": "76eb6e8d-4fe7-4d3f-b786-9e655144fd31",
+            "step": 8,
+            "arg": "amount",
+            "expected": 89.27,
+            "factor_trace": [
+                "late_return_rate (method): first scan ae8563cc-432c-4ce7-8429-a9ecead659ed 2026-10-01 is 7 days past the deadline, later than the 5 late courtesy days and inside the 15-day grace -> per-day method 0.02 x 7 = 0.14 (forfeiting the whole charge and no rate are the other forms); baseline 0.0 gives 98.87 (the DSL rounds 137.14 x 0.25 = 34.285 to 34.28; half up gives 34.29 and 98.86; not a scored value).",
+                "loop_relief (parameter, cross-category member, multi-source plan AND status AND inside-grace): Loop+ Annual in good standing and the scan inside the grace -> relief factor 0.5, applied late rate 0.07; baseline factor 1.0 gives 79.67.",
+                "condition_rate (parameter): receipt 08f401db-6971-4c00-b271-67fa572c0812 inspected used or incomplete -> 0.25 (the buyer-damage rate 0.50 belongs to damaged_by_buyer only); baseline 0.0 gives 123.55.",
+                "fee_kept (method): the captured charge carried 7 overdue days (deadline to the first scan, which stands before the 2026-10-08 capture) -> the flat 3.50 is kept; baseline 0.00 gives 91.65.",
+                "late_label_fee (parameter): return 58f53b6a-62d8-46a7-a59e-61511185412f went by UPS drop-off and was first-scanned 7 days after the deadline, more than the 3 label validity days -> 5.99 (a carrier pickup would pay 9.99, a drop-off within 3 days nothing); baseline 0.00 gives 95.26.",
+                "delay_courtesy (parameter): receipt 2026-10-05, refund 2026-10-08 = 3 days, at least the short-delay 2 and fewer than the long-delay 5 -> 2.00; baseline 0.00 gives 87.27.",
+                "plain: captured charge 140.64 (step 6); refundable 140.64 - 3.50 = 137.14; deductions RND(137.14 x min(1, 0.14 x 0.5 + 0.25)) = 43.88; result 137.14 - 43.88 - 5.99 + 2.00 = 89.27."
+            ],
+            "baseline_result": 140.64,
+            "factor_sensitivity": [
+                {
+                    "factor": "late_return_rate",
+                    "tier_taken": "first scan later than the late courtesy days but inside the grace: per-day rate",
+                    "baseline_result": 98.87
+                },
+                {
+                    "factor": "loop_relief",
+                    "tier_taken": "good standing on an annual plan, scanned inside the grace: annual relief factor",
+                    "baseline_result": 79.67
+                },
+                {
+                    "factor": "condition_rate",
+                    "tier_taken": "received used or incomplete",
+                    "baseline_result": 123.55
+                },
+                {
+                    "factor": "fee_kept",
+                    "tier_taken": "the captured charge carried at least the short-overdue but fewer than the long-overdue days: flat fee kept",
+                    "baseline_result": 91.65
+                },
+                {
+                    "factor": "late_label_fee",
+                    "tier_taken": "drop-off first-scanned more than the label validity days after the deadline",
+                    "baseline_result": 95.26
+                },
+                {
+                    "factor": "delay_courtesy",
+                    "tier_taken": "at least the short-delay days but fewer than the long-delay days after receipt",
+                    "baseline_result": 87.27
+                }
+            ]
+        }
+    ],
+    "prerequisite_closure": {
+        "root_problem": "order_ext_replacement_charge_refund",
+        "edges": [
+            {
+                "from": "order_ext_replacement_charge_refund",
+                "to": "order_ext_replacement_charge",
+                "kind": "value_input",
+                "gate": "charge_captured",
+                "form": "state",
+                "condition": "The order carries an unreturned-replacement charge capture for the replacement whose original unit came back.",
+                "policy_source": "The refund of a replacement charge is booked only after that charge stands captured on the order.",
+                "resolved_by": "pay_replacement_charge_b3f7fc80",
+                "unresolved_at_frozen_time": {
+                    "why_false": "The replacement charge fell due on 2026-09-25 (no first scan by the deadline 2026-09-24, the replacement date plus 30 days), but the order carries only its order-total capture; no unreturned-replacement charge stands captured, so the refund has nothing to refund.",
+                    "evidence": [
+                        "initial_state.order_events.00973895-8f93-48c8-a5b8-da4f8be3b06d.charge_reason = order_capture",
+                        "initial_state.order_orders.76eb6e8d-4fe7-4d3f-b786-9e655144fd31.net_paid_amount = 198.43",
+                        "initial_state.order_events.ae8563cc-432c-4ce7-8429-a9ecead659ed.event_date = 2026-10-01",
+                        "initial_state.order_events.16fd067d-64d7-4d45-81ea-341b87424765.event_date = 2026-08-25"
+                    ],
+                    "flips_to_true_by": "Step 6, the buyer's own payment, captures a 140.64 unreturned-replacement charge tied to the return; the refund reads it as its captured charge."
+                }
+            }
+        ],
+        "resolution_order": [
+            "order_ext_replacement_charge",
+            "order_ext_replacement_charge_refund"
+        ],
+        "order_uniqueness": "A single prerequisite edge: the refund of a replacement charge is booked only after that charge stands captured on the order, so the payment must come first; there are no parallel prerequisites to reorder.",
+        "edge_load_bearing": [
+            {
+                "edge": "order_ext_replacement_charge_refund -> order_ext_replacement_charge",
+                "skipped_effect": "Skipping the payment (step 6) leaves no captured charge: the refund recomputes to 0.00 instead of 89.27, and the terminal state lacks the 140.64 capture (net paid would end at 198.43 instead of 249.80)."
+            }
+        ],
+        "no_user_hint": "The persona never mentions a charge, a payment owed, a fee or a deadline; she asks only for whatever is owed back for the returned coffee makers. Paying is a passive reaction that is triggered only after the agent explains that something has to be paid first and hands the payment over.",
+        "tools_do_not_block": "pay_replacement_charge_b3f7fc80 and refund_replacement_charge_bf6a8eb8 each create one order_events row and update net_paid_amount from the arguments as given; neither looks for a replacement, a scan, a deadline or an earlier charge, and neither returns an Error, so a refund booked before any charge is captured still writes and the difference shows only in the terminal hash."
+    },
+    "charter_scope": {
+        "extended_policies": [
+            "order_ext_replacement_charge",
+            "order_ext_replacement_charge_refund"
+        ],
+        "task_tools": [
+            "pay_replacement_charge_b3f7fc80",
+            "refund_replacement_charge_bf6a8eb8"
+        ]
+    },
+    "required_documents": [
+        "order_ext_replacement_charge",
+        "order_ext_replacement_charge_refund"
+    ]
+}

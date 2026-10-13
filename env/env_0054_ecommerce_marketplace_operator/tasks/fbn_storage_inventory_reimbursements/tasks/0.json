@@ -1,0 +1,1651 @@
+{
+    "frozen_time": "2026-10-08 10:40:00 America/Los_Angeles",
+    "design_rationale": "WORKLOG task 0 (fbn_storage_inventory_reimbursements), revision 2. Draw (scripts/draw_counts.py --task 0): {\"prerequisite_problems\": 1, \"problems\": 2, \"factor_counts\": [6, 5]}. The root (warehouse-loss approval) takes 6 factors, the prerequisite (claim correction) takes 5.\n\n1. WHY THIS IS A GOOD TEST. A seller asks only for her undecided lost-inventory claim to be settled. The desk policy fixes the approved units only after the claim carries the claimable lost units, so the agent must (a) read that prerequisite sentence in the approval rule, (b) work out the claimable figure from the claim-correction rule over a reconciled ledger (lookback, search hold, finds and reimbursements inside the lookback, claim ceiling, claim unit cap), (c) see that the case shows 33 and hand the correction to the seller (the case is her own filing), and (d) compute the approval from the corrected claim with six desk factors. Difficulty comes from reading two policies and reconciling 25 FBN ledger rows and five cases, never from choosing between look-alike tools.\n\n2. SCOPE. Task 0 claims fulfill_ext_lost_claim_units (amend_lost_inventory_claim_06dd83f3, owner user) and fulfill_ext_lost_case_approval (approve_lost_inventory_case_b95e2fef, owner agent). Task 1 owns the disjoint inbound-shortage / warehouse-damage tree. Together they cover all five extended policies.\n\n3. DESIGN CONSTRAINT. Every FBN money event (reimbursement, fee credit, fee events) triggers a payout-category write, so no task tool books one. The scored writes are unit counts on fulfill_cases: the seller corrects what she claims, the desk approves a number of units, and Northloop's reimbursement run pays separately (nothing in the tree waits for it). Every tool takes the six source keys bound by the inherited dedup gate no_double_reimbursement.\n\n4. PROBLEM-TREE CARD. Root fulfill_ext_lost_case_approval <- fulfill_ext_lost_claim_units, kind value_input, gate claimed_units, form state. Prerequisite sentence (root's own rule): \"The units approved on a warehouse-loss case are fixed only after the units claimed on that case equal the claimable lost units of its SKU.\" Four-point test: connective 'only after'; record-visible state (units claimed on the case vs the claimable figure the correction rule names); no tool, id or code token; hard requirement scoped to the one case and its SKU. Only the seller's correction sets the units claimed of an open warehouse-loss case (the approval itself ends the open case). Derivation: sentence + case record (33 claimed) + claim-correction rule (25) -> the seller corrects the claim to 25. Opening evidence: initial_state.fulfill_cases.<open case>.units_claimed = 33, case_status = submitted. Order: correction, then approval. Deletion run: skipping the correction gives units_approved 30 instead of 22. user_scenario never mentions a correction; both tools are a single ctx.update and validate nothing.\n\n5. FACTOR CARD - claim correction (5 factors: 4 parameter, 1 method; standard result 5, gold 25).\n- lookback_base (parameter; program and activation date, both on the enrollment row): FBN Growth Program, 31 whole months -> 4 months (standard 2) -> 16 under the baseline.\n- store_lookback_bonus (parameter, cross-difficulty selling): Premium Store opened 2021-06-20 (63 months) -> +1 month (standard none) -> 16.\n- search_hold (parameter): latest receipt small_standard -> 2-month hold (standard 1) -> 30.\n- claim_ceiling_method (method, cross-difficulty standing): Top Rated Level -> no ceiling (standard method: 0.04 x 500 received = 20) -> 20. The three tiers are three different computations: no ceiling, the largest single lost adjustment ever recorded for the SKU (Below Standard / Developing), and a share of received units (Standard / Above Standard).\n- claim_unit_cap (parameter): FBN Growth Program active at least 12 months -> 30 (standard 15) -> 15.\nNear-misses: the 2026-04-06 adjustment (6 units) is 6 whole months old and outside the 5-month lookback; the 2026-05-06 reimbursement (6 units) is 5 whole months old and outside; the 2025-11-10 find (3 units, belonging to the settled 2025-10-15 loss) is outside the lookback and is not netted; the 2026-09-02 adjustment sits inside the 2-month hold.\n\n6. FACTOR CARD - approval (6 factors: 4 parameter, 2 method; standard result 10, gold 22).\n- shrinkage_allowance_method (method, multi-source: enrollment program row + standing level row, cross-difficulty standing): Growth AND Top Rated -> per-incident 1 x 5 adjustments in 6 months = 5 (standard floor(500 x 0.004) = 2) -> 23.\n- allowance_cap (parameter): 31 months -> cap 3 (standard 8) -> 20.\n- verification_holdback_method (method): 0 denied and 3 approved reimbursement cases opened in 12 months -> waived (standard 1) -> 21. Near-miss: the denied case of 2025-08-11 is 13 whole months old.\n- compliance_holdback (parameter, cross-difficulty standing): 0 points, good standing -> waived (standard 1) -> 21.\n- approval_limit (parameter, cross-difficulty selling): Premium Store -> 20 (standard 10) -> 20.\n- limit_uplift (parameter): case opened 2026-09-01, 37 days -> 10 (standard none) -> 20.\nThe approval (22) differs from the corrected claim (25), so approving exactly what is claimed does not score.\n\n7. BASE-INVARIANT CARD. Subject fulfill_reimbursement is governed by fulfill_reimbursement_terms. The claim-correction policy declares an overwrite of \"A warehouse loss claim is filed no later than the warehouse loss claim window counted in calendar days from the inventory adjustment date.\" for warehouse-loss (lost-in-warehouse) cases, replacing it with the month-based warehouse-loss lookback; the warehouse-damage approval of task 1 declares its own replacement for damage cases, so no claim kind is left with an undetermined window. Dedup gate no_double_reimbursement inherited: the claim nets lost-in-warehouse reimbursements paid inside the lookback, and both writes bind reimbursement_type / adjustment_ref / sku to the open case record. The approval overwrites \"Northloop reimburses units lost or damaged in its custody.\" with its approval sentence. Auto-reimbursement clause: the 2025-10-15, 2025-12-10 and 2026-04-06 losses were reimbursed automatically (2 after 3 found, 4 and 6); the 2026-05-27, 2026-07-09 (8 unfound units after 2 found on 2026-07-25), 2026-08-04 and 2026-09-02 losses missed their automatic reimbursement - the case the base parameter text describes (\"a reimbursement not issued automatically\") and exactly what the seller's open case covers; the 2026-09-30 loss is still inside its search period.\n\n8. BUSINESS-OBJECT CARD. Object: the seller's single open case (lost_in_warehouse, FKG-LINEN-APRON-2PK, no adjustment named: a SKU-level warehouse-loss case). Rows aggregated: the SKU's lost-in-warehouse adjustments, found-inventory records, lost-in-warehouse reimbursements and inbound receipts. Excluded by key: the skillet and napkin SKUs and the napkins' damaged-in-warehouse adjustment. Settled objects: each earlier reimbursement names its adjustment; each approved case has its reimbursement row.\n\n9. CROSS-CATEGORY ROWS (charter consistency). Selling plan: Premium Store, active, monthly term from 2026-09-20, next bill 2026-10-20 (same day of month). Standing: Top Rated Level, good standing, 0 violation points, last evaluation 2026-09-20 and next 2026-10-20 (the standing charter's evaluation day 20). No payments account is seeded: no computation of this tree reads payout.\n\n10. PERSONA DESIGN. Rosalind Featherstone, brisk owner-operator. Volunteers: the email, the SKU, the filing date, that she claimed 33 and wants it settled now by the agent. Only when asked: phone 2065550317, tax ID last four 5823; case number unknown. Passive: agrees to change the unit count herself only after the agent explains it and hands it over, using exactly the agent's number; accepts the approved count and ends. She never names a prerequisite and never corrects the agent.\n\n11. STANDARD SOLUTION. Locate by email; verify with phone + tax ID; read enrollment, cases, FBN activity, selling plan, standing; compute claimable lost units 25; hand the correction to the seller (units_claimed 25 on the open case); compute the approval 22; approve the case for 22 units.\n\n12. VERIFICATION. The scratch authoring script (deleted) replays gold through the real tools and evaluates both policies with check_compute's evaluator at each write's handling time: claim 25 (factor baselines 16/16/30/20/15, all-baseline 5); approval 22 after the correction (23/20/21/21/20/20, all-baseline 10); approval without the correction 30.\n\n13. DRAFT RECOMPUTATION FROM THE VISIBLE CONTEXT. From the published rules, tool schemas, persona and finder returns: the case shows 33 claimed; the approval rule fixes nothing until the claim equals the claimable lost units; the claim rule (lookback 4 + 1, hold 2, finds and reimbursements inside the lookback, no ceiling for Top Rated, cap 30) gives 25; the seller corrects her own claim; the approval rule then gives 25 - 3 = 22 capped at 30. Same objects, order and numbers as gold.\n\n14. GATE RUNS (round 2, difficulty-wide block): EXTENDED OK; TASK TOOL CONTRACT OK; REPLAY OK (11 actions, deterministic, non-vacuous, closure 34 rows = initial_state); SOLVABILITY OK (2 calls, 2 base gates, 26 seed rows); COMPUTE OK (2 computations, 11 factors, 5 cross-difficulty, 24 history rows, 34 branches); GROUNDING OK; CACHE-DIFF INFO (no cache trap used); SCOPE OK. check_traceability is deferred to the KB render step.\n\n15. REVISION LOG.\nRound 1: payout reimbursement-credit rows dropped (outside the closure); ceiling and shrinkage shares retuned; approvals set to trigger state_due.\nRound 2 (policy-task audit, item by item):\n- F2 / T0-1 (find_matching_window was a window length labelled method): the factor was removed. Found units are now netted over the warehouse-loss lookback (fixed rule). The method factor of the claim is claim_ceiling_method, whose tiers are three different computations. A fifth factor, claim_unit_cap (parameter), keeps the drawn count of 5. World: the 2026-08-04 and 2026-07-09 losses became 8 and 10 units, the 2026-06-12 find became a 2026-07-25 find against the 2026-07-09 loss, the 2026-06-26 reimbursement was removed (the 2026-05-27 loss missed its automatic reimbursement), the payments account and its read were removed. Claim 25 and approval 22 are unchanged in value; every stated figure above was recomputed.\n- O8 (payout-hold condition) and O9 / O-T0-a (asymmetric find netting, double offset of the 2025-11-10 find): closed by the same change.\n- O-T0-b (lookback_base called multi-source): card 5 now states both conditions sit on the enrollment row; the task's multi-source factor is shrinkage_allowance_method.\n- O3 (denied/approved counts wider than the rule): both counts now filter case_type reimbursement_claim and the rule says \"reimbursement case\".\n- O5 (docstrings \"Afterwards\"/\"then\"): reworded to \"On success ...\" and \"issued separately by Northloop's reimbursement run\".\n- O1 (ceiling naming): the ceiling now has one name throughout (\"warehouse-loss claim ceiling\", \"standard ceiling share\").\n- O-T0-d (standing evaluation dates vs evaluation day 20): set to 2026-09-20 / 2026-10-20.\n- F1 (damage window, task 1): the damage approval now declares its own replacement of the window sentence; recorded here because this task's overwrite was part of the ambiguity.\n- No change, with evidence: O2 (baseline sentences beside ladders are what the skill requires: the baseline paragraph must be verbatim in the rule and the ladder is the more specific statement); O4 (task 1 gate); O6 (task 1 edge); O7 / O-T0-c (missed automatic reimbursements are the situation the base parameter warehouse_loss_claim_window_days describes: \"a reimbursement not issued automatically\"); O-T0-e (the persona line signals openness only and names no prerequisite).",
+    "user_scenario": "You are Rosalind Featherstone, owner of Featherstone Kitchen Goods LLC, a small kitchenware brand that sells on Northloop and keeps its stock in Fulfilled by Northloop warehouses. You are organised and a little brisk, and you talk like someone who keeps her own books. You are calling because on September 1 you filed a claim with Northloop for linen aprons that Northloop's warehouse lost - your SKU FKG-LINEN-APRON-2PK, the two-pack linen apron - and more than a month later nothing has been decided. You want the claim settled today, and you are happy for the support agent to make the decision on Northloop's side right now on this call. When you filed it you claimed 33 units, which is what you counted as missing on your inventory report, but you are not attached to that number; you simply want the claim settled correctly.\n\nYou open by giving your registered email, rosalind.featherstone@featherstonekitchen.com, so the agent can find your account. Only when the agent asks you to confirm your identity do you give your mobile number, 2065550317, and the last four digits of your business tax ID, 5823; you do not volunteer any other personal details. You do not have the case reference number in front of you; if the agent asks for it, you say it is the only claim you have open about the aprons and that you filed it on September 1. If asked which product, you give the SKU FKG-LINEN-APRON-2PK. If the agent asks about your selling plan or your seller rating, you say they can see all of that on your account.\n\nIf the agent explains that the number of units on your claim has to be changed before it can be decided and asks you to make that change yourself, you agree, and when the agent hands the change over to you, you make it with exactly the unit count the agent gives you, because you trust the agent to read the records. Once your change has gone through, you tell the agent to go ahead and decide the claim. When the agent tells you how many units have been approved, you accept it, thank them and end the call; you do not argue for your original 33. If the agent only mentions a number without saying the claim has actually been approved, you ask whether it is approved now.",
+    "initial_state": {
+        "customers": {
+            "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136": {
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "name": "Rosalind Featherstone",
+                "email": "rosalind.featherstone@featherstonekitchen.com",
+                "phone": "2065550317",
+                "billing_zip": "98115",
+                "account_opened_date": "2021-06-14",
+                "payment_card_last4": "4719",
+                "customer_type": "seller",
+                "business_name": "Featherstone Kitchen Goods LLC",
+                "tax_id_last4": "5823"
+            }
+        },
+        "fulfill_enrollments": {
+            "77b11b95-e19d-4960-960b-e0360e296f4c": {
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "variant_name": "FBN Growth Program",
+                "status": "active",
+                "enrolled_date": "2024-01-29",
+                "activated_date": "2024-02-12",
+                "last_review_date": "2026-08-03",
+                "suspension_reason": "none",
+                "exit_requested_date": "",
+                "units_on_hand": 1152,
+                "closed_date": ""
+            }
+        },
+        "fulfill_events": {
+            "0f74d0b6-23c7-4fa7-9ee6-c820420983af": {
+                "fulfill_event_id": "0f74d0b6-23c7-4fa7-9ee6-c820420983af",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inbound_receipt",
+                "event_date": "2025-11-18",
+                "shipment_id": "NLIB-5512980",
+                "sku": "FKG-LINEN-APRON-2PK",
+                "size_tier": "small_standard",
+                "units": 300,
+                "units_expected": 300,
+                "unit_cost": 9.8
+            },
+            "a44f4031-2fb8-4cd6-8395-6fdb3b641329": {
+                "fulfill_event_id": "a44f4031-2fb8-4cd6-8395-6fdb3b641329",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inbound_receipt",
+                "event_date": "2026-05-14",
+                "shipment_id": "NLIB-6120447",
+                "sku": "FKG-LINEN-APRON-2PK",
+                "size_tier": "small_standard",
+                "units": 240,
+                "units_expected": 240,
+                "unit_cost": 9.8
+            },
+            "73462714-cbda-414d-bf1d-b55234151a44": {
+                "fulfill_event_id": "73462714-cbda-414d-bf1d-b55234151a44",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inbound_receipt",
+                "event_date": "2026-08-19",
+                "shipment_id": "NLIB-6388215",
+                "sku": "FKG-LINEN-APRON-2PK",
+                "size_tier": "small_standard",
+                "units": 260,
+                "units_expected": 260,
+                "unit_cost": 9.8
+            },
+            "7e52a28d-1c7b-483b-8d57-b2fe00c6024c": {
+                "fulfill_event_id": "7e52a28d-1c7b-483b-8d57-b2fe00c6024c",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inbound_receipt",
+                "event_date": "2025-12-04",
+                "shipment_id": "NLIB-5530912",
+                "sku": "FKG-CI-SKILLET-12",
+                "size_tier": "large_standard",
+                "units": 80,
+                "units_expected": 80,
+                "unit_cost": 18.4
+            },
+            "e64bfb53-09b0-4268-9685-f0b645578fc0": {
+                "fulfill_event_id": "e64bfb53-09b0-4268-9685-f0b645578fc0",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inbound_receipt",
+                "event_date": "2026-02-02",
+                "shipment_id": "NLIB-6011873",
+                "sku": "FKG-CI-SKILLET-12",
+                "size_tier": "large_standard",
+                "units": 54,
+                "units_expected": 60,
+                "unit_cost": 18.4
+            },
+            "07f00650-f25b-4893-bdb9-84692720d4db": {
+                "fulfill_event_id": "07f00650-f25b-4893-bdb9-84692720d4db",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inbound_receipt",
+                "event_date": "2026-01-21",
+                "shipment_id": "NLIB-5598364",
+                "sku": "FKG-LINEN-NAPKIN-6PK",
+                "size_tier": "small_standard",
+                "units": 150,
+                "units_expected": 150,
+                "unit_cost": 7.25
+            },
+            "06ec1490-ed67-4361-9e5b-ca611ec0b79e": {
+                "fulfill_event_id": "06ec1490-ed67-4361-9e5b-ca611ec0b79e",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inbound_receipt",
+                "event_date": "2026-08-19",
+                "shipment_id": "NLIB-6388215",
+                "sku": "FKG-LINEN-NAPKIN-6PK",
+                "size_tier": "small_standard",
+                "units": 120,
+                "units_expected": 120,
+                "unit_cost": 7.25
+            },
+            "88fae1ee-600e-4acd-99a2-42c7818bc152": {
+                "fulfill_event_id": "88fae1ee-600e-4acd-99a2-42c7818bc152",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inventory_adjustment",
+                "event_date": "2025-10-15",
+                "adjustment_ref": "ADJ-ED4F25D9",
+                "sku": "FKG-LINEN-APRON-2PK",
+                "units": 5,
+                "discrepancy_type": "lost_in_warehouse"
+            },
+            "b0059a05-59e6-4eed-a4fc-74672b733d03": {
+                "fulfill_event_id": "b0059a05-59e6-4eed-a4fc-74672b733d03",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inventory_adjustment",
+                "event_date": "2025-12-10",
+                "adjustment_ref": "ADJ-C29D223E",
+                "sku": "FKG-LINEN-APRON-2PK",
+                "units": 4,
+                "discrepancy_type": "lost_in_warehouse"
+            },
+            "a7bb2bd1-6476-4b22-ae5f-0e15eb011775": {
+                "fulfill_event_id": "a7bb2bd1-6476-4b22-ae5f-0e15eb011775",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inventory_adjustment",
+                "event_date": "2026-04-06",
+                "adjustment_ref": "ADJ-C84329F1",
+                "sku": "FKG-LINEN-APRON-2PK",
+                "units": 6,
+                "discrepancy_type": "lost_in_warehouse"
+            },
+            "c5f76a77-7cd5-468e-8be4-5ebf204a478d": {
+                "fulfill_event_id": "c5f76a77-7cd5-468e-8be4-5ebf204a478d",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inventory_adjustment",
+                "event_date": "2026-05-27",
+                "adjustment_ref": "ADJ-31B6C9E2",
+                "sku": "FKG-LINEN-APRON-2PK",
+                "units": 9,
+                "discrepancy_type": "lost_in_warehouse"
+            },
+            "3499801f-7e21-439c-a626-9ceeecb81a1a": {
+                "fulfill_event_id": "3499801f-7e21-439c-a626-9ceeecb81a1a",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inventory_adjustment",
+                "event_date": "2026-07-09",
+                "adjustment_ref": "ADJ-87F785AE",
+                "sku": "FKG-LINEN-APRON-2PK",
+                "units": 10,
+                "discrepancy_type": "lost_in_warehouse"
+            },
+            "c8433104-1ad2-4060-a54f-9ccff1ee8bcb": {
+                "fulfill_event_id": "c8433104-1ad2-4060-a54f-9ccff1ee8bcb",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inventory_adjustment",
+                "event_date": "2026-08-04",
+                "adjustment_ref": "ADJ-D8705092",
+                "sku": "FKG-LINEN-APRON-2PK",
+                "units": 8,
+                "discrepancy_type": "lost_in_warehouse"
+            },
+            "837e602c-5cce-4d0d-93e4-5588f3c9deaa": {
+                "fulfill_event_id": "837e602c-5cce-4d0d-93e4-5588f3c9deaa",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inventory_adjustment",
+                "event_date": "2026-09-02",
+                "adjustment_ref": "ADJ-869B2E75",
+                "sku": "FKG-LINEN-APRON-2PK",
+                "units": 5,
+                "discrepancy_type": "lost_in_warehouse"
+            },
+            "dba706e8-a480-4988-8327-be37e644a376": {
+                "fulfill_event_id": "dba706e8-a480-4988-8327-be37e644a376",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inventory_adjustment",
+                "event_date": "2026-09-30",
+                "adjustment_ref": "ADJ-11DC644D",
+                "sku": "FKG-LINEN-APRON-2PK",
+                "units": 3,
+                "discrepancy_type": "lost_in_warehouse"
+            },
+            "6e184461-f790-4d73-b178-21fe1add8843": {
+                "fulfill_event_id": "6e184461-f790-4d73-b178-21fe1add8843",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inventory_adjustment",
+                "event_date": "2025-11-06",
+                "adjustment_ref": "ADJ-2C0E0915",
+                "sku": "FKG-CI-SKILLET-12",
+                "units": 3,
+                "discrepancy_type": "lost_in_warehouse"
+            },
+            "d1dbc2fd-c3be-4725-8524-ccf790ed672e": {
+                "fulfill_event_id": "d1dbc2fd-c3be-4725-8524-ccf790ed672e",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inventory_adjustment",
+                "event_date": "2026-03-28",
+                "adjustment_ref": "ADJ-5630D0D0",
+                "sku": "FKG-LINEN-NAPKIN-6PK",
+                "units": 4,
+                "discrepancy_type": "damaged_in_warehouse"
+            },
+            "515e8c18-7809-48f7-aff3-f8ff034d7124": {
+                "fulfill_event_id": "515e8c18-7809-48f7-aff3-f8ff034d7124",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inventory_found",
+                "event_date": "2025-11-10",
+                "adjustment_ref": "ADJ-ED4F25D9",
+                "sku": "FKG-LINEN-APRON-2PK",
+                "units": 3,
+                "was_reimbursed": false
+            },
+            "0eff707b-535c-4eb6-a3a6-1a31c29af791": {
+                "fulfill_event_id": "0eff707b-535c-4eb6-a3a6-1a31c29af791",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inventory_found",
+                "event_date": "2026-07-25",
+                "adjustment_ref": "ADJ-87F785AE",
+                "sku": "FKG-LINEN-APRON-2PK",
+                "units": 2,
+                "was_reimbursed": false
+            },
+            "9d240c39-c17d-4fa7-be36-789bf4aac890": {
+                "fulfill_event_id": "9d240c39-c17d-4fa7-be36-789bf4aac890",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 19.6,
+                "event_type": "fulfill_reimbursement",
+                "event_date": "2025-11-14",
+                "reimbursement_type": "lost_in_warehouse",
+                "sku": "FKG-LINEN-APRON-2PK",
+                "units": 2,
+                "adjustment_ref": "ADJ-ED4F25D9",
+                "shipment_id": "",
+                "order_id": null,
+                "removal_order_id": null,
+                "case_id": null
+            },
+            "af5d4fb9-c991-4b31-b4a8-5e602974e480": {
+                "fulfill_event_id": "af5d4fb9-c991-4b31-b4a8-5e602974e480",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 55.2,
+                "event_type": "fulfill_reimbursement",
+                "event_date": "2025-12-16",
+                "reimbursement_type": "lost_in_warehouse",
+                "sku": "FKG-CI-SKILLET-12",
+                "units": 3,
+                "adjustment_ref": "ADJ-2C0E0915",
+                "shipment_id": "",
+                "order_id": null,
+                "removal_order_id": null,
+                "case_id": "0f55a844-be09-4c4e-97e6-957ad5cefbf4"
+            },
+            "96010a51-a65f-4d63-865b-85716a8fbc64": {
+                "fulfill_event_id": "96010a51-a65f-4d63-865b-85716a8fbc64",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 39.2,
+                "event_type": "fulfill_reimbursement",
+                "event_date": "2026-01-09",
+                "reimbursement_type": "lost_in_warehouse",
+                "sku": "FKG-LINEN-APRON-2PK",
+                "units": 4,
+                "adjustment_ref": "ADJ-C29D223E",
+                "shipment_id": "",
+                "order_id": null,
+                "removal_order_id": null,
+                "case_id": null
+            },
+            "925b8c13-3141-49ca-b1c7-ab452c5136b5": {
+                "fulfill_event_id": "925b8c13-3141-49ca-b1c7-ab452c5136b5",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 110.4,
+                "event_type": "fulfill_reimbursement",
+                "event_date": "2026-03-04",
+                "reimbursement_type": "inbound_shortage",
+                "sku": "FKG-CI-SKILLET-12",
+                "units": 6,
+                "adjustment_ref": "",
+                "shipment_id": "NLIB-6011873",
+                "order_id": null,
+                "removal_order_id": null,
+                "case_id": "4cdfc61d-e9e8-41f1-9054-de60dd8f2cbe"
+            },
+            "8e9663d2-c39f-453a-bc9c-ae3229ab1854": {
+                "fulfill_event_id": "8e9663d2-c39f-453a-bc9c-ae3229ab1854",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 29.0,
+                "event_type": "fulfill_reimbursement",
+                "event_date": "2026-04-28",
+                "reimbursement_type": "damaged_in_warehouse",
+                "sku": "FKG-LINEN-NAPKIN-6PK",
+                "units": 4,
+                "adjustment_ref": "ADJ-5630D0D0",
+                "shipment_id": "",
+                "order_id": null,
+                "removal_order_id": null,
+                "case_id": "63a2c4f6-cf34-4d8b-adf9-91bfbc0b3412"
+            },
+            "1e338136-9d2a-4066-9880-46e599abda33": {
+                "fulfill_event_id": "1e338136-9d2a-4066-9880-46e599abda33",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 58.8,
+                "event_type": "fulfill_reimbursement",
+                "event_date": "2026-05-06",
+                "reimbursement_type": "lost_in_warehouse",
+                "sku": "FKG-LINEN-APRON-2PK",
+                "units": 6,
+                "adjustment_ref": "ADJ-C84329F1",
+                "shipment_id": "",
+                "order_id": null,
+                "removal_order_id": null,
+                "case_id": null
+            }
+        },
+        "fulfill_cases": {
+            "74039aa7-64e4-493a-a60d-e21e211c8e4e": {
+                "case_id": "74039aa7-64e4-493a-a60d-e21e211c8e4e",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "case_type": "reimbursement_claim",
+                "reimbursement_type": "inbound_shortage",
+                "adjustment_ref": "",
+                "shipment_id": "NLIB-5420077",
+                "fee_event_ref": "",
+                "sku": "FKG-CI-SKILLET-12",
+                "units_claimed": 5,
+                "case_status": "denied",
+                "created_at": "2025-08-11 15:02:19 America/Los_Angeles"
+            },
+            "0f55a844-be09-4c4e-97e6-957ad5cefbf4": {
+                "case_id": "0f55a844-be09-4c4e-97e6-957ad5cefbf4",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "case_type": "reimbursement_claim",
+                "reimbursement_type": "lost_in_warehouse",
+                "adjustment_ref": "ADJ-2C0E0915",
+                "shipment_id": "",
+                "fee_event_ref": "",
+                "sku": "FKG-CI-SKILLET-12",
+                "units_claimed": 3,
+                "case_status": "approved",
+                "created_at": "2025-12-02 11:47:05 America/Los_Angeles"
+            },
+            "4cdfc61d-e9e8-41f1-9054-de60dd8f2cbe": {
+                "case_id": "4cdfc61d-e9e8-41f1-9054-de60dd8f2cbe",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "case_type": "reimbursement_claim",
+                "reimbursement_type": "inbound_shortage",
+                "adjustment_ref": "",
+                "shipment_id": "NLIB-6011873",
+                "fee_event_ref": "",
+                "sku": "FKG-CI-SKILLET-12",
+                "units_claimed": 6,
+                "case_status": "approved",
+                "created_at": "2026-02-20 09:31:50 America/Los_Angeles"
+            },
+            "63a2c4f6-cf34-4d8b-adf9-91bfbc0b3412": {
+                "case_id": "63a2c4f6-cf34-4d8b-adf9-91bfbc0b3412",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "case_type": "reimbursement_claim",
+                "reimbursement_type": "damaged_in_warehouse",
+                "adjustment_ref": "ADJ-5630D0D0",
+                "shipment_id": "",
+                "fee_event_ref": "",
+                "sku": "FKG-LINEN-NAPKIN-6PK",
+                "units_claimed": 4,
+                "case_status": "approved",
+                "created_at": "2026-04-15 16:20:33 America/Los_Angeles"
+            },
+            "cb586a63-a1b3-4f64-9977-b15c05a8cdae": {
+                "case_id": "cb586a63-a1b3-4f64-9977-b15c05a8cdae",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "case_type": "reimbursement_claim",
+                "reimbursement_type": "lost_in_warehouse",
+                "adjustment_ref": "",
+                "shipment_id": "",
+                "fee_event_ref": "",
+                "sku": "FKG-LINEN-APRON-2PK",
+                "units_claimed": 33,
+                "case_status": "submitted",
+                "created_at": "2026-09-01 09:12:44 America/Los_Angeles"
+            }
+        },
+        "selling_plans": {
+            "fa00e600-6c8b-4c10-9afe-d4d37956bd7f": {
+                "selling_plan_id": "fa00e600-6c8b-4c10-9afe-d4d37956bd7f",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "variant_name": "Premium Store",
+                "status": "active",
+                "opened_date": "2021-06-20",
+                "verified_date": "2021-06-23",
+                "store_name": "Featherstone Kitchen Goods",
+                "billing_term": "monthly",
+                "term_start_date": "2026-09-20",
+                "term_end_date": "",
+                "next_billing_date": "2026-10-20",
+                "cancel_effective_date": "",
+                "restricted_date": "",
+                "closed_date": ""
+            }
+        },
+        "standing_records": {
+            "8e0699bc-dbc7-4243-bf3d-2e6a40151689": {
+                "standing_id": "8e0699bc-dbc7-4243-bf3d-2e6a40151689",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "variant_name": "Top Rated Level",
+                "status": "good_standing",
+                "enrolled_date": "2021-06-23",
+                "last_evaluation_date": "2026-09-20",
+                "next_evaluation_date": "2026-10-20",
+                "violation_points": 0,
+                "at_risk_reason": "none",
+                "suspended_date": "",
+                "appeal_submitted_date": "",
+                "reinstated_date": "",
+                "deactivated_date": "",
+                "closed_date": ""
+            }
+        }
+    },
+    "db_closure": {
+        "fulfill_events": {
+            "a44f4031-2fb8-4cd6-8395-6fdb3b641329": {
+                "fulfill_event_id": "a44f4031-2fb8-4cd6-8395-6fdb3b641329",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inbound_receipt",
+                "event_date": "2026-05-14",
+                "shipment_id": "NLIB-6120447",
+                "sku": "FKG-LINEN-APRON-2PK",
+                "size_tier": "small_standard",
+                "units": 240,
+                "units_expected": 240,
+                "unit_cost": 9.8
+            },
+            "3499801f-7e21-439c-a626-9ceeecb81a1a": {
+                "fulfill_event_id": "3499801f-7e21-439c-a626-9ceeecb81a1a",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inventory_adjustment",
+                "event_date": "2026-07-09",
+                "adjustment_ref": "ADJ-87F785AE",
+                "sku": "FKG-LINEN-APRON-2PK",
+                "units": 10,
+                "discrepancy_type": "lost_in_warehouse"
+            },
+            "88fae1ee-600e-4acd-99a2-42c7818bc152": {
+                "fulfill_event_id": "88fae1ee-600e-4acd-99a2-42c7818bc152",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inventory_adjustment",
+                "event_date": "2025-10-15",
+                "adjustment_ref": "ADJ-ED4F25D9",
+                "sku": "FKG-LINEN-APRON-2PK",
+                "units": 5,
+                "discrepancy_type": "lost_in_warehouse"
+            },
+            "73462714-cbda-414d-bf1d-b55234151a44": {
+                "fulfill_event_id": "73462714-cbda-414d-bf1d-b55234151a44",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inbound_receipt",
+                "event_date": "2026-08-19",
+                "shipment_id": "NLIB-6388215",
+                "sku": "FKG-LINEN-APRON-2PK",
+                "size_tier": "small_standard",
+                "units": 260,
+                "units_expected": 260,
+                "unit_cost": 9.8
+            },
+            "6e184461-f790-4d73-b178-21fe1add8843": {
+                "fulfill_event_id": "6e184461-f790-4d73-b178-21fe1add8843",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inventory_adjustment",
+                "event_date": "2025-11-06",
+                "adjustment_ref": "ADJ-2C0E0915",
+                "sku": "FKG-CI-SKILLET-12",
+                "units": 3,
+                "discrepancy_type": "lost_in_warehouse"
+            },
+            "8e9663d2-c39f-453a-bc9c-ae3229ab1854": {
+                "fulfill_event_id": "8e9663d2-c39f-453a-bc9c-ae3229ab1854",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 29.0,
+                "event_type": "fulfill_reimbursement",
+                "event_date": "2026-04-28",
+                "reimbursement_type": "damaged_in_warehouse",
+                "sku": "FKG-LINEN-NAPKIN-6PK",
+                "units": 4,
+                "adjustment_ref": "ADJ-5630D0D0",
+                "shipment_id": "",
+                "order_id": null,
+                "removal_order_id": null,
+                "case_id": "63a2c4f6-cf34-4d8b-adf9-91bfbc0b3412"
+            },
+            "c5f76a77-7cd5-468e-8be4-5ebf204a478d": {
+                "fulfill_event_id": "c5f76a77-7cd5-468e-8be4-5ebf204a478d",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inventory_adjustment",
+                "event_date": "2026-05-27",
+                "adjustment_ref": "ADJ-31B6C9E2",
+                "sku": "FKG-LINEN-APRON-2PK",
+                "units": 9,
+                "discrepancy_type": "lost_in_warehouse"
+            },
+            "c8433104-1ad2-4060-a54f-9ccff1ee8bcb": {
+                "fulfill_event_id": "c8433104-1ad2-4060-a54f-9ccff1ee8bcb",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inventory_adjustment",
+                "event_date": "2026-08-04",
+                "adjustment_ref": "ADJ-D8705092",
+                "sku": "FKG-LINEN-APRON-2PK",
+                "units": 8,
+                "discrepancy_type": "lost_in_warehouse"
+            },
+            "7e52a28d-1c7b-483b-8d57-b2fe00c6024c": {
+                "fulfill_event_id": "7e52a28d-1c7b-483b-8d57-b2fe00c6024c",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inbound_receipt",
+                "event_date": "2025-12-04",
+                "shipment_id": "NLIB-5530912",
+                "sku": "FKG-CI-SKILLET-12",
+                "size_tier": "large_standard",
+                "units": 80,
+                "units_expected": 80,
+                "unit_cost": 18.4
+            },
+            "96010a51-a65f-4d63-865b-85716a8fbc64": {
+                "fulfill_event_id": "96010a51-a65f-4d63-865b-85716a8fbc64",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 39.2,
+                "event_type": "fulfill_reimbursement",
+                "event_date": "2026-01-09",
+                "reimbursement_type": "lost_in_warehouse",
+                "sku": "FKG-LINEN-APRON-2PK",
+                "units": 4,
+                "adjustment_ref": "ADJ-C29D223E",
+                "shipment_id": "",
+                "order_id": null,
+                "removal_order_id": null,
+                "case_id": null
+            },
+            "b0059a05-59e6-4eed-a4fc-74672b733d03": {
+                "fulfill_event_id": "b0059a05-59e6-4eed-a4fc-74672b733d03",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inventory_adjustment",
+                "event_date": "2025-12-10",
+                "adjustment_ref": "ADJ-C29D223E",
+                "sku": "FKG-LINEN-APRON-2PK",
+                "units": 4,
+                "discrepancy_type": "lost_in_warehouse"
+            },
+            "af5d4fb9-c991-4b31-b4a8-5e602974e480": {
+                "fulfill_event_id": "af5d4fb9-c991-4b31-b4a8-5e602974e480",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 55.2,
+                "event_type": "fulfill_reimbursement",
+                "event_date": "2025-12-16",
+                "reimbursement_type": "lost_in_warehouse",
+                "sku": "FKG-CI-SKILLET-12",
+                "units": 3,
+                "adjustment_ref": "ADJ-2C0E0915",
+                "shipment_id": "",
+                "order_id": null,
+                "removal_order_id": null,
+                "case_id": "0f55a844-be09-4c4e-97e6-957ad5cefbf4"
+            },
+            "dba706e8-a480-4988-8327-be37e644a376": {
+                "fulfill_event_id": "dba706e8-a480-4988-8327-be37e644a376",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inventory_adjustment",
+                "event_date": "2026-09-30",
+                "adjustment_ref": "ADJ-11DC644D",
+                "sku": "FKG-LINEN-APRON-2PK",
+                "units": 3,
+                "discrepancy_type": "lost_in_warehouse"
+            },
+            "06ec1490-ed67-4361-9e5b-ca611ec0b79e": {
+                "fulfill_event_id": "06ec1490-ed67-4361-9e5b-ca611ec0b79e",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inbound_receipt",
+                "event_date": "2026-08-19",
+                "shipment_id": "NLIB-6388215",
+                "sku": "FKG-LINEN-NAPKIN-6PK",
+                "size_tier": "small_standard",
+                "units": 120,
+                "units_expected": 120,
+                "unit_cost": 7.25
+            },
+            "0f74d0b6-23c7-4fa7-9ee6-c820420983af": {
+                "fulfill_event_id": "0f74d0b6-23c7-4fa7-9ee6-c820420983af",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inbound_receipt",
+                "event_date": "2025-11-18",
+                "shipment_id": "NLIB-5512980",
+                "sku": "FKG-LINEN-APRON-2PK",
+                "size_tier": "small_standard",
+                "units": 300,
+                "units_expected": 300,
+                "unit_cost": 9.8
+            },
+            "0eff707b-535c-4eb6-a3a6-1a31c29af791": {
+                "fulfill_event_id": "0eff707b-535c-4eb6-a3a6-1a31c29af791",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inventory_found",
+                "event_date": "2026-07-25",
+                "adjustment_ref": "ADJ-87F785AE",
+                "sku": "FKG-LINEN-APRON-2PK",
+                "units": 2,
+                "was_reimbursed": false
+            },
+            "1e338136-9d2a-4066-9880-46e599abda33": {
+                "fulfill_event_id": "1e338136-9d2a-4066-9880-46e599abda33",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 58.8,
+                "event_type": "fulfill_reimbursement",
+                "event_date": "2026-05-06",
+                "reimbursement_type": "lost_in_warehouse",
+                "sku": "FKG-LINEN-APRON-2PK",
+                "units": 6,
+                "adjustment_ref": "ADJ-C84329F1",
+                "shipment_id": "",
+                "order_id": null,
+                "removal_order_id": null,
+                "case_id": null
+            },
+            "07f00650-f25b-4893-bdb9-84692720d4db": {
+                "fulfill_event_id": "07f00650-f25b-4893-bdb9-84692720d4db",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inbound_receipt",
+                "event_date": "2026-01-21",
+                "shipment_id": "NLIB-5598364",
+                "sku": "FKG-LINEN-NAPKIN-6PK",
+                "size_tier": "small_standard",
+                "units": 150,
+                "units_expected": 150,
+                "unit_cost": 7.25
+            },
+            "a7bb2bd1-6476-4b22-ae5f-0e15eb011775": {
+                "fulfill_event_id": "a7bb2bd1-6476-4b22-ae5f-0e15eb011775",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inventory_adjustment",
+                "event_date": "2026-04-06",
+                "adjustment_ref": "ADJ-C84329F1",
+                "sku": "FKG-LINEN-APRON-2PK",
+                "units": 6,
+                "discrepancy_type": "lost_in_warehouse"
+            },
+            "d1dbc2fd-c3be-4725-8524-ccf790ed672e": {
+                "fulfill_event_id": "d1dbc2fd-c3be-4725-8524-ccf790ed672e",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inventory_adjustment",
+                "event_date": "2026-03-28",
+                "adjustment_ref": "ADJ-5630D0D0",
+                "sku": "FKG-LINEN-NAPKIN-6PK",
+                "units": 4,
+                "discrepancy_type": "damaged_in_warehouse"
+            },
+            "515e8c18-7809-48f7-aff3-f8ff034d7124": {
+                "fulfill_event_id": "515e8c18-7809-48f7-aff3-f8ff034d7124",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inventory_found",
+                "event_date": "2025-11-10",
+                "adjustment_ref": "ADJ-ED4F25D9",
+                "sku": "FKG-LINEN-APRON-2PK",
+                "units": 3,
+                "was_reimbursed": false
+            },
+            "9d240c39-c17d-4fa7-be36-789bf4aac890": {
+                "fulfill_event_id": "9d240c39-c17d-4fa7-be36-789bf4aac890",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 19.6,
+                "event_type": "fulfill_reimbursement",
+                "event_date": "2025-11-14",
+                "reimbursement_type": "lost_in_warehouse",
+                "sku": "FKG-LINEN-APRON-2PK",
+                "units": 2,
+                "adjustment_ref": "ADJ-ED4F25D9",
+                "shipment_id": "",
+                "order_id": null,
+                "removal_order_id": null,
+                "case_id": null
+            },
+            "837e602c-5cce-4d0d-93e4-5588f3c9deaa": {
+                "fulfill_event_id": "837e602c-5cce-4d0d-93e4-5588f3c9deaa",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inventory_adjustment",
+                "event_date": "2026-09-02",
+                "adjustment_ref": "ADJ-869B2E75",
+                "sku": "FKG-LINEN-APRON-2PK",
+                "units": 5,
+                "discrepancy_type": "lost_in_warehouse"
+            },
+            "925b8c13-3141-49ca-b1c7-ab452c5136b5": {
+                "fulfill_event_id": "925b8c13-3141-49ca-b1c7-ab452c5136b5",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 110.4,
+                "event_type": "fulfill_reimbursement",
+                "event_date": "2026-03-04",
+                "reimbursement_type": "inbound_shortage",
+                "sku": "FKG-CI-SKILLET-12",
+                "units": 6,
+                "adjustment_ref": "",
+                "shipment_id": "NLIB-6011873",
+                "order_id": null,
+                "removal_order_id": null,
+                "case_id": "4cdfc61d-e9e8-41f1-9054-de60dd8f2cbe"
+            },
+            "e64bfb53-09b0-4268-9685-f0b645578fc0": {
+                "fulfill_event_id": "e64bfb53-09b0-4268-9685-f0b645578fc0",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "amount": 0.0,
+                "event_type": "fulfill_inbound_receipt",
+                "event_date": "2026-02-02",
+                "shipment_id": "NLIB-6011873",
+                "sku": "FKG-CI-SKILLET-12",
+                "size_tier": "large_standard",
+                "units": 54,
+                "units_expected": 60,
+                "unit_cost": 18.4
+            }
+        },
+        "standing_records": {
+            "8e0699bc-dbc7-4243-bf3d-2e6a40151689": {
+                "standing_id": "8e0699bc-dbc7-4243-bf3d-2e6a40151689",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "variant_name": "Top Rated Level",
+                "status": "good_standing",
+                "enrolled_date": "2021-06-23",
+                "last_evaluation_date": "2026-09-20",
+                "next_evaluation_date": "2026-10-20",
+                "violation_points": 0,
+                "at_risk_reason": "none",
+                "suspended_date": "",
+                "appeal_submitted_date": "",
+                "reinstated_date": "",
+                "deactivated_date": "",
+                "closed_date": ""
+            }
+        },
+        "fulfill_enrollments": {
+            "77b11b95-e19d-4960-960b-e0360e296f4c": {
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "variant_name": "FBN Growth Program",
+                "status": "active",
+                "enrolled_date": "2024-01-29",
+                "activated_date": "2024-02-12",
+                "last_review_date": "2026-08-03",
+                "suspension_reason": "none",
+                "exit_requested_date": "",
+                "units_on_hand": 1152,
+                "closed_date": ""
+            }
+        },
+        "fulfill_cases": {
+            "63a2c4f6-cf34-4d8b-adf9-91bfbc0b3412": {
+                "case_id": "63a2c4f6-cf34-4d8b-adf9-91bfbc0b3412",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "case_type": "reimbursement_claim",
+                "reimbursement_type": "damaged_in_warehouse",
+                "adjustment_ref": "ADJ-5630D0D0",
+                "shipment_id": "",
+                "fee_event_ref": "",
+                "sku": "FKG-LINEN-NAPKIN-6PK",
+                "units_claimed": 4,
+                "case_status": "approved",
+                "created_at": "2026-04-15 16:20:33 America/Los_Angeles"
+            },
+            "cb586a63-a1b3-4f64-9977-b15c05a8cdae": {
+                "case_id": "cb586a63-a1b3-4f64-9977-b15c05a8cdae",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "case_type": "reimbursement_claim",
+                "reimbursement_type": "lost_in_warehouse",
+                "adjustment_ref": "",
+                "shipment_id": "",
+                "fee_event_ref": "",
+                "sku": "FKG-LINEN-APRON-2PK",
+                "units_claimed": 33,
+                "case_status": "submitted",
+                "created_at": "2026-09-01 09:12:44 America/Los_Angeles"
+            },
+            "4cdfc61d-e9e8-41f1-9054-de60dd8f2cbe": {
+                "case_id": "4cdfc61d-e9e8-41f1-9054-de60dd8f2cbe",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "case_type": "reimbursement_claim",
+                "reimbursement_type": "inbound_shortage",
+                "adjustment_ref": "",
+                "shipment_id": "NLIB-6011873",
+                "fee_event_ref": "",
+                "sku": "FKG-CI-SKILLET-12",
+                "units_claimed": 6,
+                "case_status": "approved",
+                "created_at": "2026-02-20 09:31:50 America/Los_Angeles"
+            },
+            "74039aa7-64e4-493a-a60d-e21e211c8e4e": {
+                "case_id": "74039aa7-64e4-493a-a60d-e21e211c8e4e",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "case_type": "reimbursement_claim",
+                "reimbursement_type": "inbound_shortage",
+                "adjustment_ref": "",
+                "shipment_id": "NLIB-5420077",
+                "fee_event_ref": "",
+                "sku": "FKG-CI-SKILLET-12",
+                "units_claimed": 5,
+                "case_status": "denied",
+                "created_at": "2025-08-11 15:02:19 America/Los_Angeles"
+            },
+            "0f55a844-be09-4c4e-97e6-957ad5cefbf4": {
+                "case_id": "0f55a844-be09-4c4e-97e6-957ad5cefbf4",
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "case_type": "reimbursement_claim",
+                "reimbursement_type": "lost_in_warehouse",
+                "adjustment_ref": "ADJ-2C0E0915",
+                "shipment_id": "",
+                "fee_event_ref": "",
+                "sku": "FKG-CI-SKILLET-12",
+                "units_claimed": 3,
+                "case_status": "approved",
+                "created_at": "2025-12-02 11:47:05 America/Los_Angeles"
+            }
+        },
+        "customers": {
+            "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136": {
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "name": "Rosalind Featherstone",
+                "email": "rosalind.featherstone@featherstonekitchen.com",
+                "phone": "2065550317",
+                "billing_zip": "98115",
+                "account_opened_date": "2021-06-14",
+                "payment_card_last4": "4719",
+                "customer_type": "seller",
+                "business_name": "Featherstone Kitchen Goods LLC",
+                "tax_id_last4": "5823"
+            }
+        },
+        "selling_plans": {
+            "fa00e600-6c8b-4c10-9afe-d4d37956bd7f": {
+                "selling_plan_id": "fa00e600-6c8b-4c10-9afe-d4d37956bd7f",
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "variant_name": "Premium Store",
+                "status": "active",
+                "opened_date": "2021-06-20",
+                "verified_date": "2021-06-23",
+                "store_name": "Featherstone Kitchen Goods",
+                "billing_term": "monthly",
+                "term_start_date": "2026-09-20",
+                "term_end_date": "",
+                "next_billing_date": "2026-10-20",
+                "cancel_effective_date": "",
+                "restricted_date": "",
+                "closed_date": ""
+            }
+        }
+    },
+    "db_closure_matches_initial_state": true,
+    "solvability_contract": {
+        "request_binding_version": 1,
+        "request_alignment": [
+            {
+                "claim": "The seller asks for her open claim on lost linen aprons to be decided today, by the agent, on Northloop's side.",
+                "evidence": [
+                    "user_scenario:You want the claim settled today, and you are happy for the support agent to make the decision on Northloop's side right now on this call."
+                ]
+            },
+            {
+                "claim": "The claim concerns warehouse losses of SKU FKG-LINEN-APRON-2PK filed on September 1.",
+                "evidence": [
+                    "user_scenario:on September 1 you filed a claim with Northloop for linen aprons that Northloop's warehouse lost - your SKU FKG-LINEN-APRON-2PK"
+                ]
+            }
+        ],
+        "gold_actions": [
+            {
+                "step": 8,
+                "business_effect": "The seller's open warehouse-loss case now claims 25 units instead of 33; it stays open.",
+                "request_binding": {
+                    "action_semantics": "The approval the seller asked for waits, by its own rule, on the units claimed equalling the claimable lost units; the case shows 33 at the opening, so the claim must first be corrected, and only the seller may change what she claims on her own case.",
+                    "intent_source": {
+                        "kind": "initial_state",
+                        "evidence": [
+                            "initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae.units_claimed",
+                            "initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae.case_status"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "the units claimed on the seller's open warehouse-loss case differ from the claimable lost units",
+                        "evidence": [
+                            "initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae.units_claimed",
+                            "initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae.reimbursement_type"
+                        ],
+                        "action_arg": "case_id",
+                        "value": "cb586a63-a1b3-4f64-9977-b15c05a8cdae"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "performed_by_this_tool",
+                    "fact": "The correction of the units claimed is completed by this call on the spot.",
+                    "evidence": [
+                        "initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "fulfill_reimbursement_terms",
+                        "eligibility_id": "no_double_reimbursement",
+                        "condition": "units already reimbursed on the same source object are never reimbursed again",
+                        "evidence": [
+                            "initial_state.fulfill_events.1e338136-9d2a-4066-9880-46e599abda33.reimbursement_type",
+                            "initial_state.fulfill_events.1e338136-9d2a-4066-9880-46e599abda33.adjustment_ref",
+                            "initial_state.fulfill_events.1e338136-9d2a-4066-9880-46e599abda33.shipment_id",
+                            "initial_state.fulfill_events.1e338136-9d2a-4066-9880-46e599abda33.order_id",
+                            "initial_state.fulfill_events.1e338136-9d2a-4066-9880-46e599abda33.removal_order_id",
+                            "initial_state.fulfill_events.1e338136-9d2a-4066-9880-46e599abda33.sku",
+                            "initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae.reimbursement_type",
+                            "initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae.adjustment_ref",
+                            "initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae.sku"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "fulfill_events.reimbursement_type",
+                                "source": "initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae.reimbursement_type",
+                                "action_arg": "reimbursement_type"
+                            },
+                            {
+                                "gate_field": "fulfill_events.adjustment_ref",
+                                "source": "initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae.adjustment_ref",
+                                "action_arg": "adjustment_ref"
+                            },
+                            {
+                                "gate_field": "fulfill_events.sku",
+                                "source": "initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae.sku",
+                                "action_arg": "sku"
+                            }
+                        ],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 10,
+                "business_effect": "The open warehouse-loss case is approved for 22 units and shows status approved.",
+                "request_binding": {
+                    "action_semantics": "The seller asks for her open lost-inventory claim to be decided by the agent now; approving the case is the desk decision on that claim, as opposed to correcting it or opening a new one.",
+                    "intent_source": {
+                        "kind": "initial_state",
+                        "evidence": [
+                            "initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae.case_status",
+                            "initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae.reimbursement_type",
+                            "user_scenario:You want the claim settled today, and you are happy for the support agent to make the decision on Northloop's side right now on this call."
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "the seller's only open lost-in-warehouse case still stands submitted and awaits the desk decision",
+                        "evidence": [
+                            "initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae.case_status",
+                            "user_scenario:make the decision on Northloop's side"
+                        ],
+                        "action_arg": "case_id",
+                        "value": "cb586a63-a1b3-4f64-9977-b15c05a8cdae"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "established_by_prior_tool",
+                    "fact": "The case's units claimed were corrected to 25 by the seller's own write before the decision.",
+                    "evidence": [
+                        "prior_step:8",
+                        "initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "fulfill_reimbursement_terms",
+                        "eligibility_id": "no_double_reimbursement",
+                        "condition": "units already reimbursed on the same source object are never reimbursed again",
+                        "evidence": [
+                            "initial_state.fulfill_events.1e338136-9d2a-4066-9880-46e599abda33.reimbursement_type",
+                            "initial_state.fulfill_events.1e338136-9d2a-4066-9880-46e599abda33.adjustment_ref",
+                            "initial_state.fulfill_events.1e338136-9d2a-4066-9880-46e599abda33.shipment_id",
+                            "initial_state.fulfill_events.1e338136-9d2a-4066-9880-46e599abda33.order_id",
+                            "initial_state.fulfill_events.1e338136-9d2a-4066-9880-46e599abda33.removal_order_id",
+                            "initial_state.fulfill_events.1e338136-9d2a-4066-9880-46e599abda33.sku",
+                            "initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae.reimbursement_type",
+                            "initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae.adjustment_ref",
+                            "initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae.sku"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "fulfill_events.reimbursement_type",
+                                "source": "initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae.reimbursement_type",
+                                "action_arg": "reimbursement_type"
+                            },
+                            {
+                                "gate_field": "fulfill_events.adjustment_ref",
+                                "source": "initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae.adjustment_ref",
+                                "action_arg": "adjustment_ref"
+                            },
+                            {
+                                "gate_field": "fulfill_events.sku",
+                                "source": "initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae.sku",
+                                "action_arg": "sku"
+                            }
+                        ],
+                        "satisfied": true
+                    }
+                ]
+            }
+        ],
+        "temporal_feasibility": [],
+        "required_user_inputs": [
+            {
+                "information": "Registered email used to locate the profile",
+                "source": "user_scenario:rosalind.featherstone@featherstonekitchen.com"
+            },
+            {
+                "information": "Mobile number for identity verification",
+                "source": "user_scenario:2065550317"
+            },
+            {
+                "information": "Last four digits of the business tax ID for identity verification",
+                "source": "user_scenario:5823"
+            },
+            {
+                "information": "The SKU the claim is about",
+                "source": "user_scenario:FKG-LINEN-APRON-2PK"
+            },
+            {
+                "information": "When the claim was filed (no case number at hand)",
+                "source": "user_scenario:it is the only claim you have open about the aprons and that you filed it on September 1"
+            },
+            {
+                "information": "Authorisation for the agent to decide the claim now",
+                "source": "user_scenario:you are happy for the support agent to make the decision on Northloop's side right now on this call"
+            },
+            {
+                "information": "Consent to make the unit-count change herself when handed over",
+                "source": "user_scenario:you make it with exactly the unit count the agent gives you"
+            }
+        ],
+        "seed_consistency": [
+            {
+                "row": "initial_state.fulfill_events.0f74d0b6-23c7-4fa7-9ee6-c820420983af",
+                "policy_id": "fulfill_inbound_terms",
+                "check": "Receipt of 300 of 300 expected units of FKG-LINEN-APRON-2PK (small_standard, declared cost 9.80) on shipment NLIB-5512980 dated 2025-11-18, inside the active enrollment; its units enter the running on-hand total.",
+                "evidence": [
+                    "initial_state.fulfill_events.0f74d0b6-23c7-4fa7-9ee6-c820420983af"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.a44f4031-2fb8-4cd6-8395-6fdb3b641329",
+                "policy_id": "fulfill_inbound_terms",
+                "check": "Receipt of 240 of 240 expected units of FKG-LINEN-APRON-2PK (small_standard, declared cost 9.80) on shipment NLIB-6120447 dated 2026-05-14, inside the active enrollment; its units enter the running on-hand total.",
+                "evidence": [
+                    "initial_state.fulfill_events.a44f4031-2fb8-4cd6-8395-6fdb3b641329"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.73462714-cbda-414d-bf1d-b55234151a44",
+                "policy_id": "fulfill_inbound_terms",
+                "check": "Receipt of 260 of 260 expected units of FKG-LINEN-APRON-2PK (small_standard, declared cost 9.80) on shipment NLIB-6388215 dated 2026-08-19, inside the active enrollment; its units enter the running on-hand total.",
+                "evidence": [
+                    "initial_state.fulfill_events.73462714-cbda-414d-bf1d-b55234151a44"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.7e52a28d-1c7b-483b-8d57-b2fe00c6024c",
+                "policy_id": "fulfill_inbound_terms",
+                "check": "Receipt of 80 of 80 expected units of FKG-CI-SKILLET-12 (large_standard, declared cost 18.40) on shipment NLIB-5530912 dated 2025-12-04, inside the active enrollment; its units enter the running on-hand total.",
+                "evidence": [
+                    "initial_state.fulfill_events.7e52a28d-1c7b-483b-8d57-b2fe00c6024c"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.e64bfb53-09b0-4268-9685-f0b645578fc0",
+                "policy_id": "fulfill_inbound_terms",
+                "check": "Receipt of 54 of 60 expected units of FKG-CI-SKILLET-12 (large_standard, declared cost 18.40) on shipment NLIB-6011873 dated 2026-02-02, inside the active enrollment; its units enter the running on-hand total.",
+                "evidence": [
+                    "initial_state.fulfill_events.e64bfb53-09b0-4268-9685-f0b645578fc0"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.07f00650-f25b-4893-bdb9-84692720d4db",
+                "policy_id": "fulfill_inbound_terms",
+                "check": "Receipt of 150 of 150 expected units of FKG-LINEN-NAPKIN-6PK (small_standard, declared cost 7.25) on shipment NLIB-5598364 dated 2026-01-21, inside the active enrollment; its units enter the running on-hand total.",
+                "evidence": [
+                    "initial_state.fulfill_events.07f00650-f25b-4893-bdb9-84692720d4db"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.06ec1490-ed67-4361-9e5b-ca611ec0b79e",
+                "policy_id": "fulfill_inbound_terms",
+                "check": "Receipt of 120 of 120 expected units of FKG-LINEN-NAPKIN-6PK (small_standard, declared cost 7.25) on shipment NLIB-6388215 dated 2026-08-19, inside the active enrollment; its units enter the running on-hand total.",
+                "evidence": [
+                    "initial_state.fulfill_events.06ec1490-ed67-4361-9e5b-ca611ec0b79e"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.88fae1ee-600e-4acd-99a2-42c7818bc152",
+                "policy_id": "fulfill_reimbursement_terms",
+                "check": "lost_in_warehouse write-off of 5 units of FKG-LINEN-APRON-2PK on 2025-10-15 (ADJ-ED4F25D9); settled: 3 units found 2025-11-10, the other 2 reimbursed automatically 2025-11-14.",
+                "evidence": [
+                    "initial_state.fulfill_events.88fae1ee-600e-4acd-99a2-42c7818bc152"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.b0059a05-59e6-4eed-a4fc-74672b733d03",
+                "policy_id": "fulfill_reimbursement_terms",
+                "check": "lost_in_warehouse write-off of 4 units of FKG-LINEN-APRON-2PK on 2025-12-10 (ADJ-C29D223E); settled: reimbursed automatically 2026-01-09.",
+                "evidence": [
+                    "initial_state.fulfill_events.b0059a05-59e6-4eed-a4fc-74672b733d03"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.a7bb2bd1-6476-4b22-ae5f-0e15eb011775",
+                "policy_id": "fulfill_reimbursement_terms",
+                "check": "lost_in_warehouse write-off of 6 units of FKG-LINEN-APRON-2PK on 2026-04-06 (ADJ-C84329F1); settled: reimbursed automatically 2026-05-06.",
+                "evidence": [
+                    "initial_state.fulfill_events.a7bb2bd1-6476-4b22-ae5f-0e15eb011775"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.c5f76a77-7cd5-468e-8be4-5ebf204a478d",
+                "policy_id": "fulfill_reimbursement_terms",
+                "check": "lost_in_warehouse write-off of 9 units of FKG-LINEN-APRON-2PK on 2026-05-27 (ADJ-31B6C9E2); older than the 30 auto-reimburse days with no reimbursement row: its automatic reimbursement was missed, which is what the seller's open case covers.",
+                "evidence": [
+                    "initial_state.fulfill_events.c5f76a77-7cd5-468e-8be4-5ebf204a478d"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.3499801f-7e21-439c-a626-9ceeecb81a1a",
+                "policy_id": "fulfill_reimbursement_terms",
+                "check": "lost_in_warehouse write-off of 10 units of FKG-LINEN-APRON-2PK on 2026-07-09 (ADJ-87F785AE); 2 units found 2026-07-25; the other 8 are older than 30 days with no reimbursement row (automatic reimbursement missed).",
+                "evidence": [
+                    "initial_state.fulfill_events.3499801f-7e21-439c-a626-9ceeecb81a1a"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.c8433104-1ad2-4060-a54f-9ccff1ee8bcb",
+                "policy_id": "fulfill_reimbursement_terms",
+                "check": "lost_in_warehouse write-off of 8 units of FKG-LINEN-APRON-2PK on 2026-08-04 (ADJ-D8705092); older than 30 days with no reimbursement row (automatic reimbursement missed).",
+                "evidence": [
+                    "initial_state.fulfill_events.c8433104-1ad2-4060-a54f-9ccff1ee8bcb"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.837e602c-5cce-4d0d-93e4-5588f3c9deaa",
+                "policy_id": "fulfill_reimbursement_terms",
+                "check": "lost_in_warehouse write-off of 5 units of FKG-LINEN-APRON-2PK on 2026-09-02 (ADJ-869B2E75); 36 days old with no reimbursement row (automatic reimbursement due 2026-10-02 missed).",
+                "evidence": [
+                    "initial_state.fulfill_events.837e602c-5cce-4d0d-93e4-5588f3c9deaa"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.dba706e8-a480-4988-8327-be37e644a376",
+                "policy_id": "fulfill_reimbursement_terms",
+                "check": "lost_in_warehouse write-off of 3 units of FKG-LINEN-APRON-2PK on 2026-09-30 (ADJ-11DC644D); 8 days old: still inside its auto-reimburse search period.",
+                "evidence": [
+                    "initial_state.fulfill_events.dba706e8-a480-4988-8327-be37e644a376"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.6e184461-f790-4d73-b178-21fe1add8843",
+                "policy_id": "fulfill_reimbursement_terms",
+                "check": "lost_in_warehouse write-off of 3 units of FKG-CI-SKILLET-12 on 2025-11-06 (ADJ-2C0E0915); settled through its approved case (reimbursed 2025-12-16).",
+                "evidence": [
+                    "initial_state.fulfill_events.6e184461-f790-4d73-b178-21fe1add8843"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.d1dbc2fd-c3be-4725-8524-ccf790ed672e",
+                "policy_id": "fulfill_reimbursement_terms",
+                "check": "damaged_in_warehouse write-off of 4 units of FKG-LINEN-NAPKIN-6PK on 2026-03-28 (ADJ-5630D0D0); settled through its approved damage case (reimbursed 2026-04-28).",
+                "evidence": [
+                    "initial_state.fulfill_events.d1dbc2fd-c3be-4725-8524-ccf790ed672e"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.515e8c18-7809-48f7-aff3-f8ff034d7124",
+                "policy_id": "fulfill_reimbursement_terms",
+                "check": "3 units of FKG-LINEN-APRON-2PK found on 2025-11-10 against ADJ-ED4F25D9 before any reimbursement of that loss (was_reimbursed false), so no reimbursement reversal is owed.",
+                "evidence": [
+                    "initial_state.fulfill_events.515e8c18-7809-48f7-aff3-f8ff034d7124"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.0eff707b-535c-4eb6-a3a6-1a31c29af791",
+                "policy_id": "fulfill_reimbursement_terms",
+                "check": "2 units of FKG-LINEN-APRON-2PK found on 2026-07-25 against ADJ-87F785AE before any reimbursement of that loss (was_reimbursed false), so no reimbursement reversal is owed.",
+                "evidence": [
+                    "initial_state.fulfill_events.0eff707b-535c-4eb6-a3a6-1a31c29af791"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.9d240c39-c17d-4fa7-be36-789bf4aac890",
+                "policy_id": "fulfill_reimbursement_terms",
+                "check": "lost_in_warehouse reimbursement of 2 units of FKG-LINEN-APRON-2PK on 2025-11-14 for 19.60 USD (units x declared cost); it names its source object (ADJ-ED4F25D9) and is already settled to the seller.",
+                "evidence": [
+                    "initial_state.fulfill_events.9d240c39-c17d-4fa7-be36-789bf4aac890"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.af5d4fb9-c991-4b31-b4a8-5e602974e480",
+                "policy_id": "fulfill_reimbursement_terms",
+                "check": "lost_in_warehouse reimbursement of 3 units of FKG-CI-SKILLET-12 on 2025-12-16 for 55.20 USD (units x declared cost); it names its source object (ADJ-2C0E0915) and is already settled to the seller.",
+                "evidence": [
+                    "initial_state.fulfill_events.af5d4fb9-c991-4b31-b4a8-5e602974e480"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.96010a51-a65f-4d63-865b-85716a8fbc64",
+                "policy_id": "fulfill_reimbursement_terms",
+                "check": "lost_in_warehouse reimbursement of 4 units of FKG-LINEN-APRON-2PK on 2026-01-09 for 39.20 USD (units x declared cost); it names its source object (ADJ-C29D223E) and is already settled to the seller.",
+                "evidence": [
+                    "initial_state.fulfill_events.96010a51-a65f-4d63-865b-85716a8fbc64"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.925b8c13-3141-49ca-b1c7-ab452c5136b5",
+                "policy_id": "fulfill_reimbursement_terms",
+                "check": "inbound_shortage reimbursement of 6 units of FKG-CI-SKILLET-12 on 2026-03-04 for 110.40 USD (units x declared cost); it names its source object (NLIB-6011873) and is already settled to the seller.",
+                "evidence": [
+                    "initial_state.fulfill_events.925b8c13-3141-49ca-b1c7-ab452c5136b5"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.8e9663d2-c39f-453a-bc9c-ae3229ab1854",
+                "policy_id": "fulfill_reimbursement_terms",
+                "check": "damaged_in_warehouse reimbursement of 4 units of FKG-LINEN-NAPKIN-6PK on 2026-04-28 for 29.00 USD (units x declared cost); it names its source object (ADJ-5630D0D0) and is already settled to the seller.",
+                "evidence": [
+                    "initial_state.fulfill_events.8e9663d2-c39f-453a-bc9c-ae3229ab1854"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.1e338136-9d2a-4066-9880-46e599abda33",
+                "policy_id": "fulfill_reimbursement_terms",
+                "check": "lost_in_warehouse reimbursement of 6 units of FKG-LINEN-APRON-2PK on 2026-05-06 for 58.80 USD (units x declared cost); it names its source object (ADJ-C84329F1) and is already settled to the seller.",
+                "evidence": [
+                    "initial_state.fulfill_events.1e338136-9d2a-4066-9880-46e599abda33"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_enrollments.77b11b95-e19d-4960-960b-e0360e296f4c",
+                "policy_id": "fulfill_enrollment_and_review",
+                "check": "Active FBN Growth Program enrollment approved 2024-02-12 and last reviewed 2026-08-03 for a seller holding an active Premium Store plan; units_on_hand equals the sum of the seeded inventory movements (receipts plus finds less write-offs).",
+                "evidence": [
+                    "initial_state.fulfill_enrollments.77b11b95-e19d-4960-960b-e0360e296f4c",
+                    "initial_state.selling_plans.fa00e600-6c8b-4c10-9afe-d4d37956bd7f"
+                ]
+            }
+        ]
+    },
+    "evaluation_criteria": [
+        {
+            "owner": "agent",
+            "tool": "find_customers",
+            "arguments": {
+                "email": "rosalind.featherstone@featherstonekitchen.com"
+            },
+            "objective": "Locate the caller's Northloop profile from the email she volunteers and read her customer reference.",
+            "necessity": "Every later read and write is keyed by the customer reference; without it nothing can be looked up or verified."
+        },
+        {
+            "owner": "agent",
+            "tool": "verify_customer_identity",
+            "arguments": {
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136",
+                "phone": "2065550317",
+                "tax_id_last4": "5823"
+            },
+            "objective": "Record the in-session identity check with the mobile number and the tax ID last four digits she states.",
+            "necessity": "Identity must be verified before any account information is discussed or any reimbursement decision is made; two matching details are required."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_fbn_enrollments",
+            "arguments": {
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136"
+            },
+            "objective": "Read the FBN enrollment: program FBN Growth Program, activation date 2024-02-12 and its enrollment reference.",
+            "necessity": "The program and the whole months since activation decide the lookback base, the claim unit cap and the allowance cap; the enrollment reference scopes the activity read."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_fbn_cases",
+            "arguments": {
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136"
+            },
+            "objective": "Read every FBN case of the seller: the open lost-in-warehouse case on FKG-LINEN-APRON-2PK (33 units claimed, opened 2026-09-01) and the earlier approved and denied cases.",
+            "necessity": "The open case is the object of both writes and its units claimed is the state the approval's prerequisite sentence waits on; the opening dates of the other cases decide the verification holdback, and the opening date of the open case decides the limit uplift."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_fbn_activity",
+            "arguments": {
+                "enrollment_id": "77b11b95-e19d-4960-960b-e0360e296f4c"
+            },
+            "objective": "Read the SKU ledger: inbound receipts (size tier, units), lost-in-warehouse adjustments, found-inventory records and lost-in-warehouse reimbursements.",
+            "necessity": "The claimable lost units, the search hold, the claim ceiling (largest adjustment or received share), the desk adjustment count and the shrinkage share all aggregate these rows."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_selling_plans",
+            "arguments": {
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136"
+            },
+            "objective": "Read the selling plan: Premium Store, opened 2021-06-20.",
+            "necessity": "The selling plan and its opening date decide the store lookback bonus; the selling plan decides the approval limit."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_seller_standing",
+            "arguments": {
+                "customer_id": "1cc70c1e-a6ad-4821-b8b3-b23ab7ced136"
+            },
+            "objective": "Read the performance standing: Top Rated Level, good standing, no active violation points (last evaluation 2026-09-20).",
+            "necessity": "The standing level decides the claim ceiling method and the shrinkage allowance method; the violation points and status decide the compliance holdback."
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "amend_lost_inventory_claim_06dd83f3"
+            },
+            "objective": "Unlock the seller's own claim-correction action so it can be handed to her.",
+            "necessity": "First half of the unlock/call pair for the customer's own write; no DB effect."
+        },
+        {
+            "owner": "user",
+            "tool": "call_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "amend_lost_inventory_claim_06dd83f3",
+                "arguments": {
+                    "case_id": "cb586a63-a1b3-4f64-9977-b15c05a8cdae",
+                    "reimbursement_type": "lost_in_warehouse",
+                    "adjustment_ref": "",
+                    "shipment_id": "",
+                    "order_id": "",
+                    "removal_order_id": "",
+                    "sku": "FKG-LINEN-APRON-2PK",
+                    "units_claimed": 25
+                }
+            },
+            "objective": "The seller corrects the units claimed on her open warehouse-loss case to the claimable lost units.",
+            "necessity": "The approval's rule fixes the approved units only after the units claimed on the case equal the claimable lost units of its SKU; the case shows 33 at the opening, the claim-correction policy gives 25, and the correction is the seller's own write on her own case.",
+            "argument_uniqueness_tracing": {
+                "case_id": "'cb586a63-a1b3-4f64-9977-b15c05a8cdae'. Basis: the docstring says each source reference is 'copied from the case record; pass an empty string when the case names no' such reference, and the case record (initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae) shows the reference of the seller's only open case, read from find_fbn_cases (case_status submitted, reimbursement_type lost_in_warehouse, sku FKG-LINEN-APRON-2PK). Uniqueness: there is exactly one open case of the seller, so every correct agent copies the same value; for reimbursement_type the other four loss kinds and not_applicable describe other cases, not this one.",
+                "reimbursement_type": "'lost_in_warehouse'. Basis: the docstring says each source reference is 'copied from the case record; pass an empty string when the case names no' such reference, and the case record (initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae) shows the loss kind recorded on that case. Uniqueness: there is exactly one open case of the seller, so every correct agent copies the same value; for reimbursement_type the other four loss kinds and not_applicable describe other cases, not this one.",
+                "adjustment_ref": "''. Basis: the docstring says each source reference is 'copied from the case record; pass an empty string when the case names no' such reference, and the case record (initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae) shows the case names no single adjustment (adjustment_ref is empty on the case record). Uniqueness: there is exactly one open case of the seller, so every correct agent copies the same value; for reimbursement_type the other four loss kinds and not_applicable describe other cases, not this one.",
+                "shipment_id": "''. Basis: the docstring says each source reference is 'copied from the case record; pass an empty string when the case names no' such reference, and the case record (initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae) shows the case names no inbound shipment (empty on the case record). Uniqueness: there is exactly one open case of the seller, so every correct agent copies the same value; for reimbursement_type the other four loss kinds and not_applicable describe other cases, not this one.",
+                "order_id": "''. Basis: the docstring says each source reference is 'copied from the case record; pass an empty string when the case names no' such reference, and the case record (initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae) shows the case names no order (absent on the case record). Uniqueness: there is exactly one open case of the seller, so every correct agent copies the same value; for reimbursement_type the other four loss kinds and not_applicable describe other cases, not this one.",
+                "removal_order_id": "''. Basis: the docstring says each source reference is 'copied from the case record; pass an empty string when the case names no' such reference, and the case record (initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae) shows the case names no removal order (absent on the case record). Uniqueness: there is exactly one open case of the seller, so every correct agent copies the same value; for reimbursement_type the other four loss kinds and not_applicable describe other cases, not this one.",
+                "sku": "'FKG-LINEN-APRON-2PK'. Basis: the docstring says each source reference is 'copied from the case record; pass an empty string when the case names no' such reference, and the case record (initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae) shows the SKU on the case record, which is also the SKU the seller states. Uniqueness: there is exactly one open case of the seller, so every correct agent copies the same value; for reimbursement_type the other four loss kinds and not_applicable describe other cases, not this one.",
+                "units_claimed": "25. Claimable lost units of the open lost-in-warehouse case on FKG-LINEN-APRON-2PK at handling time (before any write, NOW 2026-10-08): lookback base 4 months (FBN Growth Program, active 31 whole months since 2024-02-12, at least the 24-month threshold) plus store lookback bonus 1 month (Premium Store opened 2021-06-20, 63 months) = warehouse-loss lookback 5 months; search hold 2 months (latest receipt of the SKU records small_standard); lost-in-warehouse adjustments inside 5 months = 3 (2026-09-30) + 5 (2026-09-02) + 8 (2026-08-04) + 10 (2026-07-09) + 9 (2026-05-27) = 35, of which the 2-month hold removes 3 + 5 = 8, counted 27 (the 2026-04-06 adjustment of 6 units is 6 whole months old, outside the lookback); found-inventory units of the SKU inside the lookback = 2 (2026-07-25, against the 2026-07-09 adjustment; the 2025-11-10 find is outside); lost-in-warehouse reimbursements of the SKU inside the lookback = 0 (the 6-unit reimbursement of 2026-05-06 is 5 whole months old, outside); remainder 27 - 2 - 0 = 25; claim ceiling waived for Top Rated Level (it equals the remainder); claim unit cap 30 (FBN Growth Program active at least 12 months), not binding. Result 25. Baseline readings: standard lookback base -> 16; no store bonus -> 16; standard hold -> 30; standard ceiling share floor(500 x 0.04) = 20 -> 20; standard claim unit cap 15 -> 15."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "approve_lost_inventory_case_b95e2fef"
+            },
+            "objective": "Unlock the desk's case-approval action.",
+            "necessity": "First half of the unlock/call pair for the agent's write; no DB effect."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "approve_lost_inventory_case_b95e2fef",
+                "arguments": {
+                    "case_id": "cb586a63-a1b3-4f64-9977-b15c05a8cdae",
+                    "reimbursement_type": "lost_in_warehouse",
+                    "adjustment_ref": "",
+                    "shipment_id": "",
+                    "order_id": "",
+                    "removal_order_id": "",
+                    "sku": "FKG-LINEN-APRON-2PK",
+                    "units_approved": 22
+                }
+            },
+            "objective": "The desk approves the seller's open warehouse-loss case for the approvable units; the case shows approved with that unit count.",
+            "necessity": "This is the decision the seller asked for; the warehouse-loss approval policy alone produces units_approved from the corrected claim.",
+            "argument_uniqueness_tracing": {
+                "case_id": "'cb586a63-a1b3-4f64-9977-b15c05a8cdae'. Basis: the docstring says each source reference is 'copied from the case record; pass an empty string when the case names no' such reference, and the case record (initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae) shows the reference of the seller's only open case, read from find_fbn_cases (case_status submitted, reimbursement_type lost_in_warehouse, sku FKG-LINEN-APRON-2PK). Uniqueness: there is exactly one open case of the seller, so every correct agent copies the same value; for reimbursement_type the other four loss kinds and not_applicable describe other cases, not this one.",
+                "reimbursement_type": "'lost_in_warehouse'. Basis: the docstring says each source reference is 'copied from the case record; pass an empty string when the case names no' such reference, and the case record (initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae) shows the loss kind recorded on that case. Uniqueness: there is exactly one open case of the seller, so every correct agent copies the same value; for reimbursement_type the other four loss kinds and not_applicable describe other cases, not this one.",
+                "adjustment_ref": "''. Basis: the docstring says each source reference is 'copied from the case record; pass an empty string when the case names no' such reference, and the case record (initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae) shows the case names no single adjustment (adjustment_ref is empty on the case record). Uniqueness: there is exactly one open case of the seller, so every correct agent copies the same value; for reimbursement_type the other four loss kinds and not_applicable describe other cases, not this one.",
+                "shipment_id": "''. Basis: the docstring says each source reference is 'copied from the case record; pass an empty string when the case names no' such reference, and the case record (initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae) shows the case names no inbound shipment (empty on the case record). Uniqueness: there is exactly one open case of the seller, so every correct agent copies the same value; for reimbursement_type the other four loss kinds and not_applicable describe other cases, not this one.",
+                "order_id": "''. Basis: the docstring says each source reference is 'copied from the case record; pass an empty string when the case names no' such reference, and the case record (initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae) shows the case names no order (absent on the case record). Uniqueness: there is exactly one open case of the seller, so every correct agent copies the same value; for reimbursement_type the other four loss kinds and not_applicable describe other cases, not this one.",
+                "removal_order_id": "''. Basis: the docstring says each source reference is 'copied from the case record; pass an empty string when the case names no' such reference, and the case record (initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae) shows the case names no removal order (absent on the case record). Uniqueness: there is exactly one open case of the seller, so every correct agent copies the same value; for reimbursement_type the other four loss kinds and not_applicable describe other cases, not this one.",
+                "sku": "'FKG-LINEN-APRON-2PK'. Basis: the docstring says each source reference is 'copied from the case record; pass an empty string when the case names no' such reference, and the case record (initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae) shows the SKU on the case record, which is also the SKU the seller states. Uniqueness: there is exactly one open case of the seller, so every correct agent copies the same value; for reimbursement_type the other four loss kinds and not_applicable describe other cases, not this one.",
+                "units_approved": "22. Units approved on the open lost-in-warehouse case at its handling time (after the seller's correction to 25): units claimed 25; shrinkage allowance by the per-incident method because the enrollment is in FBN Growth Program and the seller stands at Top Rated Level = 1 unit x 5 lost-in-warehouse adjustments of the SKU dated inside the 6-month desk review span (2026-05-27, 2026-07-09, 2026-08-04, 2026-09-02, 2026-09-30; the 2026-04-06 adjustment is 6 whole months old) = 5, limited to the long-tenure allowance cap 3 (active 31 months, at least 24) = 3; verification holdback waived (no denied reimbursement case and 3 approved reimbursement cases opened inside the 12-month case-history span: 2025-12-02, 2026-02-20, 2026-04-15; the denied case of 2025-08-11 is 13 whole months old); compliance holdback waived (0 active violation points, good standing); net 25 - 3 - 0 - 0 = 22; cap = approval limit 20 (Premium Store) + limit uplift 10 (case opened 2026-09-01, 37 days before the handling date, at least 30) = 30, not binding. Result 22. Baseline readings: standard shrinkage share (floor(500 x 0.004) = 2) -> 23; standard allowance cap 8 -> 20; standard verification holdback 1 -> 21; standard compliance holdback 1 -> 21; standard approval limit 10 -> 20; no uplift -> 20."
+            }
+        }
+    ],
+    "prerequisite_closure": {
+        "root_problem": "fulfill_ext_lost_case_approval",
+        "edges": [
+            {
+                "from": "fulfill_ext_lost_case_approval",
+                "to": "fulfill_ext_lost_claim_units",
+                "kind": "value_input",
+                "gate": "claimed_units",
+                "form": "state",
+                "condition": "The open lost-in-warehouse case of the SKU carries, as its units claimed, the claimable lost units that the claim-correction rule computes for that SKU at handling time.",
+                "policy_source": "The units approved on a warehouse-loss case are fixed only after the units claimed on that case equal the claimable lost units of its SKU.",
+                "resolved_by": "amend_lost_inventory_claim_06dd83f3",
+                "unresolved_at_frozen_time": {
+                    "why_false": "The open lost-in-warehouse case carries 33 units claimed, while the claimable lost units of FKG-LINEN-APRON-2PK at frozen_time are 25.",
+                    "evidence": [
+                        "initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae.units_claimed = 33",
+                        "initial_state.fulfill_cases.cb586a63-a1b3-4f64-9977-b15c05a8cdae.case_status = submitted"
+                    ],
+                    "flips_to_true_by": "The seller's correction writes units_claimed = 25 on the same case (case stays submitted); the approval then reads claimed_units = 25."
+                }
+            }
+        ],
+        "resolution_order": [
+            "fulfill_ext_lost_claim_units",
+            "fulfill_ext_lost_case_approval"
+        ],
+        "order_uniqueness": "A single edge: the correction must land before the approval because the approval's own rule fixes its result only after the units claimed equal the claimable lost units; after the approval the case is no longer open, and the correction policy selects the open case, so the reverse order is not a valid solution.",
+        "edge_load_bearing": [
+            {
+                "edge": "fulfill_ext_lost_case_approval -> fulfill_ext_lost_claim_units",
+                "skipped_effect": "Skipping the correction leaves claimed_units = 33, so units_approved = MN(30, 33 - 3 - 0 - 0) = 30 instead of 22; the terminal case also keeps 33 units claimed before approval."
+            }
+        ],
+        "no_user_hint": "user_scenario raises only the undecided claim and asks for it to be settled; it never says the unit count is wrong or must be changed first. The seller only agrees to change the count, and runs the change, after the agent explains it and hands it over.",
+        "tools_do_not_block": "approve_lost_inventory_case_b95e2fef performs a single ctx.update on the case with the units passed and status approved; it never reads units_claimed or compares it with anything, so it would approve 30 on the uncorrected case without any error. amend_lost_inventory_claim_06dd83f3 likewise writes whatever count it is given."
+    },
+    "charter_scope": {
+        "extended_policies": [
+            "fulfill_ext_lost_claim_units",
+            "fulfill_ext_lost_case_approval"
+        ],
+        "task_tools": [
+            "amend_lost_inventory_claim_06dd83f3",
+            "approve_lost_inventory_case_b95e2fef"
+        ]
+    },
+    "required_documents": [
+        "fulfill_ext_lost_claim_units",
+        "fulfill_ext_lost_case_approval"
+    ],
+    "computations": [
+        {
+            "policy_id": "fulfill_ext_lost_claim_units",
+            "target_holding_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+            "step": 8,
+            "arg": "units_claimed",
+            "expected": 25,
+            "factor_trace": [
+                "lookback_base (parameter): evidence fulfill_enrollments variant FBN Growth Program and activation 2024-02-12 (31 whole months); tier 'Core or Growth AND active >= 24 months' selects the middle lookback base 4 months (baseline: standard 2). Baseline reading gives result 16.0.",
+                "store_lookback_bonus (parameter): evidence selling_plans Premium Store opened 2021-06-20 (63 months, >= 12); tier 'Basic or Premium Store AND opened >= 12 months' selects the small store bonus 1 month (baseline: none). Baseline reading gives result 16.0.",
+                "search_hold (parameter): evidence latest receipt of FKG-LINEN-APRON-2PK (2026-08-19) records small_standard; tier selects the small-item hold 2 months, removing the 2026-09-30 (3) and 2026-09-02 (5) adjustments (baseline: 1 month removes only the 3). Baseline reading gives result 30.0.",
+                "claim_ceiling_method (method): evidence standing_records Top Rated Level; tier 'Top Rated or Preferred Partner' waives the ceiling (it equals the remainder 25) (baseline: standard share 0.04 x 500 received = 20, which binds). Baseline reading gives result 20.",
+                "claim_unit_cap (parameter): evidence FBN Growth Program, active 31 whole months (>= 12); tier selects the mid-program cap 30, not binding (baseline: standard cap 15, which binds). Baseline reading gives result 15.",
+                "case_sku = FKG-LINEN-APRON-2PK (open lost-in-warehouse case, opened 2026-09-01).",
+                "lookback_months = 4 + 1 = 5; lost_in_lookback = 35; lost_in_hold = 8; counted_lost = 27.",
+                "found_matched = 2 (2026-07-25); reimbursed_in_lookback = 0; remainder_units = 25.",
+                "claim_ceiling = 25 (waived); claim_unit_cap = 30; result = MN(25, 30, 25) = 25."
+            ],
+            "baseline_result": 5.0,
+            "factor_sensitivity": [
+                {
+                    "factor": "lookback_base",
+                    "tier_taken": "FBN Core or Growth Program AND active >= the lookback tenure threshold",
+                    "baseline_result": 16.0
+                },
+                {
+                    "factor": "store_lookback_bonus",
+                    "tier_taken": "Basic or Premium Store AND opened >= the store tenure threshold",
+                    "baseline_result": 16.0
+                },
+                {
+                    "factor": "search_hold",
+                    "tier_taken": "latest receipt records the small standard size tier",
+                    "baseline_result": 30.0
+                },
+                {
+                    "factor": "claim_ceiling_method",
+                    "tier_taken": "Top Rated Level or Preferred Partner Level: ceiling waived",
+                    "baseline_result": 20
+                },
+                {
+                    "factor": "claim_unit_cap",
+                    "tier_taken": "FBN Core or Growth Program AND active >= the claim-cap tenure",
+                    "baseline_result": 15
+                }
+            ]
+        },
+        {
+            "policy_id": "fulfill_ext_lost_case_approval",
+            "target_holding_id": "77b11b95-e19d-4960-960b-e0360e296f4c",
+            "step": 10,
+            "arg": "units_approved",
+            "expected": 22,
+            "factor_trace": [
+                "shrinkage_allowance_method (method): evidence FBN Growth Program + standing Top Rated Level; tier 'Core/Growth/Scale AND Above Standard or better' applies the per-incident method: 1 x 5 adjustments in 6 months = 5 (baseline: floor(500 received x 0.004) = 2). Baseline reading gives result 23.",
+                "allowance_cap (parameter): evidence activation 2024-02-12, 31 whole months; tier '>= 24 months' selects cap 3, so the allowance applied is 3 (baseline: cap 8 leaves 5). Baseline reading gives result 20.",
+                "verification_holdback_method (method): evidence fulfill_cases (case_type reimbursement_claim) opened inside 12 months: 0 denied, 3 approved (2025-12-02, 2026-02-20, 2026-04-15); the denied case of 2025-08-11 is outside; tier waives the holdback (baseline: 1 unit). Baseline reading gives result 21.",
+                "compliance_holdback (parameter): evidence standing_records violation_points 0 and status good_standing; tier waives it (baseline: 1 unit). Baseline reading gives result 21.",
+                "approval_limit (parameter): evidence selling_plans Premium Store; tier selects the mid-store limit 20 (baseline: 10). Baseline reading gives result 20.",
+                "limit_uplift (parameter): evidence open case created_at 2026-09-01, 37 days before 2026-10-08; tier '>= 30 days' selects uplift 10 (baseline: none). Baseline reading gives result 20.",
+                "claimed_units = 25 after the seller's correction (33 at the opening).",
+                "applied_allowance = MN(5, 3) = 3; net_approvable = 25 - 3 - 0 - 0 = 22.",
+                "result = MN(20 + 10, MX(0, 22)) = 22."
+            ],
+            "baseline_result": 10,
+            "factor_sensitivity": [
+                {
+                    "factor": "shrinkage_allowance_method",
+                    "tier_taken": "Core, Growth or Scale Program AND Above Standard Level or better: per-incident allowance",
+                    "baseline_result": 23
+                },
+                {
+                    "factor": "allowance_cap",
+                    "tier_taken": "active at least the long tenure",
+                    "baseline_result": 20
+                },
+                {
+                    "factor": "verification_holdback_method",
+                    "tier_taken": "no denied reimbursement case AND at least the approved-case trigger of approved reimbursement cases: waived",
+                    "baseline_result": 21
+                },
+                {
+                    "factor": "compliance_holdback",
+                    "tier_taken": "no active violation points AND good standing",
+                    "baseline_result": 21
+                },
+                {
+                    "factor": "approval_limit",
+                    "tier_taken": "Basic Store or Premium Store",
+                    "baseline_result": 20
+                },
+                {
+                    "factor": "limit_uplift",
+                    "tier_taken": "opened at least the long-wait days before",
+                    "baseline_result": 20
+                }
+            ]
+        }
+    ]
+}

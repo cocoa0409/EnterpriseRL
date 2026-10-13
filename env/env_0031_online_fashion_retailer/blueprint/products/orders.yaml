@@ -1,0 +1,940 @@
+# Online Orders — every web and app order of Marlowe & Finch. The order is held as a sales
+# contract whose tier is the delivery service chosen at checkout; its lines, payments and
+# post-purchase adjustments are booked as ledger rows that the loyalty, returns, credit, preorders
+# and claims charters read.
+
+category: orders
+display_name: Online Orders
+
+binding:
+  holding_table: orders
+  event_tables: [order_lines, order_payments]
+  status_field: status
+  variant_field: variant_name
+
+lifecycle:
+  states: [placed, processing, shipped, delivered, closed, cancelled]
+  transitions:
+    - {from: placed, to: processing, by: system, means: "The order is released to the warehouse once its cancellation window and any fraud review have passed."}
+    - {from: placed, to: cancelled, by: agent, means: "The whole order is cancelled before release — at the customer's request, or after a failed fraud review or payment authorization."}
+    - {from: processing, to: cancelled, by: system, means: "Nothing on the order could be picked and every line was cancelled at the warehouse."}
+    - {from: processing, to: shipped, by: system, means: "The first parcel of the order leaves the warehouse with a carrier tracking number."}
+    - {from: shipped, to: delivered, by: system, means: "The carrier records the order's last parcel as delivered."}
+    - {from: delivered, to: closed, by: system, means: "The order closes once the post-delivery holding period has passed."}
+    - {from: shipped, to: closed, by: system, means: "The order closes without delivery — the parcel came back to the warehouse as undeliverable, or was written off as lost under a delivery claim."}
+
+accounts:
+  - key: order_value
+    unit: USD
+    meaning: "Net merchandise value the customer owes on the order: booked lines minus cancellations, price adjustments and post-purchase promotion adjustments."
+  - key: payments
+    unit: USD
+    meaning: "Money captured from the customer's tenders for the order net of money given back to those tenders by order-level refunds (return refunds are booked by the returns charter)."
+
+parameter_schema:
+  shipping_fee_usd: "List fee of the delivery service for one order (USD, 2 dp), before any waiver."
+  transit_business_days_min: "Fewest business days in transit after dispatch (integer; Monday-Friday excluding US federal holidays)."
+  transit_business_days_max: "Most business days in transit after dispatch (integer); the promised delivery date is dispatch date plus this many business days."
+  delivery_date_guaranteed: "Whether the promised delivery date is guaranteed (boolean); read by the claims charter for late-delivery claims."
+  order_cutoff_time_et: "Latest Eastern Time (HH:MM) at which an order placed on a business day counts as placed that day for dispatch."
+  processing_business_days: "Business days between placement (after cut-off rules) and dispatch (integer)."
+  carrier_service: "Carrier and service used (string)."
+  service_area: "Destinations served (enum string: all_50_states_dc_apo_fpo | access_points_all_50_states_dc | all_50_states_dc | contiguous_48_dc | same_day_metro_zip_list)."
+  available_to_alaska_hawaii: "Whether the service can ship to Alaska or Hawaii (boolean)."
+  alaska_hawaii_surcharge_usd: "Surcharge added for an Alaska or Hawaii destination (USD, 2 dp); never waived."
+  po_box_allowed: "Whether the service can deliver to a PO box (boolean)."
+  apo_fpo_allowed: "Whether the service can deliver to an APO/FPO/DPO military address (boolean)."
+  signature_threshold_usd: "Order total (USD, 2 dp) at or above which an adult signature is required (0.00 = every order needs a signature or pickup code)."
+  delivery_attempts: "Delivery attempts the carrier makes before holding the parcel (integer)."
+  carrier_hold_days: "Calendar days the carrier holds a parcel for collection after the last attempt or at the pickup point before returning it to the sender (integer)."
+  weekend_delivery: "Whether the service delivers on Saturdays (boolean)."
+  cancellation_window_minutes: "Minutes after placement during which the order stays in status placed and can be cancelled or edited (integer)."
+  max_order_value_usd: "Highest order total (USD, 2 dp) the service accepts."
+  free_shipping_credit_usd: "Amount a free-shipping entitlement (threshold, loyalty tier or SHIPFREE code) takes off this service's fee (USD, 2 dp); 0.00 = the service is not waivable by those entitlements."
+  shipping_fee_refund_on_full_cancellation: "Whether the shipping fee is refunded when the whole order is cancelled (boolean)."
+  base_free_shipping_threshold_usd: "Merchandise subtotal after discounts (USD, 2 dp) at or above which a customer without a loyalty membership earns the free-shipping credit."
+  max_units_per_order: "Maximum units on one order (integer)."
+  max_units_per_sku: "Maximum units of one SKU (style, colour and size) on one order (integer)."
+  promo_codes_per_order: "Maximum promotion codes on one order (integer)."
+  post_purchase_promo_window_days: "Calendar days after the placed date within which a valid code that was not entered at checkout can be applied (integer)."
+  base_price_adjustment_window_days: "Price-adjustment window in calendar days after the placed date for customers without a loyalty membership (integer)."
+  price_adjustment_per_line_limit: "Maximum price adjustments per order line (integer)."
+  price_adjustment_min_difference_usd: "Smallest per-unit price difference (USD, 2 dp) that is adjusted."
+  price_adjustment_excludes_clearance: "Whether a clearance price is excluded as a reference price (boolean)."
+  price_adjustment_excludes_flash_sale: "Whether a flash-sale price is excluded as a reference price (boolean)."
+  price_adjustment_excludes_code_prices: "Whether a price reachable only with a promotion code is excluded as a reference price (boolean)."
+  payment_authorization_validity_days: "Calendar days a card authorization stays valid before it must be renewed (integer)."
+  payment_capture_point: "When tenders are captured (enum string: dispatch)."
+  split_shipment_fee_policy: "How the shipping fee is charged when an order ships in several parcels (enum string: charged_once_on_first_dispatch)."
+  address_change_before_release_only: "Whether the shipping address can be changed only while the order is in status placed (boolean)."
+  service_change_before_release_only: "Whether the delivery service can be changed only while the order is in status placed (boolean)."
+  fraud_review_threshold_usd: "Order total (USD, 2 dp) at or above which the order is held for fraud review before release."
+  fraud_review_hold_hours: "Hours an order may be held for fraud review before it is cancelled if not cleared (integer)."
+  gift_card_max_value_usd: "Highest value of one purchased gift card (USD, 2 dp)."
+  gift_card_daily_purchase_cap_usd: "Highest total value of gift cards one customer may buy per calendar day, Eastern Time (USD, 2 dp)."
+  gift_card_stored_value_tender_allowed: "Whether gift-card lines may be paid with gift cards, store credit, Goodwill Credit or Rewards Notes (boolean)."
+  promo_excludes_preorders: "Whether promotion codes are excluded from pre-order and back-order reservations (boolean)."
+  promo_excludes_gift_cards: "Whether promotion codes are excluded from gift-card lines (boolean)."
+  promo_allocation_basis: "How an order-level discount is spread over lines (enum string: pro_rata_by_eligible_line_price)."
+  discount_rounding_rule: "Rounding of allocated discounts (enum string: per_line_half_up_cents_remainder_to_highest_priced_line)."
+  order_close_days_after_delivery: "Calendar days after the delivered date at which a delivered order closes (integer)."
+  rts_shipping_fee_refunded: "Whether the shipping fee is refunded when a parcel returns to sender as undeliverable (boolean)."
+  tender_capture_priority: "Order in which tenders are drawn at capture (ordered list)."
+  tender_refund_priority: "Order in which order-level refunds are returned to the captured tenders (ordered list)."
+
+variants:
+  - name: Economy Ground
+    rank: 1
+    entry_gate: {destinations: "all 50 states, DC, PO boxes and APO/FPO/DPO", min_order_usd: 0.00}
+    parameters:
+      shipping_fee_usd: 4.95
+      transit_business_days_min: 5
+      transit_business_days_max: 8
+      delivery_date_guaranteed: false
+      order_cutoff_time_et: "23:59"
+      processing_business_days: 1
+      carrier_service: "USPS Ground Advantage"
+      service_area: all_50_states_dc_apo_fpo
+      available_to_alaska_hawaii: true
+      alaska_hawaii_surcharge_usd: 0.00
+      po_box_allowed: true
+      apo_fpo_allowed: true
+      signature_threshold_usd: 750.00
+      delivery_attempts: 1
+      carrier_hold_days: 15
+      weekend_delivery: true
+      cancellation_window_minutes: 30
+      max_order_value_usd: 5000.00
+      free_shipping_credit_usd: 4.95
+      shipping_fee_refund_on_full_cancellation: true
+      base_free_shipping_threshold_usd: 120.00
+      max_units_per_order: 25
+      max_units_per_sku: 5
+      promo_codes_per_order: 1
+      post_purchase_promo_window_days: 7
+      base_price_adjustment_window_days: 14
+      price_adjustment_per_line_limit: 1
+      price_adjustment_min_difference_usd: 1.00
+      price_adjustment_excludes_clearance: true
+      price_adjustment_excludes_flash_sale: true
+      price_adjustment_excludes_code_prices: true
+      payment_authorization_validity_days: 7
+      payment_capture_point: dispatch
+      split_shipment_fee_policy: charged_once_on_first_dispatch
+      address_change_before_release_only: true
+      service_change_before_release_only: true
+      fraud_review_threshold_usd: 2500.00
+      fraud_review_hold_hours: 24
+      gift_card_max_value_usd: 500.00
+      gift_card_daily_purchase_cap_usd: 2000.00
+      gift_card_stored_value_tender_allowed: false
+      promo_excludes_preorders: true
+      promo_excludes_gift_cards: true
+      promo_allocation_basis: pro_rata_by_eligible_line_price
+      discount_rounding_rule: per_line_half_up_cents_remainder_to_highest_priced_line
+      order_close_days_after_delivery: 90
+      rts_shipping_fee_refunded: false
+      tender_capture_priority: [rewards_note, goodwill_credit, bonus_gift_card, return_store_credit, gift_card, card_or_wallet]
+      tender_refund_priority: [card_or_wallet, gift_card, return_store_credit, bonus_gift_card, goodwill_credit, rewards_note]
+  - name: Pickup Point Delivery
+    rank: 2
+    entry_gate: {destinations: "UPS Access Point locations in all 50 states and DC", min_order_usd: 0.00}
+    parameters:
+      shipping_fee_usd: 3.95
+      transit_business_days_min: 3
+      transit_business_days_max: 6
+      delivery_date_guaranteed: false
+      order_cutoff_time_et: "23:59"
+      processing_business_days: 1
+      carrier_service: "UPS Access Point Economy"
+      service_area: access_points_all_50_states_dc
+      available_to_alaska_hawaii: true
+      alaska_hawaii_surcharge_usd: 0.00
+      po_box_allowed: false
+      apo_fpo_allowed: false
+      signature_threshold_usd: 0.00
+      delivery_attempts: 1
+      carrier_hold_days: 7
+      weekend_delivery: false
+      cancellation_window_minutes: 30
+      max_order_value_usd: 5000.00
+      free_shipping_credit_usd: 3.95
+      shipping_fee_refund_on_full_cancellation: true
+      base_free_shipping_threshold_usd: 120.00
+      max_units_per_order: 25
+      max_units_per_sku: 5
+      promo_codes_per_order: 1
+      post_purchase_promo_window_days: 7
+      base_price_adjustment_window_days: 14
+      price_adjustment_per_line_limit: 1
+      price_adjustment_min_difference_usd: 1.00
+      price_adjustment_excludes_clearance: true
+      price_adjustment_excludes_flash_sale: true
+      price_adjustment_excludes_code_prices: true
+      payment_authorization_validity_days: 7
+      payment_capture_point: dispatch
+      split_shipment_fee_policy: charged_once_on_first_dispatch
+      address_change_before_release_only: true
+      service_change_before_release_only: true
+      fraud_review_threshold_usd: 2500.00
+      fraud_review_hold_hours: 24
+      gift_card_max_value_usd: 500.00
+      gift_card_daily_purchase_cap_usd: 2000.00
+      gift_card_stored_value_tender_allowed: false
+      promo_excludes_preorders: true
+      promo_excludes_gift_cards: true
+      promo_allocation_basis: pro_rata_by_eligible_line_price
+      discount_rounding_rule: per_line_half_up_cents_remainder_to_highest_priced_line
+      order_close_days_after_delivery: 90
+      rts_shipping_fee_refunded: false
+      tender_capture_priority: [rewards_note, goodwill_credit, bonus_gift_card, return_store_credit, gift_card, card_or_wallet]
+      tender_refund_priority: [card_or_wallet, gift_card, return_store_credit, bonus_gift_card, goodwill_credit, rewards_note]
+  - name: Standard Ground
+    rank: 3
+    entry_gate: {destinations: "street addresses in all 50 states and DC", min_order_usd: 0.00}
+    parameters:
+      shipping_fee_usd: 7.95
+      transit_business_days_min: 3
+      transit_business_days_max: 5
+      delivery_date_guaranteed: false
+      order_cutoff_time_et: "23:59"
+      processing_business_days: 1
+      carrier_service: "UPS Ground"
+      service_area: all_50_states_dc
+      available_to_alaska_hawaii: true
+      alaska_hawaii_surcharge_usd: 10.00
+      po_box_allowed: false
+      apo_fpo_allowed: false
+      signature_threshold_usd: 750.00
+      delivery_attempts: 3
+      carrier_hold_days: 5
+      weekend_delivery: false
+      cancellation_window_minutes: 30
+      max_order_value_usd: 5000.00
+      free_shipping_credit_usd: 7.95
+      shipping_fee_refund_on_full_cancellation: true
+      base_free_shipping_threshold_usd: 120.00
+      max_units_per_order: 25
+      max_units_per_sku: 5
+      promo_codes_per_order: 1
+      post_purchase_promo_window_days: 7
+      base_price_adjustment_window_days: 14
+      price_adjustment_per_line_limit: 1
+      price_adjustment_min_difference_usd: 1.00
+      price_adjustment_excludes_clearance: true
+      price_adjustment_excludes_flash_sale: true
+      price_adjustment_excludes_code_prices: true
+      payment_authorization_validity_days: 7
+      payment_capture_point: dispatch
+      split_shipment_fee_policy: charged_once_on_first_dispatch
+      address_change_before_release_only: true
+      service_change_before_release_only: true
+      fraud_review_threshold_usd: 2500.00
+      fraud_review_hold_hours: 24
+      gift_card_max_value_usd: 500.00
+      gift_card_daily_purchase_cap_usd: 2000.00
+      gift_card_stored_value_tender_allowed: false
+      promo_excludes_preorders: true
+      promo_excludes_gift_cards: true
+      promo_allocation_basis: pro_rata_by_eligible_line_price
+      discount_rounding_rule: per_line_half_up_cents_remainder_to_highest_priced_line
+      order_close_days_after_delivery: 90
+      rts_shipping_fee_refunded: false
+      tender_capture_priority: [rewards_note, goodwill_credit, bonus_gift_card, return_store_credit, gift_card, card_or_wallet]
+      tender_refund_priority: [card_or_wallet, gift_card, return_store_credit, bonus_gift_card, goodwill_credit, rewards_note]
+  - name: Expedited 2-Day
+    rank: 4
+    entry_gate: {destinations: "street addresses in all 50 states and DC", min_order_usd: 0.00}
+    parameters:
+      shipping_fee_usd: 14.95
+      transit_business_days_min: 2
+      transit_business_days_max: 2
+      delivery_date_guaranteed: true
+      order_cutoff_time_et: "14:00"
+      processing_business_days: 0
+      carrier_service: "UPS 2nd Day Air"
+      service_area: all_50_states_dc
+      available_to_alaska_hawaii: true
+      alaska_hawaii_surcharge_usd: 20.00
+      po_box_allowed: false
+      apo_fpo_allowed: false
+      signature_threshold_usd: 750.00
+      delivery_attempts: 3
+      carrier_hold_days: 5
+      weekend_delivery: false
+      cancellation_window_minutes: 30
+      max_order_value_usd: 5000.00
+      free_shipping_credit_usd: 7.95
+      shipping_fee_refund_on_full_cancellation: true
+      base_free_shipping_threshold_usd: 120.00
+      max_units_per_order: 25
+      max_units_per_sku: 5
+      promo_codes_per_order: 1
+      post_purchase_promo_window_days: 7
+      base_price_adjustment_window_days: 14
+      price_adjustment_per_line_limit: 1
+      price_adjustment_min_difference_usd: 1.00
+      price_adjustment_excludes_clearance: true
+      price_adjustment_excludes_flash_sale: true
+      price_adjustment_excludes_code_prices: true
+      payment_authorization_validity_days: 7
+      payment_capture_point: dispatch
+      split_shipment_fee_policy: charged_once_on_first_dispatch
+      address_change_before_release_only: true
+      service_change_before_release_only: true
+      fraud_review_threshold_usd: 2500.00
+      fraud_review_hold_hours: 24
+      gift_card_max_value_usd: 500.00
+      gift_card_daily_purchase_cap_usd: 2000.00
+      gift_card_stored_value_tender_allowed: false
+      promo_excludes_preorders: true
+      promo_excludes_gift_cards: true
+      promo_allocation_basis: pro_rata_by_eligible_line_price
+      discount_rounding_rule: per_line_half_up_cents_remainder_to_highest_priced_line
+      order_close_days_after_delivery: 90
+      rts_shipping_fee_refunded: false
+      tender_capture_priority: [rewards_note, goodwill_credit, bonus_gift_card, return_store_credit, gift_card, card_or_wallet]
+      tender_refund_priority: [card_or_wallet, gift_card, return_store_credit, bonus_gift_card, goodwill_credit, rewards_note]
+  - name: Next Business Day
+    rank: 5
+    entry_gate: {destinations: "street addresses in the contiguous 48 states and DC", min_order_usd: 0.00}
+    parameters:
+      shipping_fee_usd: 24.95
+      transit_business_days_min: 1
+      transit_business_days_max: 1
+      delivery_date_guaranteed: true
+      order_cutoff_time_et: "14:00"
+      processing_business_days: 0
+      carrier_service: "UPS Next Day Air Saver"
+      service_area: contiguous_48_dc
+      available_to_alaska_hawaii: false
+      alaska_hawaii_surcharge_usd: 0.00
+      po_box_allowed: false
+      apo_fpo_allowed: false
+      signature_threshold_usd: 750.00
+      delivery_attempts: 3
+      carrier_hold_days: 5
+      weekend_delivery: false
+      cancellation_window_minutes: 30
+      max_order_value_usd: 5000.00
+      free_shipping_credit_usd: 7.95
+      shipping_fee_refund_on_full_cancellation: true
+      base_free_shipping_threshold_usd: 120.00
+      max_units_per_order: 25
+      max_units_per_sku: 5
+      promo_codes_per_order: 1
+      post_purchase_promo_window_days: 7
+      base_price_adjustment_window_days: 14
+      price_adjustment_per_line_limit: 1
+      price_adjustment_min_difference_usd: 1.00
+      price_adjustment_excludes_clearance: true
+      price_adjustment_excludes_flash_sale: true
+      price_adjustment_excludes_code_prices: true
+      payment_authorization_validity_days: 7
+      payment_capture_point: dispatch
+      split_shipment_fee_policy: charged_once_on_first_dispatch
+      address_change_before_release_only: true
+      service_change_before_release_only: true
+      fraud_review_threshold_usd: 2500.00
+      fraud_review_hold_hours: 24
+      gift_card_max_value_usd: 500.00
+      gift_card_daily_purchase_cap_usd: 2000.00
+      gift_card_stored_value_tender_allowed: false
+      promo_excludes_preorders: true
+      promo_excludes_gift_cards: true
+      promo_allocation_basis: pro_rata_by_eligible_line_price
+      discount_rounding_rule: per_line_half_up_cents_remainder_to_highest_priced_line
+      order_close_days_after_delivery: 90
+      rts_shipping_fee_refunded: false
+      tender_capture_priority: [rewards_note, goodwill_credit, bonus_gift_card, return_store_credit, gift_card, card_or_wallet]
+      tender_refund_priority: [card_or_wallet, gift_card, return_store_credit, bonus_gift_card, goodwill_credit, rewards_note]
+  - name: Same-Day Courier
+    rank: 6
+    entry_gate: {destinations: "ZIP codes on the Same-Day metro list", order_placed_by_et: "11:00"}
+    parameters:
+      shipping_fee_usd: 29.95
+      transit_business_days_min: 0
+      transit_business_days_max: 0
+      delivery_date_guaranteed: true
+      order_cutoff_time_et: "11:00"
+      processing_business_days: 0
+      carrier_service: "Roadie Same-Day"
+      service_area: same_day_metro_zip_list
+      available_to_alaska_hawaii: false
+      alaska_hawaii_surcharge_usd: 0.00
+      po_box_allowed: false
+      apo_fpo_allowed: false
+      signature_threshold_usd: 0.00
+      delivery_attempts: 1
+      carrier_hold_days: 0
+      weekend_delivery: true
+      cancellation_window_minutes: 15
+      max_order_value_usd: 1500.00
+      free_shipping_credit_usd: 0.00
+      shipping_fee_refund_on_full_cancellation: true
+      base_free_shipping_threshold_usd: 120.00
+      max_units_per_order: 25
+      max_units_per_sku: 5
+      promo_codes_per_order: 1
+      post_purchase_promo_window_days: 7
+      base_price_adjustment_window_days: 14
+      price_adjustment_per_line_limit: 1
+      price_adjustment_min_difference_usd: 1.00
+      price_adjustment_excludes_clearance: true
+      price_adjustment_excludes_flash_sale: true
+      price_adjustment_excludes_code_prices: true
+      payment_authorization_validity_days: 7
+      payment_capture_point: dispatch
+      split_shipment_fee_policy: charged_once_on_first_dispatch
+      address_change_before_release_only: true
+      service_change_before_release_only: true
+      fraud_review_threshold_usd: 2500.00
+      fraud_review_hold_hours: 24
+      gift_card_max_value_usd: 500.00
+      gift_card_daily_purchase_cap_usd: 2000.00
+      gift_card_stored_value_tender_allowed: false
+      promo_excludes_preorders: true
+      promo_excludes_gift_cards: true
+      promo_allocation_basis: pro_rata_by_eligible_line_price
+      discount_rounding_rule: per_line_half_up_cents_remainder_to_highest_priced_line
+      order_close_days_after_delivery: 90
+      rts_shipping_fee_refunded: false
+      tender_capture_priority: [rewards_note, goodwill_credit, bonus_gift_card, return_store_credit, gift_card, card_or_wallet]
+      tender_refund_priority: [card_or_wallet, gift_card, return_store_credit, bonus_gift_card, goodwill_credit, rewards_note]
+
+events:
+  - type: orders_placed
+    target: orders
+    mutation: create
+    meaning: "A customer places an order on the website or app; it opens in status placed with its delivery service, address, totals and promotion code."
+    grain: "One row per order."
+    fields:
+      order_id: "Reference of the order (the M&F order number)."
+      customer_id: "The customer who placed the order."
+      variant_name: "Delivery service chosen at checkout."
+      status: "Always placed at creation."
+      placed_date: "Calendar date of placement, Eastern Time."
+      placed_time_et: "Time of placement, Eastern Time."
+      ship_to_address_line: "Street line of the shipping address."
+      ship_to_state: "State of the shipping address."
+      ship_to_zip: "ZIP of the shipping address."
+      merchandise_subtotal_usd: "Sum of line prices before discounts."
+      discount_total_usd: "Sum of allocated promotion discounts."
+      shipping_fee_usd: "Effective shipping fee charged after waivers."
+      surcharge_usd: "Alaska/Hawaii surcharge charged."
+      sales_tax_usd: "Sales tax charged."
+      order_total_usd: "Total charged to tenders."
+      promo_code: "The promotion code entered, or empty."
+      is_gift: "Whether the customer marked the order as a gift (prices hidden on the packing slip)."
+      promised_delivery_date: "Last date of the delivery promise."
+    triggers:
+      - event: orders:orders_line_booked
+        map: {event_date: placed_date, promo_code: promo_code}
+
+  - type: orders_line_booked
+    target: order_lines
+    meaning: "One line of merchandise or a gift card is booked on the order at placement."
+    grain: "One row per order line."
+    distinguish_by: [line_number]
+    fields:
+      event_date: "Placed date of the order."
+      line_number: "Line position on the order (1, 2, ...)."
+      sku: "SKU of the item (style-colour-size)."
+      style_name: "Product name as sold."
+      size: "Size as sold."
+      color: "Colour as sold."
+      product_class: "apparel, footwear, accessories, swim_intimates, egift_card or plastic_gift_card."
+      quantity: "Units on the line."
+      unit_price_usd: "Selling price per unit before code discounts."
+      price_type: "regular, clearance or flash_sale."
+      final_sale: "Whether the line was sold as final sale."
+      line_discount_usd: "Promotion discount allocated to the line."
+      amount_usd: "Net line amount (quantity times unit price minus allocated discount), positive."
+      promo_code: "Code whose discount was allocated to the line, or empty."
+    account: order_value
+    direction: in
+    triggers:
+      - event: credit:credit_issued
+        when: {product_class: egift_card}
+        map: {variant_name: "Marlowe & Finch e-Gift Card", initial_value_usd: amount_usd, source_reference: order_line_id, issued_date: event_date}
+      - event: credit:credit_issued
+        when: {product_class: plastic_gift_card}
+        map: {variant_name: "Marlowe & Finch Gift Card", initial_value_usd: amount_usd, source_reference: order_line_id, issued_date: event_date}
+
+  - type: orders_line_cancelled
+    target: order_lines
+    meaning: "A booked line is cancelled before dispatch — by the customer, because stock could not be picked, or because the order failed review or payment."
+    grain: "One row per cancelled booked line."
+    distinguish_by: [booked_line_id]
+    fields:
+      event_date: "Date of the cancellation."
+      booked_line_id: "The booking row being cancelled."
+      line_number: "Line position of the booking row."
+      amount_usd: "Negative of the booked line's net amount."
+      cancel_reason: "customer_request, out_of_stock_at_pick, fraud_review or payment_failure."
+    account: order_value
+    direction: out
+    triggers: []
+
+  - type: orders_price_adjusted
+    target: order_lines
+    meaning: "A line is credited the difference between the price paid and a lower regular site price within the price-adjustment window."
+    grain: "One row per adjusted booked line (a line is adjusted at most once)."
+    distinguish_by: [booked_line_id]
+    fields:
+      event_date: "Date of the adjustment."
+      booked_line_id: "The booking row being adjusted."
+      line_number: "Line position of the booking row."
+      reference_price_usd: "The lower regular site price per unit on the adjustment date."
+      amount_usd: "Negative: (unit price paid after allocated discount minus reference price) times units still kept."
+    account: order_value
+    direction: out
+    triggers:
+      - event: orders:orders_payment_refunded
+        map: {refund_component: price_adjustment, booked_line_id: booked_line_id, event_date: event_date}
+
+  - type: orders_post_purchase_promo
+    target: order_lines
+    meaning: "A promotion code that was valid on the placed date but not entered at checkout is applied afterwards as a line credit."
+    grain: "One row per booked line credited by the late code."
+    distinguish_by: [booked_line_id]
+    fields:
+      event_date: "Date the code was applied."
+      booked_line_id: "The booking row credited."
+      line_number: "Line position of the booking row."
+      promo_code: "The code applied."
+      line_discount_usd: "Discount allocated to the line."
+      amount_usd: "Negative of the allocated discount."
+    account: order_value
+    direction: out
+    triggers:
+      - event: orders:orders_payment_refunded
+        map: {refund_component: promo_adjustment, booked_line_id: booked_line_id, event_date: event_date}
+
+  - type: orders_payment_captured
+    target: order_payments
+    meaning: "A tender is captured for the order at dispatch."
+    grain: "One row per tender instrument per order."
+    distinguish_by: [tender_type, instrument_id]
+    fields:
+      event_date: "Capture date (the dispatch date)."
+      tender_type: "card_or_wallet, gift_card, return_store_credit, bonus_gift_card, goodwill_credit or rewards_note."
+      instrument_id: "The stored-value instrument drawn on; empty for card_or_wallet."
+      amount_usd: "Amount captured, positive."
+    account: payments
+    direction: in
+    triggers:
+      - event: credit:credit_redeemed
+        when: {tender_type: {not: card_or_wallet}}
+        map: {instrument_id: instrument_id, order_id: order_id, event_date: event_date}
+
+  - type: orders_payment_refunded
+    target: order_payments
+    meaning: "Money is given back to a captured tender for an order-level reason: a price adjustment, a late promotion code, a shipping fee refund, an undelivered order, or a delivery-claim refund decided under the claims charter."
+    grain: "One row per refund component per booked line per tender instrument."
+    distinguish_by: [refund_component, booked_line_id, tender_type, instrument_id]
+    fields:
+      event_date: "Refund date."
+      refund_component: "price_adjustment, promo_adjustment, shipping_fee, undelivered_order or delivery_claim."
+      booked_line_id: "The booking row the refund is for; empty for shipping_fee and undelivered_order refunds and for parcel-level delivery_claim refunds."
+      tender_type: "Tender refunded."
+      instrument_id: "Stored-value instrument refunded; empty for card_or_wallet."
+      amount_usd: "Negative amount given back."
+    account: payments
+    direction: out
+    triggers:
+      - event: credit:credit_refunded_to_instrument
+        when: {tender_type: {not: card_or_wallet}}
+        map: {instrument_id: instrument_id, order_id: order_id, event_date: event_date}
+
+  - type: orders_released
+    target: orders
+    mutation: {transition: {from: placed, to: processing}}
+    meaning: "The order is released to the warehouse."
+    grain: "One row per transaction."
+    fields:
+      status: "processing."
+    triggers: []
+
+  - type: orders_cancelled
+    target: orders
+    mutation: {transition: {from: placed, to: cancelled}}
+    meaning: "The whole order is cancelled before release."
+    grain: "One row per transaction."
+    fields:
+      status: "cancelled."
+      cancelled_date: "Date of cancellation."
+      cancel_reason: "customer_request, fraud_review or payment_failure."
+    triggers:
+      - event: orders:orders_line_cancelled
+        map: {cancel_reason: cancel_reason, event_date: cancelled_date}
+
+  - type: orders_cancelled_at_pick
+    target: orders
+    mutation: {transition: {from: processing, to: cancelled}}
+    meaning: "No line of a released order could be picked, so the order is cancelled by the warehouse."
+    grain: "One row per transaction."
+    fields:
+      status: "cancelled."
+      cancelled_date: "Date of cancellation."
+      cancel_reason: "out_of_stock_at_pick."
+    triggers:
+      - event: orders:orders_line_cancelled
+        map: {cancel_reason: out_of_stock_at_pick, event_date: cancelled_date}
+
+  - type: orders_dispatched
+    target: orders
+    mutation: {transition: {from: processing, to: shipped}}
+    meaning: "The order's first parcel leaves the warehouse."
+    grain: "One row per transaction."
+    fields:
+      status: "shipped."
+      shipped_date: "Dispatch date."
+      carrier_tracking_number: "Tracking number of the first parcel."
+      promised_delivery_date: "Recomputed as the dispatch date plus the service's transit_business_days_max business days."
+    triggers:
+      - event: orders:orders_payment_captured
+        map: {event_date: shipped_date}
+      - event: loyalty:loyalty_points_earned
+        map: {order_id: order_id, posting_date: shipped_date, earn_source: online_order}
+
+  - type: orders_delivered
+    target: orders
+    mutation: {transition: {from: shipped, to: delivered}}
+    meaning: "The carrier records the last parcel as delivered."
+    grain: "One row per transaction."
+    fields:
+      status: "delivered."
+      delivered_date: "Delivery scan date of the last parcel."
+    triggers: []
+
+  - type: orders_closed
+    target: orders
+    mutation: {transition: {from: delivered, to: closed}}
+    meaning: "A delivered order closes after the post-delivery holding period."
+    grain: "One row per transaction."
+    fields:
+      status: "closed."
+      closed_date: "Closing date."
+      close_reason: "completed."
+    triggers: []
+
+  - type: orders_closed_undelivered
+    target: orders
+    mutation: {transition: {from: shipped, to: closed}}
+    meaning: "An order closes without delivery: an undeliverable parcel came back to the warehouse, or the parcel was written off as lost under a delivery claim."
+    grain: "One row per transaction."
+    fields:
+      status: "closed."
+      closed_date: "Closing date."
+      close_reason: "returned_to_sender or lost_in_transit."
+    triggers:
+      - event: orders:orders_payment_refunded
+        when: {close_reason: returned_to_sender}
+        map: {refund_component: undelivered_order, event_date: closed_date}
+
+  - type: orders_address_changed
+    target: orders
+    mutation: update
+    meaning: "The shipping address of an order is changed before release."
+    grain: "One row per transaction."
+    fields:
+      ship_to_address_line: "New street line, verbatim as the customer gives it."
+      ship_to_state: "New state."
+      ship_to_zip: "New ZIP."
+      surcharge_usd: "Surcharge recomputed for the new destination."
+    triggers: []
+
+  - type: orders_service_changed
+    target: orders
+    mutation: update
+    meaning: "The delivery service of an order is changed before release, and its shipping fee and promise recomputed."
+    grain: "One row per transaction."
+    fields:
+      variant_name: "New delivery service."
+      shipping_fee_usd: "Effective shipping fee recomputed for the new service."
+      surcharge_usd: "Surcharge recomputed for the new service."
+      promised_delivery_date: "Delivery promise recomputed for the new service."
+    triggers: []
+
+measures:
+  - id: orders_msr_gift_card_value_today
+    window: "The calendar day of the frozen date, Eastern Time, by event_date."
+    measure: "Sum of amount_usd over orders_line_booked rows of the customer with product_class egift_card or plastic_gift_card, net of orders_line_cancelled rows for those lines."
+  - id: orders_msr_prior_orders
+    window: "All history of the customer before the order being placed."
+    measure: "Count of the customer's orders in any status other than cancelled."
+
+policies:
+  - id: orders_placement
+    subject: [orders_placed, orders_line_booked]
+    rule: >-
+      An order is accepted only for a delivery service that serves its destination: Alaska and
+      Hawaii only where `available_to_alaska_hawaii`, PO boxes only where `po_box_allowed`, APO/FPO/DPO
+      only where `apo_fpo_allowed`, and Same-Day Courier only for ZIP codes on the Same-Day metro list
+      (`service_area`). An order is accepted only if its total does not exceed the service's
+      `max_order_value_usd`, it carries at most `max_units_per_order` units and at most
+      `max_units_per_sku` units of any one SKU. A gift card line is at most `gift_card_max_value_usd`
+      and cannot be paid with stored value (`gift_card_stored_value_tender_allowed`). The promised
+      delivery date is the placement date (moved to the next business day when placed after
+      `order_cutoff_time_et` or on a non-business day) plus `processing_business_days` plus
+      `transit_business_days_max` business days, and is recomputed at dispatch. An order whose total
+      reaches `fraud_review_threshold_usd` is held in status placed for fraud review for up to
+      `fraud_review_hold_hours` hours. Lines sold at a clearance price are marked final_sale.
+    eligibility: []
+
+  - id: orders_agg_multi_holding
+    subject: [orders_placed]
+    rule: >-
+      A customer may hold any number of orders at once; there is no cap on open orders. Each order is
+      priced, shipped, adjusted and refunded on its own; thresholds such as free shipping are never met
+      by combining two orders.
+    eligibility: []
+    params: {max_per_customer: null}
+
+  - id: orders_agg_gift_card_daily_cap
+    subject: [orders_line_booked]
+    rule: >-
+      Across all of a customer's orders placed on the same calendar day (Eastern Time), gift card lines
+      may total at most `gift_card_daily_purchase_cap_usd` (orders_msr_gift_card_value_today); a gift
+      card line that would take the day's total above the cap is not booked. Cancelled gift card lines
+      do not count toward the cap.
+    eligibility: []
+    measures: [orders_msr_gift_card_value_today]
+
+  - id: orders_evt_shipping_fee
+    subject: [orders_placed, orders_service_changed]
+    rule: >-
+      The effective shipping fee starts from the service's `shipping_fee_usd`. Every entitlement the
+      customer holds on the placed date is evaluated and the lowest resulting fee is charged; waivers
+      never add together. A Marlowe & Finch Unlimited membership in status trial or active whose plan
+      covers the service (pass charter `covered_delivery_services`) makes the fee 0.00, and a plan with a
+      `same_day_discount_pct` takes that percentage off the Same-Day Courier fee. A free-shipping
+      entitlement takes `free_shipping_credit_usd` off the fee: it is earned when the merchandise
+      subtotal after discounts reaches the `free_standard_shipping_threshold_usd` of the customer's
+      Marlowe Rewards tier (loyalty charter) — or `base_free_shipping_threshold_usd` for a customer
+      without an open membership — or when the SHIPFREE code is on the order. A Marlowe Rewards tier
+      with `free_expedited_upgrade` pays for Expedited 2-Day only the Standard Ground fee less that
+      tier's free-shipping credit when its threshold is met. The `alaska_hawaii_surcharge_usd` is added
+      after every waiver and is never waived. A split shipment is charged once
+      (`split_shipment_fee_policy`). When the whole order is cancelled the shipping fee is not charged
+      (`shipping_fee_refund_on_full_cancellation`).
+    eligibility: []
+    params:
+      per_tier:
+        Economy Ground: {shipping_fee_usd: "=shipping_fee_usd", free_shipping_credit_usd: "=free_shipping_credit_usd"}
+        Pickup Point Delivery: {shipping_fee_usd: "=shipping_fee_usd", free_shipping_credit_usd: "=free_shipping_credit_usd"}
+        Standard Ground: {shipping_fee_usd: "=shipping_fee_usd", free_shipping_credit_usd: "=free_shipping_credit_usd"}
+        Expedited 2-Day: {shipping_fee_usd: "=shipping_fee_usd", free_shipping_credit_usd: "=free_shipping_credit_usd"}
+        Next Business Day: {shipping_fee_usd: "=shipping_fee_usd", free_shipping_credit_usd: "=free_shipping_credit_usd"}
+        Same-Day Courier: {shipping_fee_usd: "=shipping_fee_usd", free_shipping_credit_usd: "=free_shipping_credit_usd"}
+
+  - id: orders_evt_cancellation
+    subject: [orders_cancelled, orders_line_cancelled]
+    rule: >-
+      A customer may cancel a whole order or single lines only while the order is in status placed,
+      that is within `cancellation_window_minutes` of placement or while it is held for fraud review;
+      once released to the warehouse an order cannot be cancelled and the customer is directed to
+      refuse delivery or return it. A line is cancelled only while the order is in status placed or
+      processing, or together with the whole order. Lines are cancelled by the warehouse with reason
+      out_of_stock_at_pick when stock cannot be found in processing, and the whole order is cancelled
+      with reason fraud_review when its review is not cleared within `fraud_review_hold_hours` hours, or
+      payment_failure when its card authorization is declined. Nothing is captured before dispatch, so a
+      cancellation releases authorizations and moves no money; cancelled lines earn no points.
+    eligibility:
+      - id: order_not_dispatched
+        applies_to: [orders_line_cancelled]
+        kind: state
+        condition: "A line is cancelled only while the order is in status placed or processing, or together with the whole order."
+        evidence_fields: [orders.status, orders.order_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [orders.order_id]
+          action_bindings:
+            orders.order_id: order_id
+        state_contract:
+          field: orders.status
+          allowed: [placed, processing, cancelled]
+
+  - id: orders_evt_price_adjustment
+    subject: [orders_price_adjusted]
+    rule: >-
+      When the regular site price of the same SKU drops below the unit price the customer paid after
+      allocated discounts, the difference is credited to the line. A price adjustment is granted only
+      if it is requested no later than the price-adjustment window in calendar days after the order is
+      placed, the window being the `price_adjustment_window_days` of the customer's Marlowe Rewards tier
+      (loyalty charter) on the request date, or `base_price_adjustment_window_days` without an open
+      membership. Window days are counted as calendar days after the placed date, the placed date being
+      day zero, and a request on the last day of the window is granted. The reference price must be the
+      regular price shown on the site on the request date: clearance prices
+      (`price_adjustment_excludes_clearance`), flash-sale prices
+      (`price_adjustment_excludes_flash_sale`) and prices reachable only with a code
+      (`price_adjustment_excludes_code_prices`) never qualify. The per-unit difference must be at least
+      `price_adjustment_min_difference_usd`. A line can be adjusted at most
+      `price_adjustment_per_line_limit` time, only for units neither cancelled nor returned, and final
+      sale lines are never adjusted. The credit is refunded to the original tenders in
+      `tender_refund_priority`.
+    eligibility:
+      - id: adjustment_window
+        applies_to: [orders_price_adjusted]
+        kind: time
+        condition: "A price adjustment is granted only if it is requested no later than the price-adjustment window in calendar days after the order is placed, the window being the `price_adjustment_window_days` of the customer's Marlowe Rewards tier (loyalty charter) on the request date, or `base_price_adjustment_window_days` without an open membership."
+        evidence_fields: [orders.placed_date, orders.order_id, loyalty_memberships.variant_name]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [orders.order_id]
+          action_bindings:
+            orders.order_id: order_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the order is placed"
+          anchor_source: orders.placed_date
+          relation: not_after
+          duration_source: variants.base_price_adjustment_window_days
+          unit: calendar_days
+          counting_rule: "Window days are counted as calendar days after the placed date, the placed date being day zero, and a request on the last day of the window is granted."
+          boundary: inclusive
+      - id: once_per_line
+        applies_to: [orders_price_adjusted]
+        kind: dedup
+        condition: "A line can be adjusted at most `price_adjustment_per_line_limit` time, only for units neither cancelled nor returned, and final sale lines are never adjusted."
+        evidence_fields: [order_lines.booked_line_id, order_lines.event_type, order_lines.final_sale]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [order_lines.booked_line_id]
+          action_bindings:
+            order_lines.booked_line_id: booked_line_id
+        dedup_contract:
+          table: order_lines
+          mode: separate_record
+          object_bindings: {booked_line_id: booked_line_id}
+          duplicate_filters: {event_type: [orders_price_adjusted]}
+          distinct_fields: []
+
+  - id: orders_evt_promotions
+    subject: [orders_placed, orders_post_purchase_promo]
+    rule: >-
+      At most `promo_codes_per_order` promotion code applies to an order, and only the codes in the
+      promotion register below exist. A code applies only to eligible lines of the order: never to
+      gift card lines (`promo_excludes_gift_cards`), never to reservations under the preorders charter
+      (`promo_excludes_preorders`), never to final sale lines, and to clearance lines only where the
+      register says so. A percentage code discounts each eligible line; a fixed-amount code is spread
+      over the eligible lines in proportion to their price (`promo_allocation_basis`) and rounded per
+      `discount_rounding_rule`; a minimum spend is tested on eligible lines' price before discount.
+      A code missing at checkout is applied afterwards only if it is requested no later than
+      `post_purchase_promo_window_days` calendar days after the order is placed. Days are counted as
+      calendar days after the placed date, the placed date being day zero, and the last day counts. The
+      late code must have been valid on the placed date, the order must carry no other code, and the
+      lines credited must not be cancelled or already returned; the credit is refunded to the original
+      tenders. Promotion discounts stack with free-shipping waivers and with Rewards Notes and gift
+      cards as tender, but never with another code.
+    eligibility:
+      - id: late_code_window
+        applies_to: [orders_post_purchase_promo]
+        kind: time
+        condition: "A code missing at checkout is applied afterwards only if it is requested no later than `post_purchase_promo_window_days` calendar days after the order is placed."
+        evidence_fields: [orders.placed_date, orders.order_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [orders.order_id]
+          action_bindings:
+            orders.order_id: order_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the order is placed"
+          anchor_source: orders.placed_date
+          relation: not_after
+          duration_source: variants.post_purchase_promo_window_days
+          unit: calendar_days
+          counting_rule: "Days are counted as calendar days after the placed date, the placed date being day zero, and the last day counts."
+          boundary: inclusive
+      - id: no_other_code
+        applies_to: [orders_post_purchase_promo]
+        kind: dedup
+        condition: "The late code must have been valid on the placed date, the order must carry no other code, and the lines credited must not be cancelled or already returned; the credit is refunded to the original tenders."
+        evidence_fields: [orders.promo_code, orders.order_id, order_lines.order_id, order_lines.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [orders.order_id]
+          action_bindings:
+            orders.order_id: order_id
+        dedup_contract:
+          table: order_lines
+          mode: separate_record
+          object_bindings: {order_id: order_id}
+          duplicate_filters: {event_type: [orders_post_purchase_promo]}
+          distinct_fields: [booked_line_id]
+    params:
+      promotion_register:
+        WELCOME15: {discount: "15% off", applies_to: "regular-price lines", min_spend_usd: 0.00, valid: "the customer's first order only (orders_msr_prior_orders = 0)"}
+        SHIPFREE: {discount: "free-shipping entitlement", applies_to: "the order's shipping fee", min_spend_usd: 0.00, valid: "2026-01-01 to 2026-12-31"}
+        FALLEDIT20: {discount: "20% off", applies_to: "regular-price apparel and footwear lines", min_spend_usd: 100.00, valid: "2026-09-18 to 2026-10-12"}
+        BOOTS40: {discount: "40.00 off", applies_to: "regular-price footwear lines", min_spend_usd: 200.00, valid: "2026-10-01 to 2026-11-01"}
+        FRIENDS25: {discount: "25% off", applies_to: "regular-price and clearance lines", min_spend_usd: 0.00, valid: "2026-11-12 to 2026-11-16"}
+    measures: [orders_msr_prior_orders]
+
+  - id: orders_evt_payment
+    subject: [orders_payment_captured, orders_payment_refunded]
+    rule: >-
+      Tenders are authorized at placement and captured at dispatch (`payment_capture_point`), drawn in
+      `tender_capture_priority`; a card authorization older than `payment_authorization_validity_days`
+      is renewed before capture, and a declined renewal cancels the unshipped lines with reason
+      payment_failure. Order-level refunds (price adjustments, late promotion codes, shipping fee
+      refunds and undelivered orders) go back only to tenders captured on the same order, in
+      `tender_refund_priority`, never more to a tender than was captured from it; a stored-value tender
+      is refunded to the same instrument even if it has since expired or been used up. A refund is
+      never paid to a different card, in cash, or to a new gift card. Refunds of returned merchandise
+      are governed by the returns charter.
+    eligibility: []
+
+  - id: orders_fulfilment_lifecycle
+    subject: [orders_released, orders_cancelled_at_pick, orders_dispatched, orders_delivered, orders_closed, orders_closed_undelivered]
+    rule: >-
+      An order is released once its `cancellation_window_minutes` have passed and any fraud review is
+      cleared. Dispatch happens within `processing_business_days` business days of release. Delivery
+      follows the carrier's last scan: a parcel the carrier cannot deliver after `delivery_attempts`
+      attempts is held for `carrier_hold_days` calendar days and then returned to sender. A delivered
+      order closes `order_close_days_after_delivery` calendar days after its delivered date. An order
+      whose parcel returns to sender as undeliverable closes with close_reason returned_to_sender once
+      the warehouse receives it, and its merchandise, tax and surcharge are refunded to the original
+      tenders; the shipping fee is refunded only where `rts_shipping_fee_refunded`. Points earned on an
+      undelivered order are not reversed. An order whose parcel is written off under a delivery claim
+      closes with close_reason lost_in_transit; its compensation is governed by the claims charter.
+      Each service ships with its `carrier_service`; the earliest expected delivery is the dispatch date plus `transit_business_days_min` business days, and Saturday counts as a delivery day only where `weekend_delivery`. An order whose total is at or above `signature_threshold_usd` is delivered only against an adult signature (0.00 means every order needs a signature or a pickup code), and a delivery missed for want of a signature counts as one of the `delivery_attempts`.
+    eligibility: []
+
+  - id: orders_evt_address_service_change
+    subject: [orders_address_changed, orders_service_changed]
+    rule: >-
+      The shipping address or the delivery service of an order can be changed only while the order is
+      in status placed (`address_change_before_release_only`, `service_change_before_release_only`);
+      after release the agent cannot redirect a parcel. The new address must be served by the order's
+      service (or the new service must serve the address) under the placement rules, and the effective
+      shipping fee, surcharge and delivery promise are recomputed under the shipping-fee rules as of
+      the change date; a higher fee is collected at dispatch, a lower one simply replaces it.
+    eligibility:
+      - id: before_release
+        applies_to: [orders_address_changed, orders_service_changed]
+        kind: state
+        condition: "The shipping address or the delivery service of an order can be changed only while the order is in status placed (`address_change_before_release_only`, `service_change_before_release_only`); after release the agent cannot redirect a parcel."
+        evidence_fields: [orders.status, orders.order_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [orders.order_id]
+          action_bindings:
+            orders.order_id: order_id
+        state_contract:
+          field: orders.status
+          allowed: [placed]

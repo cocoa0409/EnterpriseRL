@@ -1,0 +1,1489 @@
+{
+    "frozen_time": "2026-10-09 15:05:00 America/Los_Angeles",
+    "design_rationale": "WORKLOG task 1 (fbn_storage_inventory_reimbursements), revision 2. Draw (scripts/draw_counts.py --task 1): {\"prerequisite_problems\": 2, \"problems\": 3, \"factor_counts\": [6, 4, 5]}. Root inbound-shortage approval takes 6 factors, the claim correction 4, the warehouse-damage approval 5.\n\n1. WHY THIS IS A GOOD TEST. The seller asks only for his inbound-shortage claim to be decided. The approval rule carries two prerequisite sentences: the result is not fixed until the units claimed equal the claimable shortage of the line, and a shortage case is decided only after no earlier warehouse-damage case of the same SKU still stands submitted. The agent must find the earlier damage case on the same SKU, decide it with its own five-factor policy (inside its damage claim span), compute the claimable shortage (same-cost netting across the shipment, over-receipt carry-forward, receiving tolerance) and hand the correction to the seller, and only then compute the approval, whose inbound verification holdback reads the case history that the damage decision just changed.\n\n2. SCOPE. Task 0 owns the lost-in-warehouse pair. Task 1 claims fulfill_ext_shortage_claim_units (amend_inbound_shortage_claim_fdee09ae, owner user), fulfill_ext_damaged_case_approval (approve_damaged_inventory_case_556f0f6d, owner agent) and fulfill_ext_shortage_case_approval (approve_inbound_shortage_case_dfebd527, owner agent). All five policies are covered across the two tasks with disjoint scopes.\n\n3. DESIGN CONSTRAINT. FBN money events trigger payout writes, so scored writes are the unit counts on fulfill_cases; Northloop's reimbursement run pays separately and nothing in the tree waits for it. Each tool takes the six source keys bound by the inherited no_double_reimbursement gate.\n\n4. PROBLEM-TREE CARD (fan-out). Root fulfill_ext_shortage_case_approval.\n Edge A: -> fulfill_ext_shortage_claim_units, value_input, gate inbound_claimed, form state. Sentence: \"The units approved on an inbound shortage case are not fixed until the units claimed on that case equal the claimable shortage of its shipment line.\" Opening: the shortage case claims 38; the claimable shortage is 26. Only the seller's correction writes the units claimed of an open shortage case. Skip run: 25 instead of 23.\n Edge B: -> fulfill_ext_damaged_case_approval, value_input, gate inbound_approved, form state. Sentence: \"An inbound shortage case is decided only after no warehouse-damage case of the same SKU opened before it still stands submitted.\" Opening: the damage case of WOG-TREK-POLE-PAIR opened 2026-09-03 is submitted, before the shortage case of 2026-09-14. Only the damage approval changes that case's status. Value effect: approving it raises the approved reimbursement-case count inside 12 months from 2 to 3, moving the seller to the waived inbound verification holdback. Skip run: 22 instead of 23.\n Four-point test on both: ordering connective (not until / only after); record-visible state; no tool, id or code token; scope exactly the case's own line / earlier damage cases of the same SKU. Order between the prerequisites: different cases, neither policy reads the other's case; replaying the correction first gives the same root value 23 and the same terminal rows.\n\n5. FACTOR CARD - damage approval (5 factors: 4 parameter, 1 method; standard result 8, gold 22). damage_allowance_method (method, multi-source: enrollment program + standing level rows, cross standing): Core AND Top Rated -> 1 x 2 damage adjustments in 6 months = 2 (standard floor(465 x 0.002) = 0) -> 23; damage_allowance_cap (parameter): 52 months -> 1 (standard 4) -> 21; damage_compliance_holdback (parameter, cross standing): 8 points -> 3 (standard 1) -> 23; damage_approval_limit (parameter, cross selling): Basic Store -> 20 (standard 8) -> 11; damage_limit_uplift (parameter): opened 36 days ago -> 3 (standard 0) -> 20. The starting units are the units claimed limited to the damage adjustments inside the 2-month damage claim span (26 = 10 + 16); near-miss: the 2026-02-15 damage adjustment (5 units) is outside both spans and was reimbursed automatically.\n\n6. FACTOR CARD - claim correction (4 factors: 3 parameter, 1 method; standard result 31, gold 26): netting_scope (method, multi-source: placement-fee row + receipt rows): partial_split shipment with two 22.60 lines -> same-cost netting 32 (standard line alone 38; whole-shipment netting 29 not applicable) -> 32; carry_span (parameter; program and activation date on the enrollment row): Core, 52 months -> 6 months, the 2026-06-05 line carries 3 (standard zero span) -> 29; near-miss: the 2026-02-11 over-receipt of 5 is 7 whole months old; tolerance_units (parameter): no other shortage case in 6 months and 52 months -> 0 (standard 1) -> 25; near-miss: the 2025-11-20 shortage case is 10 months old; tolerance_share (parameter): 300 expected -> 0.01 = 3 (standard 0.02 = 6) -> 23.\n\n7. FACTOR CARD - shortage approval (6 factors: 5 parameter, 1 method; standard result 10, gold 23): approval_share (parameter, cross standing): Top Rated -> 1.0 (standard 0.9) -> 20; inbound_verification_holdback (method): 0 denied and 3 approved reimbursement cases in 12 months after the damage decision -> waived (standard 1) -> 22; near-miss: the 2025-09-30 denial is 12 whole months old; inbound_compliance_holdback (parameter, cross standing): 8 points -> 3 (standard 1) -> 25; line_ceiling_share (parameter): FBN Core Program -> 0.10 x 300 = 30 (standard 0.05 -> 15) -> 15; inbound_approval_limit (parameter, cross selling): Basic Store -> 20 (standard 10) -> 15; inbound_limit_uplift (parameter): opened 25 days ago -> 5 (standard 0) -> 20. Gold 23 differs from the corrected claim 26.\n\n8. BASE-INVARIANT CARD. All three writes have subject fulfill_reimbursement, governed by fulfill_reimbursement_terms. Window: the warehouse-damage approval declares its own overwrite of \"A warehouse loss claim is filed no later than the warehouse loss claim window counted in calendar days from the inventory adjustment date.\" for damage cases, replaced by the damage claim span counted back from the handling date; in this world both covered adjustments (2026-08-14, 2026-09-01) also lie inside the 60-day base window both at filing (20 and 2 days before 2026-09-03) and at the handling date (56 and 38 days), so every reading of the window gives the same 26 starting units. Inbound window: the line was received 2026-08-28; the case was opened 2026-09-14 (17 days later, after the 15-day reconciliation wait) and is corrected on 2026-10-09 (42 days, inside the 60-day claim window); a line received 2026-09-25 would be too early at handling, one received 2026-08-09 one day past it. Dedup gate inherited: no inbound-shortage reimbursement exists on NLIB-6402219 / WOG-TREK-POLE-PAIR and the only damage reimbursement of the SKU settles the 2026-02-15 adjustment; each write binds reimbursement_type / object reference / sku to its case record. The shortage-claim policy overwrites the base shortage definition (netting and carry-forward); both approvals overwrite \"Northloop reimburses units lost or damaged in its custody.\"\n\n9. BUSINESS-OBJECT CARD. Objects: the open inbound-shortage case (NLIB-6402219, WOG-TREK-POLE-PAIR) and the open SKU-level warehouse-damage case (WOG-TREK-POLE-PAIR). Rows included: the three lines of NLIB-6402219 (two netted by cost), the SKU's other receipts within 6 months, its damage adjustments, the seller's reimbursement cases opened within 6 and 12 months. Excluded by key: the lantern line (different cost), the carbon-pole and lantern history, the settled 2026-02-15 damage, the denied case outside 12 months.\n\n10. CROSS-CATEGORY ROWS (charter consistency). Standing: Top Rated Level from the 2026-09-20 evaluation (evaluation day 20; next 2026-10-20); one intellectual_property violation recorded after that evaluation adds 8 points, which reaches the warning threshold of 8 and places the good-standing seller at risk for violation points; 8 is below the suspension threshold of 16, and the level stays until the next evaluation. Selling plan: Basic Store on an annual term from 2026-03-10, billed monthly on the 10th (next 2026-10-10). No payments account is seeded; no computation of this tree reads payout.\n\n11. PERSONA DESIGN. Ignatius Marrowby, chatty, relies on his warehouse manager. Volunteers: the email, the short August shipment of SKU WOG-TREK-POLE-PAIR, the claim filed September 14 for 38, wants it decided now by the agent. Only when asked: card last four 5147 and ZIP 98122; no shipment number at hand. Passive: lets the agent decide another claim first if told; makes the unit change himself with the agent's number when it is handed over; accepts the approved count and ends. He never mentions the damage claim or a wrong count.\n\n12. STANDARD SOLUTION. Locate by email; verify with card + ZIP; read enrollment, cases, FBN activity, selling plan, standing; approve the damage case for 22; hand the seller the correction to 26; approve the shortage case for 23.\n\n13. VERIFICATION. The scratch authoring script (deleted) replays gold with the real tools and evaluates each policy with check_compute's evaluator at its handling time: damage approval 22 (baselines 23/21/23/11/20, all-baseline 8); claim correction 26 (32/29/25/23, all-baseline 31); shortage approval 23 (20/22/25/15/15/20, all-baseline 10); skipping the damage approval -> 22, skipping the correction -> 25, swapping the two prerequisites -> 23.\n\n14. DRAFT RECOMPUTATION FROM THE VISIBLE CONTEXT. The shortage approval rule names two waits; the case list shows an earlier submitted damage case on the same SKU and a shortage claim of 38; the damage rule gives min(26 claimed, 26 inside the claim span) - 1 - 3 = 22 (cap 23); the shortage-claim rule gives 32 - 3 - 3 = 26; after both, the approval rule gives floor((26 - 0 - 3) x 1.0) = 23 against caps 30 and 25. Same objects, order class and numbers as gold.\n\n15. GATE RUNS (round 2, difficulty-wide block): EXTENDED OK; TASK TOOL CONTRACT OK; REPLAY OK (13 actions, deterministic, non-vacuous, closure 24 rows = initial_state); SOLVABILITY OK (3 calls, 3 base gates, 16 seed rows); COMPUTE OK (3 computations, 15 factors, 6 cross-difficulty, 16 history rows, 46 branches; suite means branches 40.00, steps 12.00; history max 24; branch max 46); GROUNDING OK; CACHE-DIFF INFO; SCOPE OK. check_traceability deferred to the KB render step.\n\n16. REVISION LOG.\nRound 1: the standing record and claim figures were retuned so gold differs from the corrected claim; the seller was renamed after a name collision with a sibling difficulty.\nRound 2 (policy-task audit, item by item):\n- F1 / T1-1 (warehouse-loss window superseded only for lost claims; damage approval ignored it): the damage approval now declares an overwrite of that window sentence with the damage claim span and starts from the claimed units limited to the damage adjustments inside the span. World: the damage adjustments moved to 2026-08-14 (10) and 2026-09-01 (16), the damage case to 2026-09-03 with 26 units, and an earlier 2026-02-15 damage (5 units, reimbursed automatically 2026-03-17) was added as a near-miss; the 102-day-late filing no longer exists, so readings A, B and C all give 22.\n- T1-2 (standing row 7 points / at risk unreachable under the standing charter): the row is now 8 points from one intellectual_property violation recorded after the 2026-09-20 evaluation, at risk for violation points (warning threshold 8, suspension 16), evaluation dates on day 20.\n- O-T1-a (shortage case filed 8 days after receipt, before the 15-day wait): the case now opens 2026-09-14, 17 days after receipt; the persona says September 14.\n- O-T1-d (annual term next billing 2027-03-10): set to 2026-10-10 (monthly billing on the term-start day).\n- O-T1-e (carry_span called multi-source): card 6 now states both conditions sit on the enrollment row; the task's multi-source factors are netting_scope and damage_allowance_method.\n- O3 (denied/approved counts unfiltered): the counts filter case_type reimbursement_claim and the rule says \"reimbursement case\". O1 (naming): the order and baseline sentences now say \"inbound verification holdback\"; the line approval ceiling is stated as the line ceiling share of units expected with the standard share as the default. O5 docstrings reworded.\n- No change, with evidence: O4 (the restated inbound correction window is an eligibility gate, not a quantity; it holds here: 42 days inside [15, 60]); O6 / O-T1-b (oldest-first decisions per SKU are the desk's rule for keeping each decision's case-history inputs settled; the edge's only effect is through the verification holdback, which that rule's own ladder reads); O7 / O-T1-c (missed automatic reimbursements are what the base parameter text calls \"a reimbursement not issued automatically\", and they are what the open damage case claims).",
+    "user_scenario": "You are Ignatius Marrowby, who runs Marrowby Trail Outfitters Co., a camping and hiking brand that stores its stock with Fulfilled by Northloop. You are friendly, a bit chatty and not very technical about Northloop's systems; you mostly go by what your warehouse manager tells you. Your problem: the inbound shipment you sent in late August arrived short on your trekking poles, SKU WOG-TREK-POLE-PAIR. Your manager filed a shortage claim for it on September 14, putting in 38 units because that is how many fewer poles were counted than were on the shipment plan, and you have heard nothing since. You want that shortage claim decided today, and you are fine with the agent approving it from Northloop's side during this call.\n\nTo find your account you start with your email, ignatius.marrowby@marrowbytrail.com. You give the last four digits of your card on file, 5147, and your billing ZIP code, 98122, only when the agent asks you to verify who you are. If asked for the shipment number you say you don't have it handy but it was the shipment received at the end of August; if asked which product, you give WOG-TREK-POLE-PAIR. If the agent asks about your store subscription or your seller rating, you say those are all on the account.\n\nIf the agent tells you that some other claim on your account has to be decided first, you tell them to go ahead and take care of it. If the agent explains that the unit count on your shortage claim has to be changed before it can be decided and asks you to change it yourself, you agree, and when the agent hands the change over to you, you enter exactly the number the agent gives you; you assume the agent can see things your manager could not. Once that is done, you ask the agent to go ahead and decide the shortage claim. When the agent tells you how many units of the shortage claim were approved, you say that is fine, thank them and hang up. If the agent gives you a number without saying the shortage claim is actually approved, you ask whether it is approved now.",
+    "initial_state": {
+        "customers": {
+            "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57": {
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "name": "Ignatius Marrowby",
+                "email": "ignatius.marrowby@marrowbytrail.com",
+                "phone": "2065550362",
+                "billing_zip": "98122",
+                "account_opened_date": "2019-03-04",
+                "payment_card_last4": "5147",
+                "customer_type": "seller",
+                "business_name": "Marrowby Trail Outfitters Co.",
+                "tax_id_last4": "6038"
+            }
+        },
+        "fulfill_enrollments": {
+            "33b339b8-b2fb-40a5-a74b-1225f327fc1b": {
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "variant_name": "FBN Core Program",
+                "status": "active",
+                "enrolled_date": "2022-04-28",
+                "activated_date": "2022-05-16",
+                "last_review_date": "2026-08-05",
+                "suspension_reason": "none",
+                "exit_requested_date": "",
+                "units_on_hand": 1076,
+                "closed_date": ""
+            }
+        },
+        "fulfill_events": {
+            "ea17aae5-f88c-4aac-9817-32ae99347840": {
+                "fulfill_event_id": "ea17aae5-f88c-4aac-9817-32ae99347840",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "amount": 0.0,
+                "event_type": "fulfill_inbound_receipt",
+                "event_date": "2025-12-03",
+                "shipment_id": "NLIB-5541180",
+                "sku": "WOG-CAMP-LANTERN",
+                "size_tier": "small_standard",
+                "units": 150,
+                "units_expected": 150,
+                "unit_cost": 14.9
+            },
+            "3bdceefe-0b1f-4a5b-ab83-0ea7627ddc86": {
+                "fulfill_event_id": "3bdceefe-0b1f-4a5b-ab83-0ea7627ddc86",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "amount": 0.0,
+                "event_type": "fulfill_inbound_receipt",
+                "event_date": "2026-02-11",
+                "shipment_id": "NLIB-5990451",
+                "sku": "WOG-TREK-POLE-PAIR",
+                "size_tier": "large_standard",
+                "units": 185,
+                "units_expected": 180,
+                "unit_cost": 22.6
+            },
+            "53cb8e6c-8cf4-4390-9b3f-d4392ecced38": {
+                "fulfill_event_id": "53cb8e6c-8cf4-4390-9b3f-d4392ecced38",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "amount": 0.0,
+                "event_type": "fulfill_inbound_receipt",
+                "event_date": "2026-04-22",
+                "shipment_id": "NLIB-6155092",
+                "sku": "WOG-TREK-POLE-CARBON",
+                "size_tier": "large_standard",
+                "units": 120,
+                "units_expected": 120,
+                "unit_cost": 22.6
+            },
+            "57f3f9ee-3d8b-425b-b5dc-f3a42f9fd9a4": {
+                "fulfill_event_id": "57f3f9ee-3d8b-425b-b5dc-f3a42f9fd9a4",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "amount": 0.0,
+                "event_type": "fulfill_inbound_receipt",
+                "event_date": "2026-06-05",
+                "shipment_id": "NLIB-6201734",
+                "sku": "WOG-TREK-POLE-PAIR",
+                "size_tier": "large_standard",
+                "units": 203,
+                "units_expected": 200,
+                "unit_cost": 22.6
+            },
+            "af5b2fa9-f1c0-44a0-84b3-8c94c661ae27": {
+                "fulfill_event_id": "af5b2fa9-f1c0-44a0-84b3-8c94c661ae27",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "amount": 0.0,
+                "event_type": "fulfill_inbound_receipt",
+                "event_date": "2026-08-28",
+                "shipment_id": "NLIB-6402219",
+                "sku": "WOG-TREK-POLE-PAIR",
+                "size_tier": "large_standard",
+                "units": 262,
+                "units_expected": 300,
+                "unit_cost": 22.6
+            },
+            "45340df5-3678-4962-b462-92c05a066e1f": {
+                "fulfill_event_id": "45340df5-3678-4962-b462-92c05a066e1f",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "amount": 0.0,
+                "event_type": "fulfill_inbound_receipt",
+                "event_date": "2026-08-28",
+                "shipment_id": "NLIB-6402219",
+                "sku": "WOG-TREK-POLE-CARBON",
+                "size_tier": "large_standard",
+                "units": 106,
+                "units_expected": 100,
+                "unit_cost": 22.6
+            },
+            "a9ccecaf-5b8d-4aaa-8169-aa89a49e3a1a": {
+                "fulfill_event_id": "a9ccecaf-5b8d-4aaa-8169-aa89a49e3a1a",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "amount": 0.0,
+                "event_type": "fulfill_inbound_receipt",
+                "event_date": "2026-08-28",
+                "shipment_id": "NLIB-6402219",
+                "sku": "WOG-CAMP-LANTERN",
+                "size_tier": "small_standard",
+                "units": 83,
+                "units_expected": 80,
+                "unit_cost": 14.9
+            },
+            "4826b256-8695-41f7-8171-d7b03f6418cd": {
+                "fulfill_event_id": "4826b256-8695-41f7-8171-d7b03f6418cd",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "amount": 81.6,
+                "event_type": "fulfill_inbound_placement_fee",
+                "event_date": "2026-08-20",
+                "shipment_id": "NLIB-6402219",
+                "placement_option": "partial_split",
+                "units": 480
+            },
+            "f4525aac-484b-4faf-9e48-3d7844a5be11": {
+                "fulfill_event_id": "f4525aac-484b-4faf-9e48-3d7844a5be11",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "amount": 0.0,
+                "event_type": "fulfill_inventory_adjustment",
+                "event_date": "2025-12-20",
+                "adjustment_ref": "ADJ-358FD2F3",
+                "sku": "WOG-CAMP-LANTERN",
+                "units": 2,
+                "discrepancy_type": "lost_in_warehouse"
+            },
+            "21b13a8d-6de5-4880-9a8a-d226d7e3ae32": {
+                "fulfill_event_id": "21b13a8d-6de5-4880-9a8a-d226d7e3ae32",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "amount": 0.0,
+                "event_type": "fulfill_inventory_adjustment",
+                "event_date": "2026-08-14",
+                "adjustment_ref": "ADJ-4ECAADB9",
+                "sku": "WOG-TREK-POLE-PAIR",
+                "units": 10,
+                "discrepancy_type": "damaged_in_warehouse"
+            },
+            "26f5d33a-c396-470f-8e16-6f79d9991c23": {
+                "fulfill_event_id": "26f5d33a-c396-470f-8e16-6f79d9991c23",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "amount": 0.0,
+                "event_type": "fulfill_inventory_adjustment",
+                "event_date": "2026-09-01",
+                "adjustment_ref": "ADJ-21C9CAA5",
+                "sku": "WOG-TREK-POLE-PAIR",
+                "units": 16,
+                "discrepancy_type": "damaged_in_warehouse"
+            },
+            "00770010-f766-41ee-9a3c-504c1954343d": {
+                "fulfill_event_id": "00770010-f766-41ee-9a3c-504c1954343d",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "amount": 90.4,
+                "event_type": "fulfill_reimbursement",
+                "event_date": "2025-12-02",
+                "reimbursement_type": "inbound_shortage",
+                "sku": "WOG-TREK-POLE-CARBON",
+                "units": 4,
+                "adjustment_ref": "",
+                "shipment_id": "NLIB-5502246",
+                "order_id": null,
+                "removal_order_id": null,
+                "case_id": "dfe69eec-8286-4ca3-874d-9b3d7d34d7fe"
+            },
+            "df4ba569-ee30-4d84-9c52-0012c55c9f57": {
+                "fulfill_event_id": "df4ba569-ee30-4d84-9c52-0012c55c9f57",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "amount": 29.8,
+                "event_type": "fulfill_reimbursement",
+                "event_date": "2026-01-27",
+                "reimbursement_type": "lost_in_warehouse",
+                "sku": "WOG-CAMP-LANTERN",
+                "units": 2,
+                "adjustment_ref": "ADJ-358FD2F3",
+                "shipment_id": "",
+                "order_id": null,
+                "removal_order_id": null,
+                "case_id": "c96b14f5-6514-4d69-b0a6-8ceb43d95997"
+            },
+            "0f2a2250-9db6-4770-bdbe-cfdc9c17ca3d": {
+                "fulfill_event_id": "0f2a2250-9db6-4770-bdbe-cfdc9c17ca3d",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "amount": 0.0,
+                "event_type": "fulfill_inventory_adjustment",
+                "event_date": "2026-02-15",
+                "adjustment_ref": "ADJ-633E7B0E",
+                "sku": "WOG-TREK-POLE-PAIR",
+                "units": 5,
+                "discrepancy_type": "damaged_in_warehouse"
+            },
+            "04611f11-c668-4eb1-84d9-7e38cd660bfa": {
+                "fulfill_event_id": "04611f11-c668-4eb1-84d9-7e38cd660bfa",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "event_type": "fulfill_reimbursement",
+                "event_date": "2026-03-17",
+                "reimbursement_type": "damaged_in_warehouse",
+                "sku": "WOG-TREK-POLE-PAIR",
+                "units": 5,
+                "amount": 113.0,
+                "adjustment_ref": "ADJ-633E7B0E",
+                "shipment_id": "",
+                "order_id": null,
+                "removal_order_id": null,
+                "case_id": null
+            }
+        },
+        "fulfill_cases": {
+            "52ea743e-c3c8-4680-9015-dede0854e12a": {
+                "case_id": "52ea743e-c3c8-4680-9015-dede0854e12a",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "case_type": "reimbursement_claim",
+                "reimbursement_type": "inbound_shortage",
+                "adjustment_ref": "",
+                "shipment_id": "NLIB-5433019",
+                "fee_event_ref": "",
+                "sku": "WOG-CAMP-LANTERN",
+                "units_claimed": 6,
+                "case_status": "denied",
+                "created_at": "2025-09-30 14:08:51 America/Los_Angeles"
+            },
+            "dfe69eec-8286-4ca3-874d-9b3d7d34d7fe": {
+                "case_id": "dfe69eec-8286-4ca3-874d-9b3d7d34d7fe",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "case_type": "reimbursement_claim",
+                "reimbursement_type": "inbound_shortage",
+                "adjustment_ref": "",
+                "shipment_id": "NLIB-5502246",
+                "fee_event_ref": "",
+                "sku": "WOG-TREK-POLE-CARBON",
+                "units_claimed": 4,
+                "case_status": "approved",
+                "created_at": "2025-11-20 10:16:02 America/Los_Angeles"
+            },
+            "c96b14f5-6514-4d69-b0a6-8ceb43d95997": {
+                "case_id": "c96b14f5-6514-4d69-b0a6-8ceb43d95997",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "case_type": "reimbursement_claim",
+                "reimbursement_type": "lost_in_warehouse",
+                "adjustment_ref": "ADJ-358FD2F3",
+                "shipment_id": "",
+                "fee_event_ref": "",
+                "sku": "WOG-CAMP-LANTERN",
+                "units_claimed": 2,
+                "case_status": "approved",
+                "created_at": "2026-01-14 13:55:40 America/Los_Angeles"
+            },
+            "e2c9c605-4af2-40ef-a4c5-46c1d5aee796": {
+                "case_id": "e2c9c605-4af2-40ef-a4c5-46c1d5aee796",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "case_type": "reimbursement_claim",
+                "reimbursement_type": "damaged_in_warehouse",
+                "adjustment_ref": "",
+                "shipment_id": "",
+                "fee_event_ref": "",
+                "sku": "WOG-TREK-POLE-PAIR",
+                "units_claimed": 26,
+                "case_status": "submitted",
+                "created_at": "2026-09-03 09:40:17 America/Los_Angeles"
+            },
+            "d7b71ac4-c118-4fc8-ba7b-1b32bbfec255": {
+                "case_id": "d7b71ac4-c118-4fc8-ba7b-1b32bbfec255",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "case_type": "reimbursement_claim",
+                "reimbursement_type": "inbound_shortage",
+                "adjustment_ref": "",
+                "shipment_id": "NLIB-6402219",
+                "fee_event_ref": "",
+                "sku": "WOG-TREK-POLE-PAIR",
+                "units_claimed": 38,
+                "case_status": "submitted",
+                "created_at": "2026-09-14 11:25:36 America/Los_Angeles"
+            }
+        },
+        "selling_plans": {
+            "c505a4ef-66b2-4f24-8151-d67bf3868091": {
+                "selling_plan_id": "c505a4ef-66b2-4f24-8151-d67bf3868091",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "variant_name": "Basic Store",
+                "status": "active",
+                "opened_date": "2019-03-10",
+                "verified_date": "2019-03-12",
+                "store_name": "Marrowby Trail Outfitters",
+                "billing_term": "annual",
+                "term_start_date": "2026-03-10",
+                "term_end_date": "2027-03-09",
+                "next_billing_date": "2026-10-10",
+                "cancel_effective_date": "",
+                "restricted_date": "",
+                "closed_date": ""
+            }
+        },
+        "standing_records": {
+            "40227ff5-299a-41a5-adea-fdc5c1371ccc": {
+                "standing_id": "40227ff5-299a-41a5-adea-fdc5c1371ccc",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "variant_name": "Top Rated Level",
+                "status": "at_risk",
+                "enrolled_date": "2019-03-12",
+                "last_evaluation_date": "2026-09-20",
+                "next_evaluation_date": "2026-10-20",
+                "violation_points": 8,
+                "at_risk_reason": "violation_points",
+                "suspended_date": "",
+                "appeal_submitted_date": "",
+                "reinstated_date": "",
+                "deactivated_date": "",
+                "closed_date": ""
+            }
+        }
+    },
+    "db_closure": {
+        "fulfill_cases": {
+            "dfe69eec-8286-4ca3-874d-9b3d7d34d7fe": {
+                "case_id": "dfe69eec-8286-4ca3-874d-9b3d7d34d7fe",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "case_type": "reimbursement_claim",
+                "reimbursement_type": "inbound_shortage",
+                "adjustment_ref": "",
+                "shipment_id": "NLIB-5502246",
+                "fee_event_ref": "",
+                "sku": "WOG-TREK-POLE-CARBON",
+                "units_claimed": 4,
+                "case_status": "approved",
+                "created_at": "2025-11-20 10:16:02 America/Los_Angeles"
+            },
+            "52ea743e-c3c8-4680-9015-dede0854e12a": {
+                "case_id": "52ea743e-c3c8-4680-9015-dede0854e12a",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "case_type": "reimbursement_claim",
+                "reimbursement_type": "inbound_shortage",
+                "adjustment_ref": "",
+                "shipment_id": "NLIB-5433019",
+                "fee_event_ref": "",
+                "sku": "WOG-CAMP-LANTERN",
+                "units_claimed": 6,
+                "case_status": "denied",
+                "created_at": "2025-09-30 14:08:51 America/Los_Angeles"
+            },
+            "d7b71ac4-c118-4fc8-ba7b-1b32bbfec255": {
+                "case_id": "d7b71ac4-c118-4fc8-ba7b-1b32bbfec255",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "case_type": "reimbursement_claim",
+                "reimbursement_type": "inbound_shortage",
+                "adjustment_ref": "",
+                "shipment_id": "NLIB-6402219",
+                "fee_event_ref": "",
+                "sku": "WOG-TREK-POLE-PAIR",
+                "units_claimed": 38,
+                "case_status": "submitted",
+                "created_at": "2026-09-14 11:25:36 America/Los_Angeles"
+            },
+            "c96b14f5-6514-4d69-b0a6-8ceb43d95997": {
+                "case_id": "c96b14f5-6514-4d69-b0a6-8ceb43d95997",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "case_type": "reimbursement_claim",
+                "reimbursement_type": "lost_in_warehouse",
+                "adjustment_ref": "ADJ-358FD2F3",
+                "shipment_id": "",
+                "fee_event_ref": "",
+                "sku": "WOG-CAMP-LANTERN",
+                "units_claimed": 2,
+                "case_status": "approved",
+                "created_at": "2026-01-14 13:55:40 America/Los_Angeles"
+            },
+            "e2c9c605-4af2-40ef-a4c5-46c1d5aee796": {
+                "case_id": "e2c9c605-4af2-40ef-a4c5-46c1d5aee796",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "case_type": "reimbursement_claim",
+                "reimbursement_type": "damaged_in_warehouse",
+                "adjustment_ref": "",
+                "shipment_id": "",
+                "fee_event_ref": "",
+                "sku": "WOG-TREK-POLE-PAIR",
+                "units_claimed": 26,
+                "case_status": "submitted",
+                "created_at": "2026-09-03 09:40:17 America/Los_Angeles"
+            }
+        },
+        "fulfill_events": {
+            "0f2a2250-9db6-4770-bdbe-cfdc9c17ca3d": {
+                "fulfill_event_id": "0f2a2250-9db6-4770-bdbe-cfdc9c17ca3d",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "amount": 0.0,
+                "event_type": "fulfill_inventory_adjustment",
+                "event_date": "2026-02-15",
+                "adjustment_ref": "ADJ-633E7B0E",
+                "sku": "WOG-TREK-POLE-PAIR",
+                "units": 5,
+                "discrepancy_type": "damaged_in_warehouse"
+            },
+            "af5b2fa9-f1c0-44a0-84b3-8c94c661ae27": {
+                "fulfill_event_id": "af5b2fa9-f1c0-44a0-84b3-8c94c661ae27",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "amount": 0.0,
+                "event_type": "fulfill_inbound_receipt",
+                "event_date": "2026-08-28",
+                "shipment_id": "NLIB-6402219",
+                "sku": "WOG-TREK-POLE-PAIR",
+                "size_tier": "large_standard",
+                "units": 262,
+                "units_expected": 300,
+                "unit_cost": 22.6
+            },
+            "00770010-f766-41ee-9a3c-504c1954343d": {
+                "fulfill_event_id": "00770010-f766-41ee-9a3c-504c1954343d",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "amount": 90.4,
+                "event_type": "fulfill_reimbursement",
+                "event_date": "2025-12-02",
+                "reimbursement_type": "inbound_shortage",
+                "sku": "WOG-TREK-POLE-CARBON",
+                "units": 4,
+                "adjustment_ref": "",
+                "shipment_id": "NLIB-5502246",
+                "order_id": null,
+                "removal_order_id": null,
+                "case_id": "dfe69eec-8286-4ca3-874d-9b3d7d34d7fe"
+            },
+            "3bdceefe-0b1f-4a5b-ab83-0ea7627ddc86": {
+                "fulfill_event_id": "3bdceefe-0b1f-4a5b-ab83-0ea7627ddc86",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "amount": 0.0,
+                "event_type": "fulfill_inbound_receipt",
+                "event_date": "2026-02-11",
+                "shipment_id": "NLIB-5990451",
+                "sku": "WOG-TREK-POLE-PAIR",
+                "size_tier": "large_standard",
+                "units": 185,
+                "units_expected": 180,
+                "unit_cost": 22.6
+            },
+            "53cb8e6c-8cf4-4390-9b3f-d4392ecced38": {
+                "fulfill_event_id": "53cb8e6c-8cf4-4390-9b3f-d4392ecced38",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "amount": 0.0,
+                "event_type": "fulfill_inbound_receipt",
+                "event_date": "2026-04-22",
+                "shipment_id": "NLIB-6155092",
+                "sku": "WOG-TREK-POLE-CARBON",
+                "size_tier": "large_standard",
+                "units": 120,
+                "units_expected": 120,
+                "unit_cost": 22.6
+            },
+            "f4525aac-484b-4faf-9e48-3d7844a5be11": {
+                "fulfill_event_id": "f4525aac-484b-4faf-9e48-3d7844a5be11",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "amount": 0.0,
+                "event_type": "fulfill_inventory_adjustment",
+                "event_date": "2025-12-20",
+                "adjustment_ref": "ADJ-358FD2F3",
+                "sku": "WOG-CAMP-LANTERN",
+                "units": 2,
+                "discrepancy_type": "lost_in_warehouse"
+            },
+            "45340df5-3678-4962-b462-92c05a066e1f": {
+                "fulfill_event_id": "45340df5-3678-4962-b462-92c05a066e1f",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "amount": 0.0,
+                "event_type": "fulfill_inbound_receipt",
+                "event_date": "2026-08-28",
+                "shipment_id": "NLIB-6402219",
+                "sku": "WOG-TREK-POLE-CARBON",
+                "size_tier": "large_standard",
+                "units": 106,
+                "units_expected": 100,
+                "unit_cost": 22.6
+            },
+            "ea17aae5-f88c-4aac-9817-32ae99347840": {
+                "fulfill_event_id": "ea17aae5-f88c-4aac-9817-32ae99347840",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "amount": 0.0,
+                "event_type": "fulfill_inbound_receipt",
+                "event_date": "2025-12-03",
+                "shipment_id": "NLIB-5541180",
+                "sku": "WOG-CAMP-LANTERN",
+                "size_tier": "small_standard",
+                "units": 150,
+                "units_expected": 150,
+                "unit_cost": 14.9
+            },
+            "df4ba569-ee30-4d84-9c52-0012c55c9f57": {
+                "fulfill_event_id": "df4ba569-ee30-4d84-9c52-0012c55c9f57",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "amount": 29.8,
+                "event_type": "fulfill_reimbursement",
+                "event_date": "2026-01-27",
+                "reimbursement_type": "lost_in_warehouse",
+                "sku": "WOG-CAMP-LANTERN",
+                "units": 2,
+                "adjustment_ref": "ADJ-358FD2F3",
+                "shipment_id": "",
+                "order_id": null,
+                "removal_order_id": null,
+                "case_id": "c96b14f5-6514-4d69-b0a6-8ceb43d95997"
+            },
+            "26f5d33a-c396-470f-8e16-6f79d9991c23": {
+                "fulfill_event_id": "26f5d33a-c396-470f-8e16-6f79d9991c23",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "amount": 0.0,
+                "event_type": "fulfill_inventory_adjustment",
+                "event_date": "2026-09-01",
+                "adjustment_ref": "ADJ-21C9CAA5",
+                "sku": "WOG-TREK-POLE-PAIR",
+                "units": 16,
+                "discrepancy_type": "damaged_in_warehouse"
+            },
+            "21b13a8d-6de5-4880-9a8a-d226d7e3ae32": {
+                "fulfill_event_id": "21b13a8d-6de5-4880-9a8a-d226d7e3ae32",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "amount": 0.0,
+                "event_type": "fulfill_inventory_adjustment",
+                "event_date": "2026-08-14",
+                "adjustment_ref": "ADJ-4ECAADB9",
+                "sku": "WOG-TREK-POLE-PAIR",
+                "units": 10,
+                "discrepancy_type": "damaged_in_warehouse"
+            },
+            "4826b256-8695-41f7-8171-d7b03f6418cd": {
+                "fulfill_event_id": "4826b256-8695-41f7-8171-d7b03f6418cd",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "amount": 81.6,
+                "event_type": "fulfill_inbound_placement_fee",
+                "event_date": "2026-08-20",
+                "shipment_id": "NLIB-6402219",
+                "placement_option": "partial_split",
+                "units": 480
+            },
+            "04611f11-c668-4eb1-84d9-7e38cd660bfa": {
+                "fulfill_event_id": "04611f11-c668-4eb1-84d9-7e38cd660bfa",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "event_type": "fulfill_reimbursement",
+                "event_date": "2026-03-17",
+                "reimbursement_type": "damaged_in_warehouse",
+                "sku": "WOG-TREK-POLE-PAIR",
+                "units": 5,
+                "amount": 113.0,
+                "adjustment_ref": "ADJ-633E7B0E",
+                "shipment_id": "",
+                "order_id": null,
+                "removal_order_id": null,
+                "case_id": null
+            },
+            "57f3f9ee-3d8b-425b-b5dc-f3a42f9fd9a4": {
+                "fulfill_event_id": "57f3f9ee-3d8b-425b-b5dc-f3a42f9fd9a4",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "amount": 0.0,
+                "event_type": "fulfill_inbound_receipt",
+                "event_date": "2026-06-05",
+                "shipment_id": "NLIB-6201734",
+                "sku": "WOG-TREK-POLE-PAIR",
+                "size_tier": "large_standard",
+                "units": 203,
+                "units_expected": 200,
+                "unit_cost": 22.6
+            },
+            "a9ccecaf-5b8d-4aaa-8169-aa89a49e3a1a": {
+                "fulfill_event_id": "a9ccecaf-5b8d-4aaa-8169-aa89a49e3a1a",
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "amount": 0.0,
+                "event_type": "fulfill_inbound_receipt",
+                "event_date": "2026-08-28",
+                "shipment_id": "NLIB-6402219",
+                "sku": "WOG-CAMP-LANTERN",
+                "size_tier": "small_standard",
+                "units": 83,
+                "units_expected": 80,
+                "unit_cost": 14.9
+            }
+        },
+        "fulfill_enrollments": {
+            "33b339b8-b2fb-40a5-a74b-1225f327fc1b": {
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "variant_name": "FBN Core Program",
+                "status": "active",
+                "enrolled_date": "2022-04-28",
+                "activated_date": "2022-05-16",
+                "last_review_date": "2026-08-05",
+                "suspension_reason": "none",
+                "exit_requested_date": "",
+                "units_on_hand": 1076,
+                "closed_date": ""
+            }
+        },
+        "selling_plans": {
+            "c505a4ef-66b2-4f24-8151-d67bf3868091": {
+                "selling_plan_id": "c505a4ef-66b2-4f24-8151-d67bf3868091",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "variant_name": "Basic Store",
+                "status": "active",
+                "opened_date": "2019-03-10",
+                "verified_date": "2019-03-12",
+                "store_name": "Marrowby Trail Outfitters",
+                "billing_term": "annual",
+                "term_start_date": "2026-03-10",
+                "term_end_date": "2027-03-09",
+                "next_billing_date": "2026-10-10",
+                "cancel_effective_date": "",
+                "restricted_date": "",
+                "closed_date": ""
+            }
+        },
+        "standing_records": {
+            "40227ff5-299a-41a5-adea-fdc5c1371ccc": {
+                "standing_id": "40227ff5-299a-41a5-adea-fdc5c1371ccc",
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "variant_name": "Top Rated Level",
+                "status": "at_risk",
+                "enrolled_date": "2019-03-12",
+                "last_evaluation_date": "2026-09-20",
+                "next_evaluation_date": "2026-10-20",
+                "violation_points": 8,
+                "at_risk_reason": "violation_points",
+                "suspended_date": "",
+                "appeal_submitted_date": "",
+                "reinstated_date": "",
+                "deactivated_date": "",
+                "closed_date": ""
+            }
+        },
+        "customers": {
+            "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57": {
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "name": "Ignatius Marrowby",
+                "email": "ignatius.marrowby@marrowbytrail.com",
+                "phone": "2065550362",
+                "billing_zip": "98122",
+                "account_opened_date": "2019-03-04",
+                "payment_card_last4": "5147",
+                "customer_type": "seller",
+                "business_name": "Marrowby Trail Outfitters Co.",
+                "tax_id_last4": "6038"
+            }
+        }
+    },
+    "db_closure_matches_initial_state": true,
+    "solvability_contract": {
+        "request_binding_version": 1,
+        "request_alignment": [
+            {
+                "claim": "The seller asks for his open shortage claim on the late-August trekking-pole shipment to be decided by the agent today.",
+                "evidence": [
+                    "user_scenario:You want that shortage claim decided today, and you are fine with the agent approving it from Northloop's side during this call."
+                ]
+            },
+            {
+                "claim": "The claim concerns SKU WOG-TREK-POLE-PAIR received short on the late-August shipment, filed on September 14 for 38 units.",
+                "evidence": [
+                    "user_scenario:the inbound shipment you sent in late August arrived short on your trekking poles, SKU WOG-TREK-POLE-PAIR"
+                ]
+            }
+        ],
+        "gold_actions": [
+            {
+                "step": 8,
+                "business_effect": "The earlier warehouse-damage case of WOG-TREK-POLE-PAIR is approved for 22 units.",
+                "request_binding": {
+                    "action_semantics": "The shortage decision the seller asked for may be made only after no earlier warehouse-damage case of the same SKU stands submitted; the damage case of 2026-09-03 is submitted, so the desk decides it first under its own approval policy.",
+                    "intent_source": {
+                        "kind": "initial_state",
+                        "evidence": [
+                            "initial_state.fulfill_cases.e2c9c605-4af2-40ef-a4c5-46c1d5aee796.case_status",
+                            "initial_state.fulfill_cases.e2c9c605-4af2-40ef-a4c5-46c1d5aee796.created_at"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "an earlier open warehouse-damage case of the same SKU awaits the desk decision",
+                        "evidence": [
+                            "initial_state.fulfill_cases.e2c9c605-4af2-40ef-a4c5-46c1d5aee796.reimbursement_type",
+                            "initial_state.fulfill_cases.e2c9c605-4af2-40ef-a4c5-46c1d5aee796.case_status"
+                        ],
+                        "action_arg": "case_id",
+                        "value": "e2c9c605-4af2-40ef-a4c5-46c1d5aee796"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "performed_by_this_tool",
+                    "fact": "The damage case decision is made by this call.",
+                    "evidence": [
+                        "initial_state.fulfill_cases.e2c9c605-4af2-40ef-a4c5-46c1d5aee796"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "fulfill_reimbursement_terms",
+                        "eligibility_id": "no_double_reimbursement",
+                        "condition": "units already reimbursed on the same source object are never reimbursed again",
+                        "evidence": [
+                            "initial_state.fulfill_events.00770010-f766-41ee-9a3c-504c1954343d.reimbursement_type",
+                            "initial_state.fulfill_events.00770010-f766-41ee-9a3c-504c1954343d.adjustment_ref",
+                            "initial_state.fulfill_events.00770010-f766-41ee-9a3c-504c1954343d.shipment_id",
+                            "initial_state.fulfill_events.00770010-f766-41ee-9a3c-504c1954343d.order_id",
+                            "initial_state.fulfill_events.00770010-f766-41ee-9a3c-504c1954343d.removal_order_id",
+                            "initial_state.fulfill_events.00770010-f766-41ee-9a3c-504c1954343d.sku",
+                            "initial_state.fulfill_cases.e2c9c605-4af2-40ef-a4c5-46c1d5aee796.reimbursement_type",
+                            "initial_state.fulfill_cases.e2c9c605-4af2-40ef-a4c5-46c1d5aee796.adjustment_ref",
+                            "initial_state.fulfill_cases.e2c9c605-4af2-40ef-a4c5-46c1d5aee796.sku"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "fulfill_events.reimbursement_type",
+                                "source": "initial_state.fulfill_cases.e2c9c605-4af2-40ef-a4c5-46c1d5aee796.reimbursement_type",
+                                "action_arg": "reimbursement_type"
+                            },
+                            {
+                                "gate_field": "fulfill_events.adjustment_ref",
+                                "source": "initial_state.fulfill_cases.e2c9c605-4af2-40ef-a4c5-46c1d5aee796.adjustment_ref",
+                                "action_arg": "adjustment_ref"
+                            },
+                            {
+                                "gate_field": "fulfill_events.sku",
+                                "source": "initial_state.fulfill_cases.e2c9c605-4af2-40ef-a4c5-46c1d5aee796.sku",
+                                "action_arg": "sku"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "fulfill_reimbursement_terms",
+                        "eligibility_id": "warehouse_loss_window",
+                        "condition": "A warehouse loss claim is filed no later than the warehouse loss claim window counted in calendar days from the inventory adjustment date.",
+                        "evidence": [
+                            "frozen_time",
+                            "initial_state.fulfill_events.21b13a8d-6de5-4880-9a8a-d226d7e3ae32.event_date",
+                            "initial_state.fulfill_events.21b13a8d-6de5-4880-9a8a-d226d7e3ae32.adjustment_ref",
+                            "initial_state.fulfill_events.26f5d33a-c396-470f-8e16-6f79d9991c23.event_date",
+                            "initial_state.fulfill_cases.e2c9c605-4af2-40ef-a4c5-46c1d5aee796.created_at"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 10,
+                "business_effect": "The seller's open inbound-shortage case now claims 26 units instead of 38.",
+                "request_binding": {
+                    "action_semantics": "The shortage approval fixes its result only once the units claimed equal the claimable shortage of the line; the case shows 38, so the claim must be corrected first, and only the seller changes what he claims.",
+                    "intent_source": {
+                        "kind": "initial_state",
+                        "evidence": [
+                            "initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255.units_claimed",
+                            "initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255.case_status"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "the units claimed on the open inbound-shortage case differ from the claimable shortage of its line",
+                        "evidence": [
+                            "initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255.units_claimed",
+                            "initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255.shipment_id"
+                        ],
+                        "action_arg": "case_id",
+                        "value": "d7b71ac4-c118-4fc8-ba7b-1b32bbfec255"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "performed_by_this_tool",
+                    "fact": "The correction is completed by this call on the spot.",
+                    "evidence": [
+                        "initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "fulfill_reimbursement_terms",
+                        "eligibility_id": "no_double_reimbursement",
+                        "condition": "units already reimbursed on the same source object are never reimbursed again",
+                        "evidence": [
+                            "initial_state.fulfill_events.00770010-f766-41ee-9a3c-504c1954343d.reimbursement_type",
+                            "initial_state.fulfill_events.00770010-f766-41ee-9a3c-504c1954343d.adjustment_ref",
+                            "initial_state.fulfill_events.00770010-f766-41ee-9a3c-504c1954343d.shipment_id",
+                            "initial_state.fulfill_events.00770010-f766-41ee-9a3c-504c1954343d.order_id",
+                            "initial_state.fulfill_events.00770010-f766-41ee-9a3c-504c1954343d.removal_order_id",
+                            "initial_state.fulfill_events.00770010-f766-41ee-9a3c-504c1954343d.sku",
+                            "initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255.reimbursement_type",
+                            "initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255.shipment_id",
+                            "initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255.sku"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "fulfill_events.reimbursement_type",
+                                "source": "initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255.reimbursement_type",
+                                "action_arg": "reimbursement_type"
+                            },
+                            {
+                                "gate_field": "fulfill_events.shipment_id",
+                                "source": "initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255.shipment_id",
+                                "action_arg": "shipment_id"
+                            },
+                            {
+                                "gate_field": "fulfill_events.sku",
+                                "source": "initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255.sku",
+                                "action_arg": "sku"
+                            }
+                        ],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 12,
+                "business_effect": "The seller's inbound-shortage case is approved for 23 units.",
+                "request_binding": {
+                    "action_semantics": "The seller asks for his open shortage claim to be decided by the agent now; approving the case is that desk decision, as opposed to correcting it.",
+                    "intent_source": {
+                        "kind": "initial_state",
+                        "evidence": [
+                            "initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255.case_status",
+                            "user_scenario:You want that shortage claim decided today, and you are fine with the agent approving it from Northloop's side during this call."
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "the open inbound-shortage case awaits the desk decision the seller asked for",
+                        "evidence": [
+                            "initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255.case_status",
+                            "user_scenario:You want that shortage claim decided today, and you are fine with the agent approving it from Northloop's side during this call."
+                        ],
+                        "action_arg": "case_id",
+                        "value": "d7b71ac4-c118-4fc8-ba7b-1b32bbfec255"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "established_by_prior_tool",
+                    "fact": "The damage case was decided and the shortage claim corrected to 26 before the decision.",
+                    "evidence": [
+                        "prior_step:8",
+                        "prior_step:10",
+                        "initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "fulfill_reimbursement_terms",
+                        "eligibility_id": "no_double_reimbursement",
+                        "condition": "units already reimbursed on the same source object are never reimbursed again",
+                        "evidence": [
+                            "initial_state.fulfill_events.00770010-f766-41ee-9a3c-504c1954343d.reimbursement_type",
+                            "initial_state.fulfill_events.00770010-f766-41ee-9a3c-504c1954343d.adjustment_ref",
+                            "initial_state.fulfill_events.00770010-f766-41ee-9a3c-504c1954343d.shipment_id",
+                            "initial_state.fulfill_events.00770010-f766-41ee-9a3c-504c1954343d.order_id",
+                            "initial_state.fulfill_events.00770010-f766-41ee-9a3c-504c1954343d.removal_order_id",
+                            "initial_state.fulfill_events.00770010-f766-41ee-9a3c-504c1954343d.sku",
+                            "initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255.reimbursement_type",
+                            "initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255.shipment_id",
+                            "initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255.sku"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "fulfill_events.reimbursement_type",
+                                "source": "initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255.reimbursement_type",
+                                "action_arg": "reimbursement_type"
+                            },
+                            {
+                                "gate_field": "fulfill_events.shipment_id",
+                                "source": "initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255.shipment_id",
+                                "action_arg": "shipment_id"
+                            },
+                            {
+                                "gate_field": "fulfill_events.sku",
+                                "source": "initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255.sku",
+                                "action_arg": "sku"
+                            }
+                        ],
+                        "satisfied": true
+                    }
+                ]
+            }
+        ],
+        "temporal_feasibility": [],
+        "required_user_inputs": [
+            {
+                "information": "Registered email used to locate the profile",
+                "source": "user_scenario:ignatius.marrowby@marrowbytrail.com"
+            },
+            {
+                "information": "Card last four digits for verification",
+                "source": "user_scenario:5147"
+            },
+            {
+                "information": "Billing ZIP code for verification",
+                "source": "user_scenario:98122"
+            },
+            {
+                "information": "The SKU the claim is about",
+                "source": "user_scenario:WOG-TREK-POLE-PAIR"
+            },
+            {
+                "information": "Which shipment (no shipment number at hand)",
+                "source": "user_scenario:it was the shipment received at the end of August"
+            },
+            {
+                "information": "Authorisation for the agent to decide the shortage claim now",
+                "source": "user_scenario:You want that shortage claim decided today, and you are fine with the agent approving it from Northloop's side during this call."
+            },
+            {
+                "information": "Consent to the agent deciding another claim first",
+                "source": "user_scenario:you tell them to go ahead and take care of it"
+            },
+            {
+                "information": "Consent to make the unit-count change himself when handed over",
+                "source": "user_scenario:you enter exactly the number the agent gives you"
+            }
+        ],
+        "seed_consistency": [
+            {
+                "row": "initial_state.fulfill_events.ea17aae5-f88c-4aac-9817-32ae99347840",
+                "policy_id": "fulfill_inbound_terms",
+                "check": "Receipt of 150 of 150 expected units of WOG-CAMP-LANTERN (small_standard, declared cost 14.90) on shipment NLIB-5541180 dated 2025-12-03 while the enrollment was active.",
+                "evidence": [
+                    "initial_state.fulfill_events.ea17aae5-f88c-4aac-9817-32ae99347840"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.3bdceefe-0b1f-4a5b-ab83-0ea7627ddc86",
+                "policy_id": "fulfill_inbound_terms",
+                "check": "Receipt of 185 of 180 expected units of WOG-TREK-POLE-PAIR (large_standard, declared cost 22.60) on shipment NLIB-5990451 dated 2026-02-11 while the enrollment was active.",
+                "evidence": [
+                    "initial_state.fulfill_events.3bdceefe-0b1f-4a5b-ab83-0ea7627ddc86"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.53cb8e6c-8cf4-4390-9b3f-d4392ecced38",
+                "policy_id": "fulfill_inbound_terms",
+                "check": "Receipt of 120 of 120 expected units of WOG-TREK-POLE-CARBON (large_standard, declared cost 22.60) on shipment NLIB-6155092 dated 2026-04-22 while the enrollment was active.",
+                "evidence": [
+                    "initial_state.fulfill_events.53cb8e6c-8cf4-4390-9b3f-d4392ecced38"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.57f3f9ee-3d8b-425b-b5dc-f3a42f9fd9a4",
+                "policy_id": "fulfill_inbound_terms",
+                "check": "Receipt of 203 of 200 expected units of WOG-TREK-POLE-PAIR (large_standard, declared cost 22.60) on shipment NLIB-6201734 dated 2026-06-05 while the enrollment was active.",
+                "evidence": [
+                    "initial_state.fulfill_events.57f3f9ee-3d8b-425b-b5dc-f3a42f9fd9a4"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.af5b2fa9-f1c0-44a0-84b3-8c94c661ae27",
+                "policy_id": "fulfill_inbound_terms",
+                "check": "Receipt of 262 of 300 expected units of WOG-TREK-POLE-PAIR (large_standard, declared cost 22.60) on shipment NLIB-6402219 dated 2026-08-28 while the enrollment was active.",
+                "evidence": [
+                    "initial_state.fulfill_events.af5b2fa9-f1c0-44a0-84b3-8c94c661ae27"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.45340df5-3678-4962-b462-92c05a066e1f",
+                "policy_id": "fulfill_inbound_terms",
+                "check": "Receipt of 106 of 100 expected units of WOG-TREK-POLE-CARBON (large_standard, declared cost 22.60) on shipment NLIB-6402219 dated 2026-08-28 while the enrollment was active.",
+                "evidence": [
+                    "initial_state.fulfill_events.45340df5-3678-4962-b462-92c05a066e1f"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.a9ccecaf-5b8d-4aaa-8169-aa89a49e3a1a",
+                "policy_id": "fulfill_inbound_terms",
+                "check": "Receipt of 83 of 80 expected units of WOG-CAMP-LANTERN (small_standard, declared cost 14.90) on shipment NLIB-6402219 dated 2026-08-28 while the enrollment was active.",
+                "evidence": [
+                    "initial_state.fulfill_events.a9ccecaf-5b8d-4aaa-8169-aa89a49e3a1a"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.4826b256-8695-41f7-8171-d7b03f6418cd",
+                "policy_id": "fulfill_inbound_terms",
+                "check": "Placement fee of shipment NLIB-6402219: 480 plan units x the FBN Core Program partial-split rate 0.17 = 81.60 USD, billed 2026-08-20; it records the split option the netting rule reads.",
+                "evidence": [
+                    "initial_state.fulfill_events.4826b256-8695-41f7-8171-d7b03f6418cd"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.f4525aac-484b-4faf-9e48-3d7844a5be11",
+                "policy_id": "fulfill_reimbursement_terms",
+                "check": "lost_in_warehouse write-off of 2 units of WOG-CAMP-LANTERN on 2025-12-20 (ADJ-358FD2F3); settled through its approved case (reimbursed 2026-01-27).",
+                "evidence": [
+                    "initial_state.fulfill_events.f4525aac-484b-4faf-9e48-3d7844a5be11"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.21b13a8d-6de5-4880-9a8a-d226d7e3ae32",
+                "policy_id": "fulfill_reimbursement_terms",
+                "check": "damaged_in_warehouse write-off of 10 units of WOG-TREK-POLE-PAIR on 2026-08-14 (ADJ-4ECAADB9); claimed on the damage case of 2026-09-03 (20 days after it) and still inside the 60-day window at the handling date (56 days); its automatic reimbursement due 2026-09-13 was missed, which the open damage case covers.",
+                "evidence": [
+                    "initial_state.fulfill_events.21b13a8d-6de5-4880-9a8a-d226d7e3ae32"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.26f5d33a-c396-470f-8e16-6f79d9991c23",
+                "policy_id": "fulfill_reimbursement_terms",
+                "check": "damaged_in_warehouse write-off of 16 units of WOG-TREK-POLE-PAIR on 2026-09-01 (ADJ-21C9CAA5); claimed on the damage case of 2026-09-03 (2 days after it), 38 days old at the handling date; its automatic reimbursement due 2026-10-01 was missed.",
+                "evidence": [
+                    "initial_state.fulfill_events.26f5d33a-c396-470f-8e16-6f79d9991c23"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.00770010-f766-41ee-9a3c-504c1954343d",
+                "policy_id": "fulfill_reimbursement_terms",
+                "check": "inbound_shortage reimbursement of 4 units of WOG-TREK-POLE-CARBON on 2025-12-02 for 90.40 USD (units x declared cost), naming its source object (NLIB-5502246).",
+                "evidence": [
+                    "initial_state.fulfill_events.00770010-f766-41ee-9a3c-504c1954343d"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.df4ba569-ee30-4d84-9c52-0012c55c9f57",
+                "policy_id": "fulfill_reimbursement_terms",
+                "check": "lost_in_warehouse reimbursement of 2 units of WOG-CAMP-LANTERN on 2026-01-27 for 29.80 USD (units x declared cost), naming its source object (ADJ-358FD2F3).",
+                "evidence": [
+                    "initial_state.fulfill_events.df4ba569-ee30-4d84-9c52-0012c55c9f57"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.0f2a2250-9db6-4770-bdbe-cfdc9c17ca3d",
+                "policy_id": "fulfill_reimbursement_terms",
+                "check": "damaged_in_warehouse write-off of 5 units of WOG-TREK-POLE-PAIR on 2026-02-15 (ADJ-633E7B0E); settled: reimbursed automatically on 2026-03-17 (30 days later); outside the damage claim span and the damage review span.",
+                "evidence": [
+                    "initial_state.fulfill_events.0f2a2250-9db6-4770-bdbe-cfdc9c17ca3d"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_events.04611f11-c668-4eb1-84d9-7e38cd660bfa",
+                "policy_id": "fulfill_reimbursement_terms",
+                "check": "damaged_in_warehouse reimbursement of 5 units of WOG-TREK-POLE-PAIR on 2026-03-17 for 113.00 USD (units x declared cost), naming its source object (ADJ-633E7B0E).",
+                "evidence": [
+                    "initial_state.fulfill_events.04611f11-c668-4eb1-84d9-7e38cd660bfa"
+                ]
+            },
+            {
+                "row": "initial_state.fulfill_enrollments.33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                "policy_id": "fulfill_enrollment_and_review",
+                "check": "Active FBN Core Program enrollment approved 2022-05-16, last reviewed 2026-08-05, for a seller with an active Basic Store plan; units_on_hand equals the seeded receipts less the seeded write-offs.",
+                "evidence": [
+                    "initial_state.fulfill_enrollments.33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+                    "initial_state.selling_plans.c505a4ef-66b2-4f24-8151-d67bf3868091"
+                ]
+            }
+        ]
+    },
+    "evaluation_criteria": [
+        {
+            "owner": "agent",
+            "tool": "find_customers",
+            "arguments": {
+                "email": "ignatius.marrowby@marrowbytrail.com"
+            },
+            "objective": "Locate the caller's profile from the email he volunteers and read his customer reference.",
+            "necessity": "Every later read and write is keyed by the customer reference."
+        },
+        {
+            "owner": "agent",
+            "tool": "verify_customer_identity",
+            "arguments": {
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57",
+                "billing_zip": "98122",
+                "payment_card_last4": "5147"
+            },
+            "objective": "Record the in-session identity check with the card last four digits and billing ZIP he states.",
+            "necessity": "Identity must be verified before account details are discussed or any case is decided; two matching details are required."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_fbn_enrollments",
+            "arguments": {
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57"
+            },
+            "objective": "Read the FBN enrollment: FBN Core Program, activated 2022-05-16, and its enrollment reference.",
+            "necessity": "The program and the months since activation decide the carry span, the tolerance units, the damage allowance cap and the line ceiling share; the reference scopes the activity read."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_fbn_cases",
+            "arguments": {
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57"
+            },
+            "objective": "Read every FBN case: the open inbound-shortage case on WOG-TREK-POLE-PAIR (shipment NLIB-6402219, 38 units, opened 2026-09-14), the open warehouse-damage case on the same SKU (26 units, opened 2026-09-03) and the earlier approved and denied cases.",
+            "necessity": "The shortage case is the object of the root and of the seller's correction; the earlier open damage case is the state the shortage approval's ordering sentence waits on; the case dates feed the tolerance units, the verification holdback and both limit uplifts."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_fbn_activity",
+            "arguments": {
+                "enrollment_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b"
+            },
+            "objective": "Read the ledger: inbound receipts of shipment NLIB-6402219 and of earlier shipments, the placement fee row with its split option, the damaged-in-warehouse adjustments (2026-02-15, 2026-08-14, 2026-09-01) and the reimbursements.",
+            "necessity": "The netted shortage, the over-receipt carry-forward, the receiving tolerance, the damage claim span, the damage allowance and the line ceiling all aggregate these rows."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_selling_plans",
+            "arguments": {
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57"
+            },
+            "objective": "Read the selling plan: Basic Store.",
+            "necessity": "The selling plan decides the damage approval limit and the inbound approval limit."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_seller_standing",
+            "arguments": {
+                "customer_id": "5d5d3c6e-7c4d-4560-b9a2-40d4d3034f57"
+            },
+            "objective": "Read the performance standing: Top Rated Level, status at risk for violation points, 8 active violation points (last evaluation 2026-09-20).",
+            "necessity": "The standing level decides the damage allowance method and the approval share; points and status decide both compliance holdbacks."
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "approve_damaged_inventory_case_556f0f6d"
+            },
+            "objective": "Unlock the desk's warehouse-damage approval action.",
+            "necessity": "First half of the unlock/call pair; no DB effect."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "approve_damaged_inventory_case_556f0f6d",
+                "arguments": {
+                    "case_id": "e2c9c605-4af2-40ef-a4c5-46c1d5aee796",
+                    "reimbursement_type": "damaged_in_warehouse",
+                    "adjustment_ref": "",
+                    "shipment_id": "",
+                    "order_id": "",
+                    "removal_order_id": "",
+                    "sku": "WOG-TREK-POLE-PAIR",
+                    "units_approved": 22
+                }
+            },
+            "objective": "The desk approves the earlier open warehouse-damage case of the same SKU for 22 units; that case shows approved.",
+            "necessity": "The shortage approval's rule decides an inbound shortage case only after no warehouse-damage case of the same SKU opened before it still stands submitted; the damage case of 2026-09-03 is submitted at the opening, and its own approval policy fixes the units.",
+            "argument_uniqueness_tracing": {
+                "case_id": "'e2c9c605-4af2-40ef-a4c5-46c1d5aee796'. Basis: the docstring requires each source reference to be 'copied from the case record; pass an empty string when the case names no' such reference, and initial_state.fulfill_cases.e2c9c605-4af2-40ef-a4c5-46c1d5aee796 shows the reference of the case, read from find_fbn_cases. Uniqueness: the case is singled out by its loss kind and its open status, so every correct agent copies the same value; for reimbursement_type the other loss kinds and not_applicable describe other cases.",
+                "reimbursement_type": "'damaged_in_warehouse'. Basis: the docstring requires each source reference to be 'copied from the case record; pass an empty string when the case names no' such reference, and initial_state.fulfill_cases.e2c9c605-4af2-40ef-a4c5-46c1d5aee796 shows the loss kind recorded on the case. Uniqueness: the case is singled out by its loss kind and its open status, so every correct agent copies the same value; for reimbursement_type the other loss kinds and not_applicable describe other cases.",
+                "adjustment_ref": "''. Basis: the docstring requires each source reference to be 'copied from the case record; pass an empty string when the case names no' such reference, and initial_state.fulfill_cases.e2c9c605-4af2-40ef-a4c5-46c1d5aee796 shows the adjustment the case names (empty: it names none). Uniqueness: the case is singled out by its loss kind and its open status, so every correct agent copies the same value; for reimbursement_type the other loss kinds and not_applicable describe other cases.",
+                "shipment_id": "''. Basis: the docstring requires each source reference to be 'copied from the case record; pass an empty string when the case names no' such reference, and initial_state.fulfill_cases.e2c9c605-4af2-40ef-a4c5-46c1d5aee796 shows the shipment the case names (empty when it names none). Uniqueness: the case is singled out by its loss kind and its open status, so every correct agent copies the same value; for reimbursement_type the other loss kinds and not_applicable describe other cases.",
+                "order_id": "''. Basis: the docstring requires each source reference to be 'copied from the case record; pass an empty string when the case names no' such reference, and initial_state.fulfill_cases.e2c9c605-4af2-40ef-a4c5-46c1d5aee796 shows the order the case names (it names none). Uniqueness: the case is singled out by its loss kind and its open status, so every correct agent copies the same value; for reimbursement_type the other loss kinds and not_applicable describe other cases.",
+                "removal_order_id": "''. Basis: the docstring requires each source reference to be 'copied from the case record; pass an empty string when the case names no' such reference, and initial_state.fulfill_cases.e2c9c605-4af2-40ef-a4c5-46c1d5aee796 shows the removal order the case names (it names none). Uniqueness: the case is singled out by its loss kind and its open status, so every correct agent copies the same value; for reimbursement_type the other loss kinds and not_applicable describe other cases.",
+                "sku": "'WOG-TREK-POLE-PAIR'. Basis: the docstring requires each source reference to be 'copied from the case record; pass an empty string when the case names no' such reference, and initial_state.fulfill_cases.e2c9c605-4af2-40ef-a4c5-46c1d5aee796 shows the SKU on the case record, which is also the SKU the seller states. Uniqueness: the case is singled out by its loss kind and its open status, so every correct agent copies the same value; for reimbursement_type the other loss kinds and not_applicable describe other cases.",
+                "units_approved": "22. Units approved on the open warehouse-damage case of WOG-TREK-POLE-PAIR (opened 2026-09-03, 26 units claimed): the units claimed are limited to the units on the SKU's damaged-in-warehouse adjustments inside the 2-month damage claim span = 10 (2026-08-14) + 16 (2026-09-01) = 26, so the start is 26 (the 2026-02-15 adjustment of 5 units is 7 whole months old and was reimbursed automatically on 2026-03-17); damage allowance by the per-incident method because the enrollment is in FBN Core Program and the seller stands at Top Rated Level = 1 x 2 damaged-in-warehouse adjustments inside the 6-month damage review span = 2, limited to the long-tenure damage cap 1 (active 52 months) = 1; high damage compliance holdback 3 (8 active violation points, at least the trigger of 6); net 26 - 1 - 3 = 22; cap = damage limit 20 (Basic Store) + damage uplift 3 (opened 36 days before, at least 21 but fewer than 45) = 23, not binding. Baseline readings: shrinkage share floor(465 x 0.002) = 0 -> 23; standard cap 4 -> 21; standard compliance 1 -> 23; standard limit 8 -> 11; no uplift -> 20."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "amend_inbound_shortage_claim_fdee09ae"
+            },
+            "objective": "Unlock the seller's own claim-correction action for handing over.",
+            "necessity": "First half of the unlock/call pair for the customer's own write; no DB effect."
+        },
+        {
+            "owner": "user",
+            "tool": "call_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "amend_inbound_shortage_claim_fdee09ae",
+                "arguments": {
+                    "case_id": "d7b71ac4-c118-4fc8-ba7b-1b32bbfec255",
+                    "reimbursement_type": "inbound_shortage",
+                    "adjustment_ref": "",
+                    "shipment_id": "NLIB-6402219",
+                    "order_id": "",
+                    "removal_order_id": "",
+                    "sku": "WOG-TREK-POLE-PAIR",
+                    "units_claimed": 26
+                }
+            },
+            "objective": "The seller corrects the units claimed on his open inbound-shortage case from 38 to 26.",
+            "necessity": "The shortage approval's rule fixes its result only once the units claimed equal the claimable shortage of the line; the case shows 38 at the opening and the shortage-claim policy gives the corrected figure; only the seller changes what he claims.",
+            "argument_uniqueness_tracing": {
+                "case_id": "'d7b71ac4-c118-4fc8-ba7b-1b32bbfec255'. Basis: the docstring requires each source reference to be 'copied from the case record; pass an empty string when the case names no' such reference, and initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255 shows the reference of the case, read from find_fbn_cases. Uniqueness: the case is singled out by its loss kind and its open status, so every correct agent copies the same value; for reimbursement_type the other loss kinds and not_applicable describe other cases.",
+                "reimbursement_type": "'inbound_shortage'. Basis: the docstring requires each source reference to be 'copied from the case record; pass an empty string when the case names no' such reference, and initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255 shows the loss kind recorded on the case. Uniqueness: the case is singled out by its loss kind and its open status, so every correct agent copies the same value; for reimbursement_type the other loss kinds and not_applicable describe other cases.",
+                "adjustment_ref": "''. Basis: the docstring requires each source reference to be 'copied from the case record; pass an empty string when the case names no' such reference, and initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255 shows the adjustment the case names (empty: it names none). Uniqueness: the case is singled out by its loss kind and its open status, so every correct agent copies the same value; for reimbursement_type the other loss kinds and not_applicable describe other cases.",
+                "shipment_id": "'NLIB-6402219'. Basis: the docstring requires each source reference to be 'copied from the case record; pass an empty string when the case names no' such reference, and initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255 shows the shipment the case names (empty when it names none). Uniqueness: the case is singled out by its loss kind and its open status, so every correct agent copies the same value; for reimbursement_type the other loss kinds and not_applicable describe other cases.",
+                "order_id": "''. Basis: the docstring requires each source reference to be 'copied from the case record; pass an empty string when the case names no' such reference, and initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255 shows the order the case names (it names none). Uniqueness: the case is singled out by its loss kind and its open status, so every correct agent copies the same value; for reimbursement_type the other loss kinds and not_applicable describe other cases.",
+                "removal_order_id": "''. Basis: the docstring requires each source reference to be 'copied from the case record; pass an empty string when the case names no' such reference, and initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255 shows the removal order the case names (it names none). Uniqueness: the case is singled out by its loss kind and its open status, so every correct agent copies the same value; for reimbursement_type the other loss kinds and not_applicable describe other cases.",
+                "sku": "'WOG-TREK-POLE-PAIR'. Basis: the docstring requires each source reference to be 'copied from the case record; pass an empty string when the case names no' such reference, and initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255 shows the SKU on the case record, which is also the SKU the seller states. Uniqueness: the case is singled out by its loss kind and its open status, so every correct agent copies the same value; for reimbursement_type the other loss kinds and not_applicable describe other cases.",
+                "units_claimed": "26. Claimable shortage of line NLIB-6402219 / WOG-TREK-POLE-PAIR (received 2026-08-28, 300 expected, 262 received): the shipment went under partial_split and carries two lines with declared unit cost 22.60 (WOG-TREK-POLE-PAIR and WOG-TREK-POLE-CARBON, 100 expected / 106 received), so the netted shortage is measured over those same-cost lines = (300 + 100) - (262 + 106) = 32; the lantern line (cost 14.90, 80 / 83) is not netted; carry span 6 months (FBN Core Program, active 52 months) -> the SKU's other line inside it, 2026-06-05 (200 / 203), carries forward 3 (the 2026-02-11 over-receipt of 5 is 7 whole months old); tolerance units waived (no other inbound-shortage case opened in the 6-month case-history span, enrollment active at least 24 months); tolerance share 0.01 for a line of at least 200 units expected -> floor(300 x 0.01) = 3; no inbound-shortage reimbursement on the line; result 32 - 3 - 3 - 0 = 26. Baseline readings: line-alone shortage 38 -> 32; no carry -> 29; standard tolerance units 1 -> 25; standard share 0.02 -> 23."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "approve_inbound_shortage_case_dfebd527"
+            },
+            "objective": "Unlock the desk's inbound-shortage approval action.",
+            "necessity": "First half of the unlock/call pair; no DB effect."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "approve_inbound_shortage_case_dfebd527",
+                "arguments": {
+                    "case_id": "d7b71ac4-c118-4fc8-ba7b-1b32bbfec255",
+                    "reimbursement_type": "inbound_shortage",
+                    "adjustment_ref": "",
+                    "shipment_id": "NLIB-6402219",
+                    "order_id": "",
+                    "removal_order_id": "",
+                    "sku": "WOG-TREK-POLE-PAIR",
+                    "units_approved": 23
+                }
+            },
+            "objective": "The desk approves the seller's inbound-shortage case for 23 units; the case shows approved.",
+            "necessity": "This is the decision the seller asked for; the inbound-shortage approval policy alone produces units_approved.",
+            "argument_uniqueness_tracing": {
+                "case_id": "'d7b71ac4-c118-4fc8-ba7b-1b32bbfec255'. Basis: the docstring requires each source reference to be 'copied from the case record; pass an empty string when the case names no' such reference, and initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255 shows the reference of the case, read from find_fbn_cases. Uniqueness: the case is singled out by its loss kind and its open status, so every correct agent copies the same value; for reimbursement_type the other loss kinds and not_applicable describe other cases.",
+                "reimbursement_type": "'inbound_shortage'. Basis: the docstring requires each source reference to be 'copied from the case record; pass an empty string when the case names no' such reference, and initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255 shows the loss kind recorded on the case. Uniqueness: the case is singled out by its loss kind and its open status, so every correct agent copies the same value; for reimbursement_type the other loss kinds and not_applicable describe other cases.",
+                "adjustment_ref": "''. Basis: the docstring requires each source reference to be 'copied from the case record; pass an empty string when the case names no' such reference, and initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255 shows the adjustment the case names (empty: it names none). Uniqueness: the case is singled out by its loss kind and its open status, so every correct agent copies the same value; for reimbursement_type the other loss kinds and not_applicable describe other cases.",
+                "shipment_id": "'NLIB-6402219'. Basis: the docstring requires each source reference to be 'copied from the case record; pass an empty string when the case names no' such reference, and initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255 shows the shipment the case names (empty when it names none). Uniqueness: the case is singled out by its loss kind and its open status, so every correct agent copies the same value; for reimbursement_type the other loss kinds and not_applicable describe other cases.",
+                "order_id": "''. Basis: the docstring requires each source reference to be 'copied from the case record; pass an empty string when the case names no' such reference, and initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255 shows the order the case names (it names none). Uniqueness: the case is singled out by its loss kind and its open status, so every correct agent copies the same value; for reimbursement_type the other loss kinds and not_applicable describe other cases.",
+                "removal_order_id": "''. Basis: the docstring requires each source reference to be 'copied from the case record; pass an empty string when the case names no' such reference, and initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255 shows the removal order the case names (it names none). Uniqueness: the case is singled out by its loss kind and its open status, so every correct agent copies the same value; for reimbursement_type the other loss kinds and not_applicable describe other cases.",
+                "sku": "'WOG-TREK-POLE-PAIR'. Basis: the docstring requires each source reference to be 'copied from the case record; pass an empty string when the case names no' such reference, and initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255 shows the SKU on the case record, which is also the SKU the seller states. Uniqueness: the case is singled out by its loss kind and its open status, so every correct agent copies the same value; for reimbursement_type the other loss kinds and not_applicable describe other cases.",
+                "units_approved": "23. Units approved on the open inbound-shortage case at its handling time (after the damage case was approved and the claim corrected to 26): inbound verification holdback waived because none of the reimbursement cases opened inside the 12-month case-history span was denied and 3 were approved (2025-11-20, 2026-01-14 and the damage case of 2026-09-03 now approved; the denial of 2025-09-30 is 12 whole months old); high inbound compliance holdback 3 (8 active violation points); after holdbacks 26 - 0 - 3 = 23; approval share 1.0 for Top Rated Level -> 23; line ceiling floor(300 x 0.10 for FBN Core Program) = 30; inbound limit 20 (Basic Store) + uplift 5 (opened 25 days before, at least 14 but fewer than 30) = 25; result min(30, 25, 23) = 23. Baseline readings: standard share 0.9 -> 20; standard verification holdback 1 -> 22; standard compliance 1 -> 25; standard ceiling share 0.05 -> 15; standard limit 10 -> 15; no uplift -> 20."
+            }
+        }
+    ],
+    "prerequisite_closure": {
+        "root_problem": "fulfill_ext_shortage_case_approval",
+        "edges": [
+            {
+                "from": "fulfill_ext_shortage_case_approval",
+                "to": "fulfill_ext_shortage_claim_units",
+                "kind": "value_input",
+                "gate": "inbound_claimed",
+                "form": "state",
+                "condition": "The open inbound-shortage case carries, as its units claimed, the claimable shortage that the shortage-claim rule computes for its shipment line at handling time.",
+                "policy_source": "The units approved on an inbound shortage case are not fixed until the units claimed on that case equal the claimable shortage of its shipment line.",
+                "resolved_by": "amend_inbound_shortage_claim_fdee09ae",
+                "unresolved_at_frozen_time": {
+                    "why_false": "The open inbound-shortage case claims 38 units while the claimable shortage of line NLIB-6402219 / WOG-TREK-POLE-PAIR is 26.",
+                    "evidence": [
+                        "initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255.units_claimed = 38",
+                        "initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255.case_status = submitted"
+                    ],
+                    "flips_to_true_by": "The seller's correction writes units_claimed = 26 on the shortage case, which stays submitted."
+                }
+            },
+            {
+                "from": "fulfill_ext_shortage_case_approval",
+                "to": "fulfill_ext_damaged_case_approval",
+                "kind": "value_input",
+                "gate": "inbound_approved",
+                "form": "state",
+                "condition": "No damaged-in-warehouse case of the shortage case's SKU that was opened before the shortage case has case_status submitted; every such case stands decided.",
+                "policy_source": "An inbound shortage case is decided only after no warehouse-damage case of the same SKU opened before it still stands submitted.",
+                "resolved_by": "approve_damaged_inventory_case_556f0f6d",
+                "unresolved_at_frozen_time": {
+                    "why_false": "The warehouse-damage case of WOG-TREK-POLE-PAIR opened 2026-09-03, before the shortage case of 2026-09-14, still stands submitted.",
+                    "evidence": [
+                        "initial_state.fulfill_cases.e2c9c605-4af2-40ef-a4c5-46c1d5aee796.case_status = submitted",
+                        "initial_state.fulfill_cases.e2c9c605-4af2-40ef-a4c5-46c1d5aee796.created_at = 2026-09-03 09:40:17 America/Los_Angeles",
+                        "initial_state.fulfill_cases.d7b71ac4-c118-4fc8-ba7b-1b32bbfec255.created_at = 2026-09-14 11:25:36 America/Los_Angeles"
+                    ],
+                    "flips_to_true_by": "The desk approves the damage case for 22 units (case_status approved), so no earlier damage case of the SKU is submitted and the approved reimbursement-case count inside 12 months rises from 2 to 3."
+                }
+            }
+        ],
+        "resolution_order": [
+            "fulfill_ext_damaged_case_approval",
+            "fulfill_ext_shortage_claim_units",
+            "fulfill_ext_shortage_case_approval"
+        ],
+        "order_uniqueness": "The two prerequisite writes touch different cases (the damage case and the shortage case) and neither policy reads the other's case: the damage approval reads only the damage case and the SKU's damage adjustments and receipts, the shortage correction reads only the shortage line and the inbound-shortage case count. Replaying with the correction before the damage approval gives the same root result (23) and the same terminal rows, so the two orders are equivalent; both must precede the root by the two prerequisite sentences.",
+        "edge_load_bearing": [
+            {
+                "edge": "fulfill_ext_shortage_case_approval -> fulfill_ext_shortage_claim_units",
+                "skipped_effect": "Without the correction inbound_claimed stays 38 and units_approved = MN(30, 25, 38 - 0 - 3) = 25 instead of 23."
+            },
+            {
+                "edge": "fulfill_ext_shortage_case_approval -> fulfill_ext_damaged_case_approval",
+                "skipped_effect": "Without the damage approval only 2 reimbursement cases are approved inside 12 months, the inbound verification holdback is the standard 1 unit and units_approved = 22 instead of 23; the damage case also stays submitted in the terminal state."
+            }
+        ],
+        "no_user_hint": "user_scenario asks only for the late-August trekking-pole shortage claim to be decided. It never mentions the damage claim, never says the unit count is wrong, and only reacts (lets the agent decide another claim, makes the change he is handed) after the agent raises it.",
+        "tools_do_not_block": "approve_inbound_shortage_case_dfebd527, approve_damaged_inventory_case_556f0f6d and amend_inbound_shortage_claim_fdee09ae each perform one ctx.update of the named case with the values passed; none reads another case or compares units, so the shortage approval would write even with the damage case still submitted or the claim uncorrected."
+    },
+    "charter_scope": {
+        "extended_policies": [
+            "fulfill_ext_damaged_case_approval",
+            "fulfill_ext_shortage_claim_units",
+            "fulfill_ext_shortage_case_approval"
+        ],
+        "task_tools": [
+            "approve_damaged_inventory_case_556f0f6d",
+            "amend_inbound_shortage_claim_fdee09ae",
+            "approve_inbound_shortage_case_dfebd527"
+        ]
+    },
+    "required_documents": [
+        "fulfill_ext_damaged_case_approval",
+        "fulfill_ext_shortage_claim_units",
+        "fulfill_ext_shortage_case_approval"
+    ],
+    "computations": [
+        {
+            "policy_id": "fulfill_ext_damaged_case_approval",
+            "target_holding_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+            "step": 8,
+            "arg": "units_approved",
+            "expected": 22,
+            "factor_trace": [
+                "damage_allowance_method (method): evidence FBN Core Program + standing Top Rated Level; per-incident method: 1 x 2 damaged-in-warehouse adjustments of WOG-TREK-POLE-PAIR inside 6 months (2026-08-14, 2026-09-01; the 2026-02-15 one is outside) = 2 (baseline: floor(465 received x 0.002) = 0). Baseline reading gives result 23.",
+                "damage_allowance_cap (parameter): evidence activation 2022-05-16, 52 whole months; tier '>= 24 months' -> cap 1, allowance applied 1 (baseline cap 4 leaves 2). Baseline reading gives result 21.",
+                "damage_compliance_holdback (parameter): evidence standing violation_points 8 (status at_risk for violation points); tier '>= 6 points' -> 3 units (baseline 1). Baseline reading gives result 23.",
+                "damage_approval_limit (parameter): evidence selling plan Basic Store -> 20 (baseline 8). Baseline reading gives result 11.",
+                "damage_limit_uplift (parameter): evidence damage case opened 2026-09-03, 36 days before 2026-10-09 -> 3 (baseline none). Baseline reading gives result 20.",
+                "damage_claimed = 26; timely_damage_units = 26 (adjustments inside the 2-month damage claim span); damage_start_units = MN(26, 26) = 26.",
+                "damage_net = 26 - 1 - 3 = 22; result = MN(20 + 3, MX(0, 22)) = 22."
+            ],
+            "baseline_result": 8,
+            "factor_sensitivity": [
+                {
+                    "factor": "damage_allowance_method",
+                    "tier_taken": "Core, Growth or Scale Program AND Above Standard Level or better: per-incident",
+                    "baseline_result": 23
+                },
+                {
+                    "factor": "damage_allowance_cap",
+                    "tier_taken": "active at least the long damage tenure",
+                    "baseline_result": 21
+                },
+                {
+                    "factor": "damage_compliance_holdback",
+                    "tier_taken": "at least the damage violation-point trigger",
+                    "baseline_result": 23
+                },
+                {
+                    "factor": "damage_approval_limit",
+                    "tier_taken": "Basic Store or Premium Store",
+                    "baseline_result": 11
+                },
+                {
+                    "factor": "damage_limit_uplift",
+                    "tier_taken": "opened at least the short damage wait but fewer than the long damage wait",
+                    "baseline_result": 20
+                }
+            ]
+        },
+        {
+            "policy_id": "fulfill_ext_shortage_claim_units",
+            "target_holding_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+            "step": 10,
+            "arg": "units_claimed",
+            "expected": 26,
+            "factor_trace": [
+                "netting_scope (method): evidence placement fee row of NLIB-6402219 = partial_split and 2 lines with declared cost 22.60; same-cost netting (400 expected - 368 received) = 32 (baseline: line alone 300 - 262 = 38). Baseline reading gives result 32.0.",
+                "carry_span (parameter): evidence FBN Core Program, active 52 months (both on the enrollment row) -> 6-month carry span; the 2026-06-05 line (200 / 203) carries 3 (baseline: zero span, no carry). Baseline reading gives result 29.0.",
+                "tolerance_units (parameter): evidence no other inbound-shortage case opened inside 6 months (the 2025-11-20 case is 10 months old) and 52 months active -> waived (baseline 1). Baseline reading gives result 25.0.",
+                "tolerance_share (parameter): evidence 300 units expected on the line (>= 200) -> 0.01, floor(3.0) = 3 (baseline 0.02 -> 6). Baseline reading gives result 23.0.",
+                "claim_shipment = NLIB-6402219, claim_sku = WOG-TREK-POLE-PAIR (open inbound-shortage case, opened 2026-09-14).",
+                "receiving_tolerance = 0 + 3 = 3; reimbursed_on_line = 0; result = MX(0, 32 - 3 - 3 - 0) = 26."
+            ],
+            "baseline_result": 31.0,
+            "factor_sensitivity": [
+                {
+                    "factor": "netting_scope",
+                    "tier_taken": "another placement option AND at least two same-cost lines: same-cost netting",
+                    "baseline_result": 32.0
+                },
+                {
+                    "factor": "carry_span",
+                    "tier_taken": "Core or Growth Program AND active at least the carry tenure",
+                    "baseline_result": 29.0
+                },
+                {
+                    "factor": "tolerance_units",
+                    "tier_taken": "no other inbound-shortage case in the span AND active at least the tolerance tenure",
+                    "baseline_result": 25.0
+                },
+                {
+                    "factor": "tolerance_share",
+                    "tier_taken": "at least the large-line threshold of units expected",
+                    "baseline_result": 23.0
+                }
+            ]
+        },
+        {
+            "policy_id": "fulfill_ext_shortage_case_approval",
+            "target_holding_id": "33b339b8-b2fb-40a5-a74b-1225f327fc1b",
+            "step": 12,
+            "arg": "units_approved",
+            "expected": 23,
+            "factor_trace": [
+                "approval_share (parameter): evidence standing Top Rated Level -> full share 1.0 (baseline 0.9). Baseline reading gives result 20.",
+                "inbound_verification_holdback (method): evidence reimbursement cases opened inside 12 months after the damage approval: 0 denied, 3 approved (2025-11-20, 2026-01-14, 2026-09-03); the 2025-09-30 denial is 12 whole months old -> waived (baseline 1; before the damage approval only 2 approved -> 1). Baseline reading gives result 22.",
+                "inbound_compliance_holdback (parameter): evidence 8 active violation points -> high 3 (baseline 1). Baseline reading gives result 25.",
+                "line_ceiling_share (parameter): evidence FBN Core Program -> 0.10 of 300 units expected = 30 (baseline 0.05 -> 15). Baseline reading gives result 15.",
+                "inbound_approval_limit (parameter): evidence Basic Store -> 20 (baseline 10). Baseline reading gives result 15.",
+                "inbound_limit_uplift (parameter): evidence shortage case opened 2026-09-14, 25 days before -> 5 (baseline none). Baseline reading gives result 20.",
+                "inbound_claimed = 26 after the correction (38 at the opening).",
+                "after_holdbacks = 26 - 0 - 3 = 23; shared_units = floor(23 x 1.0) = 23; result = MN(30, 25, 23) = 23."
+            ],
+            "baseline_result": 10,
+            "factor_sensitivity": [
+                {
+                    "factor": "approval_share",
+                    "tier_taken": "Top Rated Level or Preferred Partner Level",
+                    "baseline_result": 20
+                },
+                {
+                    "factor": "inbound_verification_holdback",
+                    "tier_taken": "no denied reimbursement case AND at least the approved-case trigger approved: waived",
+                    "baseline_result": 22
+                },
+                {
+                    "factor": "inbound_compliance_holdback",
+                    "tier_taken": "at least the inbound violation-point trigger",
+                    "baseline_result": 25
+                },
+                {
+                    "factor": "line_ceiling_share",
+                    "tier_taken": "FBN Core or Growth Program",
+                    "baseline_result": 15
+                },
+                {
+                    "factor": "inbound_approval_limit",
+                    "tier_taken": "Basic Store or Premium Store",
+                    "baseline_result": 15
+                },
+                {
+                    "factor": "inbound_limit_uplift",
+                    "tier_taken": "opened at least the short inbound wait but fewer than the long inbound wait",
+                    "baseline_result": 20
+                }
+            ]
+        }
+    ]
+}

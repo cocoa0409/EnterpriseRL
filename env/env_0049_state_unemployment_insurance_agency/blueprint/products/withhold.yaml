@@ -1,0 +1,818 @@
+# Policy charter: Benefit Withholding and Deduction Orders (claimant side).
+# One holding = one voluntary income tax election or one agency deduction order applied to a claimant's benefit payments.
+category: withhold
+display_name: Benefit Withholding and Deduction Orders
+
+binding:
+  holding_table: withholding_orders
+  event_tables: [withholding_ledger]
+  intake_tables: [withholding_requests]
+  status_field: status
+  variant_field: variant_name
+
+lifecycle:
+  states: [requested, active, suspended, revoked, terminated]
+  transitions:
+    - {from: requested, to: active, by: system, means: The election or order reaches its effective date and applies to payments issued from then on.}
+    - {from: active, to: suspended, by: agent, means: The issuing agency's notice suspends an order.}
+    - {from: suspended, to: active, by: agent, means: The issuing agency's notice resumes a suspended order.}
+    - {from: requested, to: revoked, by: user, means: The claimant confirms stopping a voluntary election before it took effect.}
+    - {from: active, to: revoked, by: user, means: The claimant confirms stopping a voluntary election.}
+    - {from: requested, to: terminated, by: agent, means: An order is withdrawn by the issuing agency before it took effect.}
+    - {from: active, to: terminated, by: agent, means: The order is satisfied, ended by the issuing agency, or ends with its claim.}
+    - {from: suspended, to: terminated, by: agent, means: A suspended order is ended by the issuing agency.}
+
+accounts:
+  - key: withheld_pending_remittance
+    unit: USD
+    meaning: Amounts deducted from benefit payments and held by the agency until remitted to the payee agency or refunded to the claimant.
+
+parameter_schema:
+  deduction_rate: "Share of the deduction basis withheld from each payment (decimal); 0 means the order states a fixed weekly amount"
+  deduction_minimum_per_payment: "Smallest deduction taken from a payment when the rate yields less (USD per payment); 0.00 means no minimum"
+  deduction_cap_pct_of_net: "Cap on all deductions of this kind combined, as a share of the net payable after overpayment offset (decimal)"
+  deduction_priority: "Order in which deductions are taken from one payment, 1 first (rank)"
+  deduction_basis: "Amount the rate is applied to (enum: gross_payable before overpayment offset, or net_after_offset)"
+  voluntary_election: "Whether the deduction exists only by the claimant's own election (boolean)"
+  initiated_by: "Party whose instruction creates the order (enum)"
+  payee_agency: "Agency to which amounts withheld are remitted (enum)"
+  remittance_schedule: "Schedule on which amounts withheld are remitted (enum)"
+  remittance_max_business_days: "Latest business day after the end of the remittance period by which the period's withholding is remitted (business days)"
+  remittance_report_form: "Report filed with the remittance (enum)"
+  effective_lead_business_days: "Business days after the election or order is recorded before it applies to payments issued (business days)"
+  amendment_lead_business_days: "Business days after an amended order or changed election is recorded before the new amount applies (business days)"
+  revocation_lead_business_days: "Business days after a revocation is confirmed before deductions stop (business days); 0 means not revocable"
+  max_election_changes_per_benefit_year: "Starts and stops of a voluntary election allowed per benefit year of the claim (count); 0 means not an election"
+  retroactive_withholding_allowed: "Whether a deduction may be taken for payments issued before the effective date (boolean)"
+  claimant_can_revoke: "Whether the claimant may stop the deduction (boolean)"
+  election_channel: "How the order or election is received (enum)"
+  order_reference_required: "Whether an IV-D case number or SNAP claim number must be on the order (boolean)"
+  certified_amount_required: "Whether the order must state a total amount to be recovered (boolean)"
+  order_limit_basis: "What ends deductions by amount (enum: none or certified_amount)"
+  max_orders_per_claimant: "Orders of this kind a claimant may have active or requested at once (count)"
+  multiple_order_allocation: "How the combined cap is shared among several orders of the same kind (enum)"
+  continues_across_claims: "Whether the order follows the claimant to payments on a later claim (boolean)"
+  ends_on_claim_closure: "Whether the order ends when the claim it was made on closes or is withdrawn (boolean)"
+  claimant_notice_days: "Calendar days before the first deduction that the claimant is mailed notice of an agency order (days); 0 means no notice period"
+  suspension_allowed: "Whether the order may be suspended on the issuing agency's notice (boolean)"
+  termination_lead_business_days: "Business days after the issuing agency's termination notice before deductions stop (business days); 0 means immediately on the next payment"
+  converts_to_arrears_only_on_current_end: "Whether ending the current support obligation leaves an arrears-only order to be received separately (boolean)"
+  deduction_rounding: "Rounding of each deduction (enum: nearest_cent)"
+  partial_deduction_when_insufficient: "Whether a deduction is taken in part when the remaining net is below the computed amount (boolean)"
+  minimum_net_for_deduction: "Smallest remaining net from which a deduction is taken at all (USD); 0.00 means any amount"
+  applies_to_federal_programs: "Whether payments under UCFE, UCX, EB, TRA and DUA are subject to the deduction (boolean)"
+  applies_to_supplemental_payments: "Whether supplemental and reissued payments are subject to the deduction (boolean)"
+  reissue_deduction_rule: "How a reissued payment is treated when its cancelled original had a deduction (enum: deduction_carried_not_retaken)"
+  refund_business_days: "Business days to refund a deduction taken in error before it was remitted (business days)"
+  refund_after_remittance_route: "Where a claimant recovers a deduction already remitted (enum)"
+  reported_on_1099g_box: "Form 1099-G box in which the year's deductions are reported (box number); 0 means not reported"
+  duplicate_election_allowed: "Whether a second election of the same kind may stand on the same claim (boolean)"
+  annual_renewal_required: "Whether the election or order must be renewed each benefit year (boolean)"
+  skip_reported_to_payee: "Whether a payment from which the deduction could not be taken is reported to the payee agency (boolean)"
+  deduction_on_waiting_week: "Whether anything is deducted for a waiting week (boolean)"
+  withholding_certificate: "Certificate the claimant completes for a voluntary election (enum)"
+  state_rate_change_effective: "When a change in the state withholding rate takes effect (enum)"
+  order_amount_basis: "How the order states its amount (enum)"
+  payee_balance_reporting: "How the payee agency reports the remaining balance of an amount-limited order (enum)"
+  deduction_stops_while_claim_on_hold: "Whether deductions pause while the claim is on hold because no payment is issued (boolean)"
+  remittance_includes_skipped_detail: "Whether the remittance report lists payments with skipped deductions (boolean)"
+
+variants:
+  - name: Voluntary Federal Income Tax Withholding
+    rank: 1
+    entry_gate: {requested_by: claimant, certificate: irs_form_w4v, claim_status: [filed, active, on_hold, inactive]}
+    parameters:
+      deduction_rate: 0.10
+      deduction_minimum_per_payment: 0.00
+      deduction_cap_pct_of_net: 1.00
+      deduction_priority: 3
+      deduction_basis: gross_payable
+      voluntary_election: true
+      initiated_by: claimant
+      payee_agency: irs
+      remittance_schedule: semiweekly_deposit
+      remittance_max_business_days: 3
+      remittance_report_form: form_945_via_eftps
+      effective_lead_business_days: 2
+      amendment_lead_business_days: 2
+      revocation_lead_business_days: 2
+      max_election_changes_per_benefit_year: 2
+      retroactive_withholding_allowed: false
+      claimant_can_revoke: true
+      election_channel: online_or_form_w4v
+      order_reference_required: false
+      certified_amount_required: false
+      order_limit_basis: none
+      max_orders_per_claimant: 1
+      multiple_order_allocation: not_applicable
+      continues_across_claims: false
+      ends_on_claim_closure: true
+      claimant_notice_days: 0
+      suspension_allowed: false
+      termination_lead_business_days: 0
+      converts_to_arrears_only_on_current_end: false
+      deduction_rounding: nearest_cent
+      partial_deduction_when_insufficient: true
+      minimum_net_for_deduction: 0.00
+      applies_to_federal_programs: true
+      applies_to_supplemental_payments: true
+      reissue_deduction_rule: deduction_carried_not_retaken
+      refund_business_days: 10
+      refund_after_remittance_route: claim_on_federal_return
+      reported_on_1099g_box: 4
+      duplicate_election_allowed: false
+      annual_renewal_required: false
+      skip_reported_to_payee: false
+      deduction_on_waiting_week: false
+      withholding_certificate: irs_form_w4v
+      state_rate_change_effective: not_applicable
+      order_amount_basis: rate
+      payee_balance_reporting: not_applicable
+      deduction_stops_while_claim_on_hold: true
+      remittance_includes_skipped_detail: false
+  - name: Voluntary State Income Tax Withholding
+    rank: 2
+    entry_gate: {requested_by: claimant, certificate: lakeland_form_ui_w4, claim_status: [filed, active, on_hold, inactive]}
+    parameters:
+      deduction_rate: 0.039
+      deduction_minimum_per_payment: 0.00
+      deduction_cap_pct_of_net: 1.00
+      deduction_priority: 4
+      deduction_basis: gross_payable
+      voluntary_election: true
+      initiated_by: claimant
+      payee_agency: lakeland_department_of_revenue
+      remittance_schedule: monthly
+      remittance_max_business_days: 15
+      remittance_report_form: state_withholding_return
+      effective_lead_business_days: 2
+      amendment_lead_business_days: 2
+      revocation_lead_business_days: 2
+      max_election_changes_per_benefit_year: 2
+      retroactive_withholding_allowed: false
+      claimant_can_revoke: true
+      election_channel: online_or_state_withholding_form
+      order_reference_required: false
+      certified_amount_required: false
+      order_limit_basis: none
+      max_orders_per_claimant: 1
+      multiple_order_allocation: not_applicable
+      continues_across_claims: false
+      ends_on_claim_closure: true
+      claimant_notice_days: 0
+      suspension_allowed: false
+      termination_lead_business_days: 0
+      converts_to_arrears_only_on_current_end: false
+      deduction_rounding: nearest_cent
+      partial_deduction_when_insufficient: true
+      minimum_net_for_deduction: 0.00
+      applies_to_federal_programs: true
+      applies_to_supplemental_payments: true
+      reissue_deduction_rule: deduction_carried_not_retaken
+      refund_business_days: 10
+      refund_after_remittance_route: claim_on_state_return
+      reported_on_1099g_box: 11
+      duplicate_election_allowed: false
+      annual_renewal_required: false
+      skip_reported_to_payee: false
+      deduction_on_waiting_week: false
+      withholding_certificate: lakeland_form_ui_w4
+      state_rate_change_effective: first_payment_of_calendar_year
+      order_amount_basis: rate
+      payee_balance_reporting: not_applicable
+      deduction_stops_while_claim_on_hold: true
+      remittance_includes_skipped_detail: false
+  - name: Child Support Withholding — Current Support Order
+    rank: 3
+    entry_gate: {requested_by: iv_d_agency, instrument: income_withholding_order, iv_d_case_number: required}
+    parameters:
+      deduction_rate: 0
+      deduction_minimum_per_payment: 0.00
+      deduction_cap_pct_of_net: 0.50
+      deduction_priority: 1
+      deduction_basis: net_after_offset
+      voluntary_election: false
+      initiated_by: iv_d_agency
+      payee_agency: state_disbursement_unit
+      remittance_schedule: per_payment_batch
+      remittance_max_business_days: 7
+      remittance_report_form: sdu_remittance_file
+      effective_lead_business_days: 5
+      amendment_lead_business_days: 5
+      revocation_lead_business_days: 0
+      max_election_changes_per_benefit_year: 0
+      retroactive_withholding_allowed: false
+      claimant_can_revoke: false
+      election_channel: iv_d_income_withholding_order
+      order_reference_required: true
+      certified_amount_required: false
+      order_limit_basis: none
+      max_orders_per_claimant: 3
+      multiple_order_allocation: prorate_by_weekly_amount
+      continues_across_claims: true
+      ends_on_claim_closure: false
+      claimant_notice_days: 10
+      suspension_allowed: true
+      termination_lead_business_days: 5
+      converts_to_arrears_only_on_current_end: true
+      deduction_rounding: nearest_cent
+      partial_deduction_when_insufficient: true
+      minimum_net_for_deduction: 0.00
+      applies_to_federal_programs: true
+      applies_to_supplemental_payments: true
+      reissue_deduction_rule: deduction_carried_not_retaken
+      refund_business_days: 10
+      refund_after_remittance_route: request_from_state_disbursement_unit
+      reported_on_1099g_box: 0
+      duplicate_election_allowed: false
+      annual_renewal_required: false
+      skip_reported_to_payee: true
+      deduction_on_waiting_week: false
+      withholding_certificate: not_applicable
+      state_rate_change_effective: not_applicable
+      order_amount_basis: weekly_amount
+      payee_balance_reporting: not_applicable
+      deduction_stops_while_claim_on_hold: true
+      remittance_includes_skipped_detail: true
+  - name: Child Support Withholding — Arrears-Only Order
+    rank: 4
+    entry_gate: {requested_by: iv_d_agency, instrument: income_withholding_order_arrears_only, certified_amount: required}
+    parameters:
+      deduction_rate: 0
+      deduction_minimum_per_payment: 0.00
+      deduction_cap_pct_of_net: 0.50
+      deduction_priority: 2
+      deduction_basis: net_after_offset
+      voluntary_election: false
+      initiated_by: iv_d_agency
+      payee_agency: state_disbursement_unit
+      remittance_schedule: per_payment_batch
+      remittance_max_business_days: 7
+      remittance_report_form: sdu_remittance_file
+      effective_lead_business_days: 5
+      amendment_lead_business_days: 5
+      revocation_lead_business_days: 0
+      max_election_changes_per_benefit_year: 0
+      retroactive_withholding_allowed: false
+      claimant_can_revoke: false
+      election_channel: iv_d_income_withholding_order
+      order_reference_required: true
+      certified_amount_required: true
+      order_limit_basis: certified_amount
+      max_orders_per_claimant: 3
+      multiple_order_allocation: prorate_by_weekly_amount
+      continues_across_claims: true
+      ends_on_claim_closure: false
+      claimant_notice_days: 10
+      suspension_allowed: true
+      termination_lead_business_days: 5
+      converts_to_arrears_only_on_current_end: false
+      deduction_rounding: nearest_cent
+      partial_deduction_when_insufficient: true
+      minimum_net_for_deduction: 0.00
+      applies_to_federal_programs: true
+      applies_to_supplemental_payments: true
+      reissue_deduction_rule: deduction_carried_not_retaken
+      refund_business_days: 10
+      refund_after_remittance_route: request_from_state_disbursement_unit
+      reported_on_1099g_box: 0
+      duplicate_election_allowed: false
+      annual_renewal_required: false
+      skip_reported_to_payee: true
+      deduction_on_waiting_week: false
+      withholding_certificate: not_applicable
+      state_rate_change_effective: not_applicable
+      order_amount_basis: weekly_amount
+      payee_balance_reporting: monthly_balance_file
+      deduction_stops_while_claim_on_hold: true
+      remittance_includes_skipped_detail: true
+  - name: SNAP Overissuance Recovery — Household or Agency Error
+    rank: 5
+    entry_gate: {requested_by: snap_agency, claim_type: inadvertent_household_or_agency_error, certified_amount: required}
+    parameters:
+      deduction_rate: 0.10
+      deduction_minimum_per_payment: 10.00
+      deduction_cap_pct_of_net: 0.25
+      deduction_priority: 6
+      deduction_basis: net_after_offset
+      voluntary_election: false
+      initiated_by: snap_agency
+      payee_agency: snap_agency
+      remittance_schedule: monthly
+      remittance_max_business_days: 10
+      remittance_report_form: snap_recovery_report
+      effective_lead_business_days: 10
+      amendment_lead_business_days: 10
+      revocation_lead_business_days: 0
+      max_election_changes_per_benefit_year: 0
+      retroactive_withholding_allowed: false
+      claimant_can_revoke: false
+      election_channel: snap_agency_certification
+      order_reference_required: true
+      certified_amount_required: true
+      order_limit_basis: certified_amount
+      max_orders_per_claimant: 1
+      multiple_order_allocation: not_applicable
+      continues_across_claims: true
+      ends_on_claim_closure: false
+      claimant_notice_days: 10
+      suspension_allowed: true
+      termination_lead_business_days: 5
+      converts_to_arrears_only_on_current_end: false
+      deduction_rounding: nearest_cent
+      partial_deduction_when_insufficient: false
+      minimum_net_for_deduction: 25.00
+      applies_to_federal_programs: true
+      applies_to_supplemental_payments: true
+      reissue_deduction_rule: deduction_carried_not_retaken
+      refund_business_days: 10
+      refund_after_remittance_route: request_from_snap_agency
+      reported_on_1099g_box: 0
+      duplicate_election_allowed: false
+      annual_renewal_required: false
+      skip_reported_to_payee: true
+      deduction_on_waiting_week: false
+      withholding_certificate: not_applicable
+      state_rate_change_effective: not_applicable
+      order_amount_basis: rate_with_minimum
+      payee_balance_reporting: monthly_balance_file
+      deduction_stops_while_claim_on_hold: true
+      remittance_includes_skipped_detail: true
+  - name: SNAP Overissuance Recovery — Intentional Program Violation
+    rank: 6
+    entry_gate: {requested_by: snap_agency, claim_type: intentional_program_violation, certified_amount: required}
+    parameters:
+      deduction_rate: 0.20
+      deduction_minimum_per_payment: 20.00
+      deduction_cap_pct_of_net: 0.50
+      deduction_priority: 5
+      deduction_basis: net_after_offset
+      voluntary_election: false
+      initiated_by: snap_agency
+      payee_agency: snap_agency
+      remittance_schedule: monthly
+      remittance_max_business_days: 10
+      remittance_report_form: snap_recovery_report
+      effective_lead_business_days: 10
+      amendment_lead_business_days: 10
+      revocation_lead_business_days: 0
+      max_election_changes_per_benefit_year: 0
+      retroactive_withholding_allowed: false
+      claimant_can_revoke: false
+      election_channel: snap_agency_certification
+      order_reference_required: true
+      certified_amount_required: true
+      order_limit_basis: certified_amount
+      max_orders_per_claimant: 1
+      multiple_order_allocation: not_applicable
+      continues_across_claims: true
+      ends_on_claim_closure: false
+      claimant_notice_days: 10
+      suspension_allowed: true
+      termination_lead_business_days: 5
+      converts_to_arrears_only_on_current_end: false
+      deduction_rounding: nearest_cent
+      partial_deduction_when_insufficient: false
+      minimum_net_for_deduction: 25.00
+      applies_to_federal_programs: true
+      applies_to_supplemental_payments: true
+      reissue_deduction_rule: deduction_carried_not_retaken
+      refund_business_days: 10
+      refund_after_remittance_route: request_from_snap_agency
+      reported_on_1099g_box: 0
+      duplicate_election_allowed: false
+      annual_renewal_required: false
+      skip_reported_to_payee: true
+      deduction_on_waiting_week: false
+      withholding_certificate: not_applicable
+      state_rate_change_effective: not_applicable
+      order_amount_basis: rate_with_minimum
+      payee_balance_reporting: monthly_balance_file
+      deduction_stops_while_claim_on_hold: true
+      remittance_includes_skipped_detail: true
+
+events:
+  - type: withhold_order_started
+    target: withholding_orders
+    mutation: create
+    meaning: A voluntary election is lodged by the claimant, or an agency deduction order is received, and recorded as requested.
+    grain: One row per election or order received.
+    fields:
+      customer_id: Claimant whose payments are subject.
+      claim_id: Claim on which the election was made, or the claim open when the order arrived.
+      variant_name: Kind of election or order.
+      requested_date: Date the election or order was received.
+      effective_date: First payment date to which it applies.
+      order_reference: IV-D case number or SNAP claim number, empty for voluntary elections.
+      weekly_amount: Weekly amount stated on a child support order, 0.00 otherwise.
+      certified_amount: Total to be recovered for an amount-limited order, 0.00 otherwise.
+    triggers: []
+  - type: withhold_order_activated
+    target: withholding_orders
+    mutation: {transition: {from: requested, to: active}}
+    meaning: The election or order takes effect.
+    grain: One transition per order.
+    fields:
+      status: Set to active.
+    triggers: []
+  - type: withhold_deduction_taken
+    target: withholding_ledger
+    meaning: An amount is deducted from one benefit payment under the order and held for remittance.
+    grain: One row per order per benefit payment.
+    distinguish_by: [source_payment_id]
+    fields:
+      source_payment_id: Benefit payment the deduction was taken from.
+      week_ending_date: Week of that payment.
+      deduction_basis_amount: Amount the rate was applied to (gross payable or net after offset).
+      amount: Amount deducted, positive.
+      entry_date: Date of the payment.
+    account: withheld_pending_remittance
+    direction: in
+    triggers: []
+  - type: withhold_deduction_skipped
+    target: withholding_ledger
+    meaning: A deduction due under the order could not be taken from a payment.
+    grain: One row per order per benefit payment skipped.
+    distinguish_by: [source_payment_id]
+    fields:
+      source_payment_id: Benefit payment on which the deduction was skipped.
+      week_ending_date: Week of that payment.
+      skip_reason: Why the deduction was not taken.
+      entry_date: Date of the payment.
+    triggers: []
+  - type: withhold_remitted
+    target: withholding_ledger
+    meaning: Amounts withheld under the order in a remittance period are remitted to the payee agency.
+    grain: One row per order per remittance period.
+    distinguish_by: [remittance_period]
+    fields:
+      remittance_period: Period whose deductions are remitted.
+      amount: Amount remitted, positive.
+      entry_date: Date remitted.
+    account: withheld_pending_remittance
+    direction: out
+    triggers: []
+  - type: withhold_deduction_refunded
+    target: withholding_ledger
+    meaning: A deduction taken in error and not yet remitted is refunded to the claimant.
+    grain: One row per deduction refunded.
+    distinguish_by: [original_deduction_id]
+    fields:
+      original_deduction_id: The single deduction being refunded.
+      refund_reason: Why the deduction was refunded.
+      amount: Amount refunded, positive.
+      entry_date: Date refunded.
+    account: withheld_pending_remittance
+    direction: out
+    triggers: []
+  - type: withhold_order_modified
+    target: withholding_orders
+    mutation: update
+    meaning: An amended order changes the weekly amount or the certified amount.
+    grain: One holding update per amendment.
+    fields:
+      weekly_amount: Amended weekly amount.
+      certified_amount: Amended total to be recovered.
+      effective_date: First payment date to which the amendment applies.
+    triggers: []
+  - type: withhold_order_suspended
+    target: withholding_orders
+    mutation: {transition: {from: active, to: suspended}}
+    meaning: The issuing agency suspends the order.
+    grain: One transition per suspension.
+    fields:
+      status: Set to suspended.
+    triggers: []
+  - type: withhold_order_resumed
+    target: withholding_orders
+    mutation: {transition: {from: suspended, to: active}}
+    meaning: The issuing agency resumes the order.
+    grain: One transition per resumption.
+    fields:
+      status: Set to active.
+    triggers: []
+  - type: withhold_election_revoked
+    target: withholding_orders
+    mutation:
+      transition:
+        - {from: requested, to: revoked}
+        - {from: active, to: revoked}
+    meaning: The claimant confirms stopping a voluntary election.
+    grain: One transition per election.
+    fields:
+      status: Set to revoked.
+      end_date: Last payment date to which the election applied.
+    triggers: []
+  - type: withhold_order_terminated
+    target: withholding_orders
+    mutation:
+      transition:
+        - {from: requested, to: terminated}
+        - {from: active, to: terminated}
+        - {from: suspended, to: terminated}
+    meaning: The order ends because it is satisfied, ended by the issuing agency or its claim closed.
+    grain: One transition per order.
+    fields:
+      status: Set to terminated.
+      end_date: Last payment date to which the order applied.
+    triggers: []
+
+measures:
+  - id: withhold_msr_available_net
+    window: One benefit payment.
+    measure: Gross payable amount of the payment minus its overpayment offset, minus the deductions already taken from it by orders of higher priority.
+  - id: withhold_msr_cumulative_deducted
+    window: The life of the order to frozen time.
+    measure: Sum of withhold_deduction_taken amount on the order minus withhold_deduction_refunded amount on the order.
+  - id: withhold_msr_unremitted_deductions
+    window: The order to frozen time.
+    measure: withhold_deduction_taken rows on the order whose entry_date falls in a remittance period with no withhold_remitted row yet, net of refunds.
+  - id: withhold_msr_election_changes
+    window: The benefit year of the claim the election was made on.
+    measure: Count of withhold_order_started rows and withhold_election_revoked transitions for voluntary elections of the same kind on that claim.
+
+policies:
+  - id: withhold_agg_multi_holding
+    subject: [withhold_order_started]
+    rule: >-
+      A claimant may be subject to several elections and orders at once, so the number of holdings per claimant is not capped overall.
+      A new election or order is recorded only when the claimant does not already have the kind's maximum number of orders of the same kind with status requested, active or suspended; for voluntary elections the count is per claim.
+      A second election of the same kind on the same claim is never recorded; a change of mind is a revocation followed, where the change limit allows, by a new election.
+      How several orders share one payment is decided by withhold_agg_deduction_priority.
+    eligibility:
+      - id: order_count_per_kind
+        applies_to: [withhold_order_started]
+        kind: dedup
+        condition: "A new election or order is recorded only when the claimant does not already have the kind's maximum number of orders of the same kind with status requested, active or suspended; for voluntary elections the count is per claim."
+        evidence_fields: [withholding_orders.customer_id, withholding_orders.claim_id, withholding_orders.variant_name, withholding_orders.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [withholding_orders.customer_id, withholding_orders.variant_name]
+          action_bindings: {withholding_orders.customer_id: customer_id, withholding_orders.variant_name: variant_name}
+        dedup_contract:
+          table: withholding_orders
+          mode: separate_record
+          object_bindings: {customer_id: customer_id, variant_name: variant_name}
+          duplicate_filters: {status: [requested, active, suspended]}
+          distinct_fields: [claim_id, order_reference]
+    params:
+      max_per_customer: null
+      per_tier:
+        Voluntary Federal Income Tax Withholding: {max_orders_per_claimant: "=max_orders_per_claimant"}
+        Voluntary State Income Tax Withholding: {max_orders_per_claimant: "=max_orders_per_claimant"}
+        Child Support Withholding — Current Support Order: {max_orders_per_claimant: "=max_orders_per_claimant"}
+        Child Support Withholding — Arrears-Only Order: {max_orders_per_claimant: "=max_orders_per_claimant"}
+        SNAP Overissuance Recovery — Household or Agency Error: {max_orders_per_claimant: "=max_orders_per_claimant"}
+        SNAP Overissuance Recovery — Intentional Program Violation: {max_orders_per_claimant: "=max_orders_per_claimant"}
+      duplicate_election_allowed: "=duplicate_election_allowed"
+
+  - id: withhold_agg_deduction_priority
+    subject: [withhold_deduction_taken, withhold_deduction_skipped]
+    rule: >-
+      Deductions are taken from each benefit payment after any overpayment offset, one order at a time in the order of the kinds' deduction priority, each from withhold_msr_available_net.
+      Every kind's combined cap applies to all of the claimant's orders of that kind together; several child support orders share their combined cap in proportion to their weekly amounts, rounded to the cent, with any rounding remainder going to the order received first.
+      A deduction that cannot be taken in full is taken in part where the kind allows partial deductions; otherwise, or when the remaining net is below the kind's minimum net, it is skipped and recorded as skipped with skip_reason insufficient_net.
+      A skipped or partial deduction is never made up from a later payment.
+      Income tax deductions are computed on the gross payable amount, so their amount does not change with the offset, but they are still taken only from what remains after higher-priority deductions.
+    eligibility: []
+    params:
+      per_tier:
+        Voluntary Federal Income Tax Withholding: {deduction_priority: "=deduction_priority", deduction_cap_pct_of_net: "=deduction_cap_pct_of_net", partial_deduction_when_insufficient: "=partial_deduction_when_insufficient", multiple_order_allocation: "=multiple_order_allocation"}
+        Voluntary State Income Tax Withholding: {deduction_priority: "=deduction_priority", deduction_cap_pct_of_net: "=deduction_cap_pct_of_net", partial_deduction_when_insufficient: "=partial_deduction_when_insufficient", multiple_order_allocation: "=multiple_order_allocation"}
+        Child Support Withholding — Current Support Order: {deduction_priority: "=deduction_priority", deduction_cap_pct_of_net: "=deduction_cap_pct_of_net", partial_deduction_when_insufficient: "=partial_deduction_when_insufficient", multiple_order_allocation: "=multiple_order_allocation"}
+        Child Support Withholding — Arrears-Only Order: {deduction_priority: "=deduction_priority", deduction_cap_pct_of_net: "=deduction_cap_pct_of_net", partial_deduction_when_insufficient: "=partial_deduction_when_insufficient", multiple_order_allocation: "=multiple_order_allocation"}
+        SNAP Overissuance Recovery — Household or Agency Error: {deduction_priority: "=deduction_priority", deduction_cap_pct_of_net: "=deduction_cap_pct_of_net", partial_deduction_when_insufficient: "=partial_deduction_when_insufficient", multiple_order_allocation: "=multiple_order_allocation"}
+        SNAP Overissuance Recovery — Intentional Program Violation: {deduction_priority: "=deduction_priority", deduction_cap_pct_of_net: "=deduction_cap_pct_of_net", partial_deduction_when_insufficient: "=partial_deduction_when_insufficient", multiple_order_allocation: "=multiple_order_allocation"}
+      minimum_net_for_deduction: "=minimum_net_for_deduction"
+    measures: [withhold_msr_available_net]
+
+  - id: withhold_evt_voluntary_elections
+    subject: [withhold_order_started, withhold_order_activated, withhold_election_revoked]
+    rule: >-
+      Federal and state income tax withholding are voluntary: only the claimant may start or stop them, by the kind's withholding certificate online or on paper, and an agent records the claimant's request rather than deciding it.
+      A voluntary election may be started only while the claim it is made on has status filed, active, on_hold or inactive.
+      The election applies to payments issued on or after its effective date, which is the effective lead business days after it is recorded, counted in business days (Monday through Friday excluding state holidays); nothing is withheld from payments issued earlier, and no catch-up deduction is taken.
+      The claimant may start or stop an election no more than the change limit per benefit year of the claim (withhold_msr_election_changes); a revocation stops deductions from payments issued after the revocation lead business days.
+      A voluntary election ends when its claim closes or is withdrawn and does not carry to a later claim; the state rate in force applies from the first payment of each calendar year.
+      The year's federal and state withholding is reported on the claim's Form 1099-G in the kind's box.
+    eligibility:
+      - id: election_on_open_claim
+        applies_to: [withhold_order_started]
+        kind: state
+        condition: "A voluntary election may be started only while the claim it is made on has status filed, active, on_hold or inactive."
+        evidence_fields: [claims.claim_id, claims.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [claims.claim_id]
+          action_bindings: {claims.claim_id: claim_id}
+        state_contract:
+          field: claims.status
+          allowed: [filed, active, on_hold, inactive]
+    params:
+      per_tier:
+        Voluntary Federal Income Tax Withholding: {voluntary_election: "=voluntary_election", claimant_can_revoke: "=claimant_can_revoke", max_election_changes_per_benefit_year: "=max_election_changes_per_benefit_year", revocation_lead_business_days: "=revocation_lead_business_days"}
+        Voluntary State Income Tax Withholding: {voluntary_election: "=voluntary_election", claimant_can_revoke: "=claimant_can_revoke", max_election_changes_per_benefit_year: "=max_election_changes_per_benefit_year", revocation_lead_business_days: "=revocation_lead_business_days"}
+        Child Support Withholding — Current Support Order: {voluntary_election: "=voluntary_election", claimant_can_revoke: "=claimant_can_revoke", max_election_changes_per_benefit_year: "=max_election_changes_per_benefit_year", revocation_lead_business_days: "=revocation_lead_business_days"}
+        Child Support Withholding — Arrears-Only Order: {voluntary_election: "=voluntary_election", claimant_can_revoke: "=claimant_can_revoke", max_election_changes_per_benefit_year: "=max_election_changes_per_benefit_year", revocation_lead_business_days: "=revocation_lead_business_days"}
+        SNAP Overissuance Recovery — Household or Agency Error: {voluntary_election: "=voluntary_election", claimant_can_revoke: "=claimant_can_revoke", max_election_changes_per_benefit_year: "=max_election_changes_per_benefit_year", revocation_lead_business_days: "=revocation_lead_business_days"}
+        SNAP Overissuance Recovery — Intentional Program Violation: {voluntary_election: "=voluntary_election", claimant_can_revoke: "=claimant_can_revoke", max_election_changes_per_benefit_year: "=max_election_changes_per_benefit_year", revocation_lead_business_days: "=revocation_lead_business_days"}
+      effective_lead_business_days: "=effective_lead_business_days"
+      retroactive_withholding_allowed: "=retroactive_withholding_allowed"
+      withholding_certificate: "=withholding_certificate"
+      election_channel: "=election_channel"
+      ends_on_claim_closure: "=ends_on_claim_closure"
+      state_rate_change_effective: "=state_rate_change_effective"
+      reported_on_1099g_box: "=reported_on_1099g_box"
+      annual_renewal_required: "=annual_renewal_required"
+    measures: [withhold_msr_election_changes]
+
+  - id: withhold_evt_agency_orders
+    subject: [withhold_order_started, withhold_order_activated, withhold_order_modified, withhold_order_suspended, withhold_order_resumed, withhold_order_terminated]
+    rule: >-
+      Child support and SNAP deductions are mandatory once the IV-D agency or the SNAP agency sends an order; the claimant cannot stop, suspend or change them, and disputes about the underlying debt are referred to the issuing agency.
+      An agency order is recorded only when it carries an IV-D case number or SNAP claim number and, for arrears-only and SNAP orders, a certified total amount.
+      The claimant is mailed notice at least the notice days before the first deduction, and the order applies to payments issued on or after the effective lead business days after it is recorded; an amended order applies after the amendment lead business days.
+      An order is suspended or resumed only on the issuing agency's notice, and terminated on the agency's notice after the termination lead business days or when its certified amount has been deducted in full.
+      Agency orders follow the claimant to payments on later claims and do not end when a claim closes; when a current support obligation ends, any remaining arrears are collected only under a separate arrears-only order.
+      Agency orders apply to payments under every program, including supplemental and reissued payments, but nothing is deducted for a waiting week or while no payment is issued.
+    eligibility:
+      - id: agency_order_reference
+        applies_to: [withhold_order_started]
+        kind: authorization
+        condition: "An agency order is recorded only when it carries an IV-D case number or SNAP claim number and, for arrears-only and SNAP orders, a certified total amount."
+        evidence_fields: [withholding_orders.order_reference, withholding_orders.certified_amount, withholding_orders.variant_name]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [withholding_orders.order_reference]
+          action_bindings: {withholding_orders.order_reference: order_reference}
+    params:
+      per_tier:
+        Voluntary Federal Income Tax Withholding: {initiated_by: "=initiated_by", order_reference_required: "=order_reference_required", certified_amount_required: "=certified_amount_required", claimant_notice_days: "=claimant_notice_days", suspension_allowed: "=suspension_allowed", termination_lead_business_days: "=termination_lead_business_days"}
+        Voluntary State Income Tax Withholding: {initiated_by: "=initiated_by", order_reference_required: "=order_reference_required", certified_amount_required: "=certified_amount_required", claimant_notice_days: "=claimant_notice_days", suspension_allowed: "=suspension_allowed", termination_lead_business_days: "=termination_lead_business_days"}
+        Child Support Withholding — Current Support Order: {initiated_by: "=initiated_by", order_reference_required: "=order_reference_required", certified_amount_required: "=certified_amount_required", claimant_notice_days: "=claimant_notice_days", suspension_allowed: "=suspension_allowed", termination_lead_business_days: "=termination_lead_business_days"}
+        Child Support Withholding — Arrears-Only Order: {initiated_by: "=initiated_by", order_reference_required: "=order_reference_required", certified_amount_required: "=certified_amount_required", claimant_notice_days: "=claimant_notice_days", suspension_allowed: "=suspension_allowed", termination_lead_business_days: "=termination_lead_business_days"}
+        SNAP Overissuance Recovery — Household or Agency Error: {initiated_by: "=initiated_by", order_reference_required: "=order_reference_required", certified_amount_required: "=certified_amount_required", claimant_notice_days: "=claimant_notice_days", suspension_allowed: "=suspension_allowed", termination_lead_business_days: "=termination_lead_business_days"}
+        SNAP Overissuance Recovery — Intentional Program Violation: {initiated_by: "=initiated_by", order_reference_required: "=order_reference_required", certified_amount_required: "=certified_amount_required", claimant_notice_days: "=claimant_notice_days", suspension_allowed: "=suspension_allowed", termination_lead_business_days: "=termination_lead_business_days"}
+      amendment_lead_business_days: "=amendment_lead_business_days"
+      continues_across_claims: "=continues_across_claims"
+      converts_to_arrears_only_on_current_end: "=converts_to_arrears_only_on_current_end"
+      applies_to_federal_programs: "=applies_to_federal_programs"
+      applies_to_supplemental_payments: "=applies_to_supplemental_payments"
+      deduction_on_waiting_week: "=deduction_on_waiting_week"
+      deduction_stops_while_claim_on_hold: "=deduction_stops_while_claim_on_hold"
+      order_amount_basis: "=order_amount_basis"
+
+  - id: withhold_evt_deduction_amount
+    subject: [withhold_deduction_taken, withhold_deduction_skipped]
+    rule: >-
+      A deduction is taken only while the order status is active, and only from payments issued on or after its effective date.
+      A deduction is taken once per order per benefit payment.
+      A rate-based deduction is the kind's rate times its deduction basis, raised to the kind's minimum per payment where one applies, rounded to the nearest cent; a child support deduction is the order's weekly amount; either is then limited by withhold_agg_deduction_priority.
+      A reissued payment carries the deduction taken from the cancelled original and no second deduction is taken.
+      For an amount-limited order the deduction is never more than the certified amount minus withhold_msr_cumulative_deducted, and when the certified amount is reached the order is terminated and any further due deduction is skipped with skip_reason order_limit_reached.
+      A payment from which the deduction was skipped is listed for the payee agency where the kind requires it.
+    eligibility:
+      - id: deduct_on_active_order
+        applies_to: [withhold_deduction_taken]
+        kind: state
+        condition: "A deduction is taken only while the order status is active, and only from payments issued on or after its effective date."
+        evidence_fields: [withholding_orders.withholding_order_id, withholding_orders.status, withholding_orders.effective_date]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [withholding_orders.withholding_order_id]
+          action_bindings: {withholding_orders.withholding_order_id: withholding_order_id}
+        state_contract:
+          field: withholding_orders.status
+          allowed: [active]
+      - id: once_per_payment
+        applies_to: [withhold_deduction_taken, withhold_deduction_skipped]
+        kind: dedup
+        condition: "A deduction is taken once per order per benefit payment."
+        evidence_fields: [withholding_ledger.withholding_order_id, withholding_ledger.source_payment_id, withholding_ledger.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [withholding_ledger.withholding_order_id, withholding_ledger.source_payment_id]
+          action_bindings: {withholding_ledger.withholding_order_id: withholding_order_id, withholding_ledger.source_payment_id: source_payment_id}
+        dedup_contract:
+          table: withholding_ledger
+          mode: separate_record
+          object_bindings: {withholding_order_id: withholding_order_id, source_payment_id: source_payment_id}
+          duplicate_filters: {event_type: [withhold_deduction_taken, withhold_deduction_skipped]}
+          distinct_fields: []
+    params:
+      per_tier:
+        Voluntary Federal Income Tax Withholding: {deduction_rate: "=deduction_rate", deduction_minimum_per_payment: "=deduction_minimum_per_payment", deduction_basis: "=deduction_basis", order_limit_basis: "=order_limit_basis", skip_reported_to_payee: "=skip_reported_to_payee"}
+        Voluntary State Income Tax Withholding: {deduction_rate: "=deduction_rate", deduction_minimum_per_payment: "=deduction_minimum_per_payment", deduction_basis: "=deduction_basis", order_limit_basis: "=order_limit_basis", skip_reported_to_payee: "=skip_reported_to_payee"}
+        Child Support Withholding — Current Support Order: {deduction_rate: "=deduction_rate", deduction_minimum_per_payment: "=deduction_minimum_per_payment", deduction_basis: "=deduction_basis", order_limit_basis: "=order_limit_basis", skip_reported_to_payee: "=skip_reported_to_payee"}
+        Child Support Withholding — Arrears-Only Order: {deduction_rate: "=deduction_rate", deduction_minimum_per_payment: "=deduction_minimum_per_payment", deduction_basis: "=deduction_basis", order_limit_basis: "=order_limit_basis", skip_reported_to_payee: "=skip_reported_to_payee"}
+        SNAP Overissuance Recovery — Household or Agency Error: {deduction_rate: "=deduction_rate", deduction_minimum_per_payment: "=deduction_minimum_per_payment", deduction_basis: "=deduction_basis", order_limit_basis: "=order_limit_basis", skip_reported_to_payee: "=skip_reported_to_payee"}
+        SNAP Overissuance Recovery — Intentional Program Violation: {deduction_rate: "=deduction_rate", deduction_minimum_per_payment: "=deduction_minimum_per_payment", deduction_basis: "=deduction_basis", order_limit_basis: "=order_limit_basis", skip_reported_to_payee: "=skip_reported_to_payee"}
+      deduction_rounding: "=deduction_rounding"
+      reissue_deduction_rule: "=reissue_deduction_rule"
+    formula:
+      rate_deduction: "round(max(deduction_rate * deduction_basis_amount, deduction_minimum_per_payment), 2)"
+      limited_deduction: "min(rate_deduction, certified_amount - withhold_msr_cumulative_deducted)"
+    measures: [withhold_msr_cumulative_deducted]
+
+  - id: withhold_evt_remittance
+    subject: [withhold_remitted]
+    rule: >-
+      Amounts withheld are remitted to the kind's payee agency on the kind's remittance schedule, no later than the remittance business days after the end of each remittance period, with the kind's remittance report.
+      A remittance period is remitted once per order.
+      The remitted amount is the deductions taken in the period less any refunded before remittance, so that withheld_pending_remittance for the period returns to zero; a payment listed with a skipped deduction is reported where the kind requires it.
+      Federal withholding is deposited through EFTPS and reported on Form 945, so a claimant asking about a federal deposit is told it is reported on Form 1099-G rather than on a W-2.
+    eligibility:
+      - id: remit_once_per_period
+        applies_to: [withhold_remitted]
+        kind: dedup
+        condition: "A remittance period is remitted once per order."
+        evidence_fields: [withholding_ledger.withholding_order_id, withholding_ledger.remittance_period, withholding_ledger.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [withholding_ledger.withholding_order_id, withholding_ledger.remittance_period]
+          action_bindings: {withholding_ledger.withholding_order_id: withholding_order_id, withholding_ledger.remittance_period: remittance_period}
+        dedup_contract:
+          table: withholding_ledger
+          mode: separate_record
+          object_bindings: {withholding_order_id: withholding_order_id, remittance_period: remittance_period}
+          duplicate_filters: {event_type: [withhold_remitted]}
+          distinct_fields: []
+    params:
+      per_tier:
+        Voluntary Federal Income Tax Withholding: {payee_agency: "=payee_agency", remittance_schedule: "=remittance_schedule", remittance_max_business_days: "=remittance_max_business_days", remittance_report_form: "=remittance_report_form"}
+        Voluntary State Income Tax Withholding: {payee_agency: "=payee_agency", remittance_schedule: "=remittance_schedule", remittance_max_business_days: "=remittance_max_business_days", remittance_report_form: "=remittance_report_form"}
+        Child Support Withholding — Current Support Order: {payee_agency: "=payee_agency", remittance_schedule: "=remittance_schedule", remittance_max_business_days: "=remittance_max_business_days", remittance_report_form: "=remittance_report_form"}
+        Child Support Withholding — Arrears-Only Order: {payee_agency: "=payee_agency", remittance_schedule: "=remittance_schedule", remittance_max_business_days: "=remittance_max_business_days", remittance_report_form: "=remittance_report_form"}
+        SNAP Overissuance Recovery — Household or Agency Error: {payee_agency: "=payee_agency", remittance_schedule: "=remittance_schedule", remittance_max_business_days: "=remittance_max_business_days", remittance_report_form: "=remittance_report_form"}
+        SNAP Overissuance Recovery — Intentional Program Violation: {payee_agency: "=payee_agency", remittance_schedule: "=remittance_schedule", remittance_max_business_days: "=remittance_max_business_days", remittance_report_form: "=remittance_report_form"}
+      remittance_includes_skipped_detail: "=remittance_includes_skipped_detail"
+      payee_balance_reporting: "=payee_balance_reporting"
+
+  - id: withhold_evt_refund
+    subject: [withhold_deduction_refunded]
+    rule: >-
+      A deduction taken in error - from a payment issued before the election or order took effect, after it was revoked or terminated, beyond a certified amount, or above the kind's cap - is refunded to the claimant by the agency within the refund business days.
+      A deduction is refunded by the agency only while it is listed in withhold_msr_unremitted_deductions.
+      Once remitted, the agency does not refund it: the claimant recovers it through the kind's after-remittance route (for income tax, as a credit on the tax return using the Form 1099-G amount).
+      A deduction is refunded only once, for its full amount.
+    eligibility:
+      - id: refund_before_remittance
+        applies_to: [withhold_deduction_refunded]
+        kind: authorization
+        condition: "A deduction is refunded by the agency only while it is listed in withhold_msr_unremitted_deductions."
+        evidence_fields: [withholding_ledger.withholding_entry_id, withholding_ledger.entry_date, withholding_ledger.remittance_period]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [withholding_ledger.withholding_entry_id]
+          action_bindings: {withholding_ledger.withholding_entry_id: original_deduction_id}
+      - id: refund_once
+        applies_to: [withhold_deduction_refunded]
+        kind: dedup
+        condition: "A deduction is refunded only once, for its full amount."
+        evidence_fields: [withholding_ledger.original_deduction_id, withholding_ledger.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [withholding_ledger.original_deduction_id]
+          action_bindings: {withholding_ledger.original_deduction_id: original_deduction_id}
+        dedup_contract:
+          table: withholding_ledger
+          mode: separate_record
+          object_bindings: {original_deduction_id: original_deduction_id}
+          duplicate_filters: {event_type: [withhold_deduction_refunded]}
+          distinct_fields: []
+    params:
+      refund_business_days: "=refund_business_days"
+      refund_after_remittance_route: "=refund_after_remittance_route"
+    measures: [withhold_msr_unremitted_deductions]
+
+  - id: withhold_order_closure
+    subject: [withhold_order_terminated, withhold_election_revoked]
+    rule: >-
+      An election or order ends in one of four ways, each recording the last payment date it applied to in end_date.
+      A voluntary election whose claim closes or is withdrawn is terminated with end_date the last payment issued on that claim.
+      An amount-limited order is terminated when withhold_msr_cumulative_deducted reaches its certified amount, with end_date the payment date of the deduction that completed it.
+      An order ended by the issuing agency is terminated with end_date the last payment issued before the termination lead business days ran out.
+      A voluntary election stopped by the claimant is revoked with end_date the last payment issued before the revocation lead business days ran out; a revocation confirmed before the election took effect leaves no payment affected.
+      A terminated or revoked holding is never reactivated: a later deduction needs a new election or a new order.
+    eligibility: []
+    params:
+      ends_on_claim_closure: "=ends_on_claim_closure"
+      termination_lead_business_days: "=termination_lead_business_days"
+      revocation_lead_business_days: "=revocation_lead_business_days"
+    measures: [withhold_msr_cumulative_deducted]

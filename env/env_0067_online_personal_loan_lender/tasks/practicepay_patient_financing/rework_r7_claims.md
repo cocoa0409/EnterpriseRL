@@ -1,0 +1,5 @@
+# Rework round 7 — claims (audit revision_6)
+
+- R6-1 member 1 (payoff): closed — the payoff's interest-bearing balance leaves out, on a plan reset to a split payment, the reset's deferred-interest part not yet repaid, worked out from the records (deferred interest billed, the reset payments after the billing, the reset payments still due); the definition is in the rule and the baseline.
+- R6-1 member 2 (second reset): closed — a plan whose deferred interest was billed is reset only once, only while no payment has posted since the billing and only before the first due date after it; a plan already reset or past either point is not reset and keeps its payment and plan APR, so no reset ever re-takes billed deferred interest that was partly repaid.
+- R6-1 class: closed — every policy that runs interest on a plan (the payoff and the reset) treats the unrepaid deferred-interest part as the reset's restated sentence does; the fee and relief schedules read balances only for their bands and run no interest.

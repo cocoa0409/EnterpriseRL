@@ -1,0 +1,812 @@
+# Product charter — Good Faith Estimates, Patient Estimates & Self-Pay Package Prices. Riverbend Regional Health, Price Transparency & Scheduling Financial Clearance.
+category: estimate
+display_name: Good Faith & Price Estimates
+
+binding:
+  holding_table: price_estimates
+  event_tables: [estimate_transactions]
+  status_field: status
+  variant_field: variant_name
+  quantity_fields: {deposit_held_usd: deposit_held}
+
+lifecycle:
+  states: [requested, issued, service_completed, in_dispute, closed, cancelled]
+  transitions:
+    - {from: requested, to: issued, by: agent, means: The estimate is furnished to the patient.}
+    - {from: requested, to: cancelled, by: user, means: The patient withdraws the request before an estimate is furnished.}
+    - {from: issued, to: cancelled, by: user, means: The patient cancels the scheduled service.}
+    - {from: issued, to: service_completed, by: system, means: The service is rendered, the hospital account is linked and the initial bill is dated.}
+    - {from: issued, to: closed, by: system, means: The estimate lapses unused after its validity period.}
+    - {from: service_completed, to: in_dispute, by: agent, means: Notice of a patient-provider dispute on Riverbend's charges is received and logged.}
+    - {from: service_completed, to: closed, by: system, means: The dispute window passes or the linked balance is resolved without a dispute.}
+    - {from: in_dispute, to: closed, by: system, means: The dispute resolution entity issues its determination or the parties settle.}
+
+accounts:
+  - key: deposit_held
+    unit: USD
+    meaning: Prepayments collected against the estimate and not yet applied, refunded or retained; collections add to it, application to the hospital account, refunds and retained cancellation fees reduce it.
+
+# ---- category-level parameter dictionary ----
+parameter_schema:
+  gfe_required: boolean — whether the estimate is a No Surprises Act good faith estimate for an uninsured or self-pay individual
+  min_scheduling_lead_bd: integer business days between the scheduling date and the service date at or above which a good faith estimate must be furnished before the service
+  issue_bd_scheduled_3_to_9: integer business days after the scheduling date within which the GFE is furnished when the service is scheduled at least 3 but fewer than 10 business days ahead
+  issue_bd_scheduled_10_plus: integer business days after the scheduling date within which the GFE is furnished when the service is scheduled at least 10 business days ahead
+  issue_bd_on_request: integer business days after an unscheduled request within which the GFE is furnished
+  insured_estimate_turnaround_bd: integer business days after the request within which an insured out-of-pocket estimate is furnished
+  business_day_calendar: enum business-day basis used for every estimate deadline
+  revision_lead_bd: integer business days before the scheduled service by which a revised estimate is furnished after a change in scope, providers or date
+  recurring_course_max_months: integer months a single recurring-course estimate may cover
+  ppdr_threshold_usd: USD amount by which a provider's or facility's billed charges must exceed that provider's or facility's expected charges on the GFE for the patient-provider dispute process to be available
+  ppdr_initiation_days: integer calendar days from the date on the initial bill within which the patient may initiate the patient-provider dispute
+  ppdr_admin_fee_usd: USD administrative fee the patient pays the selected dispute resolution entity
+  ppdr_fee_credit_if_favored: boolean — whether the amount due is further reduced by the administrative fee when the determination is below the billed charges
+  ppdr_collection_hold: boolean — whether the billed amount is kept out of collections and statements stop escalating while the dispute is pending
+  ppdr_eligible_coverage: list of coverage_status values eligible for the patient-provider dispute
+  ppdr_comparison_basis: enum what is compared with the GFE expected charges for Riverbend's own charges
+  record_retention_years: integer years a furnished estimate is retained and available to the patient
+  includes_co_provider_lines: boolean — whether the estimate carries expected-charge lines for co-providers
+  co_provider_roles: list of provider_role values included as co-providers
+  co_provider_submission_bd: integer business days a co-provider has to send its expected charges to Riverbend as convening provider
+  expected_charge_basis: enum how Riverbend's own expected charges are computed
+  package_price_schedule: mapping CPT code -> USD all-inclusive package price for package tiers; PRICED_PER_LINE for non-package tiers
+  package_includes_professional_fees: boolean — whether the package price includes Riverbend Medical Group professional fees
+  package_exclusions: list of items billed outside the package or GFE at actual charges
+  package_upgrade_differential_usd: USD added when the delivered service upgrades within the package (cesarean delivery under the maternity package); 0.00 when the tier has no upgrade
+  package_extra_day_usd: USD per additional overnight stay beyond the package's included stay; 0.00 when the tier has no overnight component
+  package_included_nights: integer overnight stays included in the package price
+  package_validity_days: integer calendar days after issue within which the service must be performed for the quoted price to hold
+  deposit_pct: percent of the estimate total collected as a deposit at scheduling
+  balance_due_days_before_service: integer calendar days before the scheduled service date by which the remaining package price is paid (0 = no pre-service balance)
+  deposit_methods: list of payment methods accepted for deposits
+  full_refund_cancel_days: integer calendar days before the scheduled service date at or beyond which a cancellation refunds the whole deposit
+  late_cancellation_fee_usd: USD retained from the deposit when a package service is cancelled later than full_refund_cancel_days (never more than the deposit held)
+  medical_cancellation_fee_waived: boolean — whether the late-cancellation fee is waived when the cancelling physician documents a medical reason
+  deposit_refund_days: integer calendar days after cancellation within which a deposit refund is issued
+  deposit_refund_method: enum refund method for deposits
+  deposit_application_timing: enum when held deposits are applied to the hospital account
+  insured_benefit_verification_required: boolean — whether benefits and remaining deductible are verified with the payer before the estimate is issued
+  insured_estimate_binding: boolean — whether the estimate limits what the patient may be billed
+  variance_review_pct: percent by which the patient's actual liability may exceed the estimate total before Patient Financial Services reviews the variance with the patient
+  estimate_request_channels: list of request_channel values accepted
+  estimate_delivery_channels: list of channels through which the estimate is delivered (paper or electronic, at the patient's choice)
+  coverage_inquiry_required: boolean — whether the scheduler must ask whether the patient has coverage and whether they intend to use it
+  gfe_rights_notice_required: boolean — whether the notice of the right to a good faith estimate is given at scheduling and on request
+  max_lines_per_version: integer maximum expected-charge lines on one estimate version
+  diagnosis_codes_required: boolean — whether expected diagnosis codes are listed on the estimate
+  estimate_disclaimer: enum standard disclaimer printed on the estimate
+  recurring_reissue_on_change: boolean — whether any change in frequency or items of a recurring course requires a new version
+  dispute_hold_reason: enum billing-hold reason placed on the linked hospital account while a dispute is pending
+  expired_estimate_reissue: enum what happens when a service is scheduled after package_validity_days
+
+# ---- tier ladder (low to high) ----
+variants:
+- name: Self-Pay Good Faith Estimate - Single Scheduled Service
+  rank: 1
+  entry_gate:
+    coverage_status: [UNINSURED, SELF_PAY_ELECTED]
+    scope: one scheduled item or service furnished by Riverbend alone
+  parameters:
+    gfe_required: true
+    min_scheduling_lead_bd: 3
+    issue_bd_scheduled_3_to_9: 1
+    issue_bd_scheduled_10_plus: 3
+    issue_bd_on_request: 3
+    insured_estimate_turnaround_bd: 2
+    business_day_calendar: MONDAY_TO_FRIDAY_EXCLUDING_FEDERAL_HOLIDAYS
+    revision_lead_bd: 1
+    recurring_course_max_months: 12
+    ppdr_threshold_usd: 400.0
+    ppdr_initiation_days: 120
+    ppdr_admin_fee_usd: 25.0
+    ppdr_fee_credit_if_favored: true
+    ppdr_collection_hold: true
+    ppdr_eligible_coverage: &id001 [UNINSURED, SELF_PAY_ELECTED]
+    ppdr_comparison_basis: SELF_PAY_FINAL_BILL_LESS_UNINSURED_DISCOUNT
+    record_retention_years: 6
+    includes_co_provider_lines: false
+    co_provider_roles: [NONE]
+    co_provider_submission_bd: 1
+    expected_charge_basis: GROSS_CHARGES_LESS_UNINSURED_DISCOUNT
+    package_price_schedule: PRICED_PER_LINE
+    package_includes_professional_fees: false
+    package_exclusions: [SERVICES_OF_UNLISTED_PROVIDERS]
+    package_upgrade_differential_usd: 0.0
+    package_extra_day_usd: 0.0
+    package_included_nights: 0
+    package_validity_days: 90
+    deposit_pct: 0.0
+    balance_due_days_before_service: 0
+    deposit_methods: &id002 [PORTAL_CARD, PHONE_CARD, ACH_BANK_DRAFT]
+    full_refund_cancel_days: 0
+    late_cancellation_fee_usd: 0.0
+    medical_cancellation_fee_waived: true
+    deposit_refund_days: 30
+    deposit_refund_method: ORIGINAL_PAYMENT_METHOD
+    deposit_application_timing: AT_FINAL_BILL
+    insured_benefit_verification_required: false
+    insured_estimate_binding: false
+    variance_review_pct: 10.0
+    estimate_request_channels: &id003 [SCHEDULING_CALL, PATIENT_PORTAL, PRICE_ESTIMATE_LINE, IN_PERSON]
+    estimate_delivery_channels: &id004 [US_MAIL, PATIENT_PORTAL, EMAIL_LINK]
+    coverage_inquiry_required: true
+    gfe_rights_notice_required: true
+    max_lines_per_version: 40
+    diagnosis_codes_required: true
+    estimate_disclaimer: NSA_GFE_DISCLAIMER
+    recurring_reissue_on_change: false
+    dispute_hold_reason: GFE_DISPUTE_PENDING
+    expired_estimate_reissue: NEW_VERSION_AT_CURRENT_PRICES
+- name: Self-Pay Good Faith Estimate - Procedure with Co-Providers
+  rank: 2
+  entry_gate:
+    coverage_status: [UNINSURED, SELF_PAY_ELECTED]
+    scope: a scheduled procedure with co-provider items (anesthesia, pathology, radiology)
+  parameters:
+    gfe_required: true
+    min_scheduling_lead_bd: 3
+    issue_bd_scheduled_3_to_9: 1
+    issue_bd_scheduled_10_plus: 3
+    issue_bd_on_request: 3
+    insured_estimate_turnaround_bd: 2
+    business_day_calendar: MONDAY_TO_FRIDAY_EXCLUDING_FEDERAL_HOLIDAYS
+    revision_lead_bd: 1
+    recurring_course_max_months: 12
+    ppdr_threshold_usd: 400.0
+    ppdr_initiation_days: 120
+    ppdr_admin_fee_usd: 25.0
+    ppdr_fee_credit_if_favored: true
+    ppdr_collection_hold: true
+    ppdr_eligible_coverage: *id001
+    ppdr_comparison_basis: SELF_PAY_FINAL_BILL_LESS_UNINSURED_DISCOUNT
+    record_retention_years: 6
+    includes_co_provider_lines: true
+    co_provider_roles: [CO_PROVIDER_ANESTHESIA, CO_PROVIDER_PATHOLOGY, CO_PROVIDER_RADIOLOGY]
+    co_provider_submission_bd: 1
+    expected_charge_basis: GROSS_CHARGES_LESS_UNINSURED_DISCOUNT
+    package_price_schedule: PRICED_PER_LINE
+    package_includes_professional_fees: false
+    package_exclusions: [SERVICES_OF_UNLISTED_PROVIDERS]
+    package_upgrade_differential_usd: 0.0
+    package_extra_day_usd: 0.0
+    package_included_nights: 0
+    package_validity_days: 90
+    deposit_pct: 0.0
+    balance_due_days_before_service: 0
+    deposit_methods: *id002
+    full_refund_cancel_days: 0
+    late_cancellation_fee_usd: 0.0
+    medical_cancellation_fee_waived: true
+    deposit_refund_days: 30
+    deposit_refund_method: ORIGINAL_PAYMENT_METHOD
+    deposit_application_timing: AT_FINAL_BILL
+    insured_benefit_verification_required: false
+    insured_estimate_binding: false
+    variance_review_pct: 10.0
+    estimate_request_channels: *id003
+    estimate_delivery_channels: *id004
+    coverage_inquiry_required: true
+    gfe_rights_notice_required: true
+    max_lines_per_version: 60
+    diagnosis_codes_required: true
+    estimate_disclaimer: NSA_GFE_DISCLAIMER
+    recurring_reissue_on_change: false
+    dispute_hold_reason: GFE_DISPUTE_PENDING
+    expired_estimate_reissue: NEW_VERSION_AT_CURRENT_PRICES
+- name: Self-Pay Good Faith Estimate - Recurring Course of Care
+  rank: 3
+  entry_gate:
+    coverage_status: [UNINSURED, SELF_PAY_ELECTED]
+    scope: recurring items or services over a course of up to 12 months
+  parameters:
+    gfe_required: true
+    min_scheduling_lead_bd: 3
+    issue_bd_scheduled_3_to_9: 1
+    issue_bd_scheduled_10_plus: 3
+    issue_bd_on_request: 3
+    insured_estimate_turnaround_bd: 2
+    business_day_calendar: MONDAY_TO_FRIDAY_EXCLUDING_FEDERAL_HOLIDAYS
+    revision_lead_bd: 1
+    recurring_course_max_months: 12
+    ppdr_threshold_usd: 400.0
+    ppdr_initiation_days: 120
+    ppdr_admin_fee_usd: 25.0
+    ppdr_fee_credit_if_favored: true
+    ppdr_collection_hold: true
+    ppdr_eligible_coverage: *id001
+    ppdr_comparison_basis: SELF_PAY_FINAL_BILL_LESS_UNINSURED_DISCOUNT
+    record_retention_years: 6
+    includes_co_provider_lines: false
+    co_provider_roles: [NONE]
+    co_provider_submission_bd: 1
+    expected_charge_basis: GROSS_CHARGES_LESS_UNINSURED_DISCOUNT
+    package_price_schedule: PRICED_PER_LINE
+    package_includes_professional_fees: false
+    package_exclusions: [SERVICES_OF_UNLISTED_PROVIDERS]
+    package_upgrade_differential_usd: 0.0
+    package_extra_day_usd: 0.0
+    package_included_nights: 0
+    package_validity_days: 365
+    deposit_pct: 0.0
+    balance_due_days_before_service: 0
+    deposit_methods: *id002
+    full_refund_cancel_days: 0
+    late_cancellation_fee_usd: 0.0
+    medical_cancellation_fee_waived: true
+    deposit_refund_days: 30
+    deposit_refund_method: ORIGINAL_PAYMENT_METHOD
+    deposit_application_timing: AT_FINAL_BILL
+    insured_benefit_verification_required: false
+    insured_estimate_binding: false
+    variance_review_pct: 10.0
+    estimate_request_channels: *id003
+    estimate_delivery_channels: *id004
+    coverage_inquiry_required: true
+    gfe_rights_notice_required: true
+    max_lines_per_version: 120
+    diagnosis_codes_required: true
+    estimate_disclaimer: NSA_GFE_DISCLAIMER
+    recurring_reissue_on_change: true
+    dispute_hold_reason: GFE_DISPUTE_PENDING
+    expired_estimate_reissue: NEW_VERSION_AT_CURRENT_PRICES
+- name: Insured Patient Out-of-Pocket Estimate
+  rank: 4
+  entry_gate:
+    coverage_status: [INSURED]
+    scope: a scheduled service billed to the patient's coverage
+  parameters:
+    gfe_required: false
+    min_scheduling_lead_bd: 3
+    issue_bd_scheduled_3_to_9: 1
+    issue_bd_scheduled_10_plus: 3
+    issue_bd_on_request: 3
+    insured_estimate_turnaround_bd: 2
+    business_day_calendar: MONDAY_TO_FRIDAY_EXCLUDING_FEDERAL_HOLIDAYS
+    revision_lead_bd: 1
+    recurring_course_max_months: 12
+    ppdr_threshold_usd: 400.0
+    ppdr_initiation_days: 120
+    ppdr_admin_fee_usd: 25.0
+    ppdr_fee_credit_if_favored: true
+    ppdr_collection_hold: true
+    ppdr_eligible_coverage: *id001
+    ppdr_comparison_basis: SELF_PAY_FINAL_BILL_LESS_UNINSURED_DISCOUNT
+    record_retention_years: 6
+    includes_co_provider_lines: false
+    co_provider_roles: [NONE]
+    co_provider_submission_bd: 1
+    expected_charge_basis: CONTRACTED_RATE_APPLIED_TO_REMAINING_BENEFITS
+    package_price_schedule: PRICED_PER_LINE
+    package_includes_professional_fees: false
+    package_exclusions: [SERVICES_OF_UNLISTED_PROVIDERS, BENEFIT_CHANGES_AFTER_VERIFICATION]
+    package_upgrade_differential_usd: 0.0
+    package_extra_day_usd: 0.0
+    package_included_nights: 0
+    package_validity_days: 30
+    deposit_pct: 0.0
+    balance_due_days_before_service: 0
+    deposit_methods: *id002
+    full_refund_cancel_days: 0
+    late_cancellation_fee_usd: 0.0
+    medical_cancellation_fee_waived: true
+    deposit_refund_days: 30
+    deposit_refund_method: ORIGINAL_PAYMENT_METHOD
+    deposit_application_timing: AT_FINAL_BILL
+    insured_benefit_verification_required: true
+    insured_estimate_binding: false
+    variance_review_pct: 15.0
+    estimate_request_channels: *id003
+    estimate_delivery_channels: *id004
+    coverage_inquiry_required: true
+    gfe_rights_notice_required: false
+    max_lines_per_version: 40
+    diagnosis_codes_required: false
+    estimate_disclaimer: INSURED_ESTIMATE_NOT_A_GUARANTEE
+    recurring_reissue_on_change: false
+    dispute_hold_reason: GFE_DISPUTE_PENDING
+    expired_estimate_reissue: NEW_VERSION_AT_CURRENT_PRICES
+- name: Riverbend Self-Pay Package Price - Imaging & Diagnostics
+  rank: 5
+  entry_gate:
+    coverage_status: [UNINSURED, SELF_PAY_ELECTED]
+    scope: a service code on the imaging package schedule
+  parameters:
+    gfe_required: true
+    min_scheduling_lead_bd: 3
+    issue_bd_scheduled_3_to_9: 1
+    issue_bd_scheduled_10_plus: 3
+    issue_bd_on_request: 3
+    insured_estimate_turnaround_bd: 2
+    business_day_calendar: MONDAY_TO_FRIDAY_EXCLUDING_FEDERAL_HOLIDAYS
+    revision_lead_bd: 1
+    recurring_course_max_months: 12
+    ppdr_threshold_usd: 400.0
+    ppdr_initiation_days: 120
+    ppdr_admin_fee_usd: 25.0
+    ppdr_fee_credit_if_favored: true
+    ppdr_collection_hold: true
+    ppdr_eligible_coverage: *id001
+    ppdr_comparison_basis: SELF_PAY_FINAL_BILL_LESS_UNINSURED_DISCOUNT
+    record_retention_years: 6
+    includes_co_provider_lines: false
+    co_provider_roles: [NONE]
+    co_provider_submission_bd: 1
+    expected_charge_basis: FIXED_PACKAGE_PRICE
+    package_price_schedule: {'70553': 1150.0, '72148': 895.0, '74177': 685.0, '77067': 195.0, '93306': 640.0}
+    package_includes_professional_fees: true
+    package_exclusions: [CONTRAST_REACTION_TREATMENT, RADIOLOGIST_SECOND_READ_REQUESTED_BY_PATIENT]
+    package_upgrade_differential_usd: 0.0
+    package_extra_day_usd: 0.0
+    package_included_nights: 0
+    package_validity_days: 90
+    deposit_pct: 100.0
+    balance_due_days_before_service: 0
+    deposit_methods: *id002
+    full_refund_cancel_days: 1
+    late_cancellation_fee_usd: 25.0
+    medical_cancellation_fee_waived: true
+    deposit_refund_days: 30
+    deposit_refund_method: ORIGINAL_PAYMENT_METHOD
+    deposit_application_timing: AT_FINAL_BILL
+    insured_benefit_verification_required: false
+    insured_estimate_binding: true
+    variance_review_pct: 0.0
+    estimate_request_channels: *id003
+    estimate_delivery_channels: *id004
+    coverage_inquiry_required: true
+    gfe_rights_notice_required: true
+    max_lines_per_version: 10
+    diagnosis_codes_required: true
+    estimate_disclaimer: NSA_GFE_DISCLAIMER_WITH_PACKAGE_TERMS
+    recurring_reissue_on_change: false
+    dispute_hold_reason: GFE_DISPUTE_PENDING
+    expired_estimate_reissue: NEW_VERSION_AT_CURRENT_PRICES
+- name: Riverbend Self-Pay Package Price - Outpatient Surgery
+  rank: 6
+  entry_gate:
+    coverage_status: [UNINSURED, SELF_PAY_ELECTED]
+    scope: a service code on the outpatient surgery package schedule, ASA physical status I or II
+  parameters:
+    gfe_required: true
+    min_scheduling_lead_bd: 3
+    issue_bd_scheduled_3_to_9: 1
+    issue_bd_scheduled_10_plus: 3
+    issue_bd_on_request: 3
+    insured_estimate_turnaround_bd: 2
+    business_day_calendar: MONDAY_TO_FRIDAY_EXCLUDING_FEDERAL_HOLIDAYS
+    revision_lead_bd: 1
+    recurring_course_max_months: 12
+    ppdr_threshold_usd: 400.0
+    ppdr_initiation_days: 120
+    ppdr_admin_fee_usd: 25.0
+    ppdr_fee_credit_if_favored: true
+    ppdr_collection_hold: true
+    ppdr_eligible_coverage: *id001
+    ppdr_comparison_basis: SELF_PAY_FINAL_BILL_LESS_UNINSURED_DISCOUNT
+    record_retention_years: 6
+    includes_co_provider_lines: true
+    co_provider_roles: [CO_PROVIDER_ANESTHESIA, CO_PROVIDER_PATHOLOGY]
+    co_provider_submission_bd: 1
+    expected_charge_basis: FIXED_PACKAGE_PRICE
+    package_price_schedule: {'47562': 7450.0, '29881': 5875.0, '49505': 5290.0, '45378': 1640.0, '66984': 3380.0}
+    package_includes_professional_fees: true
+    package_exclusions: [COMPLICATIONS_REQUIRING_ADMISSION, IMPLANTS_ABOVE_STANDARD, READMISSION_WITHIN_30_DAYS]
+    package_upgrade_differential_usd: 0.0
+    package_extra_day_usd: 1650.0
+    package_included_nights: 0
+    package_validity_days: 90
+    deposit_pct: 50.0
+    balance_due_days_before_service: 7
+    deposit_methods: *id002
+    full_refund_cancel_days: 7
+    late_cancellation_fee_usd: 150.0
+    medical_cancellation_fee_waived: true
+    deposit_refund_days: 30
+    deposit_refund_method: ORIGINAL_PAYMENT_METHOD
+    deposit_application_timing: AT_FINAL_BILL
+    insured_benefit_verification_required: false
+    insured_estimate_binding: true
+    variance_review_pct: 0.0
+    estimate_request_channels: *id003
+    estimate_delivery_channels: *id004
+    coverage_inquiry_required: true
+    gfe_rights_notice_required: true
+    max_lines_per_version: 30
+    diagnosis_codes_required: true
+    estimate_disclaimer: NSA_GFE_DISCLAIMER_WITH_PACKAGE_TERMS
+    recurring_reissue_on_change: false
+    dispute_hold_reason: GFE_DISPUTE_PENDING
+    expired_estimate_reissue: NEW_VERSION_AT_CURRENT_PRICES
+- name: Riverbend Self-Pay Package Price - Maternity & Delivery
+  rank: 7
+  entry_gate:
+    coverage_status: [UNINSURED, SELF_PAY_ELECTED]
+    scope: global maternity care enrolled before 28 weeks of gestation
+  parameters:
+    gfe_required: true
+    min_scheduling_lead_bd: 3
+    issue_bd_scheduled_3_to_9: 1
+    issue_bd_scheduled_10_plus: 3
+    issue_bd_on_request: 3
+    insured_estimate_turnaround_bd: 2
+    business_day_calendar: MONDAY_TO_FRIDAY_EXCLUDING_FEDERAL_HOLIDAYS
+    revision_lead_bd: 1
+    recurring_course_max_months: 12
+    ppdr_threshold_usd: 400.0
+    ppdr_initiation_days: 120
+    ppdr_admin_fee_usd: 25.0
+    ppdr_fee_credit_if_favored: true
+    ppdr_collection_hold: true
+    ppdr_eligible_coverage: *id001
+    ppdr_comparison_basis: SELF_PAY_FINAL_BILL_LESS_UNINSURED_DISCOUNT
+    record_retention_years: 6
+    includes_co_provider_lines: true
+    co_provider_roles: [CO_PROVIDER_ANESTHESIA]
+    co_provider_submission_bd: 1
+    expected_charge_basis: FIXED_PACKAGE_PRICE
+    package_price_schedule: {'59400': 9850.0, '59510': 12700.0}
+    package_includes_professional_fees: true
+    package_exclusions: [NICU_CARE, NEWBORN_PROFESSIONAL_SERVICES, MATERNAL_ICU_CARE]
+    package_upgrade_differential_usd: 2850.0
+    package_extra_day_usd: 1425.0
+    package_included_nights: 2
+    package_validity_days: 300
+    deposit_pct: 25.0
+    balance_due_days_before_service: 30
+    deposit_methods: *id002
+    full_refund_cancel_days: 30
+    late_cancellation_fee_usd: 250.0
+    medical_cancellation_fee_waived: true
+    deposit_refund_days: 30
+    deposit_refund_method: ORIGINAL_PAYMENT_METHOD
+    deposit_application_timing: AT_FINAL_BILL
+    insured_benefit_verification_required: false
+    insured_estimate_binding: true
+    variance_review_pct: 0.0
+    estimate_request_channels: *id003
+    estimate_delivery_channels: *id004
+    coverage_inquiry_required: true
+    gfe_rights_notice_required: true
+    max_lines_per_version: 30
+    diagnosis_codes_required: true
+    estimate_disclaimer: NSA_GFE_DISCLAIMER_WITH_PACKAGE_TERMS
+    recurring_reissue_on_change: false
+    dispute_hold_reason: GFE_DISPUTE_PENDING
+    expired_estimate_reissue: NEW_VERSION_AT_CURRENT_PRICES
+
+# ---- data flow (every write is an event) ----
+events:
+  - type: estimate_requested
+    target: price_estimates
+    mutation: create
+    meaning: A patient requests an estimate, or a service is scheduled for a patient who answers the coverage inquiry, opening an estimate.
+    grain: one row per scheduled service or recurring course (or unscheduled price request)
+    fields: {estimate_id: new estimate id, customer_id: the patient, variant_name: estimate type, coverage_status: coverage answer, request_channel: channel, request_date: request date, scheduling_date: scheduling date or empty, scheduled_service_date: service date or empty, primary_service_code: principal CPT/HCPCS, estimate_version: "1"}
+    triggers: []
+  - type: estimate_issued
+    target: price_estimates
+    mutation: {transition: {from: requested, to: issued}}
+    meaning: The estimate is furnished to the patient.
+    grain: one row per transaction
+    fields: {status: issued, issued_date: furnish date, estimate_total_usd: total expected charges}
+    triggers: []
+  - type: estimate_line_recorded
+    target: estimate_transactions
+    meaning: One expected-charge line of one provider or facility is recorded on an estimate version.
+    grain: one row per version per provider role per service code
+    distinguish_by: [estimate_version, provider_role, service_code]
+    fields: {estimate_version: version, provider_role: provider or facility, provider_name: name as printed, service_code: item or service, amount: expected charge, posting_date: date recorded}
+    triggers: []
+  - type: estimate_revised
+    target: price_estimates
+    mutation: update
+    meaning: A new version of the estimate is furnished after a change in scope, providers, date or recurring frequency.
+    grain: one row per transaction
+    fields: {estimate_version: new version, issued_date: furnish date of the new version, estimate_total_usd: new total, scheduled_service_date: current service date}
+    triggers: []
+  - type: estimate_deposit_collected
+    target: estimate_transactions
+    meaning: A package deposit or pre-service balance is collected from the patient.
+    grain: one row per deposit payment confirmation
+    distinguish_by: [payment_reference]
+    fields: {deposit_stage: which prepayment, payment_reference: confirmation number, amount: amount collected, posting_date: posting date}
+    account: deposit_held
+    direction: in
+    triggers: []
+  - type: estimate_deposit_applied
+    target: estimate_transactions
+    meaning: A held deposit is applied to the hospital account of the rendered service at final bill.
+    grain: one row per deposit collection applied
+    distinguish_by: [source_estimate_txn_id]
+    fields: {source_estimate_txn_id: deposit collection applied, encounter_id: hospital account, payment_reference: confirmation number of the deposit, amount: amount applied, posting_date: posting date}
+    account: deposit_held
+    direction: out
+    triggers:
+      - event: encounter:encounter_payment_posted
+        map: {payment_channel: PREPAYMENT_DEPOSIT_APPLIED, payment_reference: payment_reference, amount: amount, posting_date: posting_date}
+  - type: estimate_deposit_refunded
+    target: estimate_transactions
+    meaning: A held deposit (or the part not retained or applied) is refunded to the patient.
+    grain: one row per deposit collection refunded
+    distinguish_by: [source_estimate_txn_id]
+    fields: {source_estimate_txn_id: deposit collection refunded, refund_method: payout method, amount: amount refunded, posting_date: posting date}
+    account: deposit_held
+    direction: out
+    triggers: []
+  - type: estimate_cancellation_fee_retained
+    target: estimate_transactions
+    meaning: The late-cancellation fee is retained from a held deposit.
+    grain: one row per deposit collection charged
+    distinguish_by: [source_estimate_txn_id]
+    fields: {source_estimate_txn_id: deposit collection charged, amount: fee retained, posting_date: posting date}
+    account: deposit_held
+    direction: out
+    triggers: []
+  - type: estimate_service_completed
+    target: price_estimates
+    mutation: {transition: {from: issued, to: service_completed}}
+    meaning: The estimated service is rendered and billed; the hospital account and the initial bill date are linked.
+    grain: one row per transaction
+    fields: {status: service_completed, encounter_id: hospital account, initial_bill_date: date on the initial bill}
+    triggers: []
+  - type: estimate_dispute_opened
+    target: price_estimates
+    mutation: {transition: {from: service_completed, to: in_dispute}}
+    meaning: Notice of the patient's patient-provider dispute on Riverbend's charges is logged.
+    grain: one row per transaction
+    fields: {status: in_dispute, dispute_filed_date: initiation date on the notice}
+    triggers: []
+  - type: estimate_dispute_resolved
+    target: price_estimates
+    mutation: {transition: {from: in_dispute, to: closed}}
+    meaning: The dispute resolution entity determines the amount due, or Riverbend and the patient settle.
+    grain: one row per transaction
+    fields: {status: closed, dispute_outcome: result, closed_date: determination or settlement date}
+    triggers:
+      - event: encounter:encounter_adjustment_posted
+        when: {dispute_outcome: [PATIENT_FAVORED, SETTLED]}
+        map: {adjustment_code: PPDR_DETERMINATION_ADJUSTMENT}
+  - type: estimate_closed
+    target: price_estimates
+    mutation: {transition: [{from: issued, to: closed}, {from: service_completed, to: closed}]}
+    meaning: The estimate closes without a dispute (lapsed unused, or the dispute window passed).
+    grain: one row per transaction
+    fields: {status: closed, closed_date: closing date}
+    triggers: []
+  - type: estimate_cancelled
+    target: price_estimates
+    mutation: {transition: [{from: requested, to: cancelled}, {from: issued, to: cancelled}]}
+    meaning: The patient withdraws the request or cancels the scheduled service.
+    grain: one row per transaction
+    fields: {status: cancelled, closed_date: cancellation date}
+    triggers: []
+
+# ---- derived measures ----
+measures:
+  - id: estimate_msr_version_provider_total
+    window: the current estimate_version of the estimate
+    measure: sum of amount over estimate_line_recorded rows of that version for one provider_role (the provider's or facility's expected charges)
+  - id: estimate_msr_deposits_held
+    window: the life of the estimate up to the decision date
+    measure: per deposit collection, its amount less any application, refund or retained fee drawing on it (source_estimate_txn_id)
+
+# ---- policies ----
+policies:
+  - id: estimate_agg_multi_holding
+    subject: [estimate_requested]
+    rule: >-
+      A patient may hold any number of estimates, one per scheduled service; a recurring course of care is one estimate covering at most recurring_course_max_months months, and a new estimate is opened when the course runs past that period. A change to an already estimated service is a new version of the same estimate, never a second estimate. An unscheduled price request becomes the estimate of the service once that service is scheduled.
+    eligibility: []
+    params: {max_per_customer: null, recurring_course_max_months: "=recurring_course_max_months"}
+  - id: estimate_agg_deposit_application
+    subject: [estimate_deposit_applied, estimate_deposit_refunded]
+    rule: >-
+      All deposits held on one estimate are combined when the rendered service is billed (deposit_application_timing): each deposit collection is applied to the linked hospital account, oldest collection first, until the account's patient balance after the package or uninsured pricing is covered; whatever remains of the deposits after that is refunded. A deposit collection is applied at most once, and what is left of a collection after an application or a retained fee is the only amount that may be refunded from it (estimate_msr_deposits_held). Deposits are never moved to a different estimate or to an unrelated hospital account.
+    eligibility:
+      - id: one_application_per_deposit
+        applies_to: [estimate_deposit_applied]
+        kind: dedup
+        condition: A deposit collection is applied at most once, and what is left of a collection after an application or a retained fee is the only amount that may be refunded from it (estimate_msr_deposits_held).
+        evidence_fields: [estimate_transactions.source_estimate_txn_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[estimate_transactions.source_estimate_txn_id]]
+          action_bindings: {estimate_transactions.source_estimate_txn_id: source_estimate_txn_id}
+        dedup_contract:
+          table: estimate_transactions
+          mode: separate_record
+          object_bindings: {source_estimate_txn_id: source_estimate_txn_id}
+          duplicate_filters: {event_type: [estimate_deposit_applied]}
+          distinct_fields: []
+    params: {deposit_application_timing: "=deposit_application_timing"}
+    measures: [estimate_msr_deposits_held]
+  - id: estimate_gfe_issuance
+    subject: [estimate_requested, estimate_issued]
+    rule: >-
+      At scheduling, and whenever a patient asks about cost, the scheduler asks whether the patient has coverage and whether they intend to have it billed (coverage_inquiry_required) and gives the notice of the right to a good faith estimate where gfe_rights_notice_required is true. A patient who is UNINSURED, or who is insured but asks not to have the claim submitted (SELF_PAY_ELECTED), receives a good faith estimate on tiers where gfe_required is true. A good faith estimate is furnished within issue_bd_scheduled_10_plus business days after the scheduling date when the service is scheduled at least 10 business days ahead, within issue_bd_scheduled_3_to_9 business day when it is scheduled at least min_scheduling_lead_bd but fewer than 10 business days ahead, and within issue_bd_on_request business days after an unscheduled request; business days follow business_day_calendar. A service scheduled fewer than min_scheduling_lead_bd business days ahead does not require one, but one is still furnished on request. An insured patient who has the claim submitted receives the Insured Patient Out-of-Pocket Estimate within insured_estimate_turnaround_bd business days, only after benefits are verified (insured_benefit_verification_required). The estimate is delivered on paper or electronically as the patient chooses (estimate_delivery_channels) and is retained for record_retention_years years.
+    eligibility: []
+    params:
+      per_tier:
+        "Self-Pay Good Faith Estimate - Single Scheduled Service": {gfe_required: "=gfe_required", rights_notice: "=gfe_rights_notice_required", benefit_verification: "=insured_benefit_verification_required"}
+        "Self-Pay Good Faith Estimate - Procedure with Co-Providers": {gfe_required: "=gfe_required", rights_notice: "=gfe_rights_notice_required", benefit_verification: "=insured_benefit_verification_required"}
+        "Self-Pay Good Faith Estimate - Recurring Course of Care": {gfe_required: "=gfe_required", rights_notice: "=gfe_rights_notice_required", benefit_verification: "=insured_benefit_verification_required"}
+        "Insured Patient Out-of-Pocket Estimate": {gfe_required: "=gfe_required", rights_notice: "=gfe_rights_notice_required", benefit_verification: "=insured_benefit_verification_required"}
+        "Riverbend Self-Pay Package Price - Imaging & Diagnostics": {gfe_required: "=gfe_required", rights_notice: "=gfe_rights_notice_required", benefit_verification: "=insured_benefit_verification_required"}
+        "Riverbend Self-Pay Package Price - Outpatient Surgery": {gfe_required: "=gfe_required", rights_notice: "=gfe_rights_notice_required", benefit_verification: "=insured_benefit_verification_required"}
+        "Riverbend Self-Pay Package Price - Maternity & Delivery": {gfe_required: "=gfe_required", rights_notice: "=gfe_rights_notice_required", benefit_verification: "=insured_benefit_verification_required"}
+      min_scheduling_lead_bd: "=min_scheduling_lead_bd"
+      issue_bd_scheduled_3_to_9: "=issue_bd_scheduled_3_to_9"
+      issue_bd_scheduled_10_plus: "=issue_bd_scheduled_10_plus"
+      issue_bd_on_request: "=issue_bd_on_request"
+      insured_estimate_turnaround_bd: "=insured_estimate_turnaround_bd"
+      business_day_calendar: "=business_day_calendar"
+      coverage_inquiry_required: "=coverage_inquiry_required"
+      record_retention_years: "=record_retention_years"
+      estimate_delivery_channels: "=estimate_delivery_channels"
+  - id: estimate_content_and_lines
+    subject: [estimate_line_recorded, estimate_issued, estimate_revised]
+    rule: >-
+      Each estimate version lists, per provider or facility, every expected item or service with its service code and expected charge, together with the expected diagnosis codes where diagnosis_codes_required is true and the standard disclaimer (estimate_disclaimer). Riverbend's own expected charges follow expected_charge_basis: on self-pay good faith estimates, gross charges less the uninsured discount of the account type the service will be billed under; on package tiers, the package price for the service code from package_price_schedule (including Riverbend Medical Group professional fees where package_includes_professional_fees is true); on insured estimates, the contracted rate applied to the patient's remaining deductible, coinsurance and copay. Where includes_co_provider_lines is true, the expected charges of each role in co_provider_roles are requested from the co-provider, who has co_provider_submission_bd business day to send them, and are listed under the co-provider's own name. A version carries at most max_lines_per_version lines; a line is recorded once per version, provider role and service code. The estimate total is the sum of all lines of the current version (estimate_msr_version_provider_total per role).
+    eligibility:
+      - id: one_line_per_code
+        applies_to: [estimate_line_recorded]
+        kind: dedup
+        condition: A version carries at most max_lines_per_version lines; a line is recorded once per version, provider role and service code.
+        evidence_fields: [estimate_transactions.estimate_id, estimate_transactions.estimate_version, estimate_transactions.provider_role, estimate_transactions.service_code]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[estimate_transactions.estimate_id]]
+          action_bindings: {estimate_transactions.estimate_id: estimate_id}
+        dedup_contract:
+          table: estimate_transactions
+          mode: separate_record
+          object_bindings: {estimate_id: estimate_id}
+          duplicate_filters: {event_type: [estimate_line_recorded]}
+          distinct_fields: [estimate_version, provider_role, service_code]
+    params:
+      per_tier:
+        "Self-Pay Good Faith Estimate - Single Scheduled Service": {charge_basis: "=expected_charge_basis", package_prices: "=package_price_schedule", includes_professional: "=package_includes_professional_fees", co_provider_lines: "=includes_co_provider_lines", co_provider_roles: "=co_provider_roles", max_lines: "=max_lines_per_version", diagnosis_codes: "=diagnosis_codes_required", disclaimer: "=estimate_disclaimer"}
+        "Self-Pay Good Faith Estimate - Procedure with Co-Providers": {charge_basis: "=expected_charge_basis", package_prices: "=package_price_schedule", includes_professional: "=package_includes_professional_fees", co_provider_lines: "=includes_co_provider_lines", co_provider_roles: "=co_provider_roles", max_lines: "=max_lines_per_version", diagnosis_codes: "=diagnosis_codes_required", disclaimer: "=estimate_disclaimer"}
+        "Self-Pay Good Faith Estimate - Recurring Course of Care": {charge_basis: "=expected_charge_basis", package_prices: "=package_price_schedule", includes_professional: "=package_includes_professional_fees", co_provider_lines: "=includes_co_provider_lines", co_provider_roles: "=co_provider_roles", max_lines: "=max_lines_per_version", diagnosis_codes: "=diagnosis_codes_required", disclaimer: "=estimate_disclaimer"}
+        "Insured Patient Out-of-Pocket Estimate": {charge_basis: "=expected_charge_basis", package_prices: "=package_price_schedule", includes_professional: "=package_includes_professional_fees", co_provider_lines: "=includes_co_provider_lines", co_provider_roles: "=co_provider_roles", max_lines: "=max_lines_per_version", diagnosis_codes: "=diagnosis_codes_required", disclaimer: "=estimate_disclaimer"}
+        "Riverbend Self-Pay Package Price - Imaging & Diagnostics": {charge_basis: "=expected_charge_basis", package_prices: "=package_price_schedule", includes_professional: "=package_includes_professional_fees", co_provider_lines: "=includes_co_provider_lines", co_provider_roles: "=co_provider_roles", max_lines: "=max_lines_per_version", diagnosis_codes: "=diagnosis_codes_required", disclaimer: "=estimate_disclaimer"}
+        "Riverbend Self-Pay Package Price - Outpatient Surgery": {charge_basis: "=expected_charge_basis", package_prices: "=package_price_schedule", includes_professional: "=package_includes_professional_fees", co_provider_lines: "=includes_co_provider_lines", co_provider_roles: "=co_provider_roles", max_lines: "=max_lines_per_version", diagnosis_codes: "=diagnosis_codes_required", disclaimer: "=estimate_disclaimer"}
+        "Riverbend Self-Pay Package Price - Maternity & Delivery": {charge_basis: "=expected_charge_basis", package_prices: "=package_price_schedule", includes_professional: "=package_includes_professional_fees", co_provider_lines: "=includes_co_provider_lines", co_provider_roles: "=co_provider_roles", max_lines: "=max_lines_per_version", diagnosis_codes: "=diagnosis_codes_required", disclaimer: "=estimate_disclaimer"}
+      co_provider_submission_bd: "=co_provider_submission_bd"
+    measures: [estimate_msr_version_provider_total]
+  - id: estimate_revision
+    subject: [estimate_revised, estimate_line_recorded]
+    rule: >-
+      When the scheduled items, the providers, the service date or (where recurring_reissue_on_change is true) the frequency of a recurring course change after an estimate was furnished, a new version is furnished no later than revision_lead_bd business day before the scheduled service; a change made on the day of service is furnished on that day. A service performed after package_validity_days from the issued date of the quoted version is re-estimated as a new version at current prices (expired_estimate_reissue). Only the latest version furnished before the service is the estimate compared with the bill.
+    eligibility: []
+    params:
+      per_tier:
+        "Self-Pay Good Faith Estimate - Single Scheduled Service": {validity_days: "=package_validity_days", recurring_reissue: "=recurring_reissue_on_change"}
+        "Self-Pay Good Faith Estimate - Procedure with Co-Providers": {validity_days: "=package_validity_days", recurring_reissue: "=recurring_reissue_on_change"}
+        "Self-Pay Good Faith Estimate - Recurring Course of Care": {validity_days: "=package_validity_days", recurring_reissue: "=recurring_reissue_on_change"}
+        "Insured Patient Out-of-Pocket Estimate": {validity_days: "=package_validity_days", recurring_reissue: "=recurring_reissue_on_change"}
+        "Riverbend Self-Pay Package Price - Imaging & Diagnostics": {validity_days: "=package_validity_days", recurring_reissue: "=recurring_reissue_on_change"}
+        "Riverbend Self-Pay Package Price - Outpatient Surgery": {validity_days: "=package_validity_days", recurring_reissue: "=recurring_reissue_on_change"}
+        "Riverbend Self-Pay Package Price - Maternity & Delivery": {validity_days: "=package_validity_days", recurring_reissue: "=recurring_reissue_on_change"}
+      revision_lead_bd: "=revision_lead_bd"
+      expired_estimate_reissue: "=expired_estimate_reissue"
+  - id: estimate_ppdr_eligibility
+    subject: [estimate_dispute_opened]
+    rule: >-
+      The patient-provider dispute process is available only to an estimate whose coverage_status is in ppdr_eligible_coverage. A dispute is eligible only when the patient initiated it no later than the dispute window counted from the date on the initial bill. Count calendar days starting the day after initial_bill_date; a dispute initiated on day ppdr_initiation_days itself is timely. It is further available only when Riverbend's billed charges for the service exceed Riverbend's expected charges on the latest version furnished by at least ppdr_threshold_usd, compared per provider or facility: Riverbend's billed charges are the self-pay final bill less the uninsured discount (ppdr_comparison_basis), and its expected charges are the sum of the CONVENING_FACILITY and CONVENING_PROFESSIONAL lines of that version. Co-providers' bills are disputed with those co-providers, not with Riverbend. The patient pays the ppdr_admin_fee_usd to the dispute resolution entity. While the dispute is pending, the linked hospital account is placed on a billing hold with dispute_hold_reason and receives no escalating statements, final notice or collection action (ppdr_collection_hold); the patient may still pay undisputed amounts.
+    eligibility:
+      - id: dispute_window
+        applies_to: [estimate_dispute_opened]
+        kind: time
+        condition: A dispute is eligible only when the patient initiated it no later than the dispute window counted from the date on the initial bill.
+        evidence_fields: [price_estimates.initial_bill_date, price_estimates.dispute_filed_date, price_estimates.estimate_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[price_estimates.estimate_id]]
+          action_bindings: {price_estimates.estimate_id: estimate_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the date on the initial bill
+          anchor_source: price_estimates.initial_bill_date
+          relation: not_after
+          duration_source: variants.ppdr_initiation_days
+          unit: calendar_days
+          counting_rule: Count calendar days starting the day after initial_bill_date; a dispute initiated on day ppdr_initiation_days itself is timely.
+          boundary: inclusive
+      - id: eligible_coverage
+        applies_to: [estimate_dispute_opened]
+        kind: authorization
+        condition: The patient-provider dispute process is available only to an estimate whose coverage_status is in ppdr_eligible_coverage.
+        evidence_fields: [price_estimates.coverage_status, price_estimates.estimate_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[price_estimates.estimate_id]]
+          action_bindings: {price_estimates.estimate_id: estimate_id}
+    params:
+      ppdr_threshold_usd: "=ppdr_threshold_usd"
+      ppdr_initiation_days: "=ppdr_initiation_days"
+      ppdr_admin_fee_usd: "=ppdr_admin_fee_usd"
+      ppdr_eligible_coverage: "=ppdr_eligible_coverage"
+      ppdr_comparison_basis: "=ppdr_comparison_basis"
+      ppdr_collection_hold: "=ppdr_collection_hold"
+      dispute_hold_reason: "=dispute_hold_reason"
+    measures: [estimate_msr_version_provider_total]
+  - id: estimate_ppdr_outcome
+    subject: [estimate_dispute_resolved]
+    rule: >-
+      When the dispute resolution entity determines an amount below Riverbend's billed charges (PATIENT_FAVORED), the patient owes the determined amount reduced further by ppdr_admin_fee_usd where ppdr_fee_credit_if_favored is true, and the difference from the billed charges posts to the hospital account as a PPDR_DETERMINATION_ADJUSTMENT. When the entity upholds the billed charges (PROVIDER_FAVORED), the patient owes the billed charges and no adjustment posts. A settlement agreed between Riverbend and the patient before the determination (SETTLED) closes the dispute at the settled amount, the difference from the billed charges posting as the adjustment, and the fee credit does not apply. A dispute the entity dismisses as ineligible (DISMISSED_INELIGIBLE) changes nothing. In every outcome the billing hold is released and the remaining balance resumes the statement cycle from where it stopped.
+    eligibility: []
+    params: {ppdr_admin_fee_usd: "=ppdr_admin_fee_usd", ppdr_fee_credit_if_favored: "=ppdr_fee_credit_if_favored"}
+  - id: estimate_package_pricing
+    subject: [estimate_deposit_collected, estimate_issued, estimate_service_completed]
+    rule: >-
+      A package price is all-inclusive for the listed service code (insured_estimate_binding is true on package tiers): the patient is billed the package price and nothing else for the package, except the package_exclusions, each billed at actual charges less the uninsured discount; an upgrade within the maternity package (cesarean delivery) adds package_upgrade_differential_usd, and each overnight stay beyond package_included_nights adds package_extra_day_usd. At scheduling the patient pays a deposit of deposit_pct of the package price, rounded half-up to the cent; on tiers with balance_due_days_before_service above zero, the rest of the package price is paid no later than that many calendar days before the scheduled service date as a BALANCE_BEFORE_SERVICE deposit. Deposits are accepted through deposit_methods. A package service is billed as a PACKAGE_PRICE_ADJUSTMENT bringing the account's patient balance down to the package price, never through the uninsured discount. Good faith estimates on non-package tiers are not binding prices; Riverbend bills actual charges less the uninsured discount, and the dispute process protects the patient against a large excess.
+    eligibility: []
+    params:
+      per_tier:
+        "Self-Pay Good Faith Estimate - Single Scheduled Service": {binding: "=insured_estimate_binding", exclusions: "=package_exclusions", upgrade_usd: "=package_upgrade_differential_usd", extra_day_usd: "=package_extra_day_usd", included_nights: "=package_included_nights", deposit_pct: "=deposit_pct", balance_due_days: "=balance_due_days_before_service"}
+        "Self-Pay Good Faith Estimate - Procedure with Co-Providers": {binding: "=insured_estimate_binding", exclusions: "=package_exclusions", upgrade_usd: "=package_upgrade_differential_usd", extra_day_usd: "=package_extra_day_usd", included_nights: "=package_included_nights", deposit_pct: "=deposit_pct", balance_due_days: "=balance_due_days_before_service"}
+        "Self-Pay Good Faith Estimate - Recurring Course of Care": {binding: "=insured_estimate_binding", exclusions: "=package_exclusions", upgrade_usd: "=package_upgrade_differential_usd", extra_day_usd: "=package_extra_day_usd", included_nights: "=package_included_nights", deposit_pct: "=deposit_pct", balance_due_days: "=balance_due_days_before_service"}
+        "Insured Patient Out-of-Pocket Estimate": {binding: "=insured_estimate_binding", exclusions: "=package_exclusions", upgrade_usd: "=package_upgrade_differential_usd", extra_day_usd: "=package_extra_day_usd", included_nights: "=package_included_nights", deposit_pct: "=deposit_pct", balance_due_days: "=balance_due_days_before_service"}
+        "Riverbend Self-Pay Package Price - Imaging & Diagnostics": {binding: "=insured_estimate_binding", exclusions: "=package_exclusions", upgrade_usd: "=package_upgrade_differential_usd", extra_day_usd: "=package_extra_day_usd", included_nights: "=package_included_nights", deposit_pct: "=deposit_pct", balance_due_days: "=balance_due_days_before_service"}
+        "Riverbend Self-Pay Package Price - Outpatient Surgery": {binding: "=insured_estimate_binding", exclusions: "=package_exclusions", upgrade_usd: "=package_upgrade_differential_usd", extra_day_usd: "=package_extra_day_usd", included_nights: "=package_included_nights", deposit_pct: "=deposit_pct", balance_due_days: "=balance_due_days_before_service"}
+        "Riverbend Self-Pay Package Price - Maternity & Delivery": {binding: "=insured_estimate_binding", exclusions: "=package_exclusions", upgrade_usd: "=package_upgrade_differential_usd", extra_day_usd: "=package_extra_day_usd", included_nights: "=package_included_nights", deposit_pct: "=deposit_pct", balance_due_days: "=balance_due_days_before_service"}
+      deposit_methods: "=deposit_methods"
+    formula:
+      deposit_due: round(estimate_total_usd * deposit_pct / 100, 2)
+      pre_service_balance_due: estimate_total_usd - deposit_due
+  - id: estimate_cancellation_and_deposit_refund
+    subject: [estimate_cancelled, estimate_deposit_refunded, estimate_cancellation_fee_retained]
+    rule: >-
+      Only the patient can cancel a requested estimate or a scheduled package service. A cancellation made at least full_refund_cancel_days calendar days before the scheduled service date (counting back from the service date, the cancellation date being on or before that day) refunds every deposit in full. A later cancellation retains late_cancellation_fee_usd from the deposits, never more than the deposits held, unless the cancelling physician documents a medical reason (medical_cancellation_fee_waived); the remainder is refunded. The fee is retained once, from the most recent deposit collection that can cover it. Each deposit collection is refunded at most once, by the original payment method (deposit_refund_method) within deposit_refund_days calendar days of the cancellation. A Riverbend-initiated reschedule or cancellation never incurs the fee.
+    eligibility:
+      - id: one_refund_per_deposit
+        applies_to: [estimate_deposit_refunded]
+        kind: dedup
+        condition: Each deposit collection is refunded at most once, by the original payment method (deposit_refund_method) within deposit_refund_days calendar days of the cancellation.
+        evidence_fields: [estimate_transactions.source_estimate_txn_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[estimate_transactions.source_estimate_txn_id]]
+          action_bindings: {estimate_transactions.source_estimate_txn_id: source_estimate_txn_id}
+        dedup_contract:
+          table: estimate_transactions
+          mode: separate_record
+          object_bindings: {source_estimate_txn_id: source_estimate_txn_id}
+          duplicate_filters: {event_type: [estimate_deposit_refunded]}
+          distinct_fields: []
+    params:
+      per_tier:
+        "Self-Pay Good Faith Estimate - Single Scheduled Service": {full_refund_days: "=full_refund_cancel_days", late_fee_usd: "=late_cancellation_fee_usd"}
+        "Self-Pay Good Faith Estimate - Procedure with Co-Providers": {full_refund_days: "=full_refund_cancel_days", late_fee_usd: "=late_cancellation_fee_usd"}
+        "Self-Pay Good Faith Estimate - Recurring Course of Care": {full_refund_days: "=full_refund_cancel_days", late_fee_usd: "=late_cancellation_fee_usd"}
+        "Insured Patient Out-of-Pocket Estimate": {full_refund_days: "=full_refund_cancel_days", late_fee_usd: "=late_cancellation_fee_usd"}
+        "Riverbend Self-Pay Package Price - Imaging & Diagnostics": {full_refund_days: "=full_refund_cancel_days", late_fee_usd: "=late_cancellation_fee_usd"}
+        "Riverbend Self-Pay Package Price - Outpatient Surgery": {full_refund_days: "=full_refund_cancel_days", late_fee_usd: "=late_cancellation_fee_usd"}
+        "Riverbend Self-Pay Package Price - Maternity & Delivery": {full_refund_days: "=full_refund_cancel_days", late_fee_usd: "=late_cancellation_fee_usd"}
+      medical_cancellation_fee_waived: "=medical_cancellation_fee_waived"
+      deposit_refund_days: "=deposit_refund_days"
+      deposit_refund_method: "=deposit_refund_method"
+    formula:
+      fee_retained: min(late_cancellation_fee_usd, deposit_held_usd)
+      refund_due: deposit_held_usd - fee_retained
+  - id: estimate_insured_and_variance_review
+    subject: [estimate_issued, estimate_closed, estimate_service_completed]
+    rule: >-
+      An Insured Patient Out-of-Pocket Estimate is an informational estimate based on the benefits verified on the issue date; it does not limit what the patient may be billed (insured_estimate_binding), and the patient-provider dispute process does not apply to it. After any rendered estimated service is billed, when the patient's actual liability exceeds the estimate total by more than variance_review_pct percent, Patient Financial Services reviews the variance with the patient before the second statement. An estimate with no dispute closes once ppdr_initiation_days have passed after the initial bill date; an estimate never used lapses after package_validity_days from its issued date.
+    eligibility: []
+    params:
+      per_tier:
+        "Self-Pay Good Faith Estimate - Single Scheduled Service": {variance_review_pct: "=variance_review_pct", validity_days: "=package_validity_days", binding: "=insured_estimate_binding"}
+        "Self-Pay Good Faith Estimate - Procedure with Co-Providers": {variance_review_pct: "=variance_review_pct", validity_days: "=package_validity_days", binding: "=insured_estimate_binding"}
+        "Self-Pay Good Faith Estimate - Recurring Course of Care": {variance_review_pct: "=variance_review_pct", validity_days: "=package_validity_days", binding: "=insured_estimate_binding"}
+        "Insured Patient Out-of-Pocket Estimate": {variance_review_pct: "=variance_review_pct", validity_days: "=package_validity_days", binding: "=insured_estimate_binding"}
+        "Riverbend Self-Pay Package Price - Imaging & Diagnostics": {variance_review_pct: "=variance_review_pct", validity_days: "=package_validity_days", binding: "=insured_estimate_binding"}
+        "Riverbend Self-Pay Package Price - Outpatient Surgery": {variance_review_pct: "=variance_review_pct", validity_days: "=package_validity_days", binding: "=insured_estimate_binding"}
+        "Riverbend Self-Pay Package Price - Maternity & Delivery": {variance_review_pct: "=variance_review_pct", validity_days: "=package_validity_days", binding: "=insured_estimate_binding"}
+      ppdr_initiation_days: "=ppdr_initiation_days"

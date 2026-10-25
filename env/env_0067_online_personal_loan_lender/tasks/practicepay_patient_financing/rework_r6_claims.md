@@ -1,0 +1,5 @@
+# Rework round 6 — claims (audit revision_5)
+
+- R5-1: closed — the plan's courtesy limit binds both make-up reliefs again and both count as courtesy waivers; the restated courtesy sentence states once that a last remaining waiver goes to the late-fee relief only when one above 0.00 is owed and otherwise to the returned-payment-fee relief; both schedules check it, and both booking orders on a one-waiver plan, and the case where the late-fee relief works out to 0.00, end in one state.
+- R5-2: closed — the reset declares a scoped, self-naming overwrite of the payment-application sentence: on a reset plan only, the reset schedule allocates each payment to its equal share of the deferred-interest part, then interest billed since the reset, then fees, then the balance; under that order the split payment repays the reset balance with exactly the reset payments, the last taking only the rounding difference.
+- T1-R5-1: closed — task 1's gold reset ends at a rounding remainder after exactly his remaining payments under the allocation order now in force for a reset plan.

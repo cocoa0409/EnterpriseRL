@@ -1,0 +1,943 @@
+category: billing
+display_name: Premium Billing Accounts
+
+binding:
+  holding_table: billing_accounts
+  event_tables: [billing_transactions]
+  intake_tables: [billing_requests]
+  status_field: status
+  variant_field: variant_name
+  quantity_fields: {balance_due: premium_balance}
+
+lifecycle:
+  states: [pending_binder, active, grace_period, lapsed, closed]
+  transitions:
+    - {from: pending_binder, to: active, by: system, means: "The binder (first premium) payment is received in full."}
+    - {from: pending_binder, to: closed, by: system, means: "Every enrollment the account was opened for was cancelled for an unpaid binder."}
+    - {from: active, to: grace_period, by: system, means: "A premium due date passed without full payment of the coverage month due."}
+    - {from: grace_period, to: active, by: system, means: "All past-due premium is paid before the grace period ends."}
+    - {from: grace_period, to: lapsed, by: system, means: "The grace period ended without full payment; the funded coverage terminates for nonpayment."}
+    - {from: lapsed, to: active, by: agent, means: "The account is reinstated within the reinstatement window after full payment of all past-due premium."}
+    - {from: lapsed, to: closed, by: system, means: "The reinstatement window ended without reinstatement."}
+    - {from: active, to: closed, by: user, means: "The account holder closes the account after all funded coverage has ended and the balance is settled."}
+
+accounts:
+  - key: premium_balance
+    unit: USD
+    meaning: Premium owed by the account holder (negative when the account holds a credit).
+
+parameter_schema:
+  billing_frequency_months: "months of coverage billed per invoice"
+  premium_due_day: "day of the month on which the premium for a billing period is due (the first day of the period it covers)"
+  invoice_lead_days: "calendar days before the due date on which the invoice is issued"
+  grace_period_days: "calendar days after the due date during which coverage continues while premium is unpaid (non-APTC accounts); 0 when the account uses the APTC grace instead"
+  aptc_grace_period_months: "consecutive calendar months of grace for an exchange account receiving advance premium tax credit that has paid its binder; 0 when not applicable"
+  aptc_eligible: "boolean; true = the arrangement can receive advance premium tax credit from the exchange"
+  aptc_claims_pend_from_grace_month: "month of the APTC grace period (1-based) from which claims are pended rather than paid; 0 when not applicable"
+  aptc_lapse_termination_basis: "enum string; termination date when an APTC grace period ends unpaid: end_of_first_grace_month; not_applicable otherwise"
+  lapse_termination_basis: "enum string; termination date when a non-APTC grace period ends unpaid: paid_through_date"
+  premium_payment_threshold_pct: "integer percent of the net premium due that counts as full payment for grace and lapse purposes (a shortfall within the threshold carries forward as a balance)"
+  group_underpayment_tolerance: "USD; a group remittance short by no more than this amount counts as full payment and the shortfall carries forward; 0.00 for individual arrangements"
+  accepted_payment_methods: "list of payment methods accepted on the arrangement"
+  autopay_required: "boolean; true = the arrangement must keep an automatic draft (eft or card) on file"
+  autopay_discount_monthly: "USD per billed month credited off the invoice for automatic draft"
+  prepay_discount_pct: "integer percent off the twelve monthly premiums when billed annually in advance"
+  eft_represent_count: "count of times a returned automatic draft is presented again before it is treated as unpaid"
+  eft_represent_business_days: "business days after a return on which the draft is presented again; 0 when not applicable"
+  returned_payment_fee: "USD fee booked when a check or bank draft is returned unpaid (insufficient funds, closed account); 0.00 = no fee"
+  returned_payment_fee_max_per_12_months: "count; at most this many returned-payment fees in any rolling 12 months"
+  autopay_returns_before_removal: "count of returned drafts within 12 months after which automatic draft is removed and the account must pay by check or card; 0 when not applicable"
+  autopay_removal_fallback: "enum string; arrangement the account is moved to when automatic draft is removed"
+  payment_application_order: "enum string; how a payment is applied: oldest_unpaid_month_first"
+  paid_through_advance_basis: "enum string; paid-through date advances only by whole coverage months fully paid (full_months_only)"
+  reinstatement_window_days: "calendar days after the lapse (termination) date within which the account may be reinstated; 0 = no reinstatement"
+  reinstatement_max_per_12_months: "count of reinstatements allowed in any rolling 12 months; 0 = none"
+  reinstatement_requires_full_past_due: "boolean; true = all premium past due through the current month must be paid before reinstatement"
+  reinstatement_payment_methods: "list of payment methods accepted for a reinstatement payment (certified funds rule)"
+  refund_minimum: "USD; credit balances below this amount on a closed account are not refunded but written off"
+  refund_method: "enum string; original_payment_method = refund to the method of the latest payment; credit_next_invoice = applied to the next group invoice, refunded only on closure"
+  refund_issue_business_days: "business days after the credit is booked within which a refund is issued"
+  termination_credit_basis: "enum string; credit on voluntary termination: full_months_after_termination = premium billed for coverage months after the termination month is credited; no partial-month refund"
+  prepay_unearned_basis: "enum string; unearned premium on an annual prepay: unearned_months_at_discounted_rate = remaining full months times the discounted monthly rate"
+  retro_termination_limit_days: "calendar days; a group may terminate a member retroactively no more than this many days before the date the termination is reported, and premium is credited only for those months; 0 for individual arrangements"
+  retro_addition_limit_days: "calendar days; a group may add a member retroactively no more than this many days before the date reported; 0 for individual arrangements"
+  group_remittance_report_required: "boolean; true = the group submits its own monthly enrollment and premium report instead of paying a carrier-built invoice"
+  group_reconciliation_months: "months between carrier reconciliations of a self-administered group's reports against enrollment; 0 when not applicable"
+  binder_amount_basis: "enum string; amount of the binder: first_billing_period = premium for the first billing period of the arrangement"
+  binder_payment_methods: "list of payment methods accepted for the binder"
+  payment_method_change_lead_days: "calendar days before the next draft date by which a payment-method change must be confirmed to apply to that draft"
+  closure_requires_zero_balance: "boolean; true = an account can be closed only once its balance is 0.00 after credits, refunds and write-offs"
+  credit_transfer_allowed: "boolean; true = a credit balance may be applied to past-due premium on another open account of the same customer before any refund"
+  aptc_return_months_on_lapse: "enum string; advance premium tax credit for grace months after the first is returned to the exchange when an APTC account lapses (months_2_and_3); not_applicable otherwise"
+  statement_rounding: "enum string; amounts are rounded half up to the cent"
+  late_fee: "USD late fee on unpaid premium; 0.00 = none charged"
+  grace_notice_required: "boolean; true = a grace notice is sent when the account enters grace (the grace period runs whether or not the notice is read)"
+  max_months_billed_in_advance: "count of future coverage months that may be paid ahead; payments beyond it are refunded"
+  partial_month_billing: "enum string; coverage always starts and ends on month boundaries, so no partial-month premium is billed (whole_months_only)"
+  group_invoice_basis: "enum string; how group premium is computed: contract_rates_times_enrolled = the group contract's rate per coverage tier times enrolled subscribers in that tier on the first of the month; not_applicable for individual"
+  individual_invoice_basis: "enum string; how individual premium is computed: filed_rates_by_coverage_tier = the plan's monthly premium for the coverage tier plus orthodontic rider premium per enrolled person; not_applicable for groups"
+
+variants:
+  - name: "Cascade Individual Direct Bill Monthly"
+    rank: 1
+    entry_gate: {"customer_type": "individual", "markets": ["individual"]}
+    parameters:
+      billing_frequency_months: 1
+      premium_due_day: 1
+      invoice_lead_days: 20
+      grace_period_days: 31
+      aptc_grace_period_months: 0
+      aptc_eligible: false
+      aptc_claims_pend_from_grace_month: 0
+      aptc_lapse_termination_basis: "not_applicable"
+      lapse_termination_basis: "paid_through_date"
+      premium_payment_threshold_pct: 100
+      group_underpayment_tolerance: 0.0
+      accepted_payment_methods: ["check", "card"]
+      autopay_required: false
+      autopay_discount_monthly: 0.0
+      prepay_discount_pct: 0
+      eft_represent_count: 0
+      eft_represent_business_days: 0
+      returned_payment_fee: 25.0
+      returned_payment_fee_max_per_12_months: 2
+      autopay_returns_before_removal: 0
+      autopay_removal_fallback: "not_applicable"
+      payment_application_order: "oldest_unpaid_month_first"
+      paid_through_advance_basis: "full_months_only"
+      reinstatement_window_days: 30
+      reinstatement_max_per_12_months: 1
+      reinstatement_requires_full_past_due: true
+      reinstatement_payment_methods: ["card", "eft"]
+      refund_minimum: 5.0
+      refund_method: "original_payment_method"
+      refund_issue_business_days: 10
+      termination_credit_basis: "full_months_after_termination"
+      prepay_unearned_basis: "not_applicable"
+      retro_termination_limit_days: 0
+      retro_addition_limit_days: 0
+      group_remittance_report_required: false
+      group_reconciliation_months: 0
+      binder_amount_basis: "first_billing_period"
+      binder_payment_methods: ["card", "check"]
+      payment_method_change_lead_days: 0
+      closure_requires_zero_balance: true
+      credit_transfer_allowed: true
+      aptc_return_months_on_lapse: "not_applicable"
+      statement_rounding: "half_up_cents"
+      late_fee: 0.0
+      grace_notice_required: true
+      max_months_billed_in_advance: 3
+      partial_month_billing: "whole_months_only"
+      group_invoice_basis: "not_applicable"
+      individual_invoice_basis: "filed_rates_by_coverage_tier"
+  - name: "Cascade Individual AutoPay Monthly"
+    rank: 2
+    entry_gate: {"customer_type": "individual", "markets": ["individual"], "requires_payment_method": ["eft", "card"]}
+    parameters:
+      billing_frequency_months: 1
+      premium_due_day: 1
+      invoice_lead_days: 20
+      grace_period_days: 31
+      aptc_grace_period_months: 0
+      aptc_eligible: false
+      aptc_claims_pend_from_grace_month: 0
+      aptc_lapse_termination_basis: "not_applicable"
+      lapse_termination_basis: "paid_through_date"
+      premium_payment_threshold_pct: 100
+      group_underpayment_tolerance: 0.0
+      accepted_payment_methods: ["eft", "card"]
+      autopay_required: true
+      autopay_discount_monthly: 1.0
+      prepay_discount_pct: 0
+      eft_represent_count: 1
+      eft_represent_business_days: 3
+      returned_payment_fee: 25.0
+      returned_payment_fee_max_per_12_months: 2
+      autopay_returns_before_removal: 2
+      autopay_removal_fallback: "Cascade Individual Direct Bill Monthly"
+      payment_application_order: "oldest_unpaid_month_first"
+      paid_through_advance_basis: "full_months_only"
+      reinstatement_window_days: 30
+      reinstatement_max_per_12_months: 1
+      reinstatement_requires_full_past_due: true
+      reinstatement_payment_methods: ["card", "eft"]
+      refund_minimum: 5.0
+      refund_method: "original_payment_method"
+      refund_issue_business_days: 10
+      termination_credit_basis: "full_months_after_termination"
+      prepay_unearned_basis: "not_applicable"
+      retro_termination_limit_days: 0
+      retro_addition_limit_days: 0
+      group_remittance_report_required: false
+      group_reconciliation_months: 0
+      binder_amount_basis: "first_billing_period"
+      binder_payment_methods: ["eft", "card"]
+      payment_method_change_lead_days: 5
+      closure_requires_zero_balance: true
+      credit_transfer_allowed: true
+      aptc_return_months_on_lapse: "not_applicable"
+      statement_rounding: "half_up_cents"
+      late_fee: 0.0
+      grace_notice_required: true
+      max_months_billed_in_advance: 3
+      partial_month_billing: "whole_months_only"
+      group_invoice_basis: "not_applicable"
+      individual_invoice_basis: "filed_rates_by_coverage_tier"
+  - name: "Cascade Individual Quarterly Bill"
+    rank: 3
+    entry_gate: {"customer_type": "individual", "markets": ["individual"]}
+    parameters:
+      billing_frequency_months: 3
+      premium_due_day: 1
+      invoice_lead_days: 30
+      grace_period_days: 31
+      aptc_grace_period_months: 0
+      aptc_eligible: false
+      aptc_claims_pend_from_grace_month: 0
+      aptc_lapse_termination_basis: "not_applicable"
+      lapse_termination_basis: "paid_through_date"
+      premium_payment_threshold_pct: 100
+      group_underpayment_tolerance: 0.0
+      accepted_payment_methods: ["check", "card", "eft"]
+      autopay_required: false
+      autopay_discount_monthly: 0.0
+      prepay_discount_pct: 0
+      eft_represent_count: 0
+      eft_represent_business_days: 0
+      returned_payment_fee: 25.0
+      returned_payment_fee_max_per_12_months: 2
+      autopay_returns_before_removal: 0
+      autopay_removal_fallback: "not_applicable"
+      payment_application_order: "oldest_unpaid_month_first"
+      paid_through_advance_basis: "full_months_only"
+      reinstatement_window_days: 30
+      reinstatement_max_per_12_months: 1
+      reinstatement_requires_full_past_due: true
+      reinstatement_payment_methods: ["card", "eft"]
+      refund_minimum: 5.0
+      refund_method: "original_payment_method"
+      refund_issue_business_days: 10
+      termination_credit_basis: "full_months_after_termination"
+      prepay_unearned_basis: "not_applicable"
+      retro_termination_limit_days: 0
+      retro_addition_limit_days: 0
+      group_remittance_report_required: false
+      group_reconciliation_months: 0
+      binder_amount_basis: "first_billing_period"
+      binder_payment_methods: ["card", "check", "eft"]
+      payment_method_change_lead_days: 5
+      closure_requires_zero_balance: true
+      credit_transfer_allowed: true
+      aptc_return_months_on_lapse: "not_applicable"
+      statement_rounding: "half_up_cents"
+      late_fee: 0.0
+      grace_notice_required: true
+      max_months_billed_in_advance: 6
+      partial_month_billing: "whole_months_only"
+      group_invoice_basis: "not_applicable"
+      individual_invoice_basis: "filed_rates_by_coverage_tier"
+  - name: "Cascade Individual Annual Prepay"
+    rank: 4
+    entry_gate: {"customer_type": "individual", "markets": ["individual"]}
+    parameters:
+      billing_frequency_months: 12
+      premium_due_day: 1
+      invoice_lead_days: 45
+      grace_period_days: 31
+      aptc_grace_period_months: 0
+      aptc_eligible: false
+      aptc_claims_pend_from_grace_month: 0
+      aptc_lapse_termination_basis: "not_applicable"
+      lapse_termination_basis: "paid_through_date"
+      premium_payment_threshold_pct: 100
+      group_underpayment_tolerance: 0.0
+      accepted_payment_methods: ["check", "card", "eft"]
+      autopay_required: false
+      autopay_discount_monthly: 0.0
+      prepay_discount_pct: 4
+      eft_represent_count: 0
+      eft_represent_business_days: 0
+      returned_payment_fee: 25.0
+      returned_payment_fee_max_per_12_months: 2
+      autopay_returns_before_removal: 0
+      autopay_removal_fallback: "not_applicable"
+      payment_application_order: "oldest_unpaid_month_first"
+      paid_through_advance_basis: "full_months_only"
+      reinstatement_window_days: 30
+      reinstatement_max_per_12_months: 1
+      reinstatement_requires_full_past_due: true
+      reinstatement_payment_methods: ["card", "eft"]
+      refund_minimum: 5.0
+      refund_method: "original_payment_method"
+      refund_issue_business_days: 10
+      termination_credit_basis: "full_months_after_termination"
+      prepay_unearned_basis: "unearned_months_at_discounted_rate"
+      retro_termination_limit_days: 0
+      retro_addition_limit_days: 0
+      group_remittance_report_required: false
+      group_reconciliation_months: 0
+      binder_amount_basis: "first_billing_period"
+      binder_payment_methods: ["card", "check", "eft"]
+      payment_method_change_lead_days: 5
+      closure_requires_zero_balance: true
+      credit_transfer_allowed: true
+      aptc_return_months_on_lapse: "not_applicable"
+      statement_rounding: "half_up_cents"
+      late_fee: 0.0
+      grace_notice_required: true
+      max_months_billed_in_advance: 12
+      partial_month_billing: "whole_months_only"
+      group_invoice_basis: "not_applicable"
+      individual_invoice_basis: "filed_rates_by_coverage_tier"
+  - name: "Cascade Exchange SADP Monthly"
+    rank: 5
+    entry_gate: {"customer_type": "individual", "markets": ["individual_exchange"]}
+    parameters:
+      billing_frequency_months: 1
+      premium_due_day: 1
+      invoice_lead_days: 20
+      grace_period_days: 31
+      aptc_grace_period_months: 3
+      aptc_eligible: true
+      aptc_claims_pend_from_grace_month: 2
+      aptc_lapse_termination_basis: "end_of_first_grace_month"
+      lapse_termination_basis: "paid_through_date"
+      premium_payment_threshold_pct: 98
+      group_underpayment_tolerance: 0.0
+      accepted_payment_methods: ["eft", "card", "check", "exchange_aptc"]
+      autopay_required: false
+      autopay_discount_monthly: 0.0
+      prepay_discount_pct: 0
+      eft_represent_count: 1
+      eft_represent_business_days: 3
+      returned_payment_fee: 0.0
+      returned_payment_fee_max_per_12_months: 0
+      autopay_returns_before_removal: 2
+      autopay_removal_fallback: "not_applicable"
+      payment_application_order: "oldest_unpaid_month_first"
+      paid_through_advance_basis: "full_months_only"
+      reinstatement_window_days: 0
+      reinstatement_max_per_12_months: 0
+      reinstatement_requires_full_past_due: true
+      reinstatement_payment_methods: ["card", "eft"]
+      refund_minimum: 5.0
+      refund_method: "original_payment_method"
+      refund_issue_business_days: 10
+      termination_credit_basis: "full_months_after_termination"
+      prepay_unearned_basis: "not_applicable"
+      retro_termination_limit_days: 0
+      retro_addition_limit_days: 0
+      group_remittance_report_required: false
+      group_reconciliation_months: 0
+      binder_amount_basis: "first_billing_period"
+      binder_payment_methods: ["card", "eft", "check"]
+      payment_method_change_lead_days: 5
+      closure_requires_zero_balance: true
+      credit_transfer_allowed: false
+      aptc_return_months_on_lapse: "months_2_and_3"
+      statement_rounding: "half_up_cents"
+      late_fee: 0.0
+      grace_notice_required: true
+      max_months_billed_in_advance: 3
+      partial_month_billing: "whole_months_only"
+      group_invoice_basis: "not_applicable"
+      individual_invoice_basis: "filed_rates_by_coverage_tier"
+  - name: "Cascade Group List Bill"
+    rank: 6
+    entry_gate: {"customer_type": "employer_group", "markets": ["group"], "group_min_enrolled_lives": 2}
+    parameters:
+      billing_frequency_months: 1
+      premium_due_day: 1
+      invoice_lead_days: 30
+      grace_period_days: 31
+      aptc_grace_period_months: 0
+      aptc_eligible: false
+      aptc_claims_pend_from_grace_month: 0
+      aptc_lapse_termination_basis: "not_applicable"
+      lapse_termination_basis: "paid_through_date"
+      premium_payment_threshold_pct: 100
+      group_underpayment_tolerance: 25.0
+      accepted_payment_methods: ["employer_remittance"]
+      autopay_required: false
+      autopay_discount_monthly: 0.0
+      prepay_discount_pct: 0
+      eft_represent_count: 0
+      eft_represent_business_days: 0
+      returned_payment_fee: 35.0
+      returned_payment_fee_max_per_12_months: 3
+      autopay_returns_before_removal: 0
+      autopay_removal_fallback: "not_applicable"
+      payment_application_order: "oldest_unpaid_month_first"
+      paid_through_advance_basis: "full_months_only"
+      reinstatement_window_days: 30
+      reinstatement_max_per_12_months: 2
+      reinstatement_requires_full_past_due: true
+      reinstatement_payment_methods: ["employer_remittance"]
+      refund_minimum: 25.0
+      refund_method: "credit_next_invoice"
+      refund_issue_business_days: 15
+      termination_credit_basis: "full_months_after_termination"
+      prepay_unearned_basis: "not_applicable"
+      retro_termination_limit_days: 60
+      retro_addition_limit_days: 60
+      group_remittance_report_required: false
+      group_reconciliation_months: 0
+      binder_amount_basis: "first_billing_period"
+      binder_payment_methods: ["employer_remittance"]
+      payment_method_change_lead_days: 0
+      closure_requires_zero_balance: true
+      credit_transfer_allowed: false
+      aptc_return_months_on_lapse: "not_applicable"
+      statement_rounding: "half_up_cents"
+      late_fee: 0.0
+      grace_notice_required: true
+      max_months_billed_in_advance: 2
+      partial_month_billing: "whole_months_only"
+      group_invoice_basis: "contract_rates_times_enrolled"
+      individual_invoice_basis: "not_applicable"
+  - name: "Cascade Group Self-Administered Bill"
+    rank: 7
+    entry_gate: {"customer_type": "employer_group", "markets": ["group"], "group_min_enrolled_lives": 100}
+    parameters:
+      billing_frequency_months: 1
+      premium_due_day: 1
+      invoice_lead_days: 0
+      grace_period_days: 31
+      aptc_grace_period_months: 0
+      aptc_eligible: false
+      aptc_claims_pend_from_grace_month: 0
+      aptc_lapse_termination_basis: "not_applicable"
+      lapse_termination_basis: "paid_through_date"
+      premium_payment_threshold_pct: 100
+      group_underpayment_tolerance: 50.0
+      accepted_payment_methods: ["employer_remittance"]
+      autopay_required: false
+      autopay_discount_monthly: 0.0
+      prepay_discount_pct: 0
+      eft_represent_count: 0
+      eft_represent_business_days: 0
+      returned_payment_fee: 35.0
+      returned_payment_fee_max_per_12_months: 3
+      autopay_returns_before_removal: 0
+      autopay_removal_fallback: "not_applicable"
+      payment_application_order: "oldest_unpaid_month_first"
+      paid_through_advance_basis: "full_months_only"
+      reinstatement_window_days: 30
+      reinstatement_max_per_12_months: 2
+      reinstatement_requires_full_past_due: true
+      reinstatement_payment_methods: ["employer_remittance"]
+      refund_minimum: 25.0
+      refund_method: "credit_next_invoice"
+      refund_issue_business_days: 15
+      termination_credit_basis: "full_months_after_termination"
+      prepay_unearned_basis: "not_applicable"
+      retro_termination_limit_days: 60
+      retro_addition_limit_days: 60
+      group_remittance_report_required: true
+      group_reconciliation_months: 3
+      binder_amount_basis: "first_billing_period"
+      binder_payment_methods: ["employer_remittance"]
+      payment_method_change_lead_days: 0
+      closure_requires_zero_balance: true
+      credit_transfer_allowed: false
+      aptc_return_months_on_lapse: "not_applicable"
+      statement_rounding: "half_up_cents"
+      late_fee: 0.0
+      grace_notice_required: true
+      max_months_billed_in_advance: 2
+      partial_month_billing: "whole_months_only"
+      group_invoice_basis: "contract_rates_times_enrolled"
+      individual_invoice_basis: "not_applicable"
+
+events:
+  - type: billing_account_open
+    target: billing_accounts
+    mutation: create
+    meaning: A billing account is opened for a new individual application or a new group contract, awaiting its binder.
+    grain: One row per billing account.
+    fields:
+      customer_id: Party billed.
+      group_contract_id: Group contract billed; empty for individual.
+      variant_name: Billing arrangement.
+      opened_date: Opening date.
+      payment_method: Payment method on file.
+      aptc_monthly_amount: APTC on an exchange account, else 0.00.
+      balance_due: 0.00 at opening.
+    triggers: []
+  - type: billing_binder_received
+    target: billing_accounts
+    mutation: {transition: {from: pending_binder, to: active}}
+    meaning: The binder payment is received in full and the account becomes active.
+    grain: One row per transaction.
+    fields:
+      paid_through_date: Last day of the first billing period.
+    triggers: []
+  - type: billing_binder_expired
+    target: billing_accounts
+    mutation: {transition: {from: pending_binder, to: closed}}
+    meaning: The account closes because every enrollment it was opened for was cancelled for an unpaid binder.
+    grain: One row per transaction.
+    fields:
+      closed_date: Closing date.
+    triggers:
+      - event: dental:dental_binder_lapse
+        map: {termination_reason: binder_not_paid}
+      - event: vision:vision_binder_lapse
+        map: {termination_reason: binder_not_paid}
+  - type: billing_grace_start
+    target: billing_accounts
+    mutation: {transition: {from: active, to: grace_period}}
+    meaning: A premium due date passes without full payment and the grace period begins.
+    grain: One row per transaction.
+    fields:
+      grace_period_start_date: First day of the first unpaid coverage month.
+    triggers: []
+  - type: billing_grace_cured
+    target: billing_accounts
+    mutation: {transition: {from: grace_period, to: active}}
+    meaning: All past-due premium is paid within the grace period.
+    grain: One row per transaction.
+    fields:
+      grace_period_start_date: Cleared.
+      paid_through_date: Advanced by the months now fully paid.
+    triggers: []
+  - type: billing_lapse
+    target: billing_accounts
+    mutation: {transition: {from: grace_period, to: lapsed}}
+    meaning: The grace period ends unpaid and the account lapses; every enrollment it funds terminates for nonpayment.
+    grain: One row per transaction.
+    fields:
+      paid_through_date: Termination date of the funded coverage (end of the first grace month for APTC accounts).
+    triggers:
+      - event: dental:dental_terminate_nonpayment
+        map: {termination_reason: nonpayment, termination_date: paid_through_date}
+      - event: vision:vision_terminate_nonpayment
+        map: {termination_reason: nonpayment, termination_date: paid_through_date}
+      - event: dhmo:dhmo_terminate_nonpayment
+        map: {termination_reason: nonpayment, termination_date: paid_through_date}
+  - type: billing_reinstate
+    target: billing_accounts
+    mutation: {transition: {from: lapsed, to: active}}
+    meaning: A lapsed account is reinstated after full payment within the reinstatement window.
+    grain: One row per transaction.
+    fields:
+      grace_period_start_date: Cleared.
+      paid_through_date: Advanced by the months paid.
+    triggers:
+      - event: dental:dental_reinstate
+        map: {termination_reason: not_terminated}
+      - event: vision:vision_reinstate
+        map: {termination_reason: not_terminated}
+  - type: billing_reinstatement_expired
+    target: billing_accounts
+    mutation: {transition: {from: lapsed, to: closed}}
+    meaning: The reinstatement window ends without reinstatement and the account closes.
+    grain: One row per transaction.
+    fields:
+      closed_date: Closing date.
+    triggers: []
+  - type: billing_account_close
+    target: billing_accounts
+    mutation: {transition: {from: active, to: closed}}
+    meaning: The account holder closes the account after all funded coverage has ended.
+    grain: One row per transaction.
+    fields:
+      closed_date: Closing date.
+    triggers: []
+  - type: billing_payment_method_change
+    target: billing_accounts
+    mutation: update
+    meaning: The payment method on file changes at the account holder's authorization.
+    grain: One row per transaction.
+    fields:
+      payment_method: New payment method.
+    triggers: []
+  - type: billing_paid_through_update
+    target: billing_accounts
+    mutation: update
+    meaning: The paid-through date moves after a payment, a returned payment or a credit changes which coverage months are fully paid.
+    grain: One row per transaction.
+    fields:
+      paid_through_date: Recomputed paid-through date.
+    triggers: []
+  - type: billing_invoice_issued
+    target: billing_transactions
+    meaning: Premium for a billing period is billed.
+    grain: One row per invoice.
+    distinguish_by: [invoice_number]
+    fields:
+      invoice_number: Invoice number.
+      coverage_month: First month billed.
+      months_covered: Months billed.
+      product_line: combined.
+      amount: Net premium billed after discounts and APTC.
+      txn_date: Issue date.
+    account: premium_balance
+    direction: in
+    triggers: []
+  - type: billing_payment_received
+    target: billing_transactions
+    meaning: A payment is received and applied to the account.
+    grain: One row per payment.
+    distinguish_by: [payment_reference, payment_method]
+    fields:
+      invoice_number: Invoice paid, if referenced.
+      coverage_month: Oldest coverage month the payment is applied to.
+      months_covered: Whole months the payment completes.
+      product_line: combined.
+      amount: Amount received.
+      txn_date: Receipt date.
+      payment_method: Method used.
+      payment_purpose: regular, binder, grace_cure or reinstatement.
+      payment_reference: Check, trace or confirmation number.
+    account: premium_balance
+    direction: out
+    triggers:
+      - event: billing:billing_paid_through_update
+        map: {}
+  - type: billing_payment_returned
+    target: billing_transactions
+    meaning: A check or bank draft previously booked as received is returned unpaid.
+    grain: One row per returned payment.
+    distinguish_by: [original_billing_txn_id]
+    fields:
+      coverage_month: Coverage month of the returned payment.
+      months_covered: Months the returned payment had completed.
+      product_line: combined.
+      amount: Amount of the returned payment.
+      txn_date: Return date.
+      payment_method: Method of the returned payment.
+      payment_reference: Bank return trace number.
+      original_billing_txn_id: Payment returned.
+    account: premium_balance
+    direction: in
+    triggers:
+      - event: billing:billing_returned_payment_fee
+        when: {payment_method: [eft, check]}
+        map: {original_billing_txn_id: billing_txn_id, txn_date: txn_date, coverage_month: coverage_month}
+      - event: billing:billing_paid_through_update
+        map: {}
+  - type: billing_returned_payment_fee
+    target: billing_transactions
+    meaning: The returned-payment fee is charged for a returned check or draft.
+    grain: One row per returned payment charged.
+    distinguish_by: [original_billing_txn_id]
+    fields:
+      coverage_month: Coverage month of the returned payment.
+      months_covered: 0.
+      product_line: combined.
+      amount: Returned-payment fee.
+      txn_date: Fee date.
+      original_billing_txn_id: Return the fee is for.
+    account: premium_balance
+    direction: in
+    triggers: []
+  - type: billing_premium_credit
+    target: billing_transactions
+    meaning: Premium previously billed is credited back (free look, unearned months after termination, retroactive group termination, overpayment, unearned annual prepay, plan change difference, APTC reconciliation).
+    grain: One row per credited product line, reason and starting coverage month.
+    distinguish_by: [product_line, credit_reason, coverage_month]
+    fields:
+      invoice_number: Invoice the credit relates to, if any.
+      coverage_month: First coverage month credited.
+      months_covered: Months credited.
+      product_line: Product credited.
+      amount: Credit amount.
+      txn_date: Credit date.
+      credit_reason: Reason.
+    account: premium_balance
+    direction: out
+    triggers:
+      - event: billing:billing_paid_through_update
+        map: {}
+  - type: billing_refund_issued
+    target: billing_transactions
+    meaning: A credit balance is paid back to the account holder.
+    grain: One row per refund.
+    distinguish_by: [original_billing_txn_id, payment_reference]
+    fields:
+      coverage_month: Coverage month of the credit refunded.
+      months_covered: Months of the credit refunded.
+      product_line: Product of the credit refunded.
+      amount: Refund amount.
+      txn_date: Refund date.
+      payment_method: Method of the refund.
+      payment_reference: Refund trace or check number.
+      credit_reason: Reason of the credit refunded.
+      original_billing_txn_id: Credit refunded.
+    account: premium_balance
+    direction: in
+    triggers: []
+
+measures:
+  - id: billing_msr_returned_fees_12m
+    window: Rolling 12 months ending on the date of the return being charged.
+    measure: Count of billing_returned_payment_fee rows on the account.
+  - id: billing_msr_returns_12m
+    window: Rolling 12 months ending on the date of the latest return.
+    measure: Count of billing_payment_returned rows on the account whose payment_method is eft or card.
+  - id: billing_msr_reinstatements_12m
+    window: Rolling 12 months ending on the reinstatement date.
+    measure: Count of billing_payment_received rows on the account with payment_purpose reinstatement that have not been returned.
+  - id: billing_msr_past_due
+    window: Coverage months from the month after paid_through_date through the current month.
+    measure: Sum of the net premium due for those months (invoiced amounts less payments and credits applied to them).
+
+policies:
+  - id: billing_agg_multi_holding
+    subject: [billing_account_open]
+    rule: >-
+      A customer may hold several billing accounts, so there is no fixed cap.
+      A new account may be opened only when the customer holds no open account of the same arrangement family: the individual-market family (Direct Bill Monthly, AutoPay Monthly, Quarterly Bill, Annual Prepay), the Exchange SADP Monthly family, or, for an employer, a group account for the same group contract.
+      An account is open while its status is pending_binder, active, grace_period or lapsed.
+      Exchange enrollments may be funded only by the Exchange SADP Monthly arrangement, group enrollments only by a group arrangement of their own group contract, and other individual enrollments only by an individual-market arrangement.
+    eligibility:
+      - id: one_open_account_per_arrangement_family
+        applies_to: [billing_account_open]
+        kind: dedup
+        condition: "A new account may be opened only when the customer holds no open account of the same arrangement family: the individual-market family (Direct Bill Monthly, AutoPay Monthly, Quarterly Bill, Annual Prepay), the Exchange SADP Monthly family, or, for an employer, a group account for the same group contract."
+        evidence_fields: [billing_accounts.customer_id, billing_accounts.variant_name, billing_accounts.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [billing_accounts.customer_id]
+          action_bindings:
+            billing_accounts.customer_id: customer_id
+        dedup_contract:
+          table: billing_accounts
+          mode: separate_record
+          object_bindings: {customer_id: customer_id, variant_name: variant_name}
+          duplicate_filters: {status: [pending_binder, active, grace_period, lapsed]}
+          distinct_fields: [group_contract_id]
+    params:
+      max_per_customer: null
+
+  - id: billing_agg_credit_application
+    subject: [billing_premium_credit, billing_refund_issued]
+    rule: >-
+      A credit balance belongs to the account on which it arose.
+      When credit_transfer_allowed is true and the same customer has past-due premium on another open account, the credit is applied to that past-due premium (oldest month first) before any refund is issued; on arrangements where transfer is not allowed the credit stays on its own account.
+      On an open account a credit is applied to the next invoice unless the account holder asks for a refund; on a closed account the credit balance is refunded when it is at least refund_minimum and written off otherwise; group arrangements refund only on closure (refund_method credit_next_invoice).
+      A refund is issued by refund_method within refund_issue_business_days after the credit, references the credit it pays out, and can never exceed the credit balance on the account at the time.
+    eligibility: []
+    params:
+      per_tier:
+        Cascade Individual Direct Bill Monthly: {refund_minimum: "=refund_minimum", transfer: "=credit_transfer_allowed"}
+        Cascade Individual AutoPay Monthly: {refund_minimum: "=refund_minimum", transfer: "=credit_transfer_allowed"}
+        Cascade Individual Quarterly Bill: {refund_minimum: "=refund_minimum", transfer: "=credit_transfer_allowed"}
+        Cascade Individual Annual Prepay: {refund_minimum: "=refund_minimum", transfer: "=credit_transfer_allowed"}
+        Cascade Exchange SADP Monthly: {refund_minimum: "=refund_minimum", transfer: "=credit_transfer_allowed"}
+        Cascade Group List Bill: {refund_minimum: "=refund_minimum", transfer: "=credit_transfer_allowed"}
+        Cascade Group Self-Administered Bill: {refund_minimum: "=refund_minimum", transfer: "=credit_transfer_allowed"}
+
+  - id: billing_evt_invoicing
+    subject: [billing_invoice_issued]
+    rule: >-
+      Each invoice bills billing_frequency_months whole coverage months starting with the next unbilled month, and is issued invoice_lead_days before the premium_due_day of its first month; coverage always begins and ends on month boundaries, so no partial month is ever billed.
+      For individual arrangements the monthly premium is the sum, over every applied or active plan the account funds, of that plan's monthly premium for its coverage tier (dental PPO and vision charged once per plan unit), plus ortho_monthly_premium_per_enrollee for each applied or active orthodontic rider.
+      On an exchange account the invoice bills the monthly premium minus aptc_monthly_amount (never below 0.00), and the exchange's APTC is booked as a separate payment with method exchange_aptc.
+      AutoPay accounts receive autopay_discount_monthly off each billed month; an annual prepay invoice bills twelve months less prepay_discount_pct, rounded half up to the cent.
+      For group arrangements the monthly premium is the group contract's rate for each coverage tier times the subscribers enrolled in that tier on the first of the month; a self-administered group reports its own enrollment and pays on its report, and the carrier reconciles every group_reconciliation_months months.
+      No late fee is ever billed (late_fee).
+    eligibility: []
+    params:
+      per_tier:
+        Cascade Individual Direct Bill Monthly: {frequency: "=billing_frequency_months", prepay_discount: "=prepay_discount_pct", autopay_discount: "=autopay_discount_monthly"}
+        Cascade Individual AutoPay Monthly: {frequency: "=billing_frequency_months", prepay_discount: "=prepay_discount_pct", autopay_discount: "=autopay_discount_monthly"}
+        Cascade Individual Quarterly Bill: {frequency: "=billing_frequency_months", prepay_discount: "=prepay_discount_pct", autopay_discount: "=autopay_discount_monthly"}
+        Cascade Individual Annual Prepay: {frequency: "=billing_frequency_months", prepay_discount: "=prepay_discount_pct", autopay_discount: "=autopay_discount_monthly"}
+        Cascade Exchange SADP Monthly: {frequency: "=billing_frequency_months", prepay_discount: "=prepay_discount_pct", autopay_discount: "=autopay_discount_monthly"}
+        Cascade Group List Bill: {frequency: "=billing_frequency_months", prepay_discount: "=prepay_discount_pct", autopay_discount: "=autopay_discount_monthly"}
+        Cascade Group Self-Administered Bill: {frequency: "=billing_frequency_months", prepay_discount: "=prepay_discount_pct", autopay_discount: "=autopay_discount_monthly"}
+
+  - id: billing_evt_payment_application
+    subject: [billing_payment_received, billing_paid_through_update]
+    rule: >-
+      A payment is applied to the oldest unpaid coverage month first; the paid_through_date advances only by whole coverage months fully paid, where a month counts as fully paid when the amount applied to it reaches premium_payment_threshold_pct of its net premium (or falls short by no more than group_underpayment_tolerance on a group account), any shortfall carrying forward as balance.
+      A payment for the binder (the first billing period) moves a pending_binder account to active; a payment that brings every past-due month to fully paid during a grace period cures the grace period; a payment received after a lapse is applied as a reinstatement payment only when the reinstatement rules allow it and is otherwise refunded.
+      Payments that would pay more than max_months_billed_in_advance future months are refunded for the excess.
+      A payment is accepted only by a method in accepted_payment_methods for the arrangement (binder and reinstatement payments by the stricter binder_payment_methods and reinstatement_payment_methods).
+    eligibility: []
+    measures: [billing_msr_past_due]
+
+  - id: billing_evt_returned_payment
+    subject: [billing_payment_returned, billing_returned_payment_fee]
+    rule: >-
+      When a check or bank draft is returned unpaid, the return reverses the payment in full, the months it had paid become unpaid again and the paid_through_date moves back accordingly, which may put the account into grace as of the original due date.
+      On AutoPay and exchange arrangements a returned draft is presented again eft_represent_count times, eft_represent_business_days business days after the return, before it is treated as returned.
+      A returned check or bank draft is charged returned_payment_fee, but no fee is charged when the arrangement's fee is 0.00, when billing_msr_returned_fees_12m has already reached returned_payment_fee_max_per_12_months, or when the return was caused by a Cascade or bank processing error.
+      A fee may be charged only for a return that has not already been charged a fee.
+      When billing_msr_returns_12m reaches autopay_returns_before_removal, automatic draft is removed and the account moves to autopay_removal_fallback.
+    eligibility:
+      - id: one_fee_per_return
+        applies_to: [billing_returned_payment_fee]
+        kind: dedup
+        condition: A fee may be charged only for a return that has not already been charged a fee.
+        evidence_fields: [billing_transactions.original_billing_txn_id, billing_transactions.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [billing_transactions.original_billing_txn_id]
+          action_bindings:
+            billing_transactions.original_billing_txn_id: original_billing_txn_id
+        dedup_contract:
+          table: billing_transactions
+          mode: separate_record
+          object_bindings: {original_billing_txn_id: original_billing_txn_id}
+          duplicate_filters: {event_type: [billing_returned_payment_fee]}
+          distinct_fields: []
+    params:
+      per_tier:
+        Cascade Individual Direct Bill Monthly: {fee: "=returned_payment_fee", fee_cap: "=returned_payment_fee_max_per_12_months"}
+        Cascade Individual AutoPay Monthly: {fee: "=returned_payment_fee", fee_cap: "=returned_payment_fee_max_per_12_months"}
+        Cascade Individual Quarterly Bill: {fee: "=returned_payment_fee", fee_cap: "=returned_payment_fee_max_per_12_months"}
+        Cascade Individual Annual Prepay: {fee: "=returned_payment_fee", fee_cap: "=returned_payment_fee_max_per_12_months"}
+        Cascade Exchange SADP Monthly: {fee: "=returned_payment_fee", fee_cap: "=returned_payment_fee_max_per_12_months"}
+        Cascade Group List Bill: {fee: "=returned_payment_fee", fee_cap: "=returned_payment_fee_max_per_12_months"}
+        Cascade Group Self-Administered Bill: {fee: "=returned_payment_fee", fee_cap: "=returned_payment_fee_max_per_12_months"}
+    formula:
+      when: billing_msr_returned_fees_12m < returned_payment_fee_max_per_12_months
+      amount: returned_payment_fee
+    measures: [billing_msr_returned_fees_12m, billing_msr_returns_12m]
+
+  - id: billing_grace_and_lapse
+    subject: [billing_grace_start, billing_grace_cured, billing_lapse]
+    rule: >-
+      An active account enters grace_period on the day after a premium due date on which the coverage month due is not fully paid; grace_period_start_date is the first day of that unpaid month.
+      For a non-APTC account the grace period lasts grace_period_days calendar days counted from the due date of the first unpaid month; for an exchange account that receives advance premium tax credit and has paid its binder it lasts aptc_grace_period_months consecutive calendar months starting with the first unpaid month.
+      During grace coverage continues; on an APTC account claims with dates of service from month aptc_claims_pend_from_grace_month of the grace period onward are pended, and on other accounts claims are paid normally.
+      The grace period is cured when every past-due month is fully paid before it ends, and the account returns to active.
+      An account in grace may lapse only after its grace period has ended without full payment of the past-due premium.
+      The grace period ends at the close of the due date of the first unpaid month plus grace_period_days calendar days (for APTC accounts, the last day of the last grace month), and lapse is allowed only on a later day.
+      On lapse every enrollment the account funds terminates for nonpayment: the termination date is the paid_through_date (lapse_termination_basis) or, on an APTC account, the last day of the first grace month (aptc_lapse_termination_basis), and the APTC received for the later grace months is returned to the exchange.
+      A partial payment that leaves any past-due month short of the payment threshold does not stop the lapse.
+    eligibility:
+      - id: grace_ended
+        applies_to: [billing_lapse]
+        kind: time
+        condition: An account in grace may lapse only after its grace period has ended without full payment of the past-due premium.
+        evidence_fields: [billing_accounts.grace_period_start_date, billing_accounts.billing_account_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [billing_accounts.billing_account_id]
+          action_bindings:
+            billing_accounts.billing_account_id: billing_account_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: its grace period
+          anchor_source: billing_accounts.grace_period_start_date
+          relation: not_before
+          duration_source: variants.grace_period_days
+          unit: calendar_days
+          counting_rule: The grace period ends at the close of the due date of the first unpaid month plus grace_period_days calendar days (for APTC accounts, the last day of the last grace month), and lapse is allowed only on a later day.
+          boundary: exclusive
+    params:
+      per_tier:
+        Cascade Individual Direct Bill Monthly: {grace_days: "=grace_period_days", aptc_grace_months: "=aptc_grace_period_months"}
+        Cascade Individual AutoPay Monthly: {grace_days: "=grace_period_days", aptc_grace_months: "=aptc_grace_period_months"}
+        Cascade Individual Quarterly Bill: {grace_days: "=grace_period_days", aptc_grace_months: "=aptc_grace_period_months"}
+        Cascade Individual Annual Prepay: {grace_days: "=grace_period_days", aptc_grace_months: "=aptc_grace_period_months"}
+        Cascade Exchange SADP Monthly: {grace_days: "=grace_period_days", aptc_grace_months: "=aptc_grace_period_months"}
+        Cascade Group List Bill: {grace_days: "=grace_period_days", aptc_grace_months: "=aptc_grace_period_months"}
+        Cascade Group Self-Administered Bill: {grace_days: "=grace_period_days", aptc_grace_months: "=aptc_grace_period_months"}
+
+  - id: billing_reinstatement
+    subject: [billing_reinstate, billing_reinstatement_expired]
+    rule: >-
+      A lapsed account may be reinstated only no later than the reinstatement window after the lapse termination date recorded as its paid_through_date.
+      The window is reinstatement_window_days counted in calendar days from the paid_through_date, and a reinstatement on the last day of the window is in time; an arrangement whose window is 0 cannot be reinstated.
+      Reinstatement requires payment of all premium past due through the current month (reinstatement_requires_full_past_due) by a method in reinstatement_payment_methods, and is refused when billing_msr_reinstatements_12m has already reached reinstatement_max_per_12_months.
+      On reinstatement the account returns to active, the funded enrollments that ended for nonpayment are reinstated without a gap, and claims denied as not eligible in the gap are reprocessed.
+      When the window ends without reinstatement the account closes, and any credit balance is refunded under the credit rules.
+    eligibility:
+      - id: reinstatement_window_billing
+        applies_to: [billing_reinstate]
+        kind: time
+        condition: A lapsed account may be reinstated only no later than the reinstatement window after the lapse termination date recorded as its paid_through_date.
+        evidence_fields: [billing_accounts.paid_through_date, billing_accounts.billing_account_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [billing_accounts.billing_account_id]
+          action_bindings:
+            billing_accounts.billing_account_id: billing_account_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the lapse termination date recorded as its paid_through_date
+          anchor_source: billing_accounts.paid_through_date
+          relation: not_after
+          duration_source: variants.reinstatement_window_days
+          unit: calendar_days
+          counting_rule: The window is reinstatement_window_days counted in calendar days from the paid_through_date, and a reinstatement on the last day of the window is in time; an arrangement whose window is 0 cannot be reinstated.
+          boundary: inclusive
+    params:
+      per_tier:
+        Cascade Individual Direct Bill Monthly: {window_days: "=reinstatement_window_days", max_12m: "=reinstatement_max_per_12_months"}
+        Cascade Individual AutoPay Monthly: {window_days: "=reinstatement_window_days", max_12m: "=reinstatement_max_per_12_months"}
+        Cascade Individual Quarterly Bill: {window_days: "=reinstatement_window_days", max_12m: "=reinstatement_max_per_12_months"}
+        Cascade Individual Annual Prepay: {window_days: "=reinstatement_window_days", max_12m: "=reinstatement_max_per_12_months"}
+        Cascade Exchange SADP Monthly: {window_days: "=reinstatement_window_days", max_12m: "=reinstatement_max_per_12_months"}
+        Cascade Group List Bill: {window_days: "=reinstatement_window_days", max_12m: "=reinstatement_max_per_12_months"}
+        Cascade Group Self-Administered Bill: {window_days: "=reinstatement_window_days", max_12m: "=reinstatement_max_per_12_months"}
+    measures: [billing_msr_reinstatements_12m, billing_msr_past_due]
+
+  - id: billing_credits_refunds
+    subject: [billing_premium_credit, billing_refund_issued]
+    rule: >-
+      A premium credit is booked for a definite reason and product line: free_look_refund credits every premium paid for the cancelled plan; termination_unearned credits premium billed for whole coverage months after the termination month (termination_credit_basis), never a partial month; prepay_unearned credits the remaining whole months of an annual prepay at the discounted monthly rate (prepay_unearned_basis); plan_change_difference credits the difference when a plan change lowers premium already billed; overpayment credits payments beyond what was billed; aptc_reconciliation credits APTC adjustments notified by the exchange.
+      A group may report a member's termination retroactively, but a retro_termination credit may be given only for coverage months that begin within the retro termination limit before the date the group reported the termination; earlier months stay billed.
+      The retro limit is retro_termination_limit_days counted back in calendar days from the date the termination is reported, and a month whose first day falls on or after the resulting date can be credited.
+      A refund pays out a credit under billing_agg_credit_application and references the credit it pays.
+      A refund is never issued for coverage months in which a claim was paid for the person under the credited plan, except for a free-look cancellation, which requires that no claim was paid at all.
+    eligibility:
+      - id: retro_limit
+        applies_to: [billing_premium_credit]
+        kind: time
+        condition: A group may report a member's termination retroactively, but a retro_termination credit may be given only for coverage months that begin within the retro termination limit before the date the group reported the termination; earlier months stay billed.
+        evidence_fields: [billing_transactions.coverage_month, billing_transactions.billing_account_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [billing_transactions.billing_account_id]
+          action_bindings:
+            billing_transactions.billing_account_id: billing_account_id
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: coverage months that begin
+          anchor_source: billing_transactions.coverage_month
+          relation: not_after
+          duration_source: variants.retro_termination_limit_days
+          unit: calendar_days
+          counting_rule: The retro limit is retro_termination_limit_days counted back in calendar days from the date the termination is reported, and a month whose first day falls on or after the resulting date can be credited.
+          boundary: inclusive
+
+  - id: billing_account_lifecycle
+    subject: [billing_account_open, billing_binder_received, billing_binder_expired, billing_account_close, billing_payment_method_change]
+    rule: >-
+      An account is opened in pending_binder for a new individual application or group contract with an arrangement whose entry gate admits the customer type and market, and becomes active when the binder (binder_amount_basis) is received in full by a method in binder_payment_methods; it closes without ever becoming active when every enrollment it was opened for has been cancelled for an unpaid binder.
+      Closing an account and changing how it pays are the account holder's own decisions, registered as a billing request and carried out after the holder confirms it; a payment-method change authorizes future drafts and must be confirmed payment_method_change_lead_days before the next draft date to apply to it, an AutoPay arrangement cannot move to check, and a group arrangement always pays by employer remittance.
+      An account closure or payment-method change is carried out only once the account holder's billing request for that account is confirmed.
+      An account may be closed only when no enrollment it funds is applied or active and its balance is 0.00 after credits, refunds and write-offs (closure_requires_zero_balance).
+    eligibility:
+      - id: billing_request_confirmed
+        applies_to: [billing_account_close, billing_payment_method_change]
+        kind: state
+        condition: An account closure or payment-method change is carried out only once the account holder's billing request for that account is confirmed.
+        evidence_fields: [billing_requests.request_status, billing_requests.billing_account_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys:
+            - [billing_requests.billing_account_id]
+          action_bindings:
+            billing_requests.billing_account_id: billing_account_id
+        state_contract:
+          field: billing_requests.request_status
+          allowed: [confirmed]

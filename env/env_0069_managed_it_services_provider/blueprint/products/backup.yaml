@@ -1,0 +1,893 @@
+# Policy charter: Continuum Backup & Recovery (per-device backup, BDR and DRaaS plans).
+category: backup
+display_name: Continuum Backup & Recovery
+
+binding:
+  holding_table: backup_plans
+  event_tables: [backup_device_changes, backup_billing, backup_recovery_events, backup_dr_ledger]
+  intake_tables: [backup_change_requests]
+  status_field: status
+  variant_field: variant_name
+  quantity_fields: {protected_count: protected_devices, dr_days_balance: dr_days, balance_due_usd: receivable}
+
+lifecycle:
+  states: [ordered, seeding, active, suspended, notice_given, closed, cancelled]
+  transitions:
+    - {from: ordered, to: seeding, by: agent, means: "Initial full backups (seeding) of the protected devices begin."}
+    - {from: seeding, to: active, by: agent, means: "Every contracted device has completed a verified full backup and the term starts."}
+    - {from: ordered, to: cancelled, by: user, means: "The client cancels the order before seeding begins."}
+    - {from: active, to: suspended, by: system, means: "New backups are paused for non-payment; existing restore points are retained."}
+    - {from: suspended, to: active, by: agent, means: "Backups resume after the past-due balance is cleared."}
+    - {from: active, to: notice_given, by: user, means: "The client gives signed notice of non-renewal or early termination."}
+    - {from: notice_given, to: active, by: user, means: "The client withdraws the notice before its effective date."}
+    - {from: notice_given, to: closed, by: system, means: "The effective date is reached; backups stop and retention runs out under the post-cancellation window."}
+    - {from: suspended, to: closed, by: agent, means: "The plan is terminated for non-payment."}
+
+accounts:
+  - key: protected_devices
+    unit: devices
+    meaning: Servers, workstations and Microsoft 365 users currently protected under the plan.
+  - key: dr_days
+    unit: server-days
+    meaning: Cloud failover server-days available in the current contract year.
+  - key: receivable
+    unit: USD
+    meaning: Amount the client owes on the plan; charges increase it and payments reduce it.
+
+
+# ---- category-level parameter dictionary ----
+parameter_schema:
+  server_rate_list_usd: List monthly fee per protected server (USD)
+  workstation_rate_list_usd: List monthly fee per protected workstation (USD)
+  m365_user_rate_list_usd: List monthly fee per protected Microsoft 365 user, covering mailbox, OneDrive, SharePoint and Teams (USD)
+  min_protected_items: Minimum protected items at order (integer)
+  min_server_commitment_pct: Minimum billed servers as a percent of contracted_servers, rounded up (percent)
+  allowed_terms_months: Term lengths offered (list of months)
+  term_discount_pct: Discount off list rates by term length (mapping months -> percent)
+  clearpath_bundle_discount_pct: Discount off list rates when the client holds an active ClearPath agreement at or above clearpath_bundle_min_rank (percent)
+  clearpath_bundle_min_rank: Lowest ClearPath tier rank that qualifies for the bundle discount (rank 1-6)
+  onboarding_fee_per_server_usd: One-time onboarding fee per contracted server (USD)
+  onboarding_fee_minimum_usd: Minimum one-time onboarding fee (USD)
+  seeding_target_days: Target calendar days to complete seeding (integer days)
+  included_storage_tb_per_server: Protected storage included per billed server per month (TB)
+  storage_overage_rate_usd_per_tb: Monthly rate per TB of protected server storage above the pooled allowance (USD per TB)
+  storage_overage_rounding_tb: Increment overage storage is rounded up to (TB)
+  backup_frequency_minutes: Interval between scheduled server backups (integer minutes)
+  retention_days: Days restore points are retained (integer days)
+  immutable_copy: Whether an immutable cloud copy is kept (switch)
+  local_appliance_included: Whether an on-site backup appliance is supplied (switch)
+  cloud_virtualization: Whether protected servers can be run in the provider cloud during a disaster (switch)
+  ransomware_anomaly_detection: Whether backup-stream anomaly detection is included (switch)
+  backup_monitoring_24x7: Whether failed backups are triaged around the clock (switch)
+  failed_backup_response_minutes: Time from a failed scheduled backup to technician remediation start (integer minutes)
+  rto_target_hours: Target recovery time for a full server restore or failover (integer hours)
+  rto_guaranteed: Whether the recovery time target is a guarantee backed by a fee refund (switch)
+  rto_miss_refund_pct: Refund of the month's plan fee when a guaranteed recovery time is missed (percent)
+  restore_response_minutes: Time from a restore request to technician start (integer minutes)
+  restore_labor_included: Whether technician labor for restores is included (switch)
+  restore_hourly_rate_usd: Hourly rate for restore labor that is not included (USD per hour)
+  restore_billing_increment_minutes: Increment restore labor is rounded up to (integer minutes)
+  test_restores_per_year: Verified test restores included per contract year (integer)
+  dr_tests_per_year: Full disaster recovery tests included per contract year (integer)
+  dr_days_included_annual: Cloud failover server-days granted at the start of each contract year (integer)
+  dr_day_rate_usd: Rate per server-day of production failover beyond the balance (USD per server-day)
+  dr_test_server_days_free: Whether server-days used during an included DR test are free of the balance (switch)
+  expedited_drive_shipment_fee_usd: Fee for shipping a seeded recovery drive overnight (USD per shipment)
+  post_cancellation_retention_days: Days restore points remain restorable after the plan closes (integer days)
+  compliance_retention_supported: Frameworks whose retention requirement the tier meets (list of customers.compliance_framework values)
+  backup_reports: Backup success report cadence (enum monthly / weekly / daily)
+  notice_days: Calendar days of signed notice before term end for non-renewal, and minimum notice for early termination (integer days)
+  renewal_term_months: Length of each automatic renewal term (months)
+  renewal_uplift_cap_pct: Maximum rate increase at renewal (percent)
+  early_termination_fee_pct: Early termination fee as a percent of committed monthly fees remaining (percent)
+  invoice_due_days: Net payment terms (integer days)
+  late_fee_pct_monthly: Monthly late fee on an invoice's unpaid balance past the grace period (percent)
+  late_fee_grace_days: Calendar days after the due date before a late fee is assessed (integer days)
+  suspension_days_past_due: Days past due of the oldest unpaid invoice at which new backups are paused (integer days)
+  termination_for_nonpayment_days: Days in suspension after which the plan may be terminated (integer days)
+  production_failover_requires_signature: Whether a production failover needs the authorized contact's signed authorization before it starts (switch)
+
+# ---- tier ladder (low to high) ----
+variants:
+- name: Continuum Backup Basic
+  rank: 1
+  entry_gate:
+    min_protected_items: 1
+    excluded_compliance_frameworks:
+    - hipaa
+    - cmmc_level_2
+    - finra_sec
+  parameters:
+    server_rate_list_usd: 39.0
+    workstation_rate_list_usd: 7.5
+    m365_user_rate_list_usd: 2.75
+    min_protected_items: 1
+    min_server_commitment_pct: 0
+    allowed_terms_months:
+    - 1
+    - 12
+    term_discount_pct:
+      1: 0.0
+      12: 0.0
+    clearpath_bundle_discount_pct: 0.0
+    clearpath_bundle_min_rank: 3
+    onboarding_fee_per_server_usd: 0.0
+    onboarding_fee_minimum_usd: 0.0
+    seeding_target_days: 7
+    included_storage_tb_per_server: 0.5
+    storage_overage_rate_usd_per_tb: 28.0
+    storage_overage_rounding_tb: 0.25
+    backup_frequency_minutes: 1440
+    retention_days: 30
+    immutable_copy: false
+    local_appliance_included: false
+    cloud_virtualization: false
+    ransomware_anomaly_detection: false
+    backup_monitoring_24x7: false
+    failed_backup_response_minutes: 1440
+    rto_target_hours: 72
+    rto_guaranteed: false
+    rto_miss_refund_pct: 0
+    restore_response_minutes: 480
+    restore_labor_included: false
+    restore_hourly_rate_usd: 165.0
+    restore_billing_increment_minutes: 30
+    test_restores_per_year: 0
+    dr_tests_per_year: 0
+    dr_days_included_annual: 0
+    dr_day_rate_usd: 495.0
+    dr_test_server_days_free: false
+    expedited_drive_shipment_fee_usd: 350.0
+    post_cancellation_retention_days: 0
+    compliance_retention_supported:
+    - none
+    - pci_dss
+    backup_reports: monthly
+    notice_days: 30
+    renewal_term_months: 1
+    renewal_uplift_cap_pct: 7.0
+    early_termination_fee_pct: 0
+    invoice_due_days: 15
+    late_fee_pct_monthly: 1.5
+    late_fee_grace_days: 5
+    suspension_days_past_due: 30
+    termination_for_nonpayment_days: 30
+    production_failover_requires_signature: true
+- name: Continuum Backup Standard
+  rank: 2
+  entry_gate:
+    min_protected_items: 1
+    excluded_compliance_frameworks:
+    - finra_sec
+  parameters:
+    server_rate_list_usd: 59.0
+    workstation_rate_list_usd: 9.5
+    m365_user_rate_list_usd: 3.25
+    min_protected_items: 1
+    min_server_commitment_pct: 0
+    allowed_terms_months:
+    - 1
+    - 12
+    term_discount_pct:
+      1: 0.0
+      12: 0.0
+    clearpath_bundle_discount_pct: 0.0
+    clearpath_bundle_min_rank: 3
+    onboarding_fee_per_server_usd: 0.0
+    onboarding_fee_minimum_usd: 0.0
+    seeding_target_days: 7
+    included_storage_tb_per_server: 1.0
+    storage_overage_rate_usd_per_tb: 26.0
+    storage_overage_rounding_tb: 0.25
+    backup_frequency_minutes: 720
+    retention_days: 90
+    immutable_copy: true
+    local_appliance_included: false
+    cloud_virtualization: false
+    ransomware_anomaly_detection: false
+    backup_monitoring_24x7: false
+    failed_backup_response_minutes: 720
+    rto_target_hours: 48
+    rto_guaranteed: false
+    rto_miss_refund_pct: 0
+    restore_response_minutes: 240
+    restore_labor_included: true
+    restore_hourly_rate_usd: 155.0
+    restore_billing_increment_minutes: 15
+    test_restores_per_year: 1
+    dr_tests_per_year: 0
+    dr_days_included_annual: 0
+    dr_day_rate_usd: 495.0
+    dr_test_server_days_free: false
+    expedited_drive_shipment_fee_usd: 350.0
+    post_cancellation_retention_days: 30
+    compliance_retention_supported:
+    - none
+    - pci_dss
+    - hipaa
+    - cmmc_level_2
+    backup_reports: monthly
+    notice_days: 30
+    renewal_term_months: 1
+    renewal_uplift_cap_pct: 7.0
+    early_termination_fee_pct: 0
+    invoice_due_days: 15
+    late_fee_pct_monthly: 1.5
+    late_fee_grace_days: 5
+    suspension_days_past_due: 30
+    termination_for_nonpayment_days: 30
+    production_failover_requires_signature: true
+- name: Continuum Backup Plus
+  rank: 3
+  entry_gate:
+    min_protected_items: 3
+    excluded_compliance_frameworks: []
+  parameters:
+    server_rate_list_usd: 79.0
+    workstation_rate_list_usd: 11.5
+    m365_user_rate_list_usd: 3.75
+    min_protected_items: 3
+    min_server_commitment_pct: 80
+    allowed_terms_months:
+    - 12
+    - 36
+    term_discount_pct:
+      12: 0.0
+      36: 5.0
+    clearpath_bundle_discount_pct: 5.0
+    clearpath_bundle_min_rank: 3
+    onboarding_fee_per_server_usd: 95.0
+    onboarding_fee_minimum_usd: 250.0
+    seeding_target_days: 10
+    included_storage_tb_per_server: 1.0
+    storage_overage_rate_usd_per_tb: 24.0
+    storage_overage_rounding_tb: 0.25
+    backup_frequency_minutes: 240
+    retention_days: 365
+    immutable_copy: true
+    local_appliance_included: false
+    cloud_virtualization: false
+    ransomware_anomaly_detection: true
+    backup_monitoring_24x7: false
+    failed_backup_response_minutes: 240
+    rto_target_hours: 24
+    rto_guaranteed: false
+    rto_miss_refund_pct: 0
+    restore_response_minutes: 240
+    restore_labor_included: true
+    restore_hourly_rate_usd: 150.0
+    restore_billing_increment_minutes: 15
+    test_restores_per_year: 2
+    dr_tests_per_year: 0
+    dr_days_included_annual: 0
+    dr_day_rate_usd: 450.0
+    dr_test_server_days_free: false
+    expedited_drive_shipment_fee_usd: 295.0
+    post_cancellation_retention_days: 30
+    compliance_retention_supported:
+    - none
+    - pci_dss
+    - hipaa
+    - cmmc_level_2
+    backup_reports: weekly
+    notice_days: 60
+    renewal_term_months: 12
+    renewal_uplift_cap_pct: 5.0
+    early_termination_fee_pct: 75
+    invoice_due_days: 30
+    late_fee_pct_monthly: 1.5
+    late_fee_grace_days: 5
+    suspension_days_past_due: 45
+    termination_for_nonpayment_days: 30
+    production_failover_requires_signature: true
+- name: Continuum BDR
+  rank: 4
+  entry_gate:
+    min_protected_items: 3
+    min_servers: 1
+    excluded_compliance_frameworks: []
+  parameters:
+    server_rate_list_usd: 119.0
+    workstation_rate_list_usd: 14.0
+    m365_user_rate_list_usd: 3.75
+    min_protected_items: 3
+    min_server_commitment_pct: 90
+    allowed_terms_months:
+    - 12
+    - 36
+    term_discount_pct:
+      12: 0.0
+      36: 5.0
+    clearpath_bundle_discount_pct: 5.0
+    clearpath_bundle_min_rank: 3
+    onboarding_fee_per_server_usd: 195.0
+    onboarding_fee_minimum_usd: 750.0
+    seeding_target_days: 14
+    included_storage_tb_per_server: 2.0
+    storage_overage_rate_usd_per_tb: 22.0
+    storage_overage_rounding_tb: 0.1
+    backup_frequency_minutes: 60
+    retention_days: 365
+    immutable_copy: true
+    local_appliance_included: true
+    cloud_virtualization: false
+    ransomware_anomaly_detection: true
+    backup_monitoring_24x7: true
+    failed_backup_response_minutes: 240
+    rto_target_hours: 8
+    rto_guaranteed: false
+    rto_miss_refund_pct: 0
+    restore_response_minutes: 120
+    restore_labor_included: true
+    restore_hourly_rate_usd: 145.0
+    restore_billing_increment_minutes: 15
+    test_restores_per_year: 4
+    dr_tests_per_year: 1
+    dr_days_included_annual: 0
+    dr_day_rate_usd: 395.0
+    dr_test_server_days_free: true
+    expedited_drive_shipment_fee_usd: 250.0
+    post_cancellation_retention_days: 30
+    compliance_retention_supported:
+    - none
+    - pci_dss
+    - hipaa
+    - cmmc_level_2
+    backup_reports: weekly
+    notice_days: 60
+    renewal_term_months: 12
+    renewal_uplift_cap_pct: 5.0
+    early_termination_fee_pct: 75
+    invoice_due_days: 30
+    late_fee_pct_monthly: 1.5
+    late_fee_grace_days: 10
+    suspension_days_past_due: 60
+    termination_for_nonpayment_days: 45
+    production_failover_requires_signature: true
+- name: Continuum DRaaS
+  rank: 5
+  entry_gate:
+    min_protected_items: 5
+    min_servers: 2
+    excluded_compliance_frameworks: []
+  parameters:
+    server_rate_list_usd: 189.0
+    workstation_rate_list_usd: 16.0
+    m365_user_rate_list_usd: 4.25
+    min_protected_items: 5
+    min_server_commitment_pct: 90
+    allowed_terms_months:
+    - 12
+    - 36
+    term_discount_pct:
+      12: 0.0
+      36: 7.0
+    clearpath_bundle_discount_pct: 7.5
+    clearpath_bundle_min_rank: 3
+    onboarding_fee_per_server_usd: 395.0
+    onboarding_fee_minimum_usd: 1500.0
+    seeding_target_days: 21
+    included_storage_tb_per_server: 2.0
+    storage_overage_rate_usd_per_tb: 20.0
+    storage_overage_rounding_tb: 0.1
+    backup_frequency_minutes: 60
+    retention_days: 2190
+    immutable_copy: true
+    local_appliance_included: true
+    cloud_virtualization: true
+    ransomware_anomaly_detection: true
+    backup_monitoring_24x7: true
+    failed_backup_response_minutes: 60
+    rto_target_hours: 4
+    rto_guaranteed: false
+    rto_miss_refund_pct: 0
+    restore_response_minutes: 60
+    restore_labor_included: true
+    restore_hourly_rate_usd: 140.0
+    restore_billing_increment_minutes: 15
+    test_restores_per_year: 4
+    dr_tests_per_year: 2
+    dr_days_included_annual: 14
+    dr_day_rate_usd: 325.0
+    dr_test_server_days_free: true
+    expedited_drive_shipment_fee_usd: 0.0
+    post_cancellation_retention_days: 60
+    compliance_retention_supported:
+    - none
+    - pci_dss
+    - hipaa
+    - cmmc_level_2
+    - finra_sec
+    backup_reports: daily
+    notice_days: 90
+    renewal_term_months: 12
+    renewal_uplift_cap_pct: 5.0
+    early_termination_fee_pct: 80
+    invoice_due_days: 30
+    late_fee_pct_monthly: 1.5
+    late_fee_grace_days: 10
+    suspension_days_past_due: 60
+    termination_for_nonpayment_days: 45
+    production_failover_requires_signature: true
+- name: Continuum DRaaS Premier
+  rank: 6
+  entry_gate:
+    min_protected_items: 10
+    min_servers: 3
+    excluded_compliance_frameworks: []
+  parameters:
+    server_rate_list_usd: 265.0
+    workstation_rate_list_usd: 18.5
+    m365_user_rate_list_usd: 4.75
+    min_protected_items: 10
+    min_server_commitment_pct: 100
+    allowed_terms_months:
+    - 36
+    term_discount_pct:
+      36: 7.0
+    clearpath_bundle_discount_pct: 7.5
+    clearpath_bundle_min_rank: 3
+    onboarding_fee_per_server_usd: 595.0
+    onboarding_fee_minimum_usd: 3500.0
+    seeding_target_days: 30
+    included_storage_tb_per_server: 4.0
+    storage_overage_rate_usd_per_tb: 18.0
+    storage_overage_rounding_tb: 0.1
+    backup_frequency_minutes: 15
+    retention_days: 2555
+    immutable_copy: true
+    local_appliance_included: true
+    cloud_virtualization: true
+    ransomware_anomaly_detection: true
+    backup_monitoring_24x7: true
+    failed_backup_response_minutes: 30
+    rto_target_hours: 1
+    rto_guaranteed: true
+    rto_miss_refund_pct: 25
+    restore_response_minutes: 30
+    restore_labor_included: true
+    restore_hourly_rate_usd: 135.0
+    restore_billing_increment_minutes: 15
+    test_restores_per_year: 12
+    dr_tests_per_year: 4
+    dr_days_included_annual: 30
+    dr_day_rate_usd: 275.0
+    dr_test_server_days_free: true
+    expedited_drive_shipment_fee_usd: 0.0
+    post_cancellation_retention_days: 90
+    compliance_retention_supported:
+    - none
+    - pci_dss
+    - hipaa
+    - cmmc_level_2
+    - finra_sec
+    backup_reports: daily
+    notice_days: 90
+    renewal_term_months: 12
+    renewal_uplift_cap_pct: 4.0
+    early_termination_fee_pct: 80
+    invoice_due_days: 45
+    late_fee_pct_monthly: 1.5
+    late_fee_grace_days: 15
+    suspension_days_past_due: 75
+    termination_for_nonpayment_days: 60
+    production_failover_requires_signature: true
+
+
+events:
+  - type: backup_plan_ordered
+    target: backup_plans
+    mutation: create
+    meaning: The client signs an order for a Continuum tier, server commitment and term.
+    grain: One plan record per signed order.
+    fields: {customer_id: Client ordering., variant_name: Tier ordered., order_date: Signature date., term_months: Term., contracted_servers: Server commitment., server_rate_usd: Contracted server rate., workstation_rate_usd: Contracted workstation rate., m365_user_rate_usd: Contracted Microsoft 365 user rate.}
+    triggers: []
+  - type: backup_seeding_started
+    target: backup_plans
+    mutation: {transition: {from: ordered, to: seeding}}
+    meaning: Initial full backups begin.
+    grain: One transaction per plan.
+    fields: {seeding_start_date: Date seeding began.}
+    triggers: []
+  - type: backup_activated
+    target: backup_plans
+    mutation: {transition: {from: seeding, to: active}}
+    meaning: Seeding is verified complete and the term starts.
+    grain: One transaction per plan.
+    fields: {activation_date: Activation date., term_start_date: Equal to activation_date., term_end_date: Last day of the initial term.}
+    triggers:
+      - event: backup:backup_dr_days_granted
+        map: {}
+  - type: backup_order_cancelled
+    target: backup_plans
+    mutation: {transition: {from: ordered, to: cancelled}}
+    meaning: The client cancels before seeding begins.
+    grain: One transaction per plan.
+    fields: {closed_date: Date cancelled.}
+    triggers: []
+  - type: backup_suspended
+    target: backup_plans
+    mutation: {transition: {from: active, to: suspended}}
+    meaning: New backups are paused for non-payment.
+    grain: One transaction per suspension.
+    fields: {suspended_date: Date suspended.}
+    triggers: []
+  - type: backup_reinstated
+    target: backup_plans
+    mutation: {transition: {from: suspended, to: active}}
+    meaning: Backups resume after payment.
+    grain: One transaction per reinstatement.
+    fields: {suspended_date: Retained as the date of the suspension that ended.}
+    triggers: []
+  - type: backup_notice_given
+    target: backup_plans
+    mutation: {transition: {from: active, to: notice_given}}
+    meaning: The client's signed notice of non-renewal or early termination takes effect.
+    grain: One transaction per notice.
+    fields: {notice_type: non_renewal or early_termination., notice_received_date: Date received., cancellation_effective_date: Date the plan ends.}
+    triggers:
+      - event: backup:backup_early_termination_fee
+        when: {notice_type: early_termination}
+        map: {}
+  - type: backup_notice_withdrawn
+    target: backup_plans
+    mutation: {transition: {from: notice_given, to: active}}
+    meaning: The client withdraws its notice.
+    grain: One transaction per withdrawal.
+    fields: {notice_type: Reset to none., notice_received_date: Cleared., cancellation_effective_date: Cleared.}
+    triggers: []
+  - type: backup_closed
+    target: backup_plans
+    mutation: {transition: [{from: notice_given, to: closed}, {from: suspended, to: closed}]}
+    meaning: The plan ends and remaining failover days lapse.
+    grain: One transaction per plan.
+    fields: {closed_date: Date closed.}
+    triggers:
+      - event: backup:backup_dr_days_forfeited
+        map: {}
+  - type: backup_tier_changed
+    target: backup_plans
+    mutation: update
+    meaning: A signed tier change takes effect.
+    grain: One transaction per tier change.
+    fields: {variant_name: New tier., server_rate_usd: New server rate., workstation_rate_usd: New workstation rate., m365_user_rate_usd: New Microsoft 365 user rate.}
+    triggers: []
+  - type: backup_renewed
+    target: backup_plans
+    mutation: update
+    meaning: The plan rolls into a renewal term.
+    grain: One transaction per renewal term.
+    fields: {term_start_date: Renewal start., term_end_date: Renewal end., term_months: Renewal length., server_rate_usd: Renewal server rate., workstation_rate_usd: Renewal workstation rate., m365_user_rate_usd: Renewal user rate., contracted_servers: Renewal server commitment.}
+    triggers: []
+  - type: backup_devices_protected
+    target: backup_device_changes
+    meaning: A server, workstation or Microsoft 365 user is added to protection.
+    grain: One row per protected item.
+    distinguish_by: [device_name, effective_date]
+    fields: {device_class: Class., device_name: Hostname or user sign-in., effective_date: Date protection started.}
+    account: protected_devices
+    direction: in
+    triggers: []
+  - type: backup_devices_unprotected
+    target: backup_device_changes
+    meaning: An item is removed from protection.
+    grain: One row per removed item.
+    distinguish_by: [device_name, effective_date]
+    fields: {device_class: Class., device_name: Hostname or user sign-in., effective_date: Date protection stopped.}
+    account: protected_devices
+    direction: out
+    triggers: []
+  - type: backup_monthly_fee
+    target: backup_billing
+    meaning: The monthly plan fee including any storage overage is invoiced in advance.
+    grain: One row per plan per service month.
+    distinguish_by: [billing_period]
+    fields: {amount_usd: Fee., invoice_number: Invoice., billing_period: Service month., posted_date: Invoice date., storage_overage_tb: Overage TB billed.}
+    account: receivable
+    direction: in
+    triggers: []
+  - type: backup_onboarding_fee
+    target: backup_billing
+    meaning: The one-time onboarding fee is invoiced at order.
+    grain: One row per plan.
+    distinguish_by: [invoice_number]
+    fields: {amount_usd: Fee., invoice_number: Invoice., billing_period: Month of order., posted_date: Invoice date.}
+    account: receivable
+    direction: in
+    triggers: []
+  - type: backup_restore_labor_charge
+    target: backup_billing
+    meaning: Restore labor that is not included is invoiced.
+    grain: One row per restore job.
+    distinguish_by: [recovery_reference]
+    fields: {recovery_reference: Restore job., amount_usd: Amount., invoice_number: Invoice., billing_period: Month completed., posted_date: Posting date.}
+    account: receivable
+    direction: in
+    triggers: []
+  - type: backup_dr_overage_charge
+    target: backup_billing
+    meaning: Production failover server-days beyond the balance are invoiced.
+    grain: One row per failover.
+    distinguish_by: [recovery_reference]
+    fields: {recovery_reference: Failover., amount_usd: Amount., invoice_number: Invoice., billing_period: Month the failover ended., posted_date: Posting date.}
+    account: receivable
+    direction: in
+    triggers: []
+  - type: backup_payment
+    target: backup_billing
+    meaning: A payment is applied to an invoice.
+    grain: One row per remittance per invoice.
+    distinguish_by: [payment_reference, invoice_number]
+    fields: {payment_reference: Remittance reference., amount_usd: Amount applied., invoice_number: Invoice paid., posted_date: Date received.}
+    account: receivable
+    direction: out
+    triggers: []
+  - type: backup_late_fee
+    target: backup_billing
+    meaning: A late fee is assessed on a past-due invoice.
+    grain: One row per invoice per month assessed.
+    distinguish_by: [invoice_number, billing_period]
+    fields: {invoice_number: Past-due invoice., billing_period: Month assessed., amount_usd: Fee., posted_date: Assessment date.}
+    account: receivable
+    direction: in
+    triggers: []
+  - type: backup_early_termination_fee
+    target: backup_billing
+    meaning: The early termination fee is invoiced when an early termination notice takes effect.
+    grain: One row per notice.
+    distinguish_by: [invoice_number]
+    fields: {amount_usd: Fee., invoice_number: Invoice., billing_period: Month of notice., posted_date: Invoice date.}
+    account: receivable
+    direction: in
+    triggers: []
+  - type: backup_restore_requested
+    target: backup_recovery_events
+    meaning: The client or the service desk requests a restore or test restore.
+    grain: One row per recovery job.
+    distinguish_by: [recovery_reference]
+    fields: {recovery_reference: Job reference., recovery_type: file_level / full_system / test_restore., event_at: Request moment.}
+    triggers: []
+  - type: backup_restore_completed
+    target: backup_recovery_events
+    meaning: A restore job completes with the technician time logged.
+    grain: One row per recovery job.
+    distinguish_by: [recovery_reference]
+    fields: {recovery_reference: Job reference., recovery_type: Kind of restore., event_at: Completion moment., labor_minutes: Technician minutes.}
+    triggers: []
+  - type: backup_failover_declared
+    target: backup_recovery_events
+    meaning: Protected servers are started in the provider cloud for a DR test or a production disaster.
+    grain: One row per failover.
+    distinguish_by: [recovery_reference]
+    fields: {recovery_reference: Failover reference., recovery_type: dr_test or production_failover., event_at: Start moment.}
+    triggers: []
+  - type: backup_failover_ended
+    target: backup_recovery_events
+    meaning: A failover ends with failback to the client's site.
+    grain: One row per failover.
+    distinguish_by: [recovery_reference]
+    fields: {recovery_reference: Failover reference., recovery_type: dr_test or production_failover., event_at: End moment., server_days: Server-days run.}
+    triggers:
+      - event: backup:backup_dr_days_used
+        when: {recovery_type: production_failover}
+        map: {recovery_reference: recovery_reference, server_days: server_days}
+  - type: backup_dr_days_granted
+    target: backup_dr_ledger
+    meaning: Failover server-days are granted for a contract year.
+    grain: One row per contract year.
+    distinguish_by: [contract_year_start]
+    fields: {server_days: Days granted., contract_year_start: Contract year.}
+    account: dr_days
+    direction: in
+    triggers: []
+  - type: backup_dr_days_used
+    target: backup_dr_ledger
+    meaning: Failover server-days are drawn by a production failover.
+    grain: One row per failover.
+    distinguish_by: [recovery_reference]
+    fields: {server_days: Days drawn from the balance., contract_year_start: Contract year., recovery_reference: Failover.}
+    account: dr_days
+    direction: out
+    triggers: []
+  - type: backup_dr_days_forfeited
+    target: backup_dr_ledger
+    meaning: Unused failover days lapse at contract-year end or at closing.
+    grain: One row per contract year lapsing.
+    distinguish_by: [contract_year_start]
+    fields: {server_days: Days forfeited., contract_year_start: Contract year.}
+    account: dr_days
+    direction: out
+    triggers: []
+
+
+measures:
+  - id: backup_msr_test_restores_year
+    window: The current contract year (from the latest anniversary of term_start_date through the day before the next).
+    measure: Count of backup_restore_completed rows whose recovery_type is test_restore, plus backup_failover_ended rows whose recovery_type is dr_test, by type.
+  - id: backup_msr_dr_balance_year
+    window: The contract year in which the failover ended.
+    measure: Sum of server_days of backup_dr_days_granted minus backup_dr_days_used and backup_dr_days_forfeited for that contract_year_start.
+  - id: backup_msr_server_storage_tb
+    window: The true-up snapshot taken on the last day of the month before the service month.
+    measure: Total protected server storage in TB reported by the backup console across all protected servers of the plan.
+
+policies:
+  - id: backup_agg_multi_holding
+    subject: [backup_plan_ordered]
+    rule: >-
+      A client organisation holds at most one Continuum plan, and every protected server, workstation and Microsoft 365 user
+      is registered under it; a device can be protected only once. A new plan may be ordered only when the client holds no
+      other Continuum plan whose status is ordered, seeding, active, suspended or notice_given.
+    eligibility:
+      - id: single_open_plan
+        applies_to: [backup_plan_ordered]
+        kind: dedup
+        condition: A new plan may be ordered only when the client holds no other Continuum plan whose status is ordered, seeding, active, suspended or notice_given.
+        evidence_fields: [backup_plans.customer_id, backup_plans.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[backup_plans.customer_id]]
+          action_bindings: {backup_plans.customer_id: customer_id}
+        dedup_contract:
+          table: backup_plans
+          mode: separate_record
+          object_bindings: {customer_id: customer_id}
+          duplicate_filters: {status: [ordered, seeding, active, suspended, notice_given]}
+          distinct_fields: []
+    params:
+      max_per_customer: 1
+
+  - id: backup_ordering_and_pricing
+    subject: [backup_plan_ordered, backup_onboarding_fee, backup_tier_changed]
+    rule: >-
+      A plan is ordered for one tier with at least min_protected_items items and, where the tier's entry gate sets one, the
+      minimum number of servers, for a term in allowed_terms_months. A tier whose compliance_retention_supported does not
+      list the client's compliance_framework cannot be ordered or moved to, because its retention does not meet that
+      framework. Contracted rates are the list rates reduced by term_discount_pct for the term plus, when the client holds a
+      ClearPath agreement whose status is active and whose tier rank is at least clearpath_bundle_min_rank,
+      clearpath_bundle_discount_pct, the two discounts added and applied once, rounded half up to the cent. The onboarding fee
+      is onboarding_fee_per_server_usd times contracted_servers but never less than onboarding_fee_minimum_usd, invoiced on the
+      order date; tiers with a zero fee post nothing. Upgrades take effect on the first day of the next calendar month after
+      the client's signature at the new tier's rates; downgrades only at renewal. A tier change may take effect only while
+      the plan status is active.
+    eligibility:
+      - id: tier_change_active
+        applies_to: [backup_tier_changed]
+        kind: state
+        condition: A tier change may take effect only while the plan status is active.
+        evidence_fields: [backup_plans.backup_plan_id, backup_plans.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[backup_plans.backup_plan_id]]
+          action_bindings: {backup_plans.backup_plan_id: backup_plan_id}
+        state_contract:
+          field: backup_plans.status
+          allowed: [active]
+    formula:
+      total_discount_pct: term_discount_pct + clearpath_bundle_discount_pct
+      server_rate_usd: round(server_rate_list_usd * (1 - total_discount_pct / 100), 2)
+      workstation_rate_usd: round(workstation_rate_list_usd * (1 - total_discount_pct / 100), 2)
+      m365_user_rate_usd: round(m365_user_rate_list_usd * (1 - total_discount_pct / 100), 2)
+      amount_usd: max(onboarding_fee_per_server_usd * contracted_servers, onboarding_fee_minimum_usd)
+
+  - id: backup_seeding_and_activation
+    subject: [backup_seeding_started, backup_activated, backup_order_cancelled, backup_devices_protected, backup_devices_unprotected]
+    rule: >-
+      Seeding starts once the order is signed; seeding_target_days is a target. The plan activates when every contracted
+      server has a verified full backup, the term starting on the activation date and ending the day before the same day of
+      the month term_months later; activation grants the first year's dr_days_included_annual. An order may be cancelled by
+      the client only before seeding starts, the onboarding fee then being reversed. Items are protected and unprotected one
+      at a time by hostname or user sign-in; protection changes may be posted only while the plan status is seeding, active,
+      suspended or notice_given. Scheduled server backups run every backup_frequency_minutes; immutable_copy,
+      local_appliance_included, ransomware_anomaly_detection, backup_monitoring_24x7 with remediation of a failed backup
+      started within failed_backup_response_minutes as a target, and the backup_reports cadence are entitlements of the tier.
+      Removing an item never generates a credit for the current month, and its restore points
+      remain until they age out under retention_days.
+    eligibility:
+      - id: protection_status
+        applies_to: [backup_devices_protected, backup_devices_unprotected]
+        kind: state
+        condition: protection changes may be posted only while the plan status is seeding, active, suspended or notice_given.
+        evidence_fields: [backup_plans.backup_plan_id, backup_plans.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[backup_plans.backup_plan_id]]
+          action_bindings: {backup_plans.backup_plan_id: backup_plan_id}
+        state_contract:
+          field: backup_plans.status
+          allowed: [seeding, active, suspended, notice_given]
+
+  - id: backup_monthly_fee_calc
+    subject: [backup_monthly_fee]
+    rule: >-
+      The monthly fee is invoiced in advance on the first day of each service month and equals server_rate_usd times billed
+      servers plus workstation_rate_usd times protected workstations plus m365_user_rate_usd times protected Microsoft 365
+      users, counted at the end of the previous month, plus the storage overage, rounded half up to the cent. Billed servers
+      are the greater of protected servers and contracted_servers times min_server_commitment_pct divided by 100 rounded up.
+      The storage allowance is included_storage_tb_per_server times billed servers, pooled across the plan; protected server
+      storage above it (backup_msr_server_storage_tb) is rounded up to storage_overage_rounding_tb and billed at
+      storage_overage_rate_usd_per_tb. The first fee is the service month after activation, the fee continues during
+      suspension, and none is invoiced for a month beginning after the cancellation effective date.
+    eligibility: []
+    measures: [backup_msr_server_storage_tb]
+    formula:
+      overage_charge: storage_overage_tb * storage_overage_rate_usd_per_tb
+
+  - id: backup_restores_and_tests
+    subject: [backup_restore_requested, backup_restore_completed, backup_restore_labor_charge]
+    rule: >-
+      A restore is started within restore_response_minutes of the request as a target. Restore labor is included where
+      restore_labor_included is true; otherwise the logged minutes are rounded up to restore_billing_increment_minutes and
+      billed at restore_hourly_rate_usd, rounded half up to the cent. Test restores up to test_restores_per_year per contract
+      year (backup_msr_test_restores_year) are included on every tier; further test restores are billed as restore labor at
+      restore_hourly_rate_usd even where restore labor is otherwise included. Where rto_guaranteed is true and a full_system
+      restore or failover misses rto_target_hours, rto_miss_refund_pct percent of that month's plan fee is refunded by the
+      accounting team; rto_target_hours is otherwise a target only. Overnight shipment of a seeded recovery drive costs
+      expedited_drive_shipment_fee_usd per shipment, billed with the restore labor. Restores are possible after closing only
+      within post_cancellation_retention_days.
+    eligibility: []
+    measures: [backup_msr_test_restores_year]
+    params:
+      per_tier:
+        Continuum Backup Basic: {labor_included: =restore_labor_included, rate: =restore_hourly_rate_usd, tests: =test_restores_per_year}
+        Continuum Backup Standard: {labor_included: =restore_labor_included, rate: =restore_hourly_rate_usd, tests: =test_restores_per_year}
+        Continuum Backup Plus: {labor_included: =restore_labor_included, rate: =restore_hourly_rate_usd, tests: =test_restores_per_year}
+        Continuum BDR: {labor_included: =restore_labor_included, rate: =restore_hourly_rate_usd, tests: =test_restores_per_year}
+        Continuum DRaaS: {labor_included: =restore_labor_included, rate: =restore_hourly_rate_usd, tests: =test_restores_per_year}
+        Continuum DRaaS Premier: {labor_included: =restore_labor_included, rate: =restore_hourly_rate_usd, tests: =test_restores_per_year}
+
+  - id: backup_failover_days
+    subject: [backup_failover_declared, backup_failover_ended, backup_dr_days_granted, backup_dr_days_used, backup_dr_days_forfeited, backup_dr_overage_charge]
+    rule: >-
+      Cloud failover is available only where cloud_virtualization is true. A production failover starts only after the
+      authorized contact signs a production failover authorization where production_failover_requires_signature is true; a
+      DR test is scheduled through the account team, counts against dr_tests_per_year, and its server-days are free where
+      dr_test_server_days_free is true. Each contract year is granted dr_days_included_annual server-days at activation and at
+      each anniversary of term_start_date, and unused days are forfeited at the year's end and at closing. Server-days of a
+      production failover are servers times started calendar days in the cloud; they are drawn from the year's balance
+      (backup_msr_dr_balance_year) and any excess is billed at dr_day_rate_usd per server-day.
+    eligibility: []
+    measures: [backup_msr_dr_balance_year]
+    formula:
+      overage_days: max(server_days - backup_msr_dr_balance_year, 0)
+      amount_usd: overage_days * dr_day_rate_usd
+
+  - id: backup_billing_and_collections
+    subject: [backup_payment, backup_late_fee, backup_suspended, backup_reinstated]
+    rule: >-
+      Invoices fall due invoice_due_days after posting; payments apply to the named invoice, otherwise oldest first, one
+      entry per invoice. On the first day of each month every invoice unpaid more than late_fee_grace_days after its due
+      date is assessed one late fee of late_fee_pct_monthly percent of its unpaid balance, rounded half up to the cent. New
+      backups pause once the oldest unpaid invoice is suspension_days_past_due days past due, existing restore points being
+      kept, and resume once all past-due invoices are paid; after termination_for_nonpayment_days in suspension the plan may
+      be terminated for non-payment.
+    eligibility: []
+
+  - id: backup_renewal_and_termination
+    subject: [backup_renewed, backup_notice_given, backup_notice_withdrawn, backup_early_termination_fee, backup_closed]
+    rule: >-
+      The plan renews for renewal_term_months unless a signed non-renewal notice is received no later than notice_days
+      before term_end_date, renewal rates rising by renewal_uplift_cap_pct percent unless current discounted list rates are
+      lower. An early termination notice ends the plan on the later of the requested date and the notice date plus
+      notice_days, with an early termination fee of early_termination_fee_pct percent of the minimum-commitment fees for the
+      service months after the effective date through term_end_date. Notices may be withdrawn before the effective date,
+      reversing the fee. Notices, withdrawals, tier changes, order cancellations and production failover authorizations are
+      registered as change requests that take effect only on the authorized contact's signature. A renewal may be recorded
+      only while the plan status is active or suspended.
+    eligibility:
+      - id: renewal_status
+        applies_to: [backup_renewed]
+        kind: state
+        condition: A renewal may be recorded only while the plan status is active or suspended.
+        evidence_fields: [backup_plans.backup_plan_id, backup_plans.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[backup_plans.backup_plan_id]]
+          action_bindings: {backup_plans.backup_plan_id: backup_plan_id}
+        state_contract:
+          field: backup_plans.status
+          allowed: [active, suspended]

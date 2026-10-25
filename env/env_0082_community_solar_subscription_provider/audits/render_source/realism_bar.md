@@ -1,0 +1,37 @@
+# Realism bar — coordinator ruling file (env_0082), read by instantiators AND auditors
+
+The request's top priority is realism. This file is the shared written bar so that reworker and auditor do not oscillate between "struck as invented" and "below the factor floor" (the floor is gate-enforced and cannot be waived). Every coordinator ruling made later is appended here as an AMENDMENT — never only in a brief.
+
+## Domain anchor (community solar subscriptions, US)
+- The **bill credit value** is set by the utility / state program (Value Stack components, a published $/kWh credit rate, or the retail rate), applied by the utility to the subscriber's utility account from the allocation of the array's monthly production. A company factor may never change the utility's credit rate or a state-set figure; it may only change what the COMPANY charges, credits, fees or schedules within its contract terms.
+- The **subscription charge** is the company's: typically a percentage of the credit value (discount tiers, e.g. 5–20 %), or a $/kWh rate below the credit rate; LMI subscribers get program-mandated minimum savings where the state program requires it.
+- Allocation size is capped against the utility account's historical annual usage (program-specific %, stated in the charter). Allocation changes, transfers at move and cancellations take effect through the utility's allocation filing cycle (lead times, monthly/quarterly windows). Banked / excess credits roll per program rules. Annual true-up / reconciliation compares allocated production against usage or against a contracted production guarantee.
+
+## Accepted factor kinds
+- **R1** Keyed fee / rate / credit schedules on recorded, publishable keys (discount tier, program / utility territory, LMI status, share-size band, billing type consolidated vs dual, customer type residential vs small business).
+- **R2** One timing schedule per date dimension (notice period before a filing window, days since move-out, months remaining on term).
+- **R3** Proration conventions (partial-month service, days of allocation in a period). A whole-month count plus a part-month factor on the same date is ONE R3 convention — not two factors.
+- **R4** Real federal / state / utility-tariff rules (program usage caps, LMI savings floors, filing lead times, credit-rate components) stated with real or tariff-plausible figures — never invented statutes or entitlements.
+- **R5** Published contract caps (early-termination fee caps, maximum annual escalator, production-guarantee shortfall credit caps).
+- **R6** (waivable tier) A company schedule keyed on a recorded field, with plausible figures, no conflict with law or base, not an X mechanism, XF-clean, minimal in count and tagged `R6` in the claims. Auditors grade R6 factors as `R6-WAIVED` observations, not REDs.
+
+## Rejected kinds
+- **X1** Tenure / AutoPay / new-customer / loyalty / referral perks used to pad a computation.
+- **X2** Hardship cuts on penalty fees; discretionary goodwill amounts.
+- **X3** Stacking that the account-wide benefit rule forbids; a factor already embedded in a recorded amount (recorded credit value, recorded allocation kWh, recorded charge) — not load-bearing.
+- **X4** Implausible figures; invented legal figures; a company factor moving a utility- or state-set amount or date.
+
+## Design consequence
+Put computations on writes priced from raw records (allocation kWh × credit rate, true-up shortfalls, prorated charges, transfer/ETF amounts), not on rebates layered over a posted flat fee. Flat service charges are not padded computations.
+
+## Amendments
+
+### AMENDMENT 1 (coordinator, 2026-10-25, after round-1 policy audits — binding on reworkers and auditors)
+1. **Write scope is the category, not the event_types list.** The blueprint skill fences writes on the primary-category axis only ("only writes are fenced"; event families are namespaced by category). A tool writing an event of the difficulty's OWN category that is not listed in the claim's event_types is legitimate, provided the base charter books that event, the trigger rule holds, and the scopes of the M tasks stay disjoint. Items graded RED only for that reason (garden C-SCOPE, access C-RED-1, biz observation) are closed by this ruling; every other part of those items still stands.
+2. **R6 "minimal count" is operational.** Each reworker writes a LEVER CATALOGUE in the worklog: every base parameter of its plans (P keys), every holding field, every event field of its category, and every readable field of other categories, each marked used / unusable-with-reason (constant across reachable tiers, unrecorded, amount-neutral, forbidden by benefit_basis, outside the DSL). An R6 factor is acceptable only when the catalogue shows no unused honest R1–R5 lever that could take its place on that computation in that world. Auditors check the catalogue against the charter; an R6 factor with an unused honest lever available is RED, one without is R6-WAIVED. R6 never covers: a factor acting only through another factor's output, an invented mechanism no community solar provider uses, a company factor moving a utility-/state-set figure, X1–X4.
+3. **Change what the task tests rather than pad.** If a computation cannot reach its drawn count with honest levers, move the tree onto computations whose real rules are rich in the charter (e.g. production-guarantee shortfall credits with guarantee %, degradation per contract year and banked-credit treatment; ETFs by remaining term and kW; late / returned-payment fees within plan bounds and real state caps; estimated charges by a real estimating method such as average of prior posted months vs same month prior year; prorations). Any event of your own category may be used (point 1). Never relax the draw.
+4. **Account-wide benefit_basis binds.** A subscription charge is priced only by its plan's own savings rate and benefits never stack — no extra percentage cuts on charges or estimates of charges, declared overwrite or not (X3). Put factors on computations the charter actually lets vary.
+5. **DSL reach is frozen.** compute reads only this holding (F/P), its own event tables, and other categories' holdings/params/event tables; utility_accounts and projects are not readable. A real rule turning on usage, yield or capacity must read the figure from a record the DSL reaches (e.g. a review row or filing row of a subscription line that recorded it); if none exists, the rule cannot be scored — do not substitute an invented proxy (e.g. "share start date" for array age).
+6. **Statutory figures:** cite a state cap (dishonored-check fee limits, notice rules) only where you are certain of the real figure; otherwise keep the charter's own bounds. A seeded or computed fee must never exceed a real applicable statutory cap.
+7. **Seeds of other categories** must be states their owning charter produces as of the row's own date (e.g. a waitlist request sized within the waitlist sizing rule on its submission date; a garden share with its full credit/billing/filing history since activation); own-category history rows are priced under your extended rules; payments are applied exactly as the in-force payment-application rule says (no free month labels).
+8. **Rework hygiene:** verify every finding before changing; disprove with evidence if wrong (the auditor accepts a stated, evidenced disagreement). The REWORK section of your worklog and the claims file carry item ids and one-line dispositions only — never scored / baseline / sensitivity figures.

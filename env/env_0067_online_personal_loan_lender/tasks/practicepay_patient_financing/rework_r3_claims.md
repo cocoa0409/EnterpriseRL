@@ -1,0 +1,21 @@
+# Rework round 3 — claims (audit revision_2)
+
+- CG-3: closed — the make-good reversal is retired; both make-up reliefs count only a payment dated after the fee or the return that has not itself come back, and their day counts are taken only in that order (probed with a credit dated before the event).
+- CG-9: closed — the item-size surcharge and the fractional make-good extent are gone; the returned-payment fee's method is the one-penalty limit (one event with its late fee, dollar cap at the payment due, no limit for a payment toward no due date); reliefs use the capped / keep-back / whole sizing with record and relationship shares.
+- CG-10: closed — every policy carries its drawn count with a surviving method factor: returned-payment fee (level, one-penalty limit, balance, loan, FlexLine), payment reset (method plus five rate cuts that each move alone), late-fee and returned-payment-fee reliefs (size method plus four shares each); late fee and payoff unchanged in count.
+- R2-1: closed — the courtesy waiver on request is retired; the late-fee relief policy declares the restated courtesy sentence (on request as before; without request only as a make-up relief, booked on the courtesy basis and counted), which the returned-payment-fee relief follows.
+- R2-2: closed — no record is claimed to be uncounted: every make-up relief counts among the courtesy waivers, and each prerequisite condition names the fee entry its relief must name (a late-fee entry or a returned-payment fee entry).
+- R2-3: closed — make-up and replacement require the latest payment toward the due date to be dated after the fee or return and not returned; the late-fee schedule's own payment test is unchanged.
+- R2-4: closed — every write policy states that an amount of 0.00 is not owed and nothing is booked (payoff: no payment; reset: never below the minimum), and every prerequisite condition is worded "when an amount above 0.00 is owed", so each is producible in every reachable case.
+- R2-5: closed — the payoff's latest statement closing is the latest monthly interest charge or, when the deferred interest was billed after it, the billing date, so a billed plan is charged interest only from the billing on; no departure from the deferred-interest sentence remains.
+- R2-6: closed — the promotion test and the good-through accrual now sit inside the payoff's interest factor, whose baseline restores the single span and the accruing good-through days the baseline rule states.
+- R2-7: closed — the reset's standard method is the activation formula at the reset rate, so every rate cut alone against the baseline moves the payment; the deferred-interest tier re-amortizes the balance.
+- R2-8: closed — the returned-payment fee no longer scales with the item; its method factor is the one-penalty limit.
+- R2-9: closed — the make-good reversal is retired; no fee is reversed by a fractional formula.
+- R2-10: closed — no policy reads or sets AutoPay as a gate; the reset tool writes only the payment and the rate and leaves AutoPay as it is; the AutoPay sentence is restated only to let the reset count AutoPay debits already credited.
+- R2-11: closed — remaining payments are the due dates from the next due date through the final due date, the first due date being the first due day at least 25 days after purchase; the compute derives it exactly (probed on skip, same-day, month-end and leap-February cases).
+- R2-12: closed — the payment-method overwrite restates the activation method for every plan type and names the reset as the only exception; the partial-refund recast sentence is restated with the same scope.
+- T0-R2-1: closed — task 0's second prerequisite is now the returned-payment-fee relief (and the first the late-fee relief); no fractional extent remains.
+- T1-R2-1: closed — task 1 is re-worlded: the customer asks for the payment reset at any lower rate he qualifies for, the gold writes that reset plus the two fees the system owes before it, and nothing he did not ask for changes on his contract.
+- T1-R2-2: closed — R2-1 and R2-10 removed from the charter (courtesy waiver retired; AutoPay no longer a gate or a side effect).
+- T1-R2-3: closed — R2-7 and R2-8 closed as above; every factor of the task's three computations moves its result alone and against its baseline.

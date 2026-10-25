@@ -1,0 +1,18 @@
+# rework_claims_r2 — gap_waiver_cancellations_and_claims (policy-task audit revision_1)
+
+- C1 (unreal ladders, 17 factors + fee-waived deferral baseline): every member struck. pd/ud history, unpaid, in-force, requirement and channel shares removed; bl_courtesy_holdback removed; ep/eu late shares, fee allowances and placed-premium relief removed; bn_notice_cut and bn_unpaid_cut removed; the "fee waived -> not excluded" baseline sentence removed (every deferral is now an excluded item). Replacements are measurement conventions read from records (days a due-date change added; installment amount in effect on the past-due and deferral dates; whole-installment past-due and deferral relief; placed premiums net of refunds credited or due; floor value from the tracking record's placement valuation; covered-LTV cut by collateral band). BLUEPRINT-KNOWN residue: the reimbursement policies keep a published deductible-benefit schedule (credit tier, term, collateral band, LTV, amount financed) to meet the drawn counts, since real addenda carry one record-driven deductible rule.
+- C2 (method shape): pd/ud proof basis rebuilt as one method with three shapes (proof deductible picked by the coverage that paid / plan borrower maximum when no proof / claim deductible); ep/eu installment factors relabelled parameter, with a third distinct value (blended cap and restored installments).
+- C3 (two tiers one value): add-on factor now has one tier for the service contract's own refund (issued, or its own formula while unissued), a tier for a contract cancelled before the loss (nothing) and the day-prorated price.
+- C4 (counts after strikes): every policy again carries its drawn count with >= 2 parameter and >= 1 method factors; the Plus tree's multi-source factor is the recognized-deductible method (loss type x proof x tracking plan).
+- C5 (undeclared override of gap_agg_contract_portfolio force-placed premium sentence): ep and eu declare it with self-naming replaced_by; sibling tails name each other; other plans keep every added premium excluded.
+- C6 (assembly sentence naming factor quantities): removed; each starting-balance factor sentence carries its own effect and the capped-rate sentence carries its own placement before rounding.
+- C8 (SCRA schedules' starting principal): the rule now states the signed schedule and the first stage both start from the amount financed, not the opening principal.
+- Task 0 findings 1-7: closed by the class fixes above; world now has two unpaid installments at the loss, ACV per the settlement letter, service-contract refund issued inside its 30-day period (O11), frozen date before the charge-off point.
+- Task 1 finding 5 (VSC refund outside refund_processing_days): the service contract is now refunded inside 30 days of its cancellation effective date; design_rationale restated.
+- O1: "ahead of any claim decision" removed from the worksheet-benefit rule and tool docstring.
+- O3: excluded-amounts scope no longer conditions on salvage / prior-damage facts no record holds (O12); those items stay for the decision as the settlement documents state them.
+- O5: deferral installment amount now follows the cap in effect on the latest extension's date.
+- O6 / O7: kept as stated observations (fees due as carried; settlement funds not yet posted) — fees part follows the base excluded item "late charges and fees".
+- O9: recorded in the plan.md probe table as a known DSL limit (no producible world).
+- O10: user-tool docstrings now say the call records only the reimbursement amount claimed on the strength of the settlement documents.
+- Sweep: design_rationale, prerequisite_closure, necessity text, factor traces and stated equations regenerated from the new compute.

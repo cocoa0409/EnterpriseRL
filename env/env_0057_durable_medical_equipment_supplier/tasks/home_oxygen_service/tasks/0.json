@@ -1,0 +1,1565 @@
+{
+    "frozen_time": "2026-10-28 11:15:00 EDT",
+    "design_rationale": "WORKLOG / DOSSIER - home_oxygen_service task 0 (Raymond Szabo).\n\n[Step 0 draw] draw_counts.py --task 0 -> prerequisite_problems 3, factor_counts [4, 6, 5, 4]. Assignment: paid-in-full equipment month 6, post-break period start 5, setup day 4, suspension day 4.\n\n[Scope snapshot] Difficulty claims category oxygen. Nothing occupied before this task. Task 0 claims oxygen_ext_setup_start_day (record_oxygen_setup_e2e7878b), oxygen_ext_paid_in_full_equipment_month (record_oxygen_equipment_payment_51bbc3fc), oxygen_ext_stay_suspension_day (record_oxygen_suspension_f17584ff), oxygen_ext_post_break_period_start (restart_oxygen_payment_period_b66f451e, owner user). Left for task 1 (draw 2 prerequisites, [4,6,5]): the post-cap contents side (contents month paid in full), the change of primary coverage, and the return - events oxygen_contents_paid, oxygen_payer_update, oxygen_return, none touched here.\n\n[Why a good test / design thesis] Surface goal: 'keep my oxygen with Summit Ridge now that I'm home'. Scored root parameter: the first day of the new payment period (2026-10-20). Between them the agent must discover from the records that (1) the June setup was never recorded (record order_received although an initial-setup delivery 2026-06-20 and backup cylinders at home 2026-06-22 are on file), (2) the June month the HMO paid in full is not posted, (3) the stay already on the PAP device record (suspended 2026-07-18) is not on the oxygen record. Each problem has its own multi-factor calculation; the dependency is long (setup -> payment/suspension -> new period) and broad (coverage class, PAP record, service history, claim history, eligibility check all decide values).\nHonest limitation recorded for the audit: the oxygen schema carries money only on paid claim lines (whose patient share must stay 0.00 to keep the coverage trigger inside oxygen) and dates on lifecycle writes, so three of the four computations are date selections whose factors are AND-gated conditions; each gate is load-bearing (see sensitivity runs) and every threshold is a published Summit Ridge parameter of the policy.\n\n[Problem-tree card]\nroot oxygen_ext_post_break_period_start (user tool restart_oxygen_payment_period_b66f451e).\nedge 1: oxygen_ext_post_break_period_start -> oxygen_ext_stay_suspension_day value_input, gate home_again_day, form state. Sentence: \"A new payment period after a stay is not opened until the oxygen record shows the stay as a suspension with its suspension date.\" Four-point test: ordering connective 'not ... until'; waits on a record-visible state (status suspended with a suspension date filled in, whichever date the suspension policy gives); no tool/id/code token; exact scope (one suspension). Only the suspension tool writes status suspended with a date in this difficulty -> unique resolver. False at opening: initial_state.oxygen_holdings.ddb0b6dc-479a-4a18-bf8a-5cae5a046162.status = order_received, suspended_date empty. Deleting it: root becomes 2026-10-28.\nedge 2: oxygen_ext_post_break_period_start -> oxygen_ext_paid_in_full_equipment_month value_input, gate old_period_paid, form state. Sentence: \"The first day of a new payment period after a stay is fixed only after the oxygen claim history carries the payer's paid line for each equipment month that began before the stay.\" Only the paid-in-full posting tool adds oxygen_rental_paid lines. False at opening: no oxygen_billing row; initial_state.oxygen_holdings.ddb0b6dc-479a-4a18-bf8a-5cae5a046162.setup_date empty. Deleting it: root becomes 2026-10-28.\nedge 3: oxygen_ext_stay_suspension_day -> oxygen_ext_setup_start_day value_input, gate stay_evidence_day, form state. Sentence: \"A stay is recorded as a suspension only after the oxygen record shows an active rental with its setup date.\" Only the setup tool writes rental_active with a setup date from order_received. Deleting it: suspension date becomes 2026-10-28.\nedge 4: oxygen_ext_paid_in_full_equipment_month -> oxygen_ext_setup_start_day value_input, gate training_rate_pct, form state. Sentence: \"An equipment month is posted as paid only after the oxygen record shows the system set up, with its setup date and an active rental.\" Deleting it: the discharge-training test has no setup date (raises (ValueError)).\nTopological order: setup -> payment -> suspension -> new period. The posting needs the active rental its own prerequisite sentence names (and base oxygen_billable_status), which the suspension ends, so payment precedes suspension; a swapped replay leaves the terminal hash and every scored value unchanged.\nDirections: affirmative ('only after') for the posting and the suspension, negated ('not ... until') for opening the new period, affirmative ('fixed only after') for its first day - chosen per result, not alternated.\nPersona never mentions setup, payment posting or suspension; the stay dates are the situation of the root request, the June statement and discharge paperwork are given only on request.\n\n[Factor cards - figures from the sensitivity run on each handling-time world]\nSETUP DAY (2026-06-22; all-baseline 2026-06-20): home_arrival_anchor (method): order referral_source hospital_discharge, backup-cylinder delivery 2026-06-22 later than the initial-setup delivery 2026-06-20 -> first day at home 2026-06-22; baseline (initial-setup delivery date) gives 2026-06-20. | training_delivery_allowance (parameter, cross-difficulty coverage, multi-source): hospital-discharge order under Commercial HMO -> allowance K('contracted_predelivery_days') = 2 days; gap initial-setup delivery -> first day at home 2 days fits; baseline 0 days fails the gap and gives 2026-06-20. | setup_backdating_reach (parameter, cross-difficulty coverage): coverage class Commercial HMO -> reach 180 days; first day at home is 128 days before the recording day; baseline reach K('reach_short_days')=90 fails and gives 2026-06-20. | order_delivery_lead (parameter): hospital-discharge order -> lead 1 day; order 2026-06-19 to initial delivery is 1 day; baseline 0 days fails and gives 2026-06-20. | setup_day (plain read): LATEST initial_setup delivery = 2026-06-20; result = first day at home 2026-06-22 since all three conditions hold.\nPAID-IN-FULL MONTH (226.61; all-baseline 181.24): awake_usage_share (parameter): order exertion_and_sleep with 1 cylinder refill on record -> 80 percent, applied to the month's fee from the flow combination; baseline 100 percent gives 283.26. | flow_fee_combination (method): flow 4.5 LPM above the class threshold 4 and portable equipment billable (the class carries the 28.43 add-on, mobility documented, order not for sleep only, 1 backup-cylinder delivery and 1 refill on record) -> higher of 172.61 x (100+50)% = 258.915 and 172.61 + 28.43 = 201.04, i.e. 258.915; baseline (the stationary fee 172.61) gives 151.07. | payer_high_flow_rate (parameter, cross-difficulty coverage, multi-source): flow 4.5 LPM above the threshold 4 and coverage class Commercial HMO -> 93 percent; baseline 100 percent gives 243.66. | rental_position_step (parameter): paid months before this one under the HMO = 0 -> opening month 110 percent; baseline 100 percent gives 206.01. | discharge_training_rate (parameter): initial-setup delivery 2026-06-20 is before the setup date 2026-06-22 written by the setup step and the order came from a hospital discharge -> 105 percent; baseline 100 percent gives 215.82. | pap_multi_rental (parameter, cross-difficulty pap, multi-source): PAP device record on the same HMO, no ownership date (True), 7 paid PAP months < 13, rented 9 months >= 3 -> 97 percent; baseline 100 percent gives 233.62. | plan_allowed_pct (plain cross read): Commercial HMO allowed_pct_of_fee_schedule = 105; result = RND(258.915 x 80% x 93% x 110% x 105% x 97% x 105%, 2) = 226.61.\nSUSPENSION DAY (2026-07-18; all-baseline 2026-10-28): stay_evidence_source (method, cross-difficulty pap): oxygen record active (after the setup step) and the PAP device record suspended on 2026-07-18, later than the oxygen setup date 2026-06-22 -> evidence day 2026-07-18; baseline (day the stay is reported) gives 2026-10-28. | stay_backdating_reach (parameter, cross-difficulty coverage): coverage class Commercial HMO -> reach 180 days; evidence day is 102 days back; baseline 90 days fails and gives 2026-10-28. | home_use_window (parameter): class with portable cylinder refills -> window 14 days; most recent cylinder refill 2026-07-06 is 12 days before the evidence day; baseline 0 days fails and gives 2026-10-28. | established_other_rental (parameter, cross-difficulty pap): oxygen record active and the PAP device record suspended on 2026-07-18, later than the oxygen setup date 2026-06-22 -> at least 3 months; the PAP payment period began 2026-01-05, 6 whole months before that PAP suspension date; baseline 12 months fails and gives 2026-10-28. | result: all three conditions hold -> suspension dated 2026-07-18.\nNEW PERIOD START (2026-10-20; all-baseline 2026-10-28): home_return_evidence (method): record suspended since 2026-07-18 (written by the suspension step) and a technician visit on 2026-10-20 after it -> day home 2026-10-20; baseline (day of confirmation) gives 2026-10-28. | restart_filing_reach (parameter, cross-difficulty coverage): coverage class Commercial HMO -> reach 30 days; day home is 8 days before the confirmation; baseline 7 days fails and gives 2026-10-28. | coverage_recheck_window (parameter, cross-difficulty coverage): last eligibility check 2026-10-26 is 6 days after the day home; window 30 days; baseline 0 days fails and gives 2026-10-28. | closing_paid_floor (parameter): paid equipment months of the closing period = 1 (the June month posted by the payment step); floor for a commercial plan 1; baseline floor 3 fails and gives 2026-10-28. | stay_paid_span (parameter): suspension date 2026-07-18 is 26 days after the start of the most recent paid month 2026-06-22; span for a commercial plan 31 days; baseline 21 days fails and gives 2026-10-28. | result: all four conditions hold -> new payment period from 2026-10-20.\nMulti-source factors: pap_multi_rental (same-plan rental AND fewer than 13 paid PAP months AND rental age; ownership OR 13 paid PAP months), payer_high_flow_rate (prescribed flow above the threshold AND coverage class), training_delivery_allowance (facility referral AND coverage class). Cross-difficulty factors: stay_evidence_source and established_other_rental (pap), pap_multi_rental (pap), payer_high_flow_rate / training_delivery_allowance / setup_backdating_reach / stay_backdating_reach / restart_filing_reach / coverage_recheck_window / closing_paid_floor / stay_paid_span (coverage). Near-misses: the PAP record's own setup 2026-01-05 is earlier than the oxygen setup and never an evidence day; the cylinder refill 2026-07-06 is not a day home because it is before the suspension date; the eligibility check of 2026-06-20 in the ledger is not the recheck (the coverage record's last check 2026-10-26 is).\n\n[Base-invariant card] Setup (oxygen_setup_complete): oxygen_qualification gates oxygen_prior_auth (Commercial HMO requires prior authorization; request dde31ff9-5c5b-4ba5-aa45-c26fc5a649f7 approved 2026-06-19, setup day 2026-06-22 inside the 60-day validity) and oxygen_eligibility_current, which the setup policy supersedes by a declared overwrite for the setups it governs - the check that counts is the most recent one on the eligibility history dated on or before the setup day (eligibility response 2026-06-20 in the ledger, 2 days before setup, within 30 days). Payment (oxygen_rental_paid): oxygen_billable_status (rental_active after the setup step), oxygen_payment_cap scope (month 1 of 36), retest_on_file (group I patient, the gate binds only group II). Suspension: oxygen_suspension_break scope (no structured gate on oxygen_suspend). New period: oxygen_suspension_break scope; break 2026-07-18 -> 2026-10-20 = 94 days exceeds break_in_need_days 60 plus the 13 days left in July (allowance end 2026-09-29), so a new period - not a resumption - is the action.\nOverwrites declared: suspension dating (admission date -> evidence day rule), month fee and allowed-amount sentences of oxygen_evt_monthly_billing, new-period start sentence of oxygen_suspension_break.\n\n[Business-object card] One oxygen record ddb0b6dc-479a-4a18-bf8a-5cae5a046162; one coverage 9170291a-068e-4fc1-96a5-11d2ade276ad (Allegheny Builders Health HMO, out-of-pocket maximum 4500.00 met -> paid-in-full months); PAP record c4dfbbb7-6bfb-438e-90f3-c2b92746613d on the same coverage, suspended 2026-07-18; prior authorization dde31ff9-5c5b-4ba5-aa45-c26fc5a649f7. The June month is identified by the statement's claim number ABH2621100733 and service date 2026-06-22 (= the setup day).\n\n[Seed rows] customer; coverage (active HMO, last check 2026-10-26); two ledger eligibility checks (2026-06-20, 2026-10-26); PAP holding (evidence of the stay and of the multi-rental tier); oxygen holding (order_received intake gap); prior authorization; four service rows (setup to hospital 06-20, backup cylinders home 06-22, refill 07-06, technician visit 10-20). Removing the PAP row moves the suspension day to the report day; removing the technician visit moves the new period to 2026-10-28; removing the refill row drops the usage share to 100 and breaks the home-use window.\n\n[Persona design] Raymond: short practical sentences, tired; volunteers only the goal and that he is home since 10-20; credentials when asked; June statement and discharge paperwork only when asked; runs the handed-over step with the agent's values plus his paperwork; closes when told the oxygen continues and from what date.\n\n[Standard solution] locate by phone -> verify (DOB + phone) -> read oxygen record, service history, requests, claim history, coverage, PAP record -> record setup (2026-06-22) -> post June month (226.61) -> record suspension (2026-07-18) -> hand the continuation step to Raymond (start 2026-10-20, test 2026-10-16 / 87, order 2026-10-19).\n\n[Verification] Executed a scratch authoring script (removed after use) that replays gold with the real tools, evaluates every compute on its handling-time world through check_compute.build_env/eval_compute, runs per-factor baseline substitution, the all-baseline fall-back, the A/S order swap and the per-edge skip runs; outputs are the numbers quoted above and in computations.\n\n[Draft recomputation from the visible context] From the policy prose, tool schemas, the persona lines and the finder returns alone: the setup rule picks the backup-cylinder day 2026-06-22 (hospital-discharge order under the HMO: 2-day allowance for a 2-day gap, 128 days back within the plan reach, 1-day lead); the June month: flow 4.5 > 4 with portable billable -> max(172.61 x 1.50, 172.61 + 28.43) = 258.915; x80% usage share x93% HMO high-flow rate x110% x105% x97% x105% = 226.61; suspension from the PAP date 2026-07-18 (102 days back, refill 12 days before, PAP rented 6 whole months before the stay); new period from the technician visit 2026-10-20 (8 days back, recheck 6 days later, 1 paid month, stay 26 days into the paid month). Agrees with gold.\n\n[Gate record] check_extended, check_task_tools, replay_tasks, check_solvability, check_compute, check_grounding, check_cache_diff (info) and check_cross_fire all pass on the difficulty; check_compute independently recomputes every expected value, factor_sensitivity figure and baseline_result quoted above. check_traceability reports only the unlock tool names, which become reachable once the KB is rendered.\n[Rework round 2 - closure of the policy audit, symptom -> root cause -> change -> re-run] (figures as of round 2, when the June month was 227.42; round 3 below restates them)\n- F-3a (restart day-home ladder overlapped as stated): the visit tier and the refill tier could both hold. Changed the rule to 'otherwise, when the record is suspended, no technician visit is on record later than the suspension date and a cylinder refill is' and the compute tier 2 to require visit_after_stay <= suspended_date; ladder text updated. Re-run: 2026-10-20 unchanged (no post-stay refill exists), home_return_evidence is a disjoint method again.\n- F-3b (equipment PAP tiers overlapped): tier 1 now also requires fewer than 13 PAP rental months paid (rule, compute, ladder). 227.42 unchanged at the time (7 paid months).\n- Class sweep of ladders: the setup anchor now reads 'otherwise, when ... skilled nursing facility'; every other ladder of the charter is disjoint by its own conditions (distinct usage values, distinct referral sources, distinct coverage classes, non-overlapping numeric bands).\n- O-1 (base delivery mapping as a second setup date): the setup rule now states that its setup day is the only setup date recorded and that the initial-setup delivery date is carried only when the policy keeps the setup day on it.\n- O-T0-1 (eligibility response after the back-dated setup): the setup rule now says the eligibility response that counts is the most recent check on the eligibility history dated on or before the setup day (2026-06-20 here). Round 3 declares that sentence as an overwrite of base oxygen_eligibility_current (see below).\n- O-4: the suspension home-use window now requires the refill on or before the evidence day (rule and compute guard). 2026-07-18 unchanged (refill 2026-07-06).\n- O-5: the restart's suspension sentence now waits on 'a suspension with its suspension date', which the suspension write produces on every tier (evidence day or report day); condition updated.\n- O-6: order_uniqueness now states the entailed order payment -> suspension (no longer 'either order'); GT order already was setup -> payment -> suspension -> restart.\n- O-8: closing_paid_floor and stay_paid_span read the coverage class through their own bindings and are labelled cross_difficulty coverage.\n- O-9 (realism of training rate, lead fall-through, floor/span): kept; recorded as Summit Ridge published contract and billing conventions in the policy params.\n- Re-ran on the handling-time worlds: setup 2026-06-22 (baseline 2026-06-20), payment 227.42 (211.09), suspension 2026-07-18 (2026-10-28), restart 2026-10-20 (2026-10-28); every factor_sensitivity figure unchanged; edge skips unchanged.\n- Stamp sweep (class-wide): no paid equipment line exists before the June month, so no seeded amount can be copied for 226.61; the oxygen record carries no setup, suspension or restart date before the writes, and the dates the selections return (backup-cylinder delivery, PAP suspension date, technician visit) are the evidence each method factor reads, not fields that name the outcome - each has a competing record date (initial-setup delivery, report day, confirmation day) that the baseline returns.\n\n[Rework round 3 - closure of the render-source mismatches (items 1-7, minor 1-2) and policy-audit O-10, symptom -> root cause -> change -> re-run]\n- Items 1-2 / minor 1 (overwrite wider than its replacement), closed class-wide on all seven overwrites: every replaced_by is now a scope sentence of the policy's own rule that names the months, stays, periods, changes or returns it governs, says 'and only for such a ...', and leaves every other case under the base rule. The suspension overwrite now retires only 'with the admission date as suspended_date'; the admission trigger stays inherited.\n- Item 3 (equipment computation rule leaned on the flow factor's 'portable equipment is billable'): the standard month's fee is now the class's stationary_monthly_fee alone; the portable-billable definition lives only in the flow-combination sentence, whose ladder gained the tier 'flow between the thresholds and portable billable -> stationary fee plus add-on' so its fall-through (the stationary fee) equals the baseline.\n- Item 4 (flow method computed with the payer factor's output): the flow combination now raises the class's own stationary fee by the class's high_flow_uplift_pct; payer_high_flow_rate is a separate multiplier decided from records alone (flow above the threshold AND Commercial PPO/HMO -> commercial_high_flow_pct 93; AND Medicaid FFS -> medicaid_high_flow_pct 87; otherwise 100). The usage share is likewise a multiplier applied after the flow combination, so no factor binding reads another factor's binding (portable_billable counts its own refills).\n- Item 5 class (a factor tier defined on another factor's output): established_other_rental now states its own conditions from records (oxygen record active and PAP record suspended after the oxygen setup date -> PAP payment period at least 3 months before the PAP suspension date; bed analogue; otherwise the oxygen record's own period at least 12 months before the report day), with the status check. Across all date policies the gap comparisons that read a method factor's selected day were moved into result, and each parameter factor reads its own class binding; the training-delivery allowance is now decided by referral source AND coverage class (2 days under Medicare, Medicare Advantage or commercial coverage, 1 day otherwise, 0 for non-facility orders) so it rests on its own record read.\n- O-10 (eligibility gloss without an overwrite): the setup policy now declares an overwrite of base oxygen_eligibility_current; its replaced_by scopes the test to the setups this policy governs and names the check that counts (most recent on or before the setup day).\n- Re-run on the handling-time worlds: setup 2026-06-22 (all-baseline 2026-06-20), payment 226.61 (181.24), suspension 2026-07-18 (2026-10-28), restart 2026-10-20 (2026-10-28). Equipment factor_sensitivity: 283.26 / 151.07 / 243.66 / 206.01 / 215.82 / 233.62, each different from 226.61; the date factors' substitutions are unchanged. No seeded row carries 226.61.\n",
+    "user_scenario": "You are Raymond Szabo, a 62-year-old retired union carpenter living at 418 Doolittle Avenue in Carnegie, Pennsylvania. You talk in short, practical sentences and you are tired after a long summer of being sick. Summit Ridge Home Medical set you up with home oxygen - a concentrator plus small portable tanks - when you left the hospital in June, and you also rent your CPAP machine from them. In July you ended up back in the hospital and then in a rehab facility, and you finally got home on October 20. You are calling because you want to keep your oxygen with Summit Ridge now that you're home, and you want it set up right on their end so it keeps going without trouble. You do not know how their billing works and you do not guess at it.\n\nYou open by saying who you are, that you have been home since October 20 after the hospital and rehab, and that you want to keep your oxygen with Summit Ridge. When the agent asks you to confirm who you are, you give your phone number 4125550214 and your date of birth, March 11, 1964 (1964-03-11); your ZIP code is 15106 if they want something more. If they ask about the hospital stay, you went back into the hospital on July 18, 2026 and moved to rehab after that, and you have been home since October 20, 2026; a Summit Ridge technician came by the day you got home to check the machine. If they ask how the oxygen first got to you, the Summit Ridge driver brought the concentrator to your hospital room on June 20 so the respiratory people could show you how to use it, and you came home on June 22 when they dropped off the first portable tanks at the house. Your insurance is the Allegheny Builders Health HMO through your old union; you never had any other insurance on the oxygen.\n\nOnly if the agent asks whether your health plan sent you anything about the oxygen for June, you say yes, you got an explanation of benefits from Allegheny Builders and you read it off: claim number ABH2621100733, service date June 22, 2026 (2026-06-22), processed July 30, 2026 (2026-07-30), and it says the plan paid it and you owe nothing, because you had already hit your out-of-pocket maximum this year after your surgery. You have no other letters from the plan about the oxygen.\n\nOnly if the agent asks about the paperwork from your rehab discharge, you have it in front of you: the oxygen test was done on October 16, 2026 (2026-10-16) and shows 87 percent, and the doctor's new oxygen order is dated October 19, 2026 (2026-10-19), with the same flow as before.\n\nIf the agent explains that keeping your oxygen going is something you confirm yourself and hands you the step to do it, you agree and carry it out with exactly the details the agent reads to you and the test and order details from your paperwork. Once the agent tells you your oxygen is continuing and from what date, you thank them and say that is all you needed; if they ask whether there is anything else, you say no.",
+    "initial_state": {
+        "customers": {
+            "1f942def-73b0-44cf-87d6-fad17b34b557": {
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "name": "Raymond J. Szabo",
+                "date_of_birth": "1964-03-11",
+                "phone_number": "4125550214",
+                "email": "ray.szabo.carnegie@gmail.com",
+                "home_zip": "15106",
+                "service_address": "418 Doolittle Avenue, Carnegie, PA 15106",
+                "patient_since": "2025-12-29"
+            }
+        },
+        "coverage_holdings": {
+            "9170291a-068e-4fc1-96a5-11d2ade276ad": {
+                "coverage_id": "9170291a-068e-4fc1-96a5-11d2ade276ad",
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "variant_name": "Commercial HMO",
+                "status": "active",
+                "coverage_priority": "primary",
+                "member_id": "ABH77104652",
+                "plan_name": "Allegheny Builders Health HMO",
+                "effective_date": "2019-01-01",
+                "termination_date": "",
+                "benefit_year_start": "2026-01-01",
+                "last_eligibility_check_date": "2026-10-26",
+                "qmb_status": "not_qmb",
+                "deductible_met": 500.0,
+                "oop_met": 4500.0,
+                "patient_balance": 0.0,
+                "payment_plan_status": "none",
+                "payment_plan_monthly_amount": 0.0,
+                "payment_plan_start_date": "",
+                "hardship_tier": "none",
+                "hardship_approved_date": ""
+            }
+        },
+        "coverage_ledger": {
+            "76be6fe0-9cee-4825-9897-ed37b807637b": {
+                "ledger_entry_id": "76be6fe0-9cee-4825-9897-ed37b807637b",
+                "coverage_id": "9170291a-068e-4fc1-96a5-11d2ade276ad",
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "event_type": "coverage_eligibility_check",
+                "posting_date": "2026-06-20",
+                "amount": 0.0,
+                "line_allowed_amount": 0.0,
+                "source_category": "none",
+                "source_bill_id": null,
+                "responsibility_type": "none",
+                "applied_to_entry_id": null,
+                "payer_coverage_id": null,
+                "payment_method": "none",
+                "payment_reference": "",
+                "adjustment_reason": "none",
+                "benefit_year": "",
+                "eligibility_result": "active",
+                "statement_cycle": 0,
+                "balance_due": 0.0
+            },
+            "104b63a9-064a-4be7-915e-cbcbed3c0873": {
+                "ledger_entry_id": "104b63a9-064a-4be7-915e-cbcbed3c0873",
+                "coverage_id": "9170291a-068e-4fc1-96a5-11d2ade276ad",
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "event_type": "coverage_eligibility_check",
+                "posting_date": "2026-10-26",
+                "amount": 0.0,
+                "line_allowed_amount": 0.0,
+                "source_category": "none",
+                "source_bill_id": null,
+                "responsibility_type": "none",
+                "applied_to_entry_id": null,
+                "payer_coverage_id": null,
+                "payment_method": "none",
+                "payment_reference": "",
+                "adjustment_reason": "none",
+                "benefit_year": "",
+                "eligibility_result": "active",
+                "statement_cycle": 0,
+                "balance_due": 0.0
+            }
+        },
+        "pap_holdings": {
+            "c4dfbbb7-6bfb-438e-90f3-c2b92746613d": {
+                "pap_holding_id": "c4dfbbb7-6bfb-438e-90f3-c2b92746613d",
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "variant_name": "Auto-Adjusting CPAP System (E0601)",
+                "status": "suspended",
+                "coverage_id": "9170291a-068e-4fc1-96a5-11d2ade276ad",
+                "ordering_npi": "1487620935",
+                "referral_source": "sleep_center",
+                "order_date": "2025-12-29",
+                "qualifying_test_date": "2025-12-15",
+                "qualifying_ahi": 27.8,
+                "setup_date": "2026-01-05",
+                "rental_period_start_date": "2026-01-05",
+                "suspended_date": "2026-07-18",
+                "ownership_date": "",
+                "closed_date": "",
+                "serial_number": "RS11-AS-2219044",
+                "humidifier_included": true,
+                "prescribed_pressure": "auto 7-15 cmH2O",
+                "rx_date": "2025-12-29"
+            }
+        },
+        "oxygen_holdings": {
+            "ddb0b6dc-479a-4a18-bf8a-5cae5a046162": {
+                "oxygen_holding_id": "ddb0b6dc-479a-4a18-bf8a-5cae5a046162",
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "variant_name": "Concentrator with Portable Cylinders (E1390 + E0431)",
+                "status": "order_received",
+                "coverage_id": "9170291a-068e-4fc1-96a5-11d2ade276ad",
+                "ordering_npi": "1487620935",
+                "referral_source": "hospital_discharge",
+                "order_date": "2026-06-19",
+                "qualifying_test_date": "2026-06-18",
+                "qualifying_spo2": 86,
+                "qualifying_group": "group_i",
+                "prescribed_lpm": 4.5,
+                "usage_pattern": "exertion_and_sleep",
+                "mobile_in_home": true,
+                "setup_date": "",
+                "rental_period_start_date": "",
+                "cap_reached_date": "",
+                "suspended_date": "",
+                "closed_date": "",
+                "rx_date": "2026-06-19",
+                "serial_number": ""
+            }
+        },
+        "oxygen_service": {
+            "c7c1aecb-9686-4a1e-a4e4-081244655e00": {
+                "oxygen_service_id": "c7c1aecb-9686-4a1e-a4e4-081244655e00",
+                "oxygen_holding_id": "ddb0b6dc-479a-4a18-bf8a-5cae5a046162",
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "event_type": "oxygen_delivery",
+                "service_date": "2026-06-20",
+                "delivery_purpose": "initial_setup",
+                "cylinders_delivered": 0,
+                "visit_type": "none",
+                "retest_date": "",
+                "retest_spo2": 0,
+                "pickup_condition": "none",
+                "cylinders_unreturned": 0,
+                "serial_number": "AS-5L-310772",
+                "travel_destination_zip": ""
+            },
+            "0435bdf1-7aee-4045-8517-c1c12182f760": {
+                "oxygen_service_id": "0435bdf1-7aee-4045-8517-c1c12182f760",
+                "oxygen_holding_id": "ddb0b6dc-479a-4a18-bf8a-5cae5a046162",
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "event_type": "oxygen_delivery",
+                "service_date": "2026-06-22",
+                "delivery_purpose": "backup_cylinders",
+                "cylinders_delivered": 6,
+                "visit_type": "none",
+                "retest_date": "",
+                "retest_spo2": 0,
+                "pickup_condition": "none",
+                "cylinders_unreturned": 0,
+                "serial_number": "",
+                "travel_destination_zip": ""
+            },
+            "1f9bf842-9a4b-4155-ba76-67b0996ec49c": {
+                "oxygen_service_id": "1f9bf842-9a4b-4155-ba76-67b0996ec49c",
+                "oxygen_holding_id": "ddb0b6dc-479a-4a18-bf8a-5cae5a046162",
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "event_type": "oxygen_delivery",
+                "service_date": "2026-07-06",
+                "delivery_purpose": "cylinder_refill",
+                "cylinders_delivered": 12,
+                "visit_type": "none",
+                "retest_date": "",
+                "retest_spo2": 0,
+                "pickup_condition": "none",
+                "cylinders_unreturned": 0,
+                "serial_number": "",
+                "travel_destination_zip": ""
+            },
+            "768cb028-ea0f-4787-900c-73d506d48b64": {
+                "oxygen_service_id": "768cb028-ea0f-4787-900c-73d506d48b64",
+                "oxygen_holding_id": "ddb0b6dc-479a-4a18-bf8a-5cae5a046162",
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "event_type": "oxygen_maintenance_visit",
+                "service_date": "2026-10-20",
+                "delivery_purpose": "none",
+                "cylinders_delivered": 0,
+                "visit_type": "routine_maintenance",
+                "retest_date": "",
+                "retest_spo2": 0,
+                "pickup_condition": "none",
+                "cylinders_unreturned": 0,
+                "serial_number": "AS-5L-310772",
+                "travel_destination_zip": ""
+            }
+        },
+        "oxygen_billing": {},
+        "pap_billing": {
+            "a448a30c-36c7-4b67-a21e-4485c604f99b": {
+                "pap_bill_id": "a448a30c-36c7-4b67-a21e-4485c604f99b",
+                "pap_holding_id": "c4dfbbb7-6bfb-438e-90f3-c2b92746613d",
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "event_type": "pap_rental_paid",
+                "coverage_id": "9170291a-068e-4fc1-96a5-11d2ade276ad",
+                "hcpcs_code": "E0601",
+                "billing_modifier": "KH",
+                "rental_month_number": 1,
+                "service_from_date": "2026-01-05",
+                "adjudication_date": "2026-02-03",
+                "allowed_amount": 117.45,
+                "addon_allowed_amount": 26.9,
+                "payer_paid_amount": 117.45,
+                "patient_responsibility": 0.0,
+                "claim_number": "ABH2603600112",
+                "denial_reason": "none",
+                "original_bill_id": null,
+                "reversal_reason": "none",
+                "sale_amount": 0.0,
+                "fee_amount": 0.0
+            },
+            "ea5af309-659a-4e9f-b1ee-1671e241aab8": {
+                "pap_bill_id": "ea5af309-659a-4e9f-b1ee-1671e241aab8",
+                "pap_holding_id": "c4dfbbb7-6bfb-438e-90f3-c2b92746613d",
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "event_type": "pap_rental_paid",
+                "coverage_id": "9170291a-068e-4fc1-96a5-11d2ade276ad",
+                "hcpcs_code": "E0601",
+                "billing_modifier": "KI",
+                "rental_month_number": 2,
+                "service_from_date": "2026-02-05",
+                "adjudication_date": "2026-03-04",
+                "allowed_amount": 117.45,
+                "addon_allowed_amount": 26.9,
+                "payer_paid_amount": 117.45,
+                "patient_responsibility": 0.0,
+                "claim_number": "ABH2606400245",
+                "denial_reason": "none",
+                "original_bill_id": null,
+                "reversal_reason": "none",
+                "sale_amount": 0.0,
+                "fee_amount": 0.0
+            },
+            "cf32952a-e827-4452-b132-f1107be8d9db": {
+                "pap_bill_id": "cf32952a-e827-4452-b132-f1107be8d9db",
+                "pap_holding_id": "c4dfbbb7-6bfb-438e-90f3-c2b92746613d",
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "event_type": "pap_rental_paid",
+                "coverage_id": "9170291a-068e-4fc1-96a5-11d2ade276ad",
+                "hcpcs_code": "E0601",
+                "billing_modifier": "KI",
+                "rental_month_number": 3,
+                "service_from_date": "2026-03-05",
+                "adjudication_date": "2026-04-02",
+                "allowed_amount": 117.45,
+                "addon_allowed_amount": 26.9,
+                "payer_paid_amount": 117.45,
+                "patient_responsibility": 0.0,
+                "claim_number": "ABH2609200388",
+                "denial_reason": "none",
+                "original_bill_id": null,
+                "reversal_reason": "none",
+                "sale_amount": 0.0,
+                "fee_amount": 0.0
+            },
+            "76658531-e758-4c0b-aa3a-7d165c985896": {
+                "pap_bill_id": "76658531-e758-4c0b-aa3a-7d165c985896",
+                "pap_holding_id": "c4dfbbb7-6bfb-438e-90f3-c2b92746613d",
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "event_type": "pap_rental_paid",
+                "coverage_id": "9170291a-068e-4fc1-96a5-11d2ade276ad",
+                "hcpcs_code": "E0601",
+                "billing_modifier": "KJ",
+                "rental_month_number": 4,
+                "service_from_date": "2026-04-05",
+                "adjudication_date": "2026-05-04",
+                "allowed_amount": 88.09,
+                "addon_allowed_amount": 20.18,
+                "payer_paid_amount": 88.09,
+                "patient_responsibility": 0.0,
+                "claim_number": "ABH2612400417",
+                "denial_reason": "none",
+                "original_bill_id": null,
+                "reversal_reason": "none",
+                "sale_amount": 0.0,
+                "fee_amount": 0.0
+            },
+            "19b05d02-66de-430b-97c9-2085cca95084": {
+                "pap_bill_id": "19b05d02-66de-430b-97c9-2085cca95084",
+                "pap_holding_id": "c4dfbbb7-6bfb-438e-90f3-c2b92746613d",
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "event_type": "pap_rental_paid",
+                "coverage_id": "9170291a-068e-4fc1-96a5-11d2ade276ad",
+                "hcpcs_code": "E0601",
+                "billing_modifier": "KJ",
+                "rental_month_number": 5,
+                "service_from_date": "2026-05-05",
+                "adjudication_date": "2026-06-03",
+                "allowed_amount": 88.09,
+                "addon_allowed_amount": 20.18,
+                "payer_paid_amount": 88.09,
+                "patient_responsibility": 0.0,
+                "claim_number": "ABH2615400529",
+                "denial_reason": "none",
+                "original_bill_id": null,
+                "reversal_reason": "none",
+                "sale_amount": 0.0,
+                "fee_amount": 0.0
+            },
+            "b0559438-2cb3-4201-ad05-dcbc41ae46e8": {
+                "pap_bill_id": "b0559438-2cb3-4201-ad05-dcbc41ae46e8",
+                "pap_holding_id": "c4dfbbb7-6bfb-438e-90f3-c2b92746613d",
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "event_type": "pap_rental_paid",
+                "coverage_id": "9170291a-068e-4fc1-96a5-11d2ade276ad",
+                "hcpcs_code": "E0601",
+                "billing_modifier": "KJ",
+                "rental_month_number": 6,
+                "service_from_date": "2026-06-05",
+                "adjudication_date": "2026-07-02",
+                "allowed_amount": 88.09,
+                "addon_allowed_amount": 20.18,
+                "payer_paid_amount": 88.09,
+                "patient_responsibility": 0.0,
+                "claim_number": "ABH2618300661",
+                "denial_reason": "none",
+                "original_bill_id": null,
+                "reversal_reason": "none",
+                "sale_amount": 0.0,
+                "fee_amount": 0.0
+            },
+            "247f986c-2410-49b4-8a73-6cdf50b0cbf8": {
+                "pap_bill_id": "247f986c-2410-49b4-8a73-6cdf50b0cbf8",
+                "pap_holding_id": "c4dfbbb7-6bfb-438e-90f3-c2b92746613d",
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "event_type": "pap_rental_paid",
+                "coverage_id": "9170291a-068e-4fc1-96a5-11d2ade276ad",
+                "hcpcs_code": "E0601",
+                "billing_modifier": "KJ",
+                "rental_month_number": 7,
+                "service_from_date": "2026-07-05",
+                "adjudication_date": "2026-08-04",
+                "allowed_amount": 88.09,
+                "addon_allowed_amount": 20.18,
+                "payer_paid_amount": 88.09,
+                "patient_responsibility": 0.0,
+                "claim_number": "ABH2621600784",
+                "denial_reason": "none",
+                "original_bill_id": null,
+                "reversal_reason": "none",
+                "sale_amount": 0.0,
+                "fee_amount": 0.0
+            }
+        },
+        "oxygen_requests": {
+            "dde31ff9-5c5b-4ba5-aa45-c26fc5a649f7": {
+                "oxygen_request_id": "dde31ff9-5c5b-4ba5-aa45-c26fc5a649f7",
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "oxygen_holding_id": "ddb0b6dc-479a-4a18-bf8a-5cae5a046162",
+                "request_type": "prior_authorization",
+                "related_bill_id": null,
+                "request_status": "approved",
+                "requested_date": "2026-06-19",
+                "decision_date": "2026-06-19",
+                "travel_start_date": "",
+                "travel_end_date": "",
+                "created_at": "2026-06-19 15:42:00 EDT"
+            }
+        }
+    },
+    "db_closure": {
+        "pap_billing": {
+            "19b05d02-66de-430b-97c9-2085cca95084": {
+                "pap_bill_id": "19b05d02-66de-430b-97c9-2085cca95084",
+                "pap_holding_id": "c4dfbbb7-6bfb-438e-90f3-c2b92746613d",
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "event_type": "pap_rental_paid",
+                "coverage_id": "9170291a-068e-4fc1-96a5-11d2ade276ad",
+                "hcpcs_code": "E0601",
+                "billing_modifier": "KJ",
+                "rental_month_number": 5,
+                "service_from_date": "2026-05-05",
+                "adjudication_date": "2026-06-03",
+                "allowed_amount": 88.09,
+                "addon_allowed_amount": 20.18,
+                "payer_paid_amount": 88.09,
+                "patient_responsibility": 0.0,
+                "claim_number": "ABH2615400529",
+                "denial_reason": "none",
+                "original_bill_id": null,
+                "reversal_reason": "none",
+                "sale_amount": 0.0,
+                "fee_amount": 0.0
+            },
+            "cf32952a-e827-4452-b132-f1107be8d9db": {
+                "pap_bill_id": "cf32952a-e827-4452-b132-f1107be8d9db",
+                "pap_holding_id": "c4dfbbb7-6bfb-438e-90f3-c2b92746613d",
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "event_type": "pap_rental_paid",
+                "coverage_id": "9170291a-068e-4fc1-96a5-11d2ade276ad",
+                "hcpcs_code": "E0601",
+                "billing_modifier": "KI",
+                "rental_month_number": 3,
+                "service_from_date": "2026-03-05",
+                "adjudication_date": "2026-04-02",
+                "allowed_amount": 117.45,
+                "addon_allowed_amount": 26.9,
+                "payer_paid_amount": 117.45,
+                "patient_responsibility": 0.0,
+                "claim_number": "ABH2609200388",
+                "denial_reason": "none",
+                "original_bill_id": null,
+                "reversal_reason": "none",
+                "sale_amount": 0.0,
+                "fee_amount": 0.0
+            },
+            "76658531-e758-4c0b-aa3a-7d165c985896": {
+                "pap_bill_id": "76658531-e758-4c0b-aa3a-7d165c985896",
+                "pap_holding_id": "c4dfbbb7-6bfb-438e-90f3-c2b92746613d",
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "event_type": "pap_rental_paid",
+                "coverage_id": "9170291a-068e-4fc1-96a5-11d2ade276ad",
+                "hcpcs_code": "E0601",
+                "billing_modifier": "KJ",
+                "rental_month_number": 4,
+                "service_from_date": "2026-04-05",
+                "adjudication_date": "2026-05-04",
+                "allowed_amount": 88.09,
+                "addon_allowed_amount": 20.18,
+                "payer_paid_amount": 88.09,
+                "patient_responsibility": 0.0,
+                "claim_number": "ABH2612400417",
+                "denial_reason": "none",
+                "original_bill_id": null,
+                "reversal_reason": "none",
+                "sale_amount": 0.0,
+                "fee_amount": 0.0
+            },
+            "a448a30c-36c7-4b67-a21e-4485c604f99b": {
+                "pap_bill_id": "a448a30c-36c7-4b67-a21e-4485c604f99b",
+                "pap_holding_id": "c4dfbbb7-6bfb-438e-90f3-c2b92746613d",
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "event_type": "pap_rental_paid",
+                "coverage_id": "9170291a-068e-4fc1-96a5-11d2ade276ad",
+                "hcpcs_code": "E0601",
+                "billing_modifier": "KH",
+                "rental_month_number": 1,
+                "service_from_date": "2026-01-05",
+                "adjudication_date": "2026-02-03",
+                "allowed_amount": 117.45,
+                "addon_allowed_amount": 26.9,
+                "payer_paid_amount": 117.45,
+                "patient_responsibility": 0.0,
+                "claim_number": "ABH2603600112",
+                "denial_reason": "none",
+                "original_bill_id": null,
+                "reversal_reason": "none",
+                "sale_amount": 0.0,
+                "fee_amount": 0.0
+            },
+            "ea5af309-659a-4e9f-b1ee-1671e241aab8": {
+                "pap_bill_id": "ea5af309-659a-4e9f-b1ee-1671e241aab8",
+                "pap_holding_id": "c4dfbbb7-6bfb-438e-90f3-c2b92746613d",
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "event_type": "pap_rental_paid",
+                "coverage_id": "9170291a-068e-4fc1-96a5-11d2ade276ad",
+                "hcpcs_code": "E0601",
+                "billing_modifier": "KI",
+                "rental_month_number": 2,
+                "service_from_date": "2026-02-05",
+                "adjudication_date": "2026-03-04",
+                "allowed_amount": 117.45,
+                "addon_allowed_amount": 26.9,
+                "payer_paid_amount": 117.45,
+                "patient_responsibility": 0.0,
+                "claim_number": "ABH2606400245",
+                "denial_reason": "none",
+                "original_bill_id": null,
+                "reversal_reason": "none",
+                "sale_amount": 0.0,
+                "fee_amount": 0.0
+            },
+            "247f986c-2410-49b4-8a73-6cdf50b0cbf8": {
+                "pap_bill_id": "247f986c-2410-49b4-8a73-6cdf50b0cbf8",
+                "pap_holding_id": "c4dfbbb7-6bfb-438e-90f3-c2b92746613d",
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "event_type": "pap_rental_paid",
+                "coverage_id": "9170291a-068e-4fc1-96a5-11d2ade276ad",
+                "hcpcs_code": "E0601",
+                "billing_modifier": "KJ",
+                "rental_month_number": 7,
+                "service_from_date": "2026-07-05",
+                "adjudication_date": "2026-08-04",
+                "allowed_amount": 88.09,
+                "addon_allowed_amount": 20.18,
+                "payer_paid_amount": 88.09,
+                "patient_responsibility": 0.0,
+                "claim_number": "ABH2621600784",
+                "denial_reason": "none",
+                "original_bill_id": null,
+                "reversal_reason": "none",
+                "sale_amount": 0.0,
+                "fee_amount": 0.0
+            },
+            "b0559438-2cb3-4201-ad05-dcbc41ae46e8": {
+                "pap_bill_id": "b0559438-2cb3-4201-ad05-dcbc41ae46e8",
+                "pap_holding_id": "c4dfbbb7-6bfb-438e-90f3-c2b92746613d",
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "event_type": "pap_rental_paid",
+                "coverage_id": "9170291a-068e-4fc1-96a5-11d2ade276ad",
+                "hcpcs_code": "E0601",
+                "billing_modifier": "KJ",
+                "rental_month_number": 6,
+                "service_from_date": "2026-06-05",
+                "adjudication_date": "2026-07-02",
+                "allowed_amount": 88.09,
+                "addon_allowed_amount": 20.18,
+                "payer_paid_amount": 88.09,
+                "patient_responsibility": 0.0,
+                "claim_number": "ABH2618300661",
+                "denial_reason": "none",
+                "original_bill_id": null,
+                "reversal_reason": "none",
+                "sale_amount": 0.0,
+                "fee_amount": 0.0
+            }
+        },
+        "oxygen_holdings": {
+            "ddb0b6dc-479a-4a18-bf8a-5cae5a046162": {
+                "oxygen_holding_id": "ddb0b6dc-479a-4a18-bf8a-5cae5a046162",
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "variant_name": "Concentrator with Portable Cylinders (E1390 + E0431)",
+                "status": "order_received",
+                "coverage_id": "9170291a-068e-4fc1-96a5-11d2ade276ad",
+                "ordering_npi": "1487620935",
+                "referral_source": "hospital_discharge",
+                "order_date": "2026-06-19",
+                "qualifying_test_date": "2026-06-18",
+                "qualifying_spo2": 86,
+                "qualifying_group": "group_i",
+                "prescribed_lpm": 4.5,
+                "usage_pattern": "exertion_and_sleep",
+                "mobile_in_home": true,
+                "setup_date": "",
+                "rental_period_start_date": "",
+                "cap_reached_date": "",
+                "suspended_date": "",
+                "closed_date": "",
+                "rx_date": "2026-06-19",
+                "serial_number": ""
+            }
+        },
+        "coverage_ledger": {
+            "76be6fe0-9cee-4825-9897-ed37b807637b": {
+                "ledger_entry_id": "76be6fe0-9cee-4825-9897-ed37b807637b",
+                "coverage_id": "9170291a-068e-4fc1-96a5-11d2ade276ad",
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "event_type": "coverage_eligibility_check",
+                "posting_date": "2026-06-20",
+                "amount": 0.0,
+                "line_allowed_amount": 0.0,
+                "source_category": "none",
+                "source_bill_id": null,
+                "responsibility_type": "none",
+                "applied_to_entry_id": null,
+                "payer_coverage_id": null,
+                "payment_method": "none",
+                "payment_reference": "",
+                "adjustment_reason": "none",
+                "benefit_year": "",
+                "eligibility_result": "active",
+                "statement_cycle": 0,
+                "balance_due": 0.0
+            },
+            "104b63a9-064a-4be7-915e-cbcbed3c0873": {
+                "ledger_entry_id": "104b63a9-064a-4be7-915e-cbcbed3c0873",
+                "coverage_id": "9170291a-068e-4fc1-96a5-11d2ade276ad",
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "event_type": "coverage_eligibility_check",
+                "posting_date": "2026-10-26",
+                "amount": 0.0,
+                "line_allowed_amount": 0.0,
+                "source_category": "none",
+                "source_bill_id": null,
+                "responsibility_type": "none",
+                "applied_to_entry_id": null,
+                "payer_coverage_id": null,
+                "payment_method": "none",
+                "payment_reference": "",
+                "adjustment_reason": "none",
+                "benefit_year": "",
+                "eligibility_result": "active",
+                "statement_cycle": 0,
+                "balance_due": 0.0
+            }
+        },
+        "coverage_holdings": {
+            "9170291a-068e-4fc1-96a5-11d2ade276ad": {
+                "coverage_id": "9170291a-068e-4fc1-96a5-11d2ade276ad",
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "variant_name": "Commercial HMO",
+                "status": "active",
+                "coverage_priority": "primary",
+                "member_id": "ABH77104652",
+                "plan_name": "Allegheny Builders Health HMO",
+                "effective_date": "2019-01-01",
+                "termination_date": "",
+                "benefit_year_start": "2026-01-01",
+                "last_eligibility_check_date": "2026-10-26",
+                "qmb_status": "not_qmb",
+                "deductible_met": 500.0,
+                "oop_met": 4500.0,
+                "patient_balance": 0.0,
+                "payment_plan_status": "none",
+                "payment_plan_monthly_amount": 0.0,
+                "payment_plan_start_date": "",
+                "hardship_tier": "none",
+                "hardship_approved_date": ""
+            }
+        },
+        "pap_holdings": {
+            "c4dfbbb7-6bfb-438e-90f3-c2b92746613d": {
+                "pap_holding_id": "c4dfbbb7-6bfb-438e-90f3-c2b92746613d",
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "variant_name": "Auto-Adjusting CPAP System (E0601)",
+                "status": "suspended",
+                "coverage_id": "9170291a-068e-4fc1-96a5-11d2ade276ad",
+                "ordering_npi": "1487620935",
+                "referral_source": "sleep_center",
+                "order_date": "2025-12-29",
+                "qualifying_test_date": "2025-12-15",
+                "qualifying_ahi": 27.8,
+                "setup_date": "2026-01-05",
+                "rental_period_start_date": "2026-01-05",
+                "suspended_date": "2026-07-18",
+                "ownership_date": "",
+                "closed_date": "",
+                "serial_number": "RS11-AS-2219044",
+                "humidifier_included": true,
+                "prescribed_pressure": "auto 7-15 cmH2O",
+                "rx_date": "2025-12-29"
+            }
+        },
+        "oxygen_service": {
+            "0435bdf1-7aee-4045-8517-c1c12182f760": {
+                "oxygen_service_id": "0435bdf1-7aee-4045-8517-c1c12182f760",
+                "oxygen_holding_id": "ddb0b6dc-479a-4a18-bf8a-5cae5a046162",
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "event_type": "oxygen_delivery",
+                "service_date": "2026-06-22",
+                "delivery_purpose": "backup_cylinders",
+                "cylinders_delivered": 6,
+                "visit_type": "none",
+                "retest_date": "",
+                "retest_spo2": 0,
+                "pickup_condition": "none",
+                "cylinders_unreturned": 0,
+                "serial_number": "",
+                "travel_destination_zip": ""
+            },
+            "1f9bf842-9a4b-4155-ba76-67b0996ec49c": {
+                "oxygen_service_id": "1f9bf842-9a4b-4155-ba76-67b0996ec49c",
+                "oxygen_holding_id": "ddb0b6dc-479a-4a18-bf8a-5cae5a046162",
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "event_type": "oxygen_delivery",
+                "service_date": "2026-07-06",
+                "delivery_purpose": "cylinder_refill",
+                "cylinders_delivered": 12,
+                "visit_type": "none",
+                "retest_date": "",
+                "retest_spo2": 0,
+                "pickup_condition": "none",
+                "cylinders_unreturned": 0,
+                "serial_number": "",
+                "travel_destination_zip": ""
+            },
+            "c7c1aecb-9686-4a1e-a4e4-081244655e00": {
+                "oxygen_service_id": "c7c1aecb-9686-4a1e-a4e4-081244655e00",
+                "oxygen_holding_id": "ddb0b6dc-479a-4a18-bf8a-5cae5a046162",
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "event_type": "oxygen_delivery",
+                "service_date": "2026-06-20",
+                "delivery_purpose": "initial_setup",
+                "cylinders_delivered": 0,
+                "visit_type": "none",
+                "retest_date": "",
+                "retest_spo2": 0,
+                "pickup_condition": "none",
+                "cylinders_unreturned": 0,
+                "serial_number": "AS-5L-310772",
+                "travel_destination_zip": ""
+            },
+            "768cb028-ea0f-4787-900c-73d506d48b64": {
+                "oxygen_service_id": "768cb028-ea0f-4787-900c-73d506d48b64",
+                "oxygen_holding_id": "ddb0b6dc-479a-4a18-bf8a-5cae5a046162",
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "event_type": "oxygen_maintenance_visit",
+                "service_date": "2026-10-20",
+                "delivery_purpose": "none",
+                "cylinders_delivered": 0,
+                "visit_type": "routine_maintenance",
+                "retest_date": "",
+                "retest_spo2": 0,
+                "pickup_condition": "none",
+                "cylinders_unreturned": 0,
+                "serial_number": "AS-5L-310772",
+                "travel_destination_zip": ""
+            }
+        },
+        "customers": {
+            "1f942def-73b0-44cf-87d6-fad17b34b557": {
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "name": "Raymond J. Szabo",
+                "date_of_birth": "1964-03-11",
+                "phone_number": "4125550214",
+                "email": "ray.szabo.carnegie@gmail.com",
+                "home_zip": "15106",
+                "service_address": "418 Doolittle Avenue, Carnegie, PA 15106",
+                "patient_since": "2025-12-29"
+            }
+        },
+        "oxygen_requests": {
+            "dde31ff9-5c5b-4ba5-aa45-c26fc5a649f7": {
+                "oxygen_request_id": "dde31ff9-5c5b-4ba5-aa45-c26fc5a649f7",
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "oxygen_holding_id": "ddb0b6dc-479a-4a18-bf8a-5cae5a046162",
+                "request_type": "prior_authorization",
+                "related_bill_id": null,
+                "request_status": "approved",
+                "requested_date": "2026-06-19",
+                "decision_date": "2026-06-19",
+                "travel_start_date": "",
+                "travel_end_date": "",
+                "created_at": "2026-06-19 15:42:00 EDT"
+            }
+        }
+    },
+    "db_closure_matches_initial_state": true,
+    "solvability_contract": {
+        "request_binding_version": 1,
+        "request_alignment": [
+            {
+                "claim": "Raymond wants to keep his home oxygen with Summit Ridge now that he is home after a hospital and rehab stay.",
+                "evidence": [
+                    "user_scenario:you want to keep your oxygen with Summit Ridge"
+                ]
+            }
+        ],
+        "gold_actions": [
+            {
+                "step": 11,
+                "business_effect": "The oxygen record delivered in June is recorded as set up: rental_active, coverage named, setup date and payment period from 2026-06-22, serial AS-5L-310772.",
+                "request_binding": {
+                    "action_semantics": "A setup delivery is on the service history while the record still awaits setup; recording the setup is the owed system step, distinct from posting a claim or suspending.",
+                    "intent_source": {
+                        "kind": "initial_state",
+                        "evidence": [
+                            "initial_state.oxygen_service.c7c1aecb-9686-4a1e-a4e4-081244655e00.delivery_purpose",
+                            "initial_state.oxygen_holdings.ddb0b6dc-479a-4a18-bf8a-5cae5a046162.status"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "initial-setup delivery on record while the oxygen record awaits setup",
+                        "evidence": [
+                            "initial_state.oxygen_service.c7c1aecb-9686-4a1e-a4e4-081244655e00.serial_number"
+                        ],
+                        "action_arg": "serial_number",
+                        "value": "AS-5L-310772"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "preexisting_before_conversation",
+                    "fact": "The system was delivered (2026-06-20) and taken home (2026-06-22) before the call.",
+                    "evidence": [
+                        "initial_state.oxygen_service.c7c1aecb-9686-4a1e-a4e4-081244655e00.service_date",
+                        "initial_state.oxygen_service.0435bdf1-7aee-4045-8517-c1c12182f760.service_date"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "oxygen_qualification",
+                        "eligibility_id": "oxygen_prior_auth",
+                        "condition": "When the primary coverage's class requires prior authorization for oxygen (coverage parameter prior_auth_oxygen_required), oxygen is set up only once a prior_authorization request on this holding is approved and the setup date is within the coverage's prior_auth_validity_days of its decision_date.",
+                        "evidence": [
+                            "initial_state.oxygen_requests.dde31ff9-5c5b-4ba5-aa45-c26fc5a649f7.request_type",
+                            "initial_state.oxygen_requests.dde31ff9-5c5b-4ba5-aa45-c26fc5a649f7.request_status",
+                            "initial_state.oxygen_requests.dde31ff9-5c5b-4ba5-aa45-c26fc5a649f7.decision_date",
+                            "initial_state.oxygen_requests.dde31ff9-5c5b-4ba5-aa45-c26fc5a649f7.oxygen_holding_id",
+                            "initial_state.coverage_holdings.9170291a-068e-4fc1-96a5-11d2ade276ad.variant_name"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "oxygen_requests.oxygen_holding_id",
+                                "source": "initial_state.oxygen_requests.dde31ff9-5c5b-4ba5-aa45-c26fc5a649f7.oxygen_holding_id",
+                                "action_arg": "oxygen_holding_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "oxygen_qualification",
+                        "eligibility_id": "oxygen_eligibility_current",
+                        "condition": "Oxygen is set up only when the coverage's last eligibility check is within that coverage class's eligibility_reverify_days before the setup date.",
+                        "evidence": [
+                            "initial_state.coverage_holdings.9170291a-068e-4fc1-96a5-11d2ade276ad.last_eligibility_check_date",
+                            "initial_state.coverage_holdings.9170291a-068e-4fc1-96a5-11d2ade276ad.coverage_id",
+                            "initial_state.coverage_ledger.76be6fe0-9cee-4825-9897-ed37b807637b.posting_date"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "coverage_holdings.coverage_id",
+                                "source": "initial_state.coverage_holdings.9170291a-068e-4fc1-96a5-11d2ade276ad.coverage_id",
+                                "action_arg": "coverage_id"
+                            }
+                        ],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 13,
+                "business_effect": "The June 22 equipment month the HMO paid in full is posted: allowed and paid 226.61, patient share 0.00, month 1.",
+                "request_binding": {
+                    "action_semantics": "A payer remittance for a month of the now-active rental is owed on the claim history; posting a paid-in-full month is distinct from recording a denial or a contents month.",
+                    "intent_source": {
+                        "kind": "prior_step",
+                        "evidence": [
+                            "prior_step:11",
+                            "initial_state.coverage_holdings.9170291a-068e-4fc1-96a5-11d2ade276ad.oop_met"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "the plan paid it and you owe nothing",
+                        "evidence": [
+                            "user_scenario:it says the plan paid it and you owe nothing"
+                        ],
+                        "action_arg": "claim_number",
+                        "value": "ABH2621100733"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "performed_by_this_tool",
+                    "fact": "Posting the payer remittance onto the claim history happens in this call.",
+                    "evidence": [
+                        "prior_step:11",
+                        "user_scenario:claim number ABH2621100733"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "oxygen_evt_monthly_billing",
+                        "eligibility_id": "oxygen_billable_status",
+                        "condition": "An equipment month is billed only while the oxygen record is rental_active.",
+                        "evidence": [
+                            "prior_step:11"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "oxygen_holdings.oxygen_holding_id",
+                                "source": "prior_step:11",
+                                "source_table": "oxygen_holdings",
+                                "source_field": "oxygen_holding_id",
+                                "action_arg": "oxygen_holding_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "oxygen_payment_cap",
+                        "eligibility_id": "policy_scope",
+                        "condition": "The month is month 1 of the period; no cap is near (0 paid months against oxygen_rental_cap_months 36).",
+                        "evidence": [
+                            "initial_state.oxygen_holdings.ddb0b6dc-479a-4a18-bf8a-5cae5a046162.status"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "oxygen_group_ii_retest",
+                        "eligibility_id": "retest_on_file",
+                        "condition": "Month 4 and later of a group II patient are paid only when an oxygen_retest_received on this holding meets that test.",
+                        "evidence": [
+                            "initial_state.oxygen_service.c7c1aecb-9686-4a1e-a4e4-081244655e00.retest_date",
+                            "initial_state.oxygen_service.c7c1aecb-9686-4a1e-a4e4-081244655e00.retest_spo2",
+                            "initial_state.oxygen_service.c7c1aecb-9686-4a1e-a4e4-081244655e00.oxygen_holding_id",
+                            "initial_state.oxygen_holdings.ddb0b6dc-479a-4a18-bf8a-5cae5a046162.qualifying_group"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "oxygen_service.oxygen_holding_id",
+                                "source": "initial_state.oxygen_service.c7c1aecb-9686-4a1e-a4e4-081244655e00.oxygen_holding_id",
+                                "action_arg": "oxygen_holding_id"
+                            }
+                        ],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 15,
+                "business_effect": "The stay is recorded: the oxygen record is suspended from 2026-07-18.",
+                "request_binding": {
+                    "action_semantics": "The stay already shows on the PAP device record while the oxygen record is still active; recording the suspension is owed and distinct from restarting.",
+                    "intent_source": {
+                        "kind": "initial_state",
+                        "evidence": [
+                            "initial_state.pap_holdings.c4dfbbb7-6bfb-438e-90f3-c2b92746613d.status",
+                            "initial_state.pap_holdings.c4dfbbb7-6bfb-438e-90f3-c2b92746613d.suspended_date"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "the stay recorded on the PAP device record",
+                        "evidence": [
+                            "initial_state.pap_holdings.c4dfbbb7-6bfb-438e-90f3-c2b92746613d.suspended_date"
+                        ],
+                        "action_arg": "suspended_date",
+                        "value": "2026-07-18"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "preexisting_before_conversation",
+                    "fact": "The admission on 2026-07-18 happened before the call.",
+                    "evidence": [
+                        "initial_state.pap_holdings.c4dfbbb7-6bfb-438e-90f3-c2b92746613d.suspended_date"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "oxygen_suspension_break",
+                        "eligibility_id": "policy_scope",
+                        "condition": "An inpatient or skilled nursing admission suspends an active oxygen record; the record is active after the setup step.",
+                        "evidence": [
+                            "prior_step:11",
+                            "initial_state.pap_holdings.c4dfbbb7-6bfb-438e-90f3-c2b92746613d.suspended_date"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 17,
+                "business_effect": "Raymond continues his oxygen under a new payment period from 2026-10-20 with the discharge test and order recorded; record active again.",
+                "request_binding": {
+                    "action_semantics": "The caller asks to keep the oxygen after a stay longer than the allowance (2026-07-18 to 2026-10-20); a new period, not a resumption or a return, answers that.",
+                    "intent_source": {
+                        "kind": "user_scenario",
+                        "evidence": [
+                            "user_scenario:you want to keep your oxygen with Summit Ridge"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "keep your oxygen with Summit Ridge",
+                        "evidence": [
+                            "user_scenario:you want to keep your oxygen with Summit Ridge"
+                        ],
+                        "value": "ddb0b6dc-479a-4a18-bf8a-5cae5a046162"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "performed_by_this_tool",
+                    "fact": "The patient chooses to continue in this call; the new test and order already exist on the discharge paperwork.",
+                    "evidence": [
+                        "prior_step:15",
+                        "user_scenario:the oxygen test was done on October 16, 2026 (2026-10-16)"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "oxygen_suspension_break",
+                        "eligibility_id": "policy_scope",
+                        "condition": "A break longer than break_in_need_days plus the rest of the admission month starts a new payment period that needs a new test and order (new_test_and_order).",
+                        "evidence": [
+                            "prior_step:15",
+                            "initial_state.oxygen_service.768cb028-ea0f-4787-900c-73d506d48b64.service_date",
+                            "frozen_time"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    }
+                ]
+            }
+        ],
+        "temporal_feasibility": [],
+        "required_user_inputs": [
+            {
+                "information": "Locator and verification credentials",
+                "source": "user_scenario:you give your phone number 4125550214 and your date of birth, March 11, 1964 (1964-03-11)"
+            },
+            {
+                "information": "The June statement from the plan (claim number, service and processing dates, paid in full)",
+                "source": "user_scenario:claim number ABH2621100733, service date June 22, 2026 (2026-06-22), processed July 30, 2026 (2026-07-30)"
+            },
+            {
+                "information": "The discharge test and new order for the new period",
+                "source": "user_scenario:the doctor's new oxygen order is dated October 19, 2026 (2026-10-19)"
+            },
+            {
+                "information": "Stay dates (asked, never entering a write)",
+                "source": "user_scenario:you went back into the hospital on July 18, 2026"
+            }
+        ],
+        "seed_consistency": [
+            {
+                "row": "initial_state.oxygen_holdings.ddb0b6dc-479a-4a18-bf8a-5cae5a046162",
+                "policy_id": "oxygen_qualification",
+                "check": "Order 2026-06-19 from a hospital discharge, inpatient test 2026-06-18 at 86 percent (group I, at or below 88, within the 30-day lookback), approved prior authorization 2026-06-19; status still order_received with empty setup fields although the system was delivered - the intake gap this task repairs.",
+                "evidence": [
+                    "initial_state.oxygen_holdings.ddb0b6dc-479a-4a18-bf8a-5cae5a046162.qualifying_spo2",
+                    "initial_state.oxygen_requests.dde31ff9-5c5b-4ba5-aa45-c26fc5a649f7.decision_date"
+                ]
+            },
+            {
+                "row": "initial_state.oxygen_service.c7c1aecb-9686-4a1e-a4e4-081244655e00",
+                "policy_id": "oxygen_service_obligation",
+                "check": "Initial-setup delivery 2026-06-20 to the hospital room for training, serial AS-5L-310772, one day after the order (setup lead 24 hours).",
+                "evidence": [
+                    "initial_state.oxygen_service.c7c1aecb-9686-4a1e-a4e4-081244655e00.service_date"
+                ]
+            },
+            {
+                "row": "initial_state.oxygen_service.0435bdf1-7aee-4045-8517-c1c12182f760",
+                "policy_id": "oxygen_service_obligation",
+                "check": "Two backup cylinders left at the home on the discharge day 2026-06-22 (class emergency_backup_cylinders 2 is the standing set; 6 cylinders include the first portable supply).",
+                "evidence": [
+                    "initial_state.oxygen_service.0435bdf1-7aee-4045-8517-c1c12182f760.service_date"
+                ]
+            },
+            {
+                "row": "initial_state.oxygen_service.1f9bf842-9a4b-4155-ba76-67b0996ec49c",
+                "policy_id": "oxygen_service_obligation",
+                "check": "Cylinder refill 2026-07-06, 14 days after the first home supply (cylinder_refill_cycle_days 14), 12 cylinders (cylinders_per_delivery_max 12); no refill during the stay.",
+                "evidence": [
+                    "initial_state.oxygen_service.1f9bf842-9a4b-4155-ba76-67b0996ec49c.cylinders_delivered"
+                ]
+            },
+            {
+                "row": "initial_state.oxygen_service.768cb028-ea0f-4787-900c-73d506d48b64",
+                "policy_id": "oxygen_service_obligation",
+                "check": "Technician visit 2026-10-20, the day Raymond came home, checking the concentrator after three months unused.",
+                "evidence": [
+                    "initial_state.oxygen_service.768cb028-ea0f-4787-900c-73d506d48b64.service_date"
+                ]
+            }
+        ]
+    },
+    "evaluation_criteria": [
+        {
+            "owner": "agent",
+            "tool": "find_customers",
+            "arguments": {
+                "phone_number": "4125550214"
+            },
+            "objective": "Locate Raymond Szabo's patient profile from the phone number he gives.",
+            "necessity": "Every later read and write needs the patient reference number; identity verification needs the profile."
+        },
+        {
+            "owner": "agent",
+            "tool": "verify_customer_identity",
+            "arguments": {
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557",
+                "date_of_birth": "1964-03-11",
+                "phone_number": "4125550214"
+            },
+            "objective": "Verify the caller with two matching credentials (date of birth and phone number).",
+            "necessity": "No account detail may be discussed or written before the caller is verified."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_oxygen_holdings",
+            "arguments": {
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557"
+            },
+            "objective": "Read the oxygen record: status order_received, empty setup and payment-period dates, coverage, referral source hospital_discharge, order date, prescribed flow 4.5 LPM, usage exertion_and_sleep, mobility documented.",
+            "necessity": "Shows the record was never set up (prerequisite of every other write) and carries the referral source, order date, flow, usage and coverage every computation reads."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_oxygen_service",
+            "arguments": {
+                "oxygen_holding_id": "ddb0b6dc-479a-4a18-bf8a-5cae5a046162"
+            },
+            "objective": "Read the service history: initial-setup delivery 2026-06-20 (serial AS-5L-310772), backup cylinders at home 2026-06-22, cylinder refill 2026-07-06, technician visit 2026-10-20.",
+            "necessity": "Supplies the setup-day anchor and the training-delivery gap, the cylinder-refill evidence for the usage share and the home-use window, and the technician visit that marks the day home."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_oxygen_requests",
+            "arguments": {
+                "oxygen_holding_id": "ddb0b6dc-479a-4a18-bf8a-5cae5a046162"
+            },
+            "objective": "Read the approved prior authorization decided 2026-06-19.",
+            "necessity": "The coverage class requires prior authorization for oxygen; the approved request is the setup eligibility evidence."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_oxygen_billing",
+            "arguments": {
+                "oxygen_holding_id": "ddb0b6dc-479a-4a18-bf8a-5cae5a046162"
+            },
+            "objective": "Confirm that no equipment month is on the oxygen claim history.",
+            "necessity": "The post-break period waits on a paid line for each month that began before the stay; this read shows none is posted and that the month being posted is the first of the period."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_coverage_holdings",
+            "arguments": {
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557"
+            },
+            "objective": "Read the Commercial HMO coverage: active, allowed percentage via its class, out-of-pocket maximum met, last eligibility check 2026-10-26.",
+            "necessity": "The coverage class sets the back-dating reaches, the training-delivery allowance, the payer high-flow rate, the recheck window, the paid-month floor and span, and the allowed percentage; the met out-of-pocket maximum explains the zero patient share."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_pap_holdings",
+            "arguments": {
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557"
+            },
+            "objective": "Read the PAP device record: rented under the same HMO since 2026-01-05, suspended on 2026-07-18.",
+            "necessity": "The PAP suspension date is the evidence day of the oxygen suspension and the PAP rental age decides the established-rental rule; the same-plan PAP rental sets the multi-rental percentage."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_pap_billing",
+            "arguments": {
+                "pap_holding_id": "c4dfbbb7-6bfb-438e-90f3-c2b92746613d"
+            },
+            "objective": "Read the PAP rental months paid: 7 months from 2026-01-05 to 2026-07-05, none after the stay.",
+            "necessity": "The multi-rental rule separates a PAP device still rented (fewer than 13 paid months, no ownership date) from one owned; this read settles the tier."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_coverage_ledger",
+            "arguments": {
+                "customer_id": "1f942def-73b0-44cf-87d6-fad17b34b557"
+            },
+            "objective": "Read the eligibility responses on the HMO: 2026-06-20 (before the setup) and 2026-10-26 (after the return home).",
+            "necessity": "The 2026-06-20 response is the setup eligibility evidence; the coverage record names 2026-10-26 as the last check used by the recheck rule."
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "record_oxygen_setup_e2e7878b"
+            },
+            "objective": "Unlock record_oxygen_setup_e2e7878b so it can be called.",
+            "necessity": "First half of the unlock/call pair for recording the setup; no DB effect, unlocked once in this task."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "record_oxygen_setup_e2e7878b",
+                "arguments": {
+                    "oxygen_holding_id": "ddb0b6dc-479a-4a18-bf8a-5cae5a046162",
+                    "coverage_id": "9170291a-068e-4fc1-96a5-11d2ade276ad",
+                    "setup_date": "2026-06-22",
+                    "serial_number": "AS-5L-310772"
+                }
+            },
+            "objective": "Record the setup so the record becomes an active rental with its setup day.",
+            "necessity": "oxygen_ext_setup_start_day computes setup_date.",
+            "argument_uniqueness_tracing": {
+                "oxygen_holding_id": "ddb0b6dc-479a-4a18-bf8a-5cae5a046162 (1) value: the oxygen record reference. (2) basis: the find_oxygen_holdings return for customer 1f942def-73b0-44cf-87d6-fad17b34b557 lists exactly one oxygen record, and the tool docstring says the id is 'read from the oxygen record lookup before the call'. (3) uniqueness: the patient holds one oxygen record, so no other id is possible.",
+                "coverage_id": "9170291a-068e-4fc1-96a5-11d2ade276ad (1) value. (2) basis: the coverage lookup returns one coverage record, Commercial HMO 'Allegheny Builders Health HMO', status active, the same id already named on the oxygen record; docstring: 'the coverage record the rental is billed to'. (3) uniqueness: it is the patient's only coverage record.",
+                "setup_date": "2026-06-22 - calculated. Factors: initial-setup delivery 2026-06-20 (plain read); home_arrival_anchor: hospital-discharge order and backup cylinders delivered at home 2026-06-22 -> first day at home 2026-06-22; training_delivery_allowance 2 days (hospital-discharge order, Commercial HMO) >= gap 2; setup_backdating_reach 180 days (Commercial HMO) >= 128; order_delivery_lead 1 day >= order 2026-06-19 to delivery 2026-06-20 = 1. All three hold, so the setup day is 2026-06-22.",
+                "serial_number": "AS-5L-310772 (1) value. (2) basis: the initial-setup delivery row of find_oxygen_service carries serial_number AS-5L-310772; docstring: 'exactly as it appears on the setup delivery in the patient's oxygen service history'. (3) uniqueness: only the setup delivery carries a serial number."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "record_oxygen_equipment_payment_51bbc3fc"
+            },
+            "objective": "Unlock record_oxygen_equipment_payment_51bbc3fc so it can be called.",
+            "necessity": "First half of the unlock/call pair for posting the paid-in-full June month; no DB effect, unlocked once in this task."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "record_oxygen_equipment_payment_51bbc3fc",
+                "arguments": {
+                    "oxygen_holding_id": "ddb0b6dc-479a-4a18-bf8a-5cae5a046162",
+                    "coverage_id": "9170291a-068e-4fc1-96a5-11d2ade276ad",
+                    "service_from_date": "2026-06-22",
+                    "adjudication_date": "2026-07-30",
+                    "claim_number": "ABH2621100733",
+                    "hcpcs_code": "E1390",
+                    "flow_modifier": "QF",
+                    "rental_month_number": 1,
+                    "portable_allowed_amount": 0.0,
+                    "allowed_amount": 226.61
+                }
+            },
+            "objective": "Post the June equipment month the HMO paid in full.",
+            "necessity": "oxygen_ext_paid_in_full_equipment_month computes allowed_amount.",
+            "argument_uniqueness_tracing": {
+                "oxygen_holding_id": "ddb0b6dc-479a-4a18-bf8a-5cae5a046162 (1) value: the oxygen record reference. (2) basis: the find_oxygen_holdings return for customer 1f942def-73b0-44cf-87d6-fad17b34b557 lists exactly one oxygen record, and the tool docstring says the id is 'read from the oxygen record lookup before the call'. (3) uniqueness: the patient holds one oxygen record, so no other id is possible.",
+                "coverage_id": "9170291a-068e-4fc1-96a5-11d2ade276ad (1) value. (2) basis: the explanation of benefits Raymond reads is from Allegheny Builders, the only coverage record (Commercial HMO). (3) uniqueness: the paying plan is that record.",
+                "service_from_date": "2026-06-22 (1) value. (2) basis: user_scenario 'service date June 22, 2026 (2026-06-22)'; it equals the setup day written by the setup step, the first anniversary of the period. (3) uniqueness: the statement names one month.",
+                "adjudication_date": "2026-07-30 (1) value. (2) basis: user_scenario 'processed July 30, 2026 (2026-07-30)'. (3) uniqueness: one processing date on the statement.",
+                "claim_number": "ABH2621100733 (1) value. (2) basis: user_scenario 'claim number ABH2621100733'; docstring requires it verbatim. (3) uniqueness: one claim on the statement.",
+                "hcpcs_code": "E1390 (1) value. (2) basis: base oxygen_evt_monthly_billing 'The line carries the class's `stationary_hcpcs`'; the class Concentrator with Portable Cylinders has stationary_hcpcs E1390. (3) uniqueness: E0439 is the liquid reservoir code and E0442/E0443 are contents codes the docstring excludes.",
+                "flow_modifier": "QF (1) value. (2) basis: base 'above `high_flow_threshold_lpm` ... (modifier QG, or QF when portable equipment is furnished'; flow 4.5 > 4 and portable equipment is billable. (3) uniqueness: QG needs no billable portable, QE needs flow below 1, none needs flow between the thresholds.",
+                "rental_month_number": "1 (1) value. (2) basis: base 'the month number is the next ordinal after the paid months counted by oxygen_msr_paid_months_current_period'; the claim history is empty. (3) uniqueness: no paid month exists before it.",
+                "portable_allowed_amount": "0.0 (1) value. (2) basis: the policy's flow combination - 'so the add-on is never paid on top of the raised fee' - and the higher of the two amounts is the raised stationary fee (258.915 vs 201.04 before the percentages). (3) uniqueness: the add-on part is zero whenever the raised fee wins.",
+                "allowed_amount": "226.61 - calculated. awake_usage_share (parameter): order exertion_and_sleep with 1 cylinder refill on record -> 80 percent, applied to the month's fee from the flow combination; baseline 100 percent gives 283.26. flow_fee_combination (method): flow 4.5 LPM above the class threshold 4 and portable equipment billable (the class carries the 28.43 add-on, mobility documented, order not for sleep only, 1 backup-cylinder delivery and 1 refill on record) -> higher of 172.61 x (100+50)% = 258.915 and 172.61 + 28.43 = 201.04, i.e. 258.915; baseline (the stationary fee 172.61) gives 151.07. payer_high_flow_rate (parameter, cross-difficulty coverage, multi-source): flow 4.5 LPM above the threshold 4 and coverage class Commercial HMO -> 93 percent; baseline 100 percent gives 243.66. rental_position_step (parameter): paid months before this one under the HMO = 0 -> opening month 110 percent; baseline 100 percent gives 206.01. discharge_training_rate (parameter): initial-setup delivery 2026-06-20 is before the setup date 2026-06-22 written by the setup step and the order came from a hospital discharge -> 105 percent; baseline 100 percent gives 215.82. pap_multi_rental (parameter, cross-difficulty pap, multi-source): PAP device record on the same HMO, no ownership date (True), 7 paid PAP months < 13, rented 9 months >= 3 -> 97 percent; baseline 100 percent gives 233.62. plan_allowed_pct (plain cross read): Commercial HMO allowed_pct_of_fee_schedule = 105; result = RND(258.915 x 80% x 93% x 110% x 105% x 97% x 105%, 2) = 226.61."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "record_oxygen_suspension_f17584ff"
+            },
+            "objective": "Unlock record_oxygen_suspension_f17584ff so it can be called.",
+            "necessity": "First half of the unlock/call pair for recording the stay as a suspension; no DB effect, unlocked once in this task."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "record_oxygen_suspension_f17584ff",
+                "arguments": {
+                    "oxygen_holding_id": "ddb0b6dc-479a-4a18-bf8a-5cae5a046162",
+                    "suspended_date": "2026-07-18"
+                }
+            },
+            "objective": "Record the hospital and rehab stay as a suspension dated from the evidence day.",
+            "necessity": "oxygen_ext_stay_suspension_day computes suspended_date.",
+            "argument_uniqueness_tracing": {
+                "oxygen_holding_id": "ddb0b6dc-479a-4a18-bf8a-5cae5a046162 (1) value: the oxygen record reference. (2) basis: the find_oxygen_holdings return for customer 1f942def-73b0-44cf-87d6-fad17b34b557 lists exactly one oxygen record, and the tool docstring says the id is 'read from the oxygen record lookup before the call'. (3) uniqueness: the patient holds one oxygen record, so no other id is possible.",
+                "suspended_date": "2026-07-18 - calculated. stay_evidence_source (method, cross-difficulty pap): oxygen record active (after the setup step) and the PAP device record suspended on 2026-07-18, later than the oxygen setup date 2026-06-22 -> evidence day 2026-07-18; baseline (day the stay is reported) gives 2026-10-28. stay_backdating_reach (parameter, cross-difficulty coverage): coverage class Commercial HMO -> reach 180 days; evidence day is 102 days back; baseline 90 days fails and gives 2026-10-28. home_use_window (parameter): class with portable cylinder refills -> window 14 days; most recent cylinder refill 2026-07-06 is 12 days before the evidence day; baseline 0 days fails and gives 2026-10-28. established_other_rental (parameter, cross-difficulty pap): oxygen record active and the PAP device record suspended on 2026-07-18, later than the oxygen setup date 2026-06-22 -> at least 3 months; the PAP payment period began 2026-01-05, 6 whole months before that PAP suspension date; baseline 12 months fails and gives 2026-10-28. result: all three conditions hold -> suspension dated 2026-07-18."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "restart_oxygen_payment_period_b66f451e"
+            },
+            "objective": "Unlock restart_oxygen_payment_period_b66f451e so it can be called.",
+            "necessity": "First half of the unlock/call pair for the patient continuing under a new payment period; no DB effect, unlocked once in this task."
+        },
+        {
+            "owner": "user",
+            "tool": "call_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "restart_oxygen_payment_period_b66f451e",
+                "arguments": {
+                    "oxygen_holding_id": "ddb0b6dc-479a-4a18-bf8a-5cae5a046162",
+                    "rental_period_start_date": "2026-10-20",
+                    "qualifying_test_date": "2026-10-16",
+                    "qualifying_spo2": 87,
+                    "rx_date": "2026-10-19"
+                }
+            },
+            "objective": "Raymond continues his oxygen under a new payment period from the day home.",
+            "necessity": "oxygen_ext_post_break_period_start computes rental_period_start_date.",
+            "argument_uniqueness_tracing": {
+                "oxygen_holding_id": "ddb0b6dc-479a-4a18-bf8a-5cae5a046162 (1) value: the oxygen record reference. (2) basis: the find_oxygen_holdings return for customer 1f942def-73b0-44cf-87d6-fad17b34b557 lists exactly one oxygen record, and the tool docstring says the id is 'read from the oxygen record lookup before the call'. (3) uniqueness: the patient holds one oxygen record, so no other id is possible. The agent reads it to Raymond when handing over the step.",
+                "rental_period_start_date": "2026-10-20 - calculated; the agent states it to Raymond. home_return_evidence (method): record suspended since 2026-07-18 (written by the suspension step) and a technician visit on 2026-10-20 after it -> day home 2026-10-20; baseline (day of confirmation) gives 2026-10-28. restart_filing_reach (parameter, cross-difficulty coverage): coverage class Commercial HMO -> reach 30 days; day home is 8 days before the confirmation; baseline 7 days fails and gives 2026-10-28. coverage_recheck_window (parameter, cross-difficulty coverage): last eligibility check 2026-10-26 is 6 days after the day home; window 30 days; baseline 0 days fails and gives 2026-10-28. closing_paid_floor (parameter, cross-difficulty coverage): paid equipment months of the closing period = 1 (the June month posted by the payment step); floor for a commercial plan 1; baseline floor 3 fails and gives 2026-10-28. stay_paid_span (parameter, cross-difficulty coverage): suspension date 2026-07-18 is 26 days after the start of the most recent paid month 2026-06-22; span for a commercial plan 31 days; baseline 21 days fails and gives 2026-10-28. result: all four conditions hold -> new payment period from 2026-10-20.",
+                "qualifying_test_date": "2026-10-16 (1) value. (2) basis: user_scenario 'the oxygen test was done on October 16, 2026 (2026-10-16)'. (3) uniqueness: one discharge test.",
+                "qualifying_spo2": "87 (1) value. (2) basis: user_scenario 'shows 87 percent'; docstring 'integer percent'. (3) uniqueness: one reading on the test.",
+                "rx_date": "2026-10-19 (1) value. (2) basis: user_scenario 'the doctor's new oxygen order is dated October 19, 2026 (2026-10-19)'. (3) uniqueness: one new order."
+            }
+        }
+    ],
+    "computations": [
+        {
+            "policy_id": "oxygen_ext_setup_start_day",
+            "target_holding_id": "ddb0b6dc-479a-4a18-bf8a-5cae5a046162",
+            "step": 11,
+            "arg": "setup_date",
+            "expected": "2026-06-22",
+            "factor_trace": [
+                "home_arrival_anchor (method): order referral_source hospital_discharge, backup-cylinder delivery 2026-06-22 later than the initial-setup delivery 2026-06-20 -> first day at home 2026-06-22; baseline (initial-setup delivery date) gives 2026-06-20.",
+                "training_delivery_allowance (parameter, cross-difficulty coverage, multi-source): hospital-discharge order under Commercial HMO -> allowance K('contracted_predelivery_days') = 2 days; gap initial-setup delivery -> first day at home 2 days fits; baseline 0 days fails the gap and gives 2026-06-20.",
+                "setup_backdating_reach (parameter, cross-difficulty coverage): coverage class Commercial HMO -> reach 180 days; first day at home is 128 days before the recording day; baseline reach K('reach_short_days')=90 fails and gives 2026-06-20.",
+                "order_delivery_lead (parameter): hospital-discharge order -> lead 1 day; order 2026-06-19 to initial delivery is 1 day; baseline 0 days fails and gives 2026-06-20.",
+                "setup_day (plain read): LATEST initial_setup delivery = 2026-06-20; result = first day at home 2026-06-22 since all three conditions hold."
+            ],
+            "baseline_result": "2026-06-20",
+            "factor_sensitivity": [
+                {
+                    "factor": "home_arrival_anchor",
+                    "tier_taken": "hospital-discharge order with a later backup-cylinder delivery",
+                    "baseline_result": "2026-06-20"
+                },
+                {
+                    "factor": "training_delivery_allowance",
+                    "tier_taken": "facility order under a Medicare, Medicare Advantage or commercial coverage",
+                    "baseline_result": "2026-06-20"
+                },
+                {
+                    "factor": "setup_backdating_reach",
+                    "tier_taken": "coverage is Commercial HMO (plan tier)",
+                    "baseline_result": "2026-06-20"
+                },
+                {
+                    "factor": "order_delivery_lead",
+                    "tier_taken": "order from a hospital discharge",
+                    "baseline_result": "2026-06-20"
+                }
+            ]
+        },
+        {
+            "policy_id": "oxygen_ext_paid_in_full_equipment_month",
+            "target_holding_id": "ddb0b6dc-479a-4a18-bf8a-5cae5a046162",
+            "step": 13,
+            "arg": "allowed_amount",
+            "expected": 226.61,
+            "factor_trace": [
+                "awake_usage_share (parameter): order exertion_and_sleep with 1 cylinder refill on record -> 80 percent, applied to the month's fee from the flow combination; baseline 100 percent gives 283.26.",
+                "flow_fee_combination (method): flow 4.5 LPM above the class threshold 4 and portable equipment billable (the class carries the 28.43 add-on, mobility documented, order not for sleep only, 1 backup-cylinder delivery and 1 refill on record) -> higher of 172.61 x (100+50)% = 258.915 and 172.61 + 28.43 = 201.04, i.e. 258.915; baseline (the stationary fee 172.61) gives 151.07.",
+                "payer_high_flow_rate (parameter, cross-difficulty coverage, multi-source): flow 4.5 LPM above the threshold 4 and coverage class Commercial HMO -> 93 percent; baseline 100 percent gives 243.66.",
+                "rental_position_step (parameter): paid months before this one under the HMO = 0 -> opening month 110 percent; baseline 100 percent gives 206.01.",
+                "discharge_training_rate (parameter): initial-setup delivery 2026-06-20 is before the setup date 2026-06-22 written by the setup step and the order came from a hospital discharge -> 105 percent; baseline 100 percent gives 215.82.",
+                "pap_multi_rental (parameter, cross-difficulty pap, multi-source): PAP device record on the same HMO, no ownership date (True), 7 paid PAP months < 13, rented 9 months >= 3 -> 97 percent; baseline 100 percent gives 233.62.",
+                "plan_allowed_pct (plain cross read): Commercial HMO allowed_pct_of_fee_schedule = 105; result = RND(258.915 x 80% x 93% x 110% x 105% x 97% x 105%, 2) = 226.61."
+            ],
+            "baseline_result": 181.24,
+            "factor_sensitivity": [
+                {
+                    "factor": "awake_usage_share",
+                    "tier_taken": "exertion and sleep with a cylinder refill on record",
+                    "baseline_result": 283.26
+                },
+                {
+                    "factor": "flow_fee_combination",
+                    "tier_taken": "flow above threshold with portable billable",
+                    "baseline_result": 151.07
+                },
+                {
+                    "factor": "payer_high_flow_rate",
+                    "tier_taken": "flow above the high-flow threshold under Commercial PPO or Commercial HMO",
+                    "baseline_result": 243.66
+                },
+                {
+                    "factor": "rental_position_step",
+                    "tier_taken": "no month paid yet",
+                    "baseline_result": 206.01
+                },
+                {
+                    "factor": "discharge_training_rate",
+                    "tier_taken": "delivered before the setup date, hospital discharge order",
+                    "baseline_result": 215.82
+                },
+                {
+                    "factor": "pap_multi_rental",
+                    "tier_taken": "PAP rented on the same plan for 3+ months with fewer than 13 paid months",
+                    "baseline_result": 233.62
+                }
+            ]
+        },
+        {
+            "policy_id": "oxygen_ext_stay_suspension_day",
+            "target_holding_id": "ddb0b6dc-479a-4a18-bf8a-5cae5a046162",
+            "step": 15,
+            "arg": "suspended_date",
+            "expected": "2026-07-18",
+            "factor_trace": [
+                "stay_evidence_source (method, cross-difficulty pap): oxygen record active (after the setup step) and the PAP device record suspended on 2026-07-18, later than the oxygen setup date 2026-06-22 -> evidence day 2026-07-18; baseline (day the stay is reported) gives 2026-10-28.",
+                "stay_backdating_reach (parameter, cross-difficulty coverage): coverage class Commercial HMO -> reach 180 days; evidence day is 102 days back; baseline 90 days fails and gives 2026-10-28.",
+                "home_use_window (parameter): class with portable cylinder refills -> window 14 days; most recent cylinder refill 2026-07-06 is 12 days before the evidence day; baseline 0 days fails and gives 2026-10-28.",
+                "established_other_rental (parameter, cross-difficulty pap): oxygen record active and the PAP device record suspended on 2026-07-18, later than the oxygen setup date 2026-06-22 -> at least 3 months; the PAP payment period began 2026-01-05, 6 whole months before that PAP suspension date; baseline 12 months fails and gives 2026-10-28.",
+                "result: all three conditions hold -> suspension dated 2026-07-18."
+            ],
+            "baseline_result": "2026-10-28",
+            "factor_sensitivity": [
+                {
+                    "factor": "stay_evidence_source",
+                    "tier_taken": "PAP device record suspended after the oxygen setup date",
+                    "baseline_result": "2026-10-28"
+                },
+                {
+                    "factor": "stay_backdating_reach",
+                    "tier_taken": "coverage is Commercial HMO (plan tier)",
+                    "baseline_result": "2026-10-28"
+                },
+                {
+                    "factor": "home_use_window",
+                    "tier_taken": "class with portable cylinder refills",
+                    "baseline_result": "2026-10-28"
+                },
+                {
+                    "factor": "established_other_rental",
+                    "tier_taken": "oxygen record active and PAP device record suspended after the oxygen setup date",
+                    "baseline_result": "2026-10-28"
+                }
+            ]
+        },
+        {
+            "policy_id": "oxygen_ext_post_break_period_start",
+            "target_holding_id": "ddb0b6dc-479a-4a18-bf8a-5cae5a046162",
+            "step": 17,
+            "arg": "rental_period_start_date",
+            "expected": "2026-10-20",
+            "factor_trace": [
+                "home_return_evidence (method): record suspended since 2026-07-18 (written by the suspension step) and a technician visit on 2026-10-20 after it -> day home 2026-10-20; baseline (day of confirmation) gives 2026-10-28.",
+                "restart_filing_reach (parameter, cross-difficulty coverage): coverage class Commercial HMO -> reach 30 days; day home is 8 days before the confirmation; baseline 7 days fails and gives 2026-10-28.",
+                "coverage_recheck_window (parameter, cross-difficulty coverage): last eligibility check 2026-10-26 is 6 days after the day home; window 30 days; baseline 0 days fails and gives 2026-10-28.",
+                "closing_paid_floor (parameter, cross-difficulty coverage): paid equipment months of the closing period = 1 (the June month posted by the payment step); floor for a commercial plan 1; baseline floor 3 fails and gives 2026-10-28.",
+                "stay_paid_span (parameter, cross-difficulty coverage): suspension date 2026-07-18 is 26 days after the start of the most recent paid month 2026-06-22; span for a commercial plan 31 days; baseline 21 days fails and gives 2026-10-28.",
+                "result: all four conditions hold -> new payment period from 2026-10-20."
+            ],
+            "baseline_result": "2026-10-28",
+            "factor_sensitivity": [
+                {
+                    "factor": "home_return_evidence",
+                    "tier_taken": "record suspended and a technician visit after the suspension date",
+                    "baseline_result": "2026-10-28"
+                },
+                {
+                    "factor": "restart_filing_reach",
+                    "tier_taken": "coverage is Commercial HMO (plan tier)",
+                    "baseline_result": "2026-10-28"
+                },
+                {
+                    "factor": "coverage_recheck_window",
+                    "tier_taken": "coverage is Commercial HMO (plan tier)",
+                    "baseline_result": "2026-10-28"
+                },
+                {
+                    "factor": "closing_paid_floor",
+                    "tier_taken": "Commercial PPO or Commercial HMO",
+                    "baseline_result": "2026-10-28"
+                },
+                {
+                    "factor": "stay_paid_span",
+                    "tier_taken": "Commercial PPO or Commercial HMO",
+                    "baseline_result": "2026-10-28"
+                }
+            ]
+        }
+    ],
+    "prerequisite_closure": {
+        "root_problem": "oxygen_ext_post_break_period_start",
+        "edges": [
+            {
+                "from": "oxygen_ext_post_break_period_start",
+                "to": "oxygen_ext_stay_suspension_day",
+                "kind": "value_input",
+                "gate": "home_again_day",
+                "form": "state",
+                "condition": "oxygen_holdings.status is suspended and oxygen_holdings.suspended_date is filled in",
+                "policy_source": "A new payment period after a stay is not opened until the oxygen record shows the stay as a suspension with its suspension date.",
+                "resolved_by": "record_oxygen_suspension_f17584ff",
+                "unresolved_at_frozen_time": {
+                    "why_false": "The oxygen record is not suspended: it still shows order_received with no suspension date, although the stay began 2026-07-18.",
+                    "evidence": [
+                        "initial_state.oxygen_holdings.ddb0b6dc-479a-4a18-bf8a-5cae5a046162.status = order_received",
+                        "initial_state.oxygen_holdings.ddb0b6dc-479a-4a18-bf8a-5cae5a046162.suspended_date = \"\""
+                    ],
+                    "flips_to_true_by": "after the suspension step the record is suspended with suspended_date 2026-07-18, so the technician visit of 2026-10-20 counts as the day home (2026-10-20 instead of 2026-10-28)."
+                }
+            },
+            {
+                "from": "oxygen_ext_post_break_period_start",
+                "to": "oxygen_ext_paid_in_full_equipment_month",
+                "kind": "value_input",
+                "gate": "old_period_paid",
+                "form": "state",
+                "condition": "oxygen_billing carries an oxygen_rental_paid line for every equipment month that began before the suspension date",
+                "policy_source": "The first day of a new payment period after a stay is fixed only after the oxygen claim history carries the payer's paid line for each equipment month that began before the stay.",
+                "resolved_by": "record_oxygen_equipment_payment_51bbc3fc",
+                "unresolved_at_frozen_time": {
+                    "why_false": "No equipment month is on the claim history: the record was never set up, so the June month the HMO paid in full is not posted.",
+                    "evidence": [
+                        "initial_state.oxygen_holdings.ddb0b6dc-479a-4a18-bf8a-5cae5a046162.setup_date = \"\"",
+                        "initial_state.oxygen_holdings.ddb0b6dc-479a-4a18-bf8a-5cae5a046162.status = order_received"
+                    ],
+                    "flips_to_true_by": "after the payment step one paid month (2026-06-22) is on the claim history: the paid-month floor (1) and the paid-month span (26 days) both hold."
+                }
+            },
+            {
+                "from": "oxygen_ext_stay_suspension_day",
+                "to": "oxygen_ext_setup_start_day",
+                "kind": "value_input",
+                "gate": "stay_evidence_day",
+                "form": "state",
+                "condition": "oxygen_holdings.status is rental_active and oxygen_holdings.setup_date is filled in for the oxygen record",
+                "policy_source": "A stay is recorded as a suspension only after the oxygen record shows an active rental with its setup date.",
+                "resolved_by": "record_oxygen_setup_e2e7878b",
+                "unresolved_at_frozen_time": {
+                    "why_false": "The oxygen record still shows order_received with no setup date, so no active rental exists to suspend.",
+                    "evidence": [
+                        "initial_state.oxygen_holdings.ddb0b6dc-479a-4a18-bf8a-5cae5a046162.status = order_received",
+                        "initial_state.oxygen_holdings.ddb0b6dc-479a-4a18-bf8a-5cae5a046162.setup_date = \"\""
+                    ],
+                    "flips_to_true_by": "after the setup step the record is rental_active with setup date 2026-06-22, so the PAP suspension date 2026-07-18 (later than the setup date) becomes the evidence day."
+                }
+            },
+            {
+                "from": "oxygen_ext_paid_in_full_equipment_month",
+                "to": "oxygen_ext_setup_start_day",
+                "kind": "value_input",
+                "gate": "training_rate_pct",
+                "form": "state",
+                "condition": "oxygen_holdings.status is rental_active and oxygen_holdings.setup_date is filled in for the oxygen record",
+                "policy_source": "An equipment month is posted as paid only after the oxygen record shows the system set up, with its setup date and an active rental.",
+                "resolved_by": "record_oxygen_setup_e2e7878b",
+                "unresolved_at_frozen_time": {
+                    "why_false": "The oxygen record still shows order_received with no setup date.",
+                    "evidence": [
+                        "initial_state.oxygen_holdings.ddb0b6dc-479a-4a18-bf8a-5cae5a046162.status = order_received",
+                        "initial_state.oxygen_holdings.ddb0b6dc-479a-4a18-bf8a-5cae5a046162.setup_date = \"\""
+                    ],
+                    "flips_to_true_by": "after the setup step the setup date 2026-06-22 follows the initial-setup delivery 2026-06-20, so the discharge-training percentage is 105."
+                }
+            }
+        ],
+        "resolution_order": [
+            "oxygen_ext_setup_start_day",
+            "oxygen_ext_paid_in_full_equipment_month",
+            "oxygen_ext_stay_suspension_day",
+            "oxygen_ext_post_break_period_start"
+        ],
+        "order_uniqueness": "Payment posting and suspension both wait on the setup, but they are not free to swap: the posting rule's own prerequisite state - 'the oxygen record shows the system set up, with its setup date and an active rental' - must hold when the June month is posted, and base oxygen_billable_status bills an equipment month only while the record is rental_active; the suspension write moves the record to suspended. So the policy-compliant order is setup -> payment -> suspension -> restart. For the record, a replay with payment and suspension swapped gives the same terminal hash and the same scored values (allowed_amount 226.61, suspended_date 2026-07-18, new period 2026-10-20), so the scored outcome is unique either way; only setup -> payment -> suspension complies with the posting rule at its handling time.",
+        "edge_load_bearing": [
+            {
+                "edge": "oxygen_ext_post_break_period_start -> oxygen_ext_stay_suspension_day",
+                "skipped_effect": "rental_period_start_date changes 2026-10-20 -> 2026-10-28 (no suspension on record, so no day home is read) and the record keeps status order_received/active without a suspension."
+            },
+            {
+                "edge": "oxygen_ext_post_break_period_start -> oxygen_ext_paid_in_full_equipment_month",
+                "skipped_effect": "rental_period_start_date changes 2026-10-20 -> 2026-10-28 (paid-month floor 0 < 1 and no paid month to measure the span) and the June paid line is missing from the terminal DB."
+            },
+            {
+                "edge": "oxygen_ext_stay_suspension_day -> oxygen_ext_setup_start_day",
+                "skipped_effect": "suspended_date changes 2026-07-18 -> 2026-10-28 (the record is not an active rental, so the PAP evidence is not used) and the terminal record lacks setup date and status."
+            },
+            {
+                "edge": "oxygen_ext_paid_in_full_equipment_month -> oxygen_ext_setup_start_day",
+                "skipped_effect": "allowed_amount cannot be worked out without a setup date (the discharge-training test raises (ValueError)); with the setup step it is 226.61."
+            }
+        ],
+        "no_user_hint": "user_scenario asks only to keep the oxygen with Summit Ridge now that Raymond is home. It never says the record was not set up, never asks to post a payment or to record a suspension, and never hints that something must be sorted out first; the June statement and the discharge paperwork are given only when the agent asks for them.",
+        "tools_do_not_block": "None of the four task tools reads a status or checks a prerequisite: record_oxygen_setup_e2e7878b, record_oxygen_equipment_payment_51bbc3fc, record_oxygen_suspension_f17584ff and restart_oxygen_payment_period_b66f451e each perform one ctx.update/ctx.create with the arguments as given (see task_tools.py); called out of order they still write and return their confirmation line."
+    },
+    "charter_scope": {
+        "extended_policies": [
+            "oxygen_ext_setup_start_day",
+            "oxygen_ext_paid_in_full_equipment_month",
+            "oxygen_ext_stay_suspension_day",
+            "oxygen_ext_post_break_period_start"
+        ],
+        "task_tools": [
+            "record_oxygen_setup_e2e7878b",
+            "record_oxygen_equipment_payment_51bbc3fc",
+            "record_oxygen_suspension_f17584ff",
+            "restart_oxygen_payment_period_b66f451e"
+        ]
+    },
+    "required_documents": [
+        "oxygen_ext_setup_start_day",
+        "oxygen_ext_paid_in_full_equipment_month",
+        "oxygen_ext_stay_suspension_day",
+        "oxygen_ext_post_break_period_start"
+    ]
+}

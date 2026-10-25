@@ -1,0 +1,3 @@
+# Renderer note, preowned render round 2 (saved verbatim by the coordinator; RENDER round 2: DOCS OK, 70 docs)
+
+One wording issue remains that changes no figure, so I did not stop for it. In the transport rule's agency-holding sentence, a report dated *on* the repossession date is called "no report yet taken for this recovery", but the dating sentence treats a same-day report as this recovery's lot intake. The holding charge is zero under either reading. In the yard-holding document I listed the same-day case once, as "taken to the lot on the day of the repossession", and kept the "no report yet taken for this recovery" gloss only for reports dated before the repossession. The set of no-charge cases is unchanged.

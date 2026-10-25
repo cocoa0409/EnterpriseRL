@@ -1,0 +1,21 @@
+# Source mismatches reported by the resupply renderer (agent a07a65952ae43dbb0), round 1 — verbatim
+# Coordinator verified items 1 and 2 against resupply.extended.yaml (superseded clauses govern every item / every shipment; replacements are scoped to filter lines / self-pay ground shipments).
+
+1. **Overwrite wider than its replacement (filter units).** `resupply_ext_covered_filter_units` retires a base clause that applies to every item but replaces it only for filters.
+   - Retired: "the units shipped on one line cover units divided by qty times months calendar months from the ship date, and covers_through_date is the day before the same day of the month that many months later".
+   - Replacement: "A disposable-filter line covers the months shipped, counted from the ship date, and its covered-through date is the day before the same day of the month that many months later."
+   - Masks, cushions outside the standing order, headgear, tubing, chambers and so on are left with no covered-through rule in force.
+2. **Overwrite wider than its replacement (ground shipping).** `resupply_ext_ground_charge_catch_up` retires "Ground shipping costs `ground_shipping_fee`, waived for a self-pay subscription order whose items total at least `self_pay_free_shipping_min` when that value is above 0.00". The replacement covers only "A self-pay shipment that went out by ground owes one ground shipping charge…". Ground cost for coverage-billed shipments is left with no rule in force.
+3. **One factor's tier depends on another factor's output (wrong-cushion reship).** In `resupply_ext_wrong_cushion_reship_units`:
+   - `period_share` has the tier "the error is handled 31 to 90 days after the replaced line shipped → the reship covers only the remainder of the replaced line's period".
+   - That remainder is the output of a different factor, `remainder_start`: "the start date is the handling day when … the day that earlier supply runs out when … otherwise the replaced line's ship date".
+   - The two factor documents can only meet through the shared term "remainder of the replaced line's period".
+4. **Rule text versus compute (rush pricing).** `resupply_ext_rush_shipping_charge`, factor `ground_credit`:
+   - The rule says "otherwise, with no item line booked on today's shipment, the rush is priced at the full rush fee".
+   - The compute is `… (today_lines > 0 and today_amount < P('self_pay_free_shipping_min')) else fee`. On schedules whose free-shipping minimum is 0.00 (all five coverage schedules), a shipment that does have item lines also gets the full fee, which the "no item line" wording doesn't cover.
+5. **Rule text versus compute (missed standing-order months).** `resupply_ext_standing_order_charge`, factor `missed_month_makeup`:
+   - The ladder says "exactly one standing-order month was missed → one month of units added".
+   - The compute is `missed: MX(0, 12 - std_units_12/std_rate)` and `made_up: … (rate if missed >= 1 else 0)`. Missed months can be fractional, so anything from 1 up to just under 2 gets one month, not only exactly one.
+6. **Docstring claims an effect the tool body lacks.** `update_mask_style_bfa4256b` says "The new style … decides which interface and cushion items its standing order ships". The body only does `ctx.update(... mask_style=mask_style)`. I left this claim out of the recorded-style hub: it isn't the tool's effect, and including it would have the depended-on document describe the standing order that waits on it.
+7. **Possible overwrite scope (subscription discount).** `resupply_ext_standing_order_charge` retires "on the Self-Pay Supply Subscription the `subscription_discount_pct` discount applies to every line…". The replacement is phrased about "the line", meaning a standing-order line, yet ends "applied to every line". It's unclear what discount applies to other subscription lines, such as branch purchases or filters.
+8. **Channel conflict (minor).** The overwrite in `resupply_ext_refill_request_items` confirms a refill "in the call", and `confirm_refill_request_b3535d21` always records the phone channel. The base rule still in force accepts a request only through the schedule's accepted channels, and the Self-Pay Supply Subscription doesn't accept phone calls.

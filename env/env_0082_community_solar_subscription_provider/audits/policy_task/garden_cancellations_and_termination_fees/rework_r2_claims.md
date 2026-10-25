@@ -1,0 +1,31 @@
+# rework_r2_claims — garden_cancellations_and_termination_fees
+
+- C-SCOPE: closed by coordinator ruling AMENDMENT 1.1. All four written events are garden events that the base charter books, with triggers [], and the task scopes stay disjoint.
+- C-APPLY: closed.
+  - The late-fee unpaid amount is now defined by payment application (each payment is recorded under the line it settles).
+  - Both worlds were re-seeded: the returned payment is the last payment, every earlier payment sits on its own line, and the only later charge is still in its grace period. The label arithmetic therefore equals the application-order result, and no other late fee is owed at the opening.
+- C-ETFRED: closed. The settlement no longer deducts any part of the termination fee; the prompt and agreement-form deductions are removed.
+- C-RESERVE: closed. The reserve for an unposted statement is removed. In its place the settlement adds the charge of a statement that has already posted but has no charge yet, priced exactly as the base charge rule will price it, so nothing is estimated.
+- C-B1: closed, except for one disputed part.
+  - Closed: line_switch_credit and prior_decrease_addback are relabelled as parameters. The late fee's lateness_accrual is redesigned so its tiers count from different anchors (return date or due date), which is a genuine change of input. The settlement's method factor is now reported_statement_prepay (its tiers use distinct inputs), and closing_line_scope is relabelled as a parameter.
+  - Disputed with evidence: the settlement still has only one genuine method factor. The LEVER CATALOGUE in the worklog shows that a payment amount has no second honest input, so the settlement's other three factors stay R6. A coordinator ruling has been requested.
+- C-MARKET: closed. market_rate_relief is removed from both termination-fee policies, and agreement_form_terms (R6, keyed on the signed date) takes its slot.
+- C-R6COUNT: closed by the operational test in AMENDMENT 1.2. The worklog LEVER CATALOGUE lists every Garden parameter key, holding field, event field and readable field of other categories, each marked used or unusable with a reason. Every remaining R6 factor sits on a computation where no honest R1–R5 lever is left unused.
+- C-NONPAY: closed. Both termination-fee policies count nonpayment_removal lines, cite garden_nonpayment_removal, and price a closing that has no request date with the lead-time tier in full; no error is raised.
+- C-C1: closed.
+  - Moved kW are now read from other-line initial filings tied to the removal line by its filing_month. When several filings match, their kW are summed and the term of the one that takes effect latest is used, and the rule says so.
+  - The re-opened charge is selected by the latest bill_date, as stated in the rule.
+  - The statement-month read used by the old reserve is gone.
+- C-B5: closed. The late-fee rule states the zero floor on the unpaid amount, and that no fee is written when the unpaid amount is zero; the compute returns zero in that case.
+- C-C3: closed. Every policy that counts whole months now states the convention the compute uses (calendar-month difference less one when the later day of the month is smaller; no last-day substitution).
+- C-G3: closed. All eight tool bodies book nothing for an amount that is not positive and return a one-line notice; the docstrings say so.
+- C-E4: closed. The effect texts of both settlement edges were rewritten, so no stale deduction names remain.
+- T0-1, T1-1: closed through C-APPLY. The re-seeded worlds leave no second late fee owed.
+- T0-2, T1-2: closed through C-ETFRED.
+- T0-3, T1-3: closed through C-B1 (except the disputed settlement part), C-MARKET, C-RESERVE and C-R6COUNT.
+- T0-4: closed. The step numbers in the problem closure are generated from evaluation_criteria.
+- T0-5, T1-4: closed through C-SCOPE (AMENDMENT 1.1), C-G3 and C-E4.
+- O4: kept as an observation. Both trees still rest on fees the system never booked; that is the opening state the trees resolve.
+- O5: closed. The decrease request is filtered to outcome completed.
+- O6, O7, O8, O10: kept as observations; no change was needed.
+- Task-0 seed observation (sizing cut): closed. The business share's initial line now equals contract_kw, and a subscriber increase line gives the allowance-basis tier taken.

@@ -1,0 +1,995 @@
+# Product charter — Hospital Account (Encounter Billing). Riverbend Regional Health, Patient Financial Services.
+category: encounter
+display_name: Hospital Account (Encounter Billing)
+
+binding:
+  holding_table: encounter_accounts
+  event_tables: [encounter_transactions]
+  intake_tables: [encounter_billing_inquiries]
+  status_field: status
+  variant_field: variant_name
+  quantity_fields: {gross_charges_total: gross_charges, patient_balance: patient_balance}
+
+lifecycle:
+  states: [pending_billing, insurance_pending, patient_due, billing_hold, bad_debt, closed]
+  transitions:
+    - {from: pending_billing, to: insurance_pending, by: system, means: The final bill drops to the primary payer after the bill-hold days and a claim is created.}
+    - {from: pending_billing, to: patient_due, by: system, means: The final bill drops to the patient on a SELF_PAY account and the self-pay liability posts.}
+    - {from: insurance_pending, to: patient_due, by: system, means: The payer adjudicated the claim leaving patient responsibility on the account.}
+    - {from: insurance_pending, to: closed, by: system, means: The payer paid in full and no patient responsibility remains.}
+    - {from: patient_due, to: billing_hold, by: agent, means: A representative places a billing hold (itemization review, charge dispute, pending financial assistance application, coverage update or good-faith-estimate dispute).}
+    - {from: billing_hold, to: patient_due, by: agent, means: The hold reason is resolved or the hold period lapses and statements resume.}
+    - {from: patient_due, to: insurance_pending, by: agent, means: Newly reported coverage is verified and the account is rebilled to that payer.}
+    - {from: billing_hold, to: insurance_pending, by: agent, means: Coverage reported during a coverage-update hold is verified and the account is rebilled.}
+    - {from: patient_due, to: bad_debt, by: system, means: The account reaches the placement day with a balance at or above the placement minimum and is placed with the collection agency.}
+    - {from: bad_debt, to: patient_due, by: agent, means: The account is recalled from the agency (financial assistance application, dispute or billing error) and returns to in-house servicing.}
+    - {from: patient_due, to: closed, by: system, means: The patient balance reaches zero (or a small balance is written off).}
+    - {from: billing_hold, to: closed, by: agent, means: An adjustment during the hold brings the patient balance to zero.}
+    - {from: bad_debt, to: closed, by: system, means: The placed balance is paid or written off by the agency closing cycle.}
+
+accounts:
+  - key: gross_charges
+    unit: USD
+    meaning: Total chargemaster (CDM) charges on the encounter; charge postings add to it and charge credits reduce it.
+  - key: patient_balance
+    unit: USD
+    meaning: The amount the patient currently owes on the encounter; liability postings and refunds add to it, payments, discounts and adjustments reduce it (negative means a credit balance).
+
+# ---- category-level parameter dictionary ----
+parameter_schema:
+  bill_hold_days: 'integer calendar days after service_end_date (for the recurring therapy account: after the last day of each service month) before the final bill drops to the payer or to the patient'
+  billing_frequency: enum PER_ENCOUNTER | MONTHLY_SERIES — whether one final bill covers the whole encounter or each calendar month of a recurring series is billed separately
+  late_charge_window_days: integer calendar days after final_bill_date within which a late charge may still post and be billed; a late charge found after it is written off and never billed to the patient
+  uninsured_discount_pct: percent of gross charges deducted for a SELF_PAY financial-class account on medically necessary or emergency services, posted at final bill (Riverbend uninsured discount schedule)
+  uninsured_discount_elective_pct: percent of gross charges deducted for a SELF_PAY account whose service_classification is ELECTIVE_NON_COVERED
+  uninsured_discount_on_noncovered_insured: boolean — whether an insured patient's NONCOVERED_SERVICE liability line receives the uninsured discount percent
+  uninsured_discount_rounding: 'rounding basis for every discount amount: half-up to the cent on the computed USD amount'
+  prompt_pay_discount_pct: percent of the remaining patient balance deducted when the balance is paid in full inside the prompt-pay window
+  prompt_pay_window_days: integer calendar days counted from first_statement_date within which a full payment earns the prompt-pay discount
+  prompt_pay_min_balance_usd: USD minimum patient balance at the time of payment for the prompt-pay discount to apply
+  prompt_pay_eligible_channels: list of payment_channel values that can earn the prompt-pay discount
+  prompt_pay_stacks_with_uninsured: boolean — whether the prompt-pay discount is computed on the balance remaining after the uninsured discount (true) instead of being withheld when an uninsured discount was posted (false)
+  prompt_pay_excluded_after_fap: boolean — whether an encounter that has received a FAP_CHARITY_ADJUSTMENT is excluded from the prompt-pay discount
+  prompt_pay_excluded_in_payment_plan: boolean — whether an encounter enrolled in a payment plan is excluded from the prompt-pay discount
+  statement_cycle_days: integer calendar days between consecutive summary statements on a patient_due account
+  summary_statements_before_final_notice: integer number of summary statements issued before the FINAL_NOTICE statement
+  statement_min_balance_usd: USD balance below which no summary statement is generated for the cycle
+  eca_notification_period_days: integer calendar days from first_statement_date before any extraordinary collection action (agency placement with credit reporting) may begin
+  final_notice_lead_days: integer calendar days a FINAL_NOTICE must precede any extraordinary collection action
+  bad_debt_placement_after_days: integer calendar days from first_statement_date at which an unresolved patient_due account is placed with the collection agency
+  bad_debt_min_balance_usd: USD minimum patient balance for collection-agency placement; smaller balances stay in house
+  credit_reporting_min_balance_usd: USD minimum placed balance the agency may report to the consumer credit bureaus
+  credit_reporting_min_age_days: integer calendar days from first_statement_date before a placed balance may be credit-reported
+  legal_action_permitted: boolean — whether Riverbend files lawsuits, wage garnishments or liens on patient balances
+  interest_rate_pct: annual percent interest charged on patient balances (Riverbend charges none)
+  itemized_statement_turnaround_business_days: integer business days (Monday-Friday excluding Riverbend holidays) after the request within which an itemized statement is issued
+  itemized_statement_collection_pause_days: integer calendar days collection activity (statements past the current cycle, final notice, placement) pauses after an itemized statement is requested
+  itemized_statement_channels: list of delivery_channel values available for an itemized statement
+  itemized_statement_fee_usd: USD fee for an itemized statement copy (Riverbend provides them free)
+  charge_dispute_filing_window_days: integer calendar days after the posting_date of the first statement that listed the disputed charge within which a charge dispute is accepted
+  charge_dispute_hold_days: integer calendar days of billing hold granted while a charge dispute is reviewed
+  charge_dispute_response_business_days: integer business days after the dispute is logged within which billing review answers it
+  max_charge_disputes_per_encounter: integer number of charge disputes accepted per encounter
+  rep_charge_credit_authority_usd: USD maximum charge-line credit a patient financial services representative may post without coding review
+  duplicate_charge_auto_credit: boolean — whether a line duplicating another line's cdm_code, service_date and units is credited without coding review
+  service_recovery_courtesy_max_usd: USD maximum one-time service-recovery courtesy adjustment per encounter
+  service_recovery_courtesy_per_year: integer number of courtesy adjustments allowed per patient per calendar year across all encounters
+  small_balance_write_off_usd: USD remaining patient balance at or below which the balance is written off as SMALL_BALANCE_WRITE_OFF
+  refund_min_credit_usd: USD minimum credit balance that is refunded; smaller credits are held on the profile
+  refund_issue_days: integer calendar days after a credit balance arises within which the refund is issued
+  refund_card_max_age_days: integer calendar days since the card payment within which a refund goes back to the original card; older card payments and checks are refunded by PAPER_CHECK, ACH payments by ACH_CREDIT
+  credit_offset_open_balances: boolean — whether a credit balance is first applied to the same patient's other patient_due encounters (oldest service_start_date first) before any refund
+  payment_application_order: enum basis for applying an undesignated payment across the patient's patient_due encounters
+  card_payment_max_usd: USD maximum single card payment accepted by phone or portal
+  insurance_no_response_days: integer calendar days after the claim's submitted_date with no adjudication after which the account is reviewed for patient billing
+  coverage_update_window_days: integer calendar days after first_statement_date within which newly reported insurance is billed (subject to the payer's timely-filing limit)
+  coverage_update_hold_days: integer calendar days of billing hold while newly reported coverage is verified
+  max_billing_holds_per_encounter: integer number of billing holds an encounter may receive over its life
+  final_notice_channel: enum delivery_channel always used for a FINAL_NOTICE, whatever the patient's paperless preference
+  statement_consolidation: enum — summary statements consolidate every patient_due encounter of the guarantor into one mailing
+
+# ---- tier ladder (low to high) ----
+variants:
+- name: Outpatient Clinic Visit Account
+  rank: 1
+  entry_gate: {patient_class: OUTPATIENT_CLINIC, registration: scheduled or walk-in clinic visit, max_service_days: 1}
+  parameters:
+    bill_hold_days: 3
+    billing_frequency: PER_ENCOUNTER
+    late_charge_window_days: 7
+    uninsured_discount_pct: 40.0
+    uninsured_discount_elective_pct: 20.0
+    uninsured_discount_on_noncovered_insured: true
+    uninsured_discount_rounding: ROUND_HALF_UP_CENT
+    prompt_pay_discount_pct: 10.0
+    prompt_pay_window_days: 30
+    prompt_pay_min_balance_usd: 50.0
+    prompt_pay_eligible_channels: &id001 [PORTAL_CARD, PHONE_CARD, ACH_BANK_DRAFT, MAILED_CHECK, POINT_OF_SERVICE]
+    prompt_pay_stacks_with_uninsured: true
+    prompt_pay_excluded_after_fap: true
+    prompt_pay_excluded_in_payment_plan: true
+    statement_cycle_days: 30
+    summary_statements_before_final_notice: 3
+    statement_min_balance_usd: 5.0
+    eca_notification_period_days: 120
+    final_notice_lead_days: 30
+    bad_debt_placement_after_days: 150
+    bad_debt_min_balance_usd: 25.0
+    credit_reporting_min_balance_usd: 500.0
+    credit_reporting_min_age_days: 365
+    legal_action_permitted: false
+    interest_rate_pct: 0.0
+    itemized_statement_turnaround_business_days: 5
+    itemized_statement_collection_pause_days: 30
+    itemized_statement_channels: &id002 [US_MAIL, PATIENT_PORTAL, EMAIL_LINK]
+    itemized_statement_fee_usd: 0.0
+    charge_dispute_filing_window_days: 180
+    charge_dispute_hold_days: 30
+    charge_dispute_response_business_days: 10
+    max_charge_disputes_per_encounter: 2
+    rep_charge_credit_authority_usd: 150.0
+    duplicate_charge_auto_credit: true
+    service_recovery_courtesy_max_usd: 25.0
+    service_recovery_courtesy_per_year: 1
+    small_balance_write_off_usd: 4.99
+    refund_min_credit_usd: 1.0
+    refund_issue_days: 30
+    refund_card_max_age_days: 180
+    credit_offset_open_balances: true
+    payment_application_order: OLDEST_SERVICE_START_DATE_FIRST
+    card_payment_max_usd: 9999.99
+    insurance_no_response_days: 45
+    coverage_update_window_days: 365
+    coverage_update_hold_days: 30
+    max_billing_holds_per_encounter: 2
+    final_notice_channel: US_MAIL
+    statement_consolidation: GUARANTOR_CONSOLIDATED
+- name: Outpatient Diagnostic Imaging & Lab Account
+  rank: 2
+  entry_gate: {patient_class: OUTPATIENT_DIAGNOSTIC, registration: order from a referring provider, max_service_days: 1}
+  parameters:
+    bill_hold_days: 4
+    billing_frequency: PER_ENCOUNTER
+    late_charge_window_days: 10
+    uninsured_discount_pct: 55.0
+    uninsured_discount_elective_pct: 25.0
+    uninsured_discount_on_noncovered_insured: true
+    uninsured_discount_rounding: ROUND_HALF_UP_CENT
+    prompt_pay_discount_pct: 10.0
+    prompt_pay_window_days: 30
+    prompt_pay_min_balance_usd: 75.0
+    prompt_pay_eligible_channels: *id001
+    prompt_pay_stacks_with_uninsured: true
+    prompt_pay_excluded_after_fap: true
+    prompt_pay_excluded_in_payment_plan: true
+    statement_cycle_days: 30
+    summary_statements_before_final_notice: 3
+    statement_min_balance_usd: 5.0
+    eca_notification_period_days: 120
+    final_notice_lead_days: 30
+    bad_debt_placement_after_days: 150
+    bad_debt_min_balance_usd: 25.0
+    credit_reporting_min_balance_usd: 500.0
+    credit_reporting_min_age_days: 365
+    legal_action_permitted: false
+    interest_rate_pct: 0.0
+    itemized_statement_turnaround_business_days: 5
+    itemized_statement_collection_pause_days: 30
+    itemized_statement_channels: *id002
+    itemized_statement_fee_usd: 0.0
+    charge_dispute_filing_window_days: 180
+    charge_dispute_hold_days: 30
+    charge_dispute_response_business_days: 10
+    max_charge_disputes_per_encounter: 2
+    rep_charge_credit_authority_usd: 250.0
+    duplicate_charge_auto_credit: true
+    service_recovery_courtesy_max_usd: 25.0
+    service_recovery_courtesy_per_year: 1
+    small_balance_write_off_usd: 4.99
+    refund_min_credit_usd: 1.0
+    refund_issue_days: 30
+    refund_card_max_age_days: 180
+    credit_offset_open_balances: true
+    payment_application_order: OLDEST_SERVICE_START_DATE_FIRST
+    card_payment_max_usd: 9999.99
+    insurance_no_response_days: 45
+    coverage_update_window_days: 365
+    coverage_update_hold_days: 30
+    max_billing_holds_per_encounter: 2
+    final_notice_channel: US_MAIL
+    statement_consolidation: GUARANTOR_CONSOLIDATED
+- name: Recurring Outpatient Therapy Account
+  rank: 3
+  entry_gate: {patient_class: RECURRING_OUTPATIENT, registration: 'therapy plan of care (PT/OT/speech, infusion or cardiac rehab)', max_service_days: 31}
+  parameters:
+    bill_hold_days: 5
+    billing_frequency: MONTHLY_SERIES
+    late_charge_window_days: 30
+    uninsured_discount_pct: 45.0
+    uninsured_discount_elective_pct: 20.0
+    uninsured_discount_on_noncovered_insured: true
+    uninsured_discount_rounding: ROUND_HALF_UP_CENT
+    prompt_pay_discount_pct: 10.0
+    prompt_pay_window_days: 30
+    prompt_pay_min_balance_usd: 100.0
+    prompt_pay_eligible_channels: *id001
+    prompt_pay_stacks_with_uninsured: true
+    prompt_pay_excluded_after_fap: true
+    prompt_pay_excluded_in_payment_plan: true
+    statement_cycle_days: 30
+    summary_statements_before_final_notice: 3
+    statement_min_balance_usd: 5.0
+    eca_notification_period_days: 120
+    final_notice_lead_days: 30
+    bad_debt_placement_after_days: 150
+    bad_debt_min_balance_usd: 50.0
+    credit_reporting_min_balance_usd: 500.0
+    credit_reporting_min_age_days: 365
+    legal_action_permitted: false
+    interest_rate_pct: 0.0
+    itemized_statement_turnaround_business_days: 7
+    itemized_statement_collection_pause_days: 30
+    itemized_statement_channels: *id002
+    itemized_statement_fee_usd: 0.0
+    charge_dispute_filing_window_days: 180
+    charge_dispute_hold_days: 30
+    charge_dispute_response_business_days: 10
+    max_charge_disputes_per_encounter: 2
+    rep_charge_credit_authority_usd: 250.0
+    duplicate_charge_auto_credit: true
+    service_recovery_courtesy_max_usd: 40.0
+    service_recovery_courtesy_per_year: 1
+    small_balance_write_off_usd: 4.99
+    refund_min_credit_usd: 1.0
+    refund_issue_days: 30
+    refund_card_max_age_days: 180
+    credit_offset_open_balances: true
+    payment_application_order: OLDEST_SERVICE_START_DATE_FIRST
+    card_payment_max_usd: 9999.99
+    insurance_no_response_days: 60
+    coverage_update_window_days: 365
+    coverage_update_hold_days: 30
+    max_billing_holds_per_encounter: 2
+    final_notice_channel: US_MAIL
+    statement_consolidation: GUARANTOR_CONSOLIDATED
+- name: Emergency Department Visit Account
+  rank: 4
+  entry_gate: {patient_class: EMERGENCY, registration: emergency department arrival (EMTALA screening), max_service_days: 2}
+  parameters:
+    bill_hold_days: 4
+    billing_frequency: PER_ENCOUNTER
+    late_charge_window_days: 10
+    uninsured_discount_pct: 45.0
+    uninsured_discount_elective_pct: 20.0
+    uninsured_discount_on_noncovered_insured: true
+    uninsured_discount_rounding: ROUND_HALF_UP_CENT
+    prompt_pay_discount_pct: 10.0
+    prompt_pay_window_days: 30
+    prompt_pay_min_balance_usd: 100.0
+    prompt_pay_eligible_channels: *id001
+    prompt_pay_stacks_with_uninsured: true
+    prompt_pay_excluded_after_fap: true
+    prompt_pay_excluded_in_payment_plan: true
+    statement_cycle_days: 30
+    summary_statements_before_final_notice: 3
+    statement_min_balance_usd: 5.0
+    eca_notification_period_days: 120
+    final_notice_lead_days: 30
+    bad_debt_placement_after_days: 150
+    bad_debt_min_balance_usd: 50.0
+    credit_reporting_min_balance_usd: 500.0
+    credit_reporting_min_age_days: 365
+    legal_action_permitted: false
+    interest_rate_pct: 0.0
+    itemized_statement_turnaround_business_days: 5
+    itemized_statement_collection_pause_days: 30
+    itemized_statement_channels: *id002
+    itemized_statement_fee_usd: 0.0
+    charge_dispute_filing_window_days: 180
+    charge_dispute_hold_days: 45
+    charge_dispute_response_business_days: 15
+    max_charge_disputes_per_encounter: 2
+    rep_charge_credit_authority_usd: 500.0
+    duplicate_charge_auto_credit: true
+    service_recovery_courtesy_max_usd: 50.0
+    service_recovery_courtesy_per_year: 1
+    small_balance_write_off_usd: 4.99
+    refund_min_credit_usd: 1.0
+    refund_issue_days: 30
+    refund_card_max_age_days: 180
+    credit_offset_open_balances: true
+    payment_application_order: OLDEST_SERVICE_START_DATE_FIRST
+    card_payment_max_usd: 9999.99
+    insurance_no_response_days: 60
+    coverage_update_window_days: 365
+    coverage_update_hold_days: 30
+    max_billing_holds_per_encounter: 2
+    final_notice_channel: US_MAIL
+    statement_consolidation: GUARANTOR_CONSOLIDATED
+- name: Outpatient Surgery Account
+  rank: 5
+  entry_gate: {patient_class: OUTPATIENT_SURGERY, registration: scheduled procedure with surgical case number, max_service_days: 1}
+  parameters:
+    bill_hold_days: 5
+    billing_frequency: PER_ENCOUNTER
+    late_charge_window_days: 14
+    uninsured_discount_pct: 50.0
+    uninsured_discount_elective_pct: 25.0
+    uninsured_discount_on_noncovered_insured: false
+    uninsured_discount_rounding: ROUND_HALF_UP_CENT
+    prompt_pay_discount_pct: 15.0
+    prompt_pay_window_days: 45
+    prompt_pay_min_balance_usd: 250.0
+    prompt_pay_eligible_channels: *id001
+    prompt_pay_stacks_with_uninsured: true
+    prompt_pay_excluded_after_fap: true
+    prompt_pay_excluded_in_payment_plan: true
+    statement_cycle_days: 30
+    summary_statements_before_final_notice: 3
+    statement_min_balance_usd: 5.0
+    eca_notification_period_days: 120
+    final_notice_lead_days: 30
+    bad_debt_placement_after_days: 150
+    bad_debt_min_balance_usd: 100.0
+    credit_reporting_min_balance_usd: 500.0
+    credit_reporting_min_age_days: 365
+    legal_action_permitted: false
+    interest_rate_pct: 0.0
+    itemized_statement_turnaround_business_days: 7
+    itemized_statement_collection_pause_days: 30
+    itemized_statement_channels: *id002
+    itemized_statement_fee_usd: 0.0
+    charge_dispute_filing_window_days: 180
+    charge_dispute_hold_days: 45
+    charge_dispute_response_business_days: 15
+    max_charge_disputes_per_encounter: 2
+    rep_charge_credit_authority_usd: 750.0
+    duplicate_charge_auto_credit: true
+    service_recovery_courtesy_max_usd: 75.0
+    service_recovery_courtesy_per_year: 1
+    small_balance_write_off_usd: 4.99
+    refund_min_credit_usd: 1.0
+    refund_issue_days: 30
+    refund_card_max_age_days: 180
+    credit_offset_open_balances: true
+    payment_application_order: OLDEST_SERVICE_START_DATE_FIRST
+    card_payment_max_usd: 9999.99
+    insurance_no_response_days: 60
+    coverage_update_window_days: 365
+    coverage_update_hold_days: 30
+    max_billing_holds_per_encounter: 2
+    final_notice_channel: US_MAIL
+    statement_consolidation: GUARANTOR_CONSOLIDATED
+- name: Observation Stay Account
+  rank: 6
+  entry_gate: {patient_class: OBSERVATION, registration: physician observation order, max_service_days: 3}
+  parameters:
+    bill_hold_days: 4
+    billing_frequency: PER_ENCOUNTER
+    late_charge_window_days: 14
+    uninsured_discount_pct: 50.0
+    uninsured_discount_elective_pct: 25.0
+    uninsured_discount_on_noncovered_insured: false
+    uninsured_discount_rounding: ROUND_HALF_UP_CENT
+    prompt_pay_discount_pct: 15.0
+    prompt_pay_window_days: 45
+    prompt_pay_min_balance_usd: 250.0
+    prompt_pay_eligible_channels: *id001
+    prompt_pay_stacks_with_uninsured: true
+    prompt_pay_excluded_after_fap: true
+    prompt_pay_excluded_in_payment_plan: true
+    statement_cycle_days: 30
+    summary_statements_before_final_notice: 4
+    statement_min_balance_usd: 5.0
+    eca_notification_period_days: 120
+    final_notice_lead_days: 30
+    bad_debt_placement_after_days: 150
+    bad_debt_min_balance_usd: 100.0
+    credit_reporting_min_balance_usd: 500.0
+    credit_reporting_min_age_days: 365
+    legal_action_permitted: false
+    interest_rate_pct: 0.0
+    itemized_statement_turnaround_business_days: 7
+    itemized_statement_collection_pause_days: 45
+    itemized_statement_channels: *id002
+    itemized_statement_fee_usd: 0.0
+    charge_dispute_filing_window_days: 180
+    charge_dispute_hold_days: 60
+    charge_dispute_response_business_days: 20
+    max_charge_disputes_per_encounter: 2
+    rep_charge_credit_authority_usd: 750.0
+    duplicate_charge_auto_credit: true
+    service_recovery_courtesy_max_usd: 75.0
+    service_recovery_courtesy_per_year: 1
+    small_balance_write_off_usd: 4.99
+    refund_min_credit_usd: 1.0
+    refund_issue_days: 30
+    refund_card_max_age_days: 180
+    credit_offset_open_balances: true
+    payment_application_order: OLDEST_SERVICE_START_DATE_FIRST
+    card_payment_max_usd: 9999.99
+    insurance_no_response_days: 60
+    coverage_update_window_days: 365
+    coverage_update_hold_days: 30
+    max_billing_holds_per_encounter: 2
+    final_notice_channel: US_MAIL
+    statement_consolidation: GUARANTOR_CONSOLIDATED
+- name: Inpatient Admission Account
+  rank: 7
+  entry_gate: {patient_class: INPATIENT, registration: physician inpatient admission order, max_service_days: 365}
+  parameters:
+    bill_hold_days: 5
+    billing_frequency: PER_ENCOUNTER
+    late_charge_window_days: 30
+    uninsured_discount_pct: 55.0
+    uninsured_discount_elective_pct: 25.0
+    uninsured_discount_on_noncovered_insured: false
+    uninsured_discount_rounding: ROUND_HALF_UP_CENT
+    prompt_pay_discount_pct: 15.0
+    prompt_pay_window_days: 45
+    prompt_pay_min_balance_usd: 500.0
+    prompt_pay_eligible_channels: *id001
+    prompt_pay_stacks_with_uninsured: true
+    prompt_pay_excluded_after_fap: true
+    prompt_pay_excluded_in_payment_plan: true
+    statement_cycle_days: 30
+    summary_statements_before_final_notice: 4
+    statement_min_balance_usd: 5.0
+    eca_notification_period_days: 120
+    final_notice_lead_days: 30
+    bad_debt_placement_after_days: 150
+    bad_debt_min_balance_usd: 100.0
+    credit_reporting_min_balance_usd: 500.0
+    credit_reporting_min_age_days: 365
+    legal_action_permitted: false
+    interest_rate_pct: 0.0
+    itemized_statement_turnaround_business_days: 10
+    itemized_statement_collection_pause_days: 45
+    itemized_statement_channels: *id002
+    itemized_statement_fee_usd: 0.0
+    charge_dispute_filing_window_days: 180
+    charge_dispute_hold_days: 60
+    charge_dispute_response_business_days: 20
+    max_charge_disputes_per_encounter: 2
+    rep_charge_credit_authority_usd: 1000.0
+    duplicate_charge_auto_credit: true
+    service_recovery_courtesy_max_usd: 100.0
+    service_recovery_courtesy_per_year: 1
+    small_balance_write_off_usd: 4.99
+    refund_min_credit_usd: 1.0
+    refund_issue_days: 30
+    refund_card_max_age_days: 180
+    credit_offset_open_balances: true
+    payment_application_order: OLDEST_SERVICE_START_DATE_FIRST
+    card_payment_max_usd: 9999.99
+    insurance_no_response_days: 90
+    coverage_update_window_days: 365
+    coverage_update_hold_days: 30
+    max_billing_holds_per_encounter: 2
+    final_notice_channel: US_MAIL
+    statement_consolidation: GUARANTOR_CONSOLIDATED
+
+# ---- data flow (every write is an event) ----
+events:
+  - type: encounter_registered
+    target: encounter_accounts
+    mutation: create
+    meaning: Registration opens a hospital account for one encounter (or one plan-of-care series) of the patient.
+    grain: one row per registered encounter
+    fields: {encounter_id: new account id, customer_id: the patient, variant_name: patient-class tier, facility: campus of service, financial_class: financial class from registration, service_classification: clinical classification, service_start_date: date of service or arrival, account_opened_date: registration date}
+    triggers: []
+  - type: encounter_charge_posted
+    target: encounter_transactions
+    meaning: One chargemaster line is posted to the account from a clinical department.
+    grain: one row per charge line
+    distinguish_by: [line_number]
+    fields: {line_number: charge line sequence, cdm_code: chargemaster code, cpt_hcpcs_code: procedure code, revenue_code: UB-04 revenue code, service_date: date rendered, units: billed units, amount: gross charge of the line, posting_date: posting date}
+    account: gross_charges
+    direction: in
+    triggers: []
+  - type: encounter_charge_credited
+    target: encounter_transactions
+    meaning: A posted charge line is credited in whole or in part (duplicate, service not rendered, units correction, late charge past window, non-billable supply).
+    grain: one row per credit against one charge line for one reason
+    distinguish_by: [source_txn_id, credit_reason_code]
+    fields: {source_txn_id: the charge line credited, credit_reason_code: reason for the credit, amount: gross amount credited, posting_date: posting date}
+    account: gross_charges
+    direction: out
+    triggers: []
+  - type: encounter_liability_posted
+    target: encounter_transactions
+    meaning: Patient liability posts to the account — the full self-pay final bill, or a patient-responsibility amount reported by a payer on adjudication.
+    grain: one row per liability source per claim (or per self-pay final bill)
+    distinguish_by: [liability_source, claim_id, posting_date]
+    fields: {liability_source: origin of the liability, claim_id: adjudicated claim (empty for self-pay), amount: liability amount, posting_date: posting date}
+    account: patient_balance
+    direction: in
+    triggers:
+      - event: encounter:encounter_adjustment_posted
+        when: {liability_source: SELF_PAY_FINAL_BILL}
+        map: {adjustment_code: UNINSURED_DISCOUNT, posting_date: posting_date}
+  - type: encounter_adjustment_posted
+    target: encounter_transactions
+    meaning: A discount, write-off or adjustment reduces the patient balance (uninsured, prompt-pay, charity, charge correction, small balance, courtesy, dispute determination, package price, rebill transfer).
+    grain: one row per adjustment code per source transaction
+    distinguish_by: [adjustment_code, source_txn_id]
+    fields: {adjustment_code: kind of adjustment, source_txn_id: "the liability posting, charge credit or payment the adjustment is computed from", amount: adjustment amount, posting_date: posting date}
+    account: patient_balance
+    direction: out
+    triggers: []
+  - type: encounter_payment_posted
+    target: encounter_transactions
+    meaning: A patient payment is applied to the account (card, bank draft, check, point of service, plan installment or applied deposit).
+    grain: one row per payment confirmation applied to one account
+    distinguish_by: [payment_reference]
+    fields: {payment_channel: how received, payment_reference: confirmation number, amount: amount applied, posting_date: posting date}
+    account: patient_balance
+    direction: out
+    triggers: []
+  - type: encounter_refund_issued
+    target: encounter_transactions
+    meaning: A credit balance is refunded to the patient against the payment that created it.
+    grain: one row per refunded source payment
+    distinguish_by: [source_txn_id]
+    fields: {source_txn_id: the payment refunded, refund_method: payout method, amount: refund amount, posting_date: posting date}
+    account: patient_balance
+    direction: in
+    triggers: []
+  - type: encounter_statement_issued
+    target: encounter_transactions
+    meaning: A patient statement (summary, itemized, or final notice) is generated for the account.
+    grain: one row per statement of a type and sequence
+    distinguish_by: [statement_type, statement_cycle]
+    fields: {statement_type: kind of statement, statement_cycle: sequence of that type, delivery_channel: how delivered, amount: always 0.00, posting_date: statement date}
+    triggers:
+      - event: encounter:encounter_first_statement_recorded
+        when: {statement_type: SUMMARY_STATEMENT, statement_cycle: 1}
+        map: {first_statement_date: posting_date}
+  - type: encounter_first_statement_recorded
+    target: encounter_accounts
+    mutation: update
+    meaning: The date of the first post-discharge summary statement is stamped on the account.
+    grain: one row per transaction
+    fields: {first_statement_date: date of the first summary statement}
+    triggers: []
+  - type: encounter_billed_to_insurance
+    target: encounter_accounts
+    mutation: {transition: {from: pending_billing, to: insurance_pending}}
+    meaning: The final bill drops to the primary payer.
+    grain: one row per transaction
+    fields: {status: insurance_pending, final_bill_date: bill drop date, financial_class: payer class billed}
+    triggers:
+      - event: claim:claim_submitted
+        map: {encounter_id: encounter_id}
+  - type: encounter_self_pay_billed
+    target: encounter_accounts
+    mutation: {transition: {from: pending_billing, to: patient_due}}
+    meaning: The final bill drops to the patient on a SELF_PAY account.
+    grain: one row per transaction
+    fields: {status: patient_due, final_bill_date: bill drop date}
+    triggers:
+      - event: encounter:encounter_liability_posted
+        map: {liability_source: SELF_PAY_FINAL_BILL}
+  - type: encounter_patient_responsibility_due
+    target: encounter_accounts
+    mutation: {transition: {from: insurance_pending, to: patient_due}}
+    meaning: The payer adjudicated with patient responsibility and the account moves to patient billing.
+    grain: one row per transaction
+    fields: {status: patient_due}
+    triggers: []
+  - type: encounter_hold_placed
+    target: encounter_accounts
+    mutation: {transition: {from: patient_due, to: billing_hold}}
+    meaning: A representative places a billing hold for a stated reason.
+    grain: one row per transaction
+    fields: {status: billing_hold, billing_hold_reason: hold reason, hold_started_date: hold start, holds_used_count: holds used including this one}
+    triggers: []
+  - type: encounter_hold_released
+    target: encounter_accounts
+    mutation: {transition: {from: billing_hold, to: patient_due}}
+    meaning: The hold ends and statements resume.
+    grain: one row per transaction
+    fields: {status: patient_due, billing_hold_reason: reset to NONE, hold_started_date: cleared}
+    triggers: []
+  - type: encounter_rebilled_to_insurance
+    target: encounter_accounts
+    mutation: {transition: [{from: patient_due, to: insurance_pending}, {from: billing_hold, to: insurance_pending}]}
+    meaning: Newly reported coverage is verified and the account is rebilled to that payer.
+    grain: one row per transaction
+    fields: {status: insurance_pending, financial_class: new payer class, billing_hold_reason: reset to NONE, hold_started_date: cleared}
+    triggers:
+      - event: claim:claim_submitted
+        map: {encounter_id: encounter_id}
+      - event: encounter:encounter_adjustment_posted
+        map: {adjustment_code: INSURANCE_REBILL_TRANSFER}
+  - type: encounter_placed_with_agency
+    target: encounter_accounts
+    mutation: {transition: {from: patient_due, to: bad_debt}}
+    meaning: The account is placed with the collection agency.
+    grain: one row per transaction
+    fields: {status: bad_debt, bad_debt_placement_date: placement date}
+    triggers: []
+  - type: encounter_recalled_from_agency
+    target: encounter_accounts
+    mutation: {transition: {from: bad_debt, to: patient_due}}
+    meaning: The account is recalled from the agency to in-house servicing.
+    grain: one row per transaction
+    fields: {status: patient_due, bad_debt_placement_date: kept as history}
+    triggers: []
+  - type: encounter_closed
+    target: encounter_accounts
+    mutation: {transition: [{from: insurance_pending, to: closed}, {from: patient_due, to: closed}, {from: billing_hold, to: closed}, {from: bad_debt, to: closed}]}
+    meaning: The account closes at a zero patient balance.
+    grain: one row per transaction
+    fields: {status: closed, closed_date: closing date}
+    triggers: []
+  - type: encounter_coverage_updated
+    target: encounter_accounts
+    mutation: update
+    meaning: The financial class on the account is corrected after coverage is verified or found terminated.
+    grain: one row per transaction
+    fields: {financial_class: verified financial class}
+    triggers: []
+
+# ---- derived measures ----
+measures:
+  - id: encounter_msr_courtesy_cy
+    window: the calendar year (January 1 to December 31) containing the posting date being decided
+    measure: count of encounter_adjustment_posted rows with adjustment_code SERVICE_RECOVERY_COURTESY across all encounters of the patient
+  - id: encounter_msr_summary_statements
+    window: the life of the encounter up to the decision date
+    measure: count of encounter_statement_issued rows with statement_type SUMMARY_STATEMENT on the encounter
+  - id: encounter_msr_disputes_filed
+    window: the life of the encounter up to the decision date
+    measure: count of encounter_billing_inquiries rows with inquiry_type CHARGE_DISPUTE on the encounter
+
+# ---- policies ----
+policies:
+  - id: encounter_agg_multi_holding
+    subject: [encounter_registered]
+    rule: >-
+      A patient may hold any number of hospital accounts at once; registration opens one account per encounter, and one account per plan of care for a recurring outpatient therapy series. A new encounter is never merged into an existing account, and a recurring series is never split into per-visit accounts. The patient-class tier of an account is fixed by the registration type in its entry gate and is not changed after registration.
+    eligibility: []
+    params: {max_per_customer: null}
+  - id: encounter_agg_payment_application
+    subject: [encounter_payment_posted, encounter_refund_issued, encounter_statement_issued]
+    rule: >-
+      All patient_due accounts of one patient are serviced together. A payment the patient designates to a specific account is applied to that account only. An undesignated payment is applied across the patient's patient_due accounts in the order fixed by payment_application_order, each account receiving at most its current patient_balance before the next account is reached. When credit_offset_open_balances is true, a credit balance on one account is applied to the patient's other patient_due accounts in the same order before any refund is considered, and only the credit left after that offset is refundable. Summary statements consolidate every patient_due account of the patient into one mailing per statement cycle (statement_consolidation), but each account carries its own statement sequence and its own first_statement_date. A card payment larger than card_payment_max_usd is refused and must be split or paid by ACH bank draft.
+    eligibility: []
+    params: {payment_application_order: "=payment_application_order", credit_offset_open_balances: "=credit_offset_open_balances", statement_consolidation: "=statement_consolidation", card_payment_max_usd: "=card_payment_max_usd"}
+  - id: encounter_final_bill_and_liability
+    subject: [encounter_registered, encounter_charge_posted, encounter_billed_to_insurance, encounter_self_pay_billed, encounter_patient_responsibility_due, encounter_liability_posted, encounter_closed]
+    rule: >-
+      Charges accrue on a pending_billing account until the final bill drops bill_hold_days calendar days after service_end_date (for a MONTHLY_SERIES account, after the last day of each service month, each month being billed separately). An account whose financial_class is SELF_PAY drops to the patient: the whole net gross charges post as one SELF_PAY_FINAL_BILL liability and the uninsured discount follows. Any other financial class drops to the primary payer as a claim. When the payer adjudicates, only amounts the payer reports as patient responsibility (deductible, coinsurance, copay, non-covered service, coverage terminated) post as liability, each as its own posting carrying the claim reference; amounts the payer reports as a contractual obligation are never billed to the patient. If no adjudication is received within insurance_no_response_days of the claim's submitted date, the account is reviewed by billing and stays insurance_pending; the patient is not billed for an unadjudicated claim. An account closes when its patient balance reaches zero, or when the payer pays in full leaving nothing to the patient. Riverbend charges no interest (interest_rate_pct) and no late fees on any patient balance.
+    eligibility: []
+    params: {bill_hold_days: "=bill_hold_days", billing_frequency: "=billing_frequency", insurance_no_response_days: "=insurance_no_response_days", interest_rate_pct: "=interest_rate_pct"}
+  - id: encounter_uninsured_discount
+    subject: [encounter_liability_posted, encounter_adjustment_posted]
+    rule: >-
+      The uninsured discount applies only when the account's financial_class is SELF_PAY at final bill. It is posted once per SELF_PAY_FINAL_BILL liability, as an UNINSURED_DISCOUNT adjustment whose source is that liability posting, at uninsured_discount_pct of the liability for EMERGENCY and MEDICALLY_NECESSARY services and at uninsured_discount_elective_pct for ELECTIVE_NON_COVERED services. On an insured account, a NONCOVERED_SERVICE liability line receives the same uninsured_discount_pct only on tiers where uninsured_discount_on_noncovered_insured is true; deductible, coinsurance and copay amounts never receive it. Discount amounts are rounded half-up to the cent. An account priced under a Riverbend self-pay package receives the PACKAGE_PRICE_ADJUSTMENT instead and never the uninsured discount. A later financial-assistance charity adjustment is computed by the assistance program on its own basis and does not reverse the uninsured discount.
+    eligibility:
+      - id: self_pay_class
+        applies_to: [encounter_adjustment_posted]
+        kind: authorization
+        condition: The uninsured discount applies only when the account's financial_class is SELF_PAY at final bill.
+        evidence_fields: [encounter_accounts.financial_class, encounter_accounts.encounter_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[encounter_accounts.encounter_id]]
+          action_bindings: {encounter_accounts.encounter_id: encounter_id}
+    params:
+      per_tier:
+        Outpatient Clinic Visit Account: {discount_pct: "=uninsured_discount_pct", elective_pct: "=uninsured_discount_elective_pct", noncovered_insured: "=uninsured_discount_on_noncovered_insured"}
+        Outpatient Diagnostic Imaging & Lab Account: {discount_pct: "=uninsured_discount_pct", elective_pct: "=uninsured_discount_elective_pct", noncovered_insured: "=uninsured_discount_on_noncovered_insured"}
+        Recurring Outpatient Therapy Account: {discount_pct: "=uninsured_discount_pct", elective_pct: "=uninsured_discount_elective_pct", noncovered_insured: "=uninsured_discount_on_noncovered_insured"}
+        Emergency Department Visit Account: {discount_pct: "=uninsured_discount_pct", elective_pct: "=uninsured_discount_elective_pct", noncovered_insured: "=uninsured_discount_on_noncovered_insured"}
+        Outpatient Surgery Account: {discount_pct: "=uninsured_discount_pct", elective_pct: "=uninsured_discount_elective_pct", noncovered_insured: "=uninsured_discount_on_noncovered_insured"}
+        Observation Stay Account: {discount_pct: "=uninsured_discount_pct", elective_pct: "=uninsured_discount_elective_pct", noncovered_insured: "=uninsured_discount_on_noncovered_insured"}
+        Inpatient Admission Account: {discount_pct: "=uninsured_discount_pct", elective_pct: "=uninsured_discount_elective_pct", noncovered_insured: "=uninsured_discount_on_noncovered_insured"}
+      rounding: "=uninsured_discount_rounding"
+    formula:
+      when: adjustment_code == "UNINSURED_DISCOUNT"
+      uninsured_discount_amount: round(amount * uninsured_discount_pct / 100, 2)
+  - id: encounter_prompt_pay_discount
+    subject: [encounter_payment_posted, encounter_adjustment_posted]
+    rule: >-
+      A patient who pays the entire remaining balance of one account in a single payment earns the prompt-pay discount on that account. The full payment must post no later than the prompt-pay window counted from the first post-discharge statement date. Count calendar days starting the day after first_statement_date; a payment whose posting_date is the last day of the window still qualifies. The discount is prompt_pay_discount_pct of the patient balance standing immediately before the payment (after the uninsured discount when prompt_pay_stacks_with_uninsured is true), rounded half-up to the cent, and the payment amount due is that balance less the discount; the discount posts as a PROMPT_PAY_DISCOUNT adjustment whose source is the qualifying payment. The discount is not available when the balance before payment is below prompt_pay_min_balance_usd, when the payment channel is not in prompt_pay_eligible_channels, when the account has received a FAP_CHARITY_ADJUSTMENT (prompt_pay_excluded_after_fap), or when the account is enrolled in an active or past_due Riverbend payment plan (prompt_pay_excluded_in_payment_plan). A partial payment never earns a partial discount, and the discount is posted at most once per account.
+    eligibility:
+      - id: prompt_window
+        applies_to: [encounter_adjustment_posted]
+        kind: time
+        condition: The full payment must post no later than the prompt-pay window counted from the first post-discharge statement date.
+        evidence_fields: [encounter_accounts.first_statement_date, encounter_accounts.encounter_id, encounter_transactions.posting_date]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[encounter_accounts.encounter_id]]
+          action_bindings: {encounter_accounts.encounter_id: encounter_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the first post-discharge statement date
+          anchor_source: encounter_accounts.first_statement_date
+          relation: not_after
+          duration_source: variants.prompt_pay_window_days
+          unit: calendar_days
+          counting_rule: Count calendar days starting the day after first_statement_date; a payment whose posting_date is the last day of the window still qualifies.
+          boundary: inclusive
+      - id: one_prompt_discount
+        applies_to: [encounter_adjustment_posted]
+        kind: dedup
+        condition: A partial payment never earns a partial discount, and the discount is posted at most once per account.
+        evidence_fields: [encounter_transactions.encounter_id, encounter_transactions.adjustment_code]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[encounter_transactions.encounter_id]]
+          action_bindings: {encounter_transactions.encounter_id: encounter_id}
+        dedup_contract:
+          table: encounter_transactions
+          mode: separate_record
+          object_bindings: {encounter_id: encounter_id}
+          duplicate_filters: {adjustment_code: [PROMPT_PAY_DISCOUNT]}
+          distinct_fields: []
+    params:
+      per_tier:
+        Outpatient Clinic Visit Account: {pct: "=prompt_pay_discount_pct", window_days: "=prompt_pay_window_days", min_balance: "=prompt_pay_min_balance_usd"}
+        Outpatient Diagnostic Imaging & Lab Account: {pct: "=prompt_pay_discount_pct", window_days: "=prompt_pay_window_days", min_balance: "=prompt_pay_min_balance_usd"}
+        Recurring Outpatient Therapy Account: {pct: "=prompt_pay_discount_pct", window_days: "=prompt_pay_window_days", min_balance: "=prompt_pay_min_balance_usd"}
+        Emergency Department Visit Account: {pct: "=prompt_pay_discount_pct", window_days: "=prompt_pay_window_days", min_balance: "=prompt_pay_min_balance_usd"}
+        Outpatient Surgery Account: {pct: "=prompt_pay_discount_pct", window_days: "=prompt_pay_window_days", min_balance: "=prompt_pay_min_balance_usd"}
+        Observation Stay Account: {pct: "=prompt_pay_discount_pct", window_days: "=prompt_pay_window_days", min_balance: "=prompt_pay_min_balance_usd"}
+        Inpatient Admission Account: {pct: "=prompt_pay_discount_pct", window_days: "=prompt_pay_window_days", min_balance: "=prompt_pay_min_balance_usd"}
+      eligible_channels: "=prompt_pay_eligible_channels"
+      stacks_with_uninsured: "=prompt_pay_stacks_with_uninsured"
+      excluded_after_fap: "=prompt_pay_excluded_after_fap"
+      excluded_in_payment_plan: "=prompt_pay_excluded_in_payment_plan"
+    formula:
+      when_not: patient_balance < prompt_pay_min_balance_usd
+      prompt_pay_discount: round(patient_balance * prompt_pay_discount_pct / 100, 2)
+      payment_due: patient_balance - prompt_pay_discount
+  - id: encounter_itemized_statement
+    subject: [encounter_statement_issued]
+    rule: >-
+      Any patient may request an itemized statement listing every charge line (date, CDM code, CPT/HCPCS code, revenue code, units and charge) and every payment and adjustment on an account. An itemized statement is available once the final bill has dropped; an account still pending_billing receives none because its charges are not final. It is issued free of charge (itemized_statement_fee_usd) within itemized_statement_turnaround_business_days business days of the request, counting Monday through Friday and excluding Riverbend holidays, through any channel in itemized_statement_channels the patient chooses. Each request is logged as an ITEMIZED_STATEMENT_REQUEST inquiry and produces one ITEMIZED_STATEMENT with the next itemized sequence number; a repeat request produces a new sequence. On request, collection activity beyond the current statement cycle (a further summary statement, the final notice and agency placement) pauses for itemized_statement_collection_pause_days calendar days from the request.
+    eligibility:
+      - id: final_bill_dropped
+        applies_to: [encounter_statement_issued]
+        kind: state
+        condition: An itemized statement is available once the final bill has dropped; an account still pending_billing receives none because its charges are not final.
+        evidence_fields: [encounter_accounts.status, encounter_accounts.encounter_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[encounter_accounts.encounter_id]]
+          action_bindings: {encounter_accounts.encounter_id: encounter_id}
+        state_contract:
+          field: encounter_accounts.status
+          allowed: [insurance_pending, patient_due, billing_hold, bad_debt, closed]
+    params:
+      per_tier:
+        Outpatient Clinic Visit Account: {turnaround_business_days: "=itemized_statement_turnaround_business_days", pause_days: "=itemized_statement_collection_pause_days"}
+        Outpatient Diagnostic Imaging & Lab Account: {turnaround_business_days: "=itemized_statement_turnaround_business_days", pause_days: "=itemized_statement_collection_pause_days"}
+        Recurring Outpatient Therapy Account: {turnaround_business_days: "=itemized_statement_turnaround_business_days", pause_days: "=itemized_statement_collection_pause_days"}
+        Emergency Department Visit Account: {turnaround_business_days: "=itemized_statement_turnaround_business_days", pause_days: "=itemized_statement_collection_pause_days"}
+        Outpatient Surgery Account: {turnaround_business_days: "=itemized_statement_turnaround_business_days", pause_days: "=itemized_statement_collection_pause_days"}
+        Observation Stay Account: {turnaround_business_days: "=itemized_statement_turnaround_business_days", pause_days: "=itemized_statement_collection_pause_days"}
+        Inpatient Admission Account: {turnaround_business_days: "=itemized_statement_turnaround_business_days", pause_days: "=itemized_statement_collection_pause_days"}
+      fee_usd: "=itemized_statement_fee_usd"
+      channels: "=itemized_statement_channels"
+  - id: encounter_statement_and_collection_cycle
+    subject: [encounter_statement_issued, encounter_first_statement_recorded, encounter_placed_with_agency, encounter_recalled_from_agency]
+    rule: >-
+      A patient_due account with a patient balance of at least statement_min_balance_usd receives a SUMMARY_STATEMENT every statement_cycle_days calendar days; the date of the first one is stamped as first_statement_date. After summary_statements_before_final_notice summary statements (counted by encounter_msr_summary_statements), the next statement is a FINAL_NOTICE, always delivered by final_notice_channel; the final notice states the collection action Riverbend may take and the deadline, and includes the plain-language summary of the Financial Assistance Policy. No extraordinary collection action may begin until eca_notification_period_days have passed from first_statement_date and the final notice has preceded it by at least final_notice_lead_days. Placement may occur no earlier than the placement day counted from the first post-discharge statement date. Count calendar days starting the day after first_statement_date, the placement day being day bad_debt_placement_after_days itself. Only a balance of at least bad_debt_min_balance_usd is placed; a smaller balance stays in house on statements. A placed balance may be credit-reported only when it is at least credit_reporting_min_balance_usd and at least credit_reporting_min_age_days have passed from first_statement_date; Riverbend never sues, garnishes wages or places liens (legal_action_permitted). An account on billing_hold receives no statement beyond the current cycle and is never placed. An account placed with the agency is recalled to patient_due when the patient submits a financial assistance application within the assistance application period, when a charge dispute or good-faith-estimate dispute is accepted on it, or when billing finds the placed balance was misstated.
+    eligibility:
+      - id: placement_day
+        applies_to: [encounter_placed_with_agency]
+        kind: time
+        condition: Placement may occur no earlier than the placement day counted from the first post-discharge statement date.
+        evidence_fields: [encounter_accounts.first_statement_date, encounter_accounts.encounter_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[encounter_accounts.encounter_id]]
+          action_bindings: {encounter_accounts.encounter_id: encounter_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the first post-discharge statement date
+          anchor_source: encounter_accounts.first_statement_date
+          relation: not_before
+          duration_source: variants.bad_debt_placement_after_days
+          unit: calendar_days
+          counting_rule: Count calendar days starting the day after first_statement_date, the placement day being day bad_debt_placement_after_days itself.
+          boundary: inclusive
+    params:
+      per_tier:
+        Outpatient Clinic Visit Account: {statements_before_final: "=summary_statements_before_final_notice", placement_min_balance: "=bad_debt_min_balance_usd"}
+        Outpatient Diagnostic Imaging & Lab Account: {statements_before_final: "=summary_statements_before_final_notice", placement_min_balance: "=bad_debt_min_balance_usd"}
+        Recurring Outpatient Therapy Account: {statements_before_final: "=summary_statements_before_final_notice", placement_min_balance: "=bad_debt_min_balance_usd"}
+        Emergency Department Visit Account: {statements_before_final: "=summary_statements_before_final_notice", placement_min_balance: "=bad_debt_min_balance_usd"}
+        Outpatient Surgery Account: {statements_before_final: "=summary_statements_before_final_notice", placement_min_balance: "=bad_debt_min_balance_usd"}
+        Observation Stay Account: {statements_before_final: "=summary_statements_before_final_notice", placement_min_balance: "=bad_debt_min_balance_usd"}
+        Inpatient Admission Account: {statements_before_final: "=summary_statements_before_final_notice", placement_min_balance: "=bad_debt_min_balance_usd"}
+      statement_cycle_days: "=statement_cycle_days"
+      statement_min_balance_usd: "=statement_min_balance_usd"
+      eca_notification_period_days: "=eca_notification_period_days"
+      final_notice_lead_days: "=final_notice_lead_days"
+      final_notice_channel: "=final_notice_channel"
+      placement_after_days: "=bad_debt_placement_after_days"
+      credit_reporting_min_balance_usd: "=credit_reporting_min_balance_usd"
+      credit_reporting_min_age_days: "=credit_reporting_min_age_days"
+      legal_action_permitted: "=legal_action_permitted"
+    measures: [encounter_msr_summary_statements]
+  - id: encounter_charge_dispute_and_correction
+    subject: [encounter_charge_credited, encounter_adjustment_posted]
+    rule: >-
+      A patient may dispute a specific charge line. A charge dispute is accepted only within the dispute filing window counted from the date of the first statement that listed the disputed charge. Count calendar days starting the day after that statement's posting_date; a dispute logged on the last day of the window is accepted. Each dispute is logged as a CHARGE_DISPUTE inquiry naming the disputed charge line, at most max_charge_disputes_per_encounter per account (encounter_msr_disputes_filed), and is answered within charge_dispute_response_business_days business days. A representative may credit a disputed line when the account's records show the error — a duplicate of another line with the same cdm_code, service_date and units (credited without review when duplicate_charge_auto_credit is true), units billed above the units documented, a supply that is not separately billable, or a service the encounter record shows was not rendered — provided the credit does not exceed rep_charge_credit_authority_usd; a larger credit is forwarded to coding review (FORWARDED_CODING_REVIEW) and is not posted by the representative. A charge line is credited at most once for the same reason. On a SELF_PAY account already billed to the patient, the credited gross amount also reduces the patient balance by a CHARGE_CORRECTION_ADJUSTMENT equal to the credited amount less the uninsured discount already granted on it (credited amount times one minus the discount percent that was applied, rounded half-up to the cent), sourced to the charge credit. On an insured account the credit produces a corrected claim to the payer and no patient-balance adjustment until the payer re-adjudicates.
+    eligibility:
+      - id: dispute_window
+        applies_to: [encounter_charge_credited]
+        kind: time
+        condition: A charge dispute is accepted only within the dispute filing window counted from the date of the first statement that listed the disputed charge.
+        evidence_fields: [encounter_transactions.posting_date, encounter_transactions.encounter_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[encounter_transactions.encounter_id]]
+          action_bindings: {encounter_transactions.encounter_id: encounter_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the date of the first statement that listed the disputed charge
+          anchor_source: encounter_transactions.posting_date
+          relation: not_after
+          duration_source: variants.charge_dispute_filing_window_days
+          unit: calendar_days
+          counting_rule: Count calendar days starting the day after that statement's posting_date; a dispute logged on the last day of the window is accepted.
+          boundary: inclusive
+      - id: one_credit_per_reason
+        applies_to: [encounter_charge_credited]
+        kind: dedup
+        condition: A charge line is credited at most once for the same reason.
+        evidence_fields: [encounter_transactions.source_txn_id, encounter_transactions.credit_reason_code]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[encounter_transactions.source_txn_id]]
+          action_bindings: {encounter_transactions.source_txn_id: source_txn_id}
+        dedup_contract:
+          table: encounter_transactions
+          mode: separate_record
+          object_bindings: {source_txn_id: source_txn_id}
+          duplicate_filters: {event_type: [encounter_charge_credited]}
+          distinct_fields: [credit_reason_code]
+    params:
+      per_tier:
+        Outpatient Clinic Visit Account: {authority_usd: "=rep_charge_credit_authority_usd", response_business_days: "=charge_dispute_response_business_days"}
+        Outpatient Diagnostic Imaging & Lab Account: {authority_usd: "=rep_charge_credit_authority_usd", response_business_days: "=charge_dispute_response_business_days"}
+        Recurring Outpatient Therapy Account: {authority_usd: "=rep_charge_credit_authority_usd", response_business_days: "=charge_dispute_response_business_days"}
+        Emergency Department Visit Account: {authority_usd: "=rep_charge_credit_authority_usd", response_business_days: "=charge_dispute_response_business_days"}
+        Outpatient Surgery Account: {authority_usd: "=rep_charge_credit_authority_usd", response_business_days: "=charge_dispute_response_business_days"}
+        Observation Stay Account: {authority_usd: "=rep_charge_credit_authority_usd", response_business_days: "=charge_dispute_response_business_days"}
+        Inpatient Admission Account: {authority_usd: "=rep_charge_credit_authority_usd", response_business_days: "=charge_dispute_response_business_days"}
+      filing_window_days: "=charge_dispute_filing_window_days"
+      max_disputes: "=max_charge_disputes_per_encounter"
+      duplicate_auto_credit: "=duplicate_charge_auto_credit"
+    formula:
+      when: adjustment_code == "CHARGE_CORRECTION_ADJUSTMENT"
+      correction_adjustment: round(amount * (1 - uninsured_discount_pct / 100), 2)
+    measures: [encounter_msr_disputes_filed]
+  - id: encounter_billing_hold
+    subject: [encounter_hold_placed, encounter_hold_released]
+    rule: >-
+      A representative places a billing hold on a patient_due account for exactly one reason, and only within the hold allowance: an account receives at most max_billing_holds_per_encounter holds over its life (holds_used_count). The hold length depends on the reason — ITEMIZATION_REVIEW lasts itemized_statement_collection_pause_days, CHARGE_DISPUTE lasts charge_dispute_hold_days, COVERAGE_UPDATE_PENDING lasts coverage_update_hold_days, each counted in calendar days from hold_started_date; FAP_APPLICATION_PENDING lasts until the assistance determination; GFE_DISPUTE_PENDING lasts until the dispute outcome. A FAP_APPLICATION_PENDING hold requires an assistance application of the patient on file in submitted or pending_documents status. A GFE_DISPUTE_PENDING hold requires a good-faith estimate of the patient linked to this account in in_dispute status. The hold is released when its reason is resolved or its length lapses, whichever comes first; release resets billing_hold_reason to NONE. When the allowance is exhausted, a pending financial assistance application or good-faith-estimate dispute still stops every collection action on the account under those programs' own rules, but no further hold status is placed.
+    eligibility:
+      - id: fap_application_on_file
+        applies_to: [encounter_hold_placed]
+        kind: authorization
+        condition: A FAP_APPLICATION_PENDING hold requires an assistance application of the patient on file in submitted or pending_documents status.
+        evidence_fields: [assistance_cases.status, assistance_cases.customer_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[assistance_cases.customer_id]]
+          action_bindings: {assistance_cases.customer_id: customer_id}
+      - id: gfe_dispute_on_file
+        applies_to: [encounter_hold_placed]
+        kind: authorization
+        condition: A GFE_DISPUTE_PENDING hold requires a good-faith estimate of the patient linked to this account in in_dispute status.
+        evidence_fields: [price_estimates.status, price_estimates.encounter_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[price_estimates.encounter_id]]
+          action_bindings: {price_estimates.encounter_id: encounter_id}
+    params:
+      per_tier:
+        Outpatient Clinic Visit Account: {dispute_hold_days: "=charge_dispute_hold_days", itemization_hold_days: "=itemized_statement_collection_pause_days"}
+        Outpatient Diagnostic Imaging & Lab Account: {dispute_hold_days: "=charge_dispute_hold_days", itemization_hold_days: "=itemized_statement_collection_pause_days"}
+        Recurring Outpatient Therapy Account: {dispute_hold_days: "=charge_dispute_hold_days", itemization_hold_days: "=itemized_statement_collection_pause_days"}
+        Emergency Department Visit Account: {dispute_hold_days: "=charge_dispute_hold_days", itemization_hold_days: "=itemized_statement_collection_pause_days"}
+        Outpatient Surgery Account: {dispute_hold_days: "=charge_dispute_hold_days", itemization_hold_days: "=itemized_statement_collection_pause_days"}
+        Observation Stay Account: {dispute_hold_days: "=charge_dispute_hold_days", itemization_hold_days: "=itemized_statement_collection_pause_days"}
+        Inpatient Admission Account: {dispute_hold_days: "=charge_dispute_hold_days", itemization_hold_days: "=itemized_statement_collection_pause_days"}
+      max_holds: "=max_billing_holds_per_encounter"
+      coverage_update_hold_days: "=coverage_update_hold_days"
+  - id: encounter_refund_and_credit_balance
+    subject: [encounter_refund_issued]
+    rule: >-
+      A credit balance (a negative patient_balance) arises when payments exceed what the patient owes after later adjustments. The credit is first offset against the patient's other patient_due accounts under the payment-application rule; the remaining credit is refunded only when it is at least refund_min_credit_usd, within refund_issue_days calendar days of the date the credit arose. The refund is booked against the payment that created the credit, most recent payment first, never refunding more than that payment's amount. A payment is refunded at most once. The refund goes back to the original card when the source payment was a card payment posted no more than refund_card_max_age_days calendar days before the refund date, by ACH_CREDIT when the source was an ACH bank draft, and by PAPER_CHECK otherwise. A credit below refund_min_credit_usd stays on the profile and offsets the patient's next liability.
+    eligibility:
+      - id: one_refund_per_payment
+        applies_to: [encounter_refund_issued]
+        kind: dedup
+        condition: A payment is refunded at most once.
+        evidence_fields: [encounter_transactions.source_txn_id, encounter_transactions.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[encounter_transactions.source_txn_id]]
+          action_bindings: {encounter_transactions.source_txn_id: source_txn_id}
+        dedup_contract:
+          table: encounter_transactions
+          mode: separate_record
+          object_bindings: {source_txn_id: source_txn_id}
+          duplicate_filters: {event_type: [encounter_refund_issued]}
+          distinct_fields: []
+    params: {refund_min_credit_usd: "=refund_min_credit_usd", refund_issue_days: "=refund_issue_days", refund_card_max_age_days: "=refund_card_max_age_days"}
+    formula:
+      when: patient_balance < 0
+      refund_amount: abs(patient_balance)
+  - id: encounter_small_balance_and_courtesy
+    subject: [encounter_adjustment_posted, encounter_closed]
+    rule: >-
+      When a patient_due account's remaining balance is greater than zero and at or below small_balance_write_off_usd after a payment or adjustment, the remainder is written off as SMALL_BALANCE_WRITE_OFF and the account closes. A representative may grant one SERVICE_RECOVERY_COURTESY adjustment on an account when the patient reports a documented service failure (a billing error already corrected on the account, or a statement sent during an active billing hold), up to service_recovery_courtesy_max_usd and never more than the current patient balance. Only one courtesy adjustment is allowed per patient per calendar year across all accounts. A courtesy adjustment is never granted on an account in bad_debt status or on a balance under an active payment plan, and it is not combined with a prompt-pay discount on the same account.
+    eligibility:
+      - id: courtesy_once_per_year
+        applies_to: [encounter_adjustment_posted]
+        kind: dedup
+        condition: Only one courtesy adjustment is allowed per patient per calendar year across all accounts.
+        evidence_fields: [encounter_transactions.customer_id, encounter_transactions.adjustment_code, encounter_transactions.posting_date]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[encounter_transactions.customer_id]]
+          action_bindings: {encounter_transactions.customer_id: customer_id}
+        dedup_contract:
+          table: encounter_transactions
+          mode: separate_record
+          object_bindings: {customer_id: customer_id}
+          duplicate_filters: {adjustment_code: [SERVICE_RECOVERY_COURTESY]}
+          distinct_fields: [posting_date]
+    params:
+      per_tier:
+        Outpatient Clinic Visit Account: {courtesy_max_usd: "=service_recovery_courtesy_max_usd"}
+        Outpatient Diagnostic Imaging & Lab Account: {courtesy_max_usd: "=service_recovery_courtesy_max_usd"}
+        Recurring Outpatient Therapy Account: {courtesy_max_usd: "=service_recovery_courtesy_max_usd"}
+        Emergency Department Visit Account: {courtesy_max_usd: "=service_recovery_courtesy_max_usd"}
+        Outpatient Surgery Account: {courtesy_max_usd: "=service_recovery_courtesy_max_usd"}
+        Observation Stay Account: {courtesy_max_usd: "=service_recovery_courtesy_max_usd"}
+        Inpatient Admission Account: {courtesy_max_usd: "=service_recovery_courtesy_max_usd"}
+      small_balance_write_off_usd: "=small_balance_write_off_usd"
+      courtesy_per_year: "=service_recovery_courtesy_per_year"
+    formula:
+      when: adjustment_code == "SERVICE_RECOVERY_COURTESY"
+      courtesy_amount: min(service_recovery_courtesy_max_usd, patient_balance)
+    measures: [encounter_msr_courtesy_cy]
+  - id: encounter_coverage_update_rebill
+    subject: [encounter_coverage_updated, encounter_rebilled_to_insurance, encounter_adjustment_posted]
+    rule: >-
+      A patient who reports insurance that was active on the date of service, after the account was billed as SELF_PAY or to a different payer, has the coverage verified while the account may sit on a COVERAGE_UPDATE_PENDING hold. Newly reported coverage is billed only when it is reported within coverage_update_window_days of first_statement_date and the payer's own timely-filing limit, counted from the date of service, has not expired. When both hold, the financial class is updated and the account is rebilled: the open self-pay balance net of the uninsured discount and of patient payments is transferred off the patient balance as an INSURANCE_REBILL_TRANSFER adjustment and a new claim is submitted; payments already made remain on the account and are reconciled when the payer adjudicates. When the payer's limit has expired, the account is not rebilled and the self-pay balance stands. Coverage reported as terminated before the date of service changes the financial class to SELF_PAY, and the payer's denial amount posts as COVERAGE_TERMINATED liability.
+    eligibility: []
+    params: {coverage_update_window_days: "=coverage_update_window_days", coverage_update_hold_days: "=coverage_update_hold_days"}
+  - id: encounter_late_charges
+    subject: [encounter_charge_posted, encounter_charge_credited]
+    rule: >-
+      A charge found after the final bill (a late charge) posts and is billed only when it posts within late_charge_window_days calendar days after final_bill_date; on an insured account it is billed by replacement claim, on a SELF_PAY account it adds to the self-pay liability with the uninsured discount. A late charge that posts after the window is credited in full with LATE_CHARGE_PAST_WINDOW and is never billed to the patient or the payer.
+    eligibility: []
+    params:
+      per_tier:
+        Outpatient Clinic Visit Account: {late_charge_window_days: "=late_charge_window_days"}
+        Outpatient Diagnostic Imaging & Lab Account: {late_charge_window_days: "=late_charge_window_days"}
+        Recurring Outpatient Therapy Account: {late_charge_window_days: "=late_charge_window_days"}
+        Emergency Department Visit Account: {late_charge_window_days: "=late_charge_window_days"}
+        Outpatient Surgery Account: {late_charge_window_days: "=late_charge_window_days"}
+        Observation Stay Account: {late_charge_window_days: "=late_charge_window_days"}
+        Inpatient Admission Account: {late_charge_window_days: "=late_charge_window_days"}

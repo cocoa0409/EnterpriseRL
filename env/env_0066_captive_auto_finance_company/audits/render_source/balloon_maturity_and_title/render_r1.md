@@ -1,0 +1,5 @@
+# Renderer notes, balloon render round 1 (saved verbatim by the coordinator from the renderer's final message; RENDER round 1: DOCS OK, 83 docs)
+
+Two things are worth logging but are not stop items:
+1. **Base payoff text vs formula (balloon_payoff_and_refunds):** the base rule says "The per diem is the principal_balance times apr divided by per_diem_day_basis", but its own formula divides by 100. The overwrite text in balloon_ext_payoff_quote says the per diem "stays principal_balance times apr divided by 100 divided by per_diem_day_basis". For quotes outside its scope it repeats the base wording without the 100. I carried the base text verbatim.
+2. **Ambiguous "one" in balloon_ext_return_balance_plan:** the prior-fee share reads "where one was assessed or posted in those months but none in the plan_recent_window_months…". The ladder says "one in those months". The compute counts it as at least one, and the docs follow that reading. The same use of "one" appears elsewhere in the charter, e.g. "but one posted in the … long window".

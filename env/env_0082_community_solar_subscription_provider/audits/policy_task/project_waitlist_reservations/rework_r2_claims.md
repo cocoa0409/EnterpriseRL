@@ -1,0 +1,35 @@
+# rework round 2 claims — project_waitlist_reservations (env_0082)
+
+- P1: FIXED — the restore prior-output window is stated once, in the whole-month form only ("posted on the closed share in the last N whole months, N being twelve plus the whole months from its closed_date to today"); rule, baseline.rule and factor tier text carry the same words; task 0 re-priced on that single reading.
+- P2: FIXED — (a) both fits' target-yield words now read "where this reservation has received at least one offer on its own project … the latest of this reservation's offers on that project", matching the reservation-scoped compute, with a same-date tie rule (larger offered_kw, then larger estimated_annual_kwh) implemented in compute; (b) the banked-credit allowance names "the active Residential share on the reservation's own utility account" and the Standard and add-on offer scopes require that account to hold no more than one active Residential share; (c) the recency middle tier reads "carry a net credited kWh above 0", the test the compute makes; (d) the "headroom still applies" clauses are gone — the restore and both fits are scoped to a request that is within the account headroom of waitlist_agg_account_headroom, every other change follows the base rule.
+- P3: FIXED — the offered_kw overwrite of all three offer policies is removed; each offer policy now carries only its kWh and savings overwrites, and its single prerequisite sentence is the only statement of the dependency; the seeded partial offers sit outside the full-offer scope and are priced by the base rule.
+- P4: FIXED — the add-on state gate now waits only on Residential Standard reservations "that can receive a valid offer", so the base pass-over sentence holds unchanged; the seeded add-on partial offers were made when the Standard reservation could not receive a valid offer and was passed over.
+- P5: FIXED — the gate sentence is worded on the record state itself: "no Residential Standard reservation on the same project that can receive a valid offer is left in queued status"; condition and sentence say the same thing.
+- P6: FIXED — the standard and add-on prerequisite sentences now read "is no more than the … fitted size of its utility account", the same quantity as their conditions; the band step that separated room and fitted size is retired.
+- P7: FIXED — the restore and both fits carry an order sentence (replacement first, then floor, then multipliers; target replacement; room formed, then sized down), matching the compute order; the offer order sentences now also name the trend and banked steps in sequence.
+- F1: FIXED — guaranteed_output_sizing is removed from the restore and both fits; no sizing divides by a guarantee percent any more.
+- F2: FIXED — array_wear_allowance is removed from all three offers (no proxy for array age is used; projects stay unread).
+- F3: FIXED — guarantee_output_floor tier two is now live and distinct (a single-shortfall year floors at the midpoint of credited and guaranteed kWh, two consecutive shortfall years at the guaranteed kWh), and the same ladder is the closed share's prior-output floor in the restore.
+- F4: FIXED — usage_figure_averaging is labelled parameter (its tiers select a value by how many true-ups fall in the window); method-shape tests now apply only to method factors, each with a distinct input per tier pair (tables in both design rationales).
+- T1: FIXED — every offer and request tool body enforces its docstring: offered_kw and requested_kw greater than zero after rounding, estimated_annual_kwh a whole number of zero or more, estimated_annual_savings zero or more, respond_by_date in YYYY-MM-DD; a breaking call returns an error receipt and writes nothing (documented in Returns).
+- O1: FIXED — no undeclared ladder remains: each rule states and computes only its declared factors (the relocation offer carries no banked allowance; the add-on fit carries no kept share).
+- O2: FIXED — docstrings describe the call's own effect in the present ("The call's effect is visible at once …").
+- O3: KEPT — the state_gate gate is written `waitlist_reservations.status`, the `<table>.<field>` form SKILL.md allows for state_gate edges; no eligibility id carries this state.
+- O4: KEPT — the base priority-rank order agrees with the extended gate; the gate is the blocked policy's own sentence and now preserves the base pass-over.
+- O5: FIXED — size_band_step is retired; the restore sizes to increment_kw.
+- O6: FIXED — task 1 seeds the queue-position and reconfirmation notices both reservations were due under the base schedules, each listed in seed_consistency and read in gold; task 0 has none due before frozen_time.
+- O7: FIXED — with guaranteed-output sizing removed, guarantee-based quantities enter only as expected production (existing output) and design output per kW; the fits' target yield no longer uses a guarantee figure.
+- O8: KEPT — persona names and identifiers come only from this difficulty's assigned band; cross-difficulty uniqueness is outside read isolation.
+- 0.1: FIXED — restore factors are prior_output_history, prior_output_guarantee_floor, kept_share_of_output and restore_yield_basis (two method, two parameter), each load-bearing on the task 0 world.
+- 0.2: FIXED — relocation offer factors are output_history_basis, guarantee_output_floor, young_share_blend, credit_value_recency and credit_rate_trend (R6), each load-bearing; no dead tier.
+- 0.3: FIXED — see P1; baseline_result and factor_sensitivity follow the single window reading.
+- 0.4: FIXED — see P7; the restore's order sentence fixes replace-then-floor-then-multiply.
+- 0.5: FIXED — the task 0 proof text is rewritten from the evaluated bindings; every figure in tracing, factor_trace and design_rationale is generated, none hand-typed.
+- 0.6: FIXED — charter items cited there are closed as listed above.
+- 1.1: FIXED — see P2(a); both branch orders replayed through the task tools give one terminal state; order_uniqueness states the rule words and compute that make it so.
+- 1.2: FIXED — see P3; the seeded offers are partial, out of the extended scope, priced by the base rule and consistent with the class order; target_yield_source tier one rests on them legitimately.
+- 1.3: FIXED — see P5.
+- 1.4: FIXED — see P7.
+- 1.5: FIXED — the add-on fit carries usage_figure_averaging, banking_margin, existing_output_basis and target_yield_source, each load-bearing; F1 and F2 removed; the standard fit gains existing_kept_share; both offers gain credit_rate_trend.
+- 1.6: FIXED — charter items cited there are closed as listed above.
+- R6 inventory: banked_value_allowance, banking_margin, young_share_blend, credit_rate_trend and the single-shortfall midpoint of the guarantee floors, each justified by the LEVER CATALOGUE in the worklog.

@@ -1,0 +1,5 @@
+# Rework round 15 claims (personal_loan_servicing; proof-only round)
+
+S11: closed — task 1's courtesy-waiver trace, amount tracing and dossier now state the waiver form's figure unrounded, as the computation keeps it. Each factor-baseline line shows that same unrounded figure times its share before the result is rounded, so no line states a figure rounded and then multiplies the unrounded one.
+S11 class (every intermediate stated rounded but used unrounded, in both task files): closed — a mechanical sweep that checks each stated product and flags any intermediate stated at one precision and used at another found two more instances, both in task 1. The pay-cycle and bank-event figure in the late-fee and returned-fee tracing, traces and dossier is now stated unrounded, as the plain lines already used it. A re-run of the sweep over both task files finds no arithmetic error and no inconsistent intermediate. Task 0 needed no change.
+loan.extended.yaml, task_tools.py and both task worlds are byte-identical; no scored value moved.

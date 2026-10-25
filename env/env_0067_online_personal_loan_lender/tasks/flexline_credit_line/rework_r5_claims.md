@@ -1,0 +1,9 @@
+src-4a: closed — task 0's personal-loan late fee is now figured from the published loan late-fee rules (schedule figure with the first-late and loan-tenure shares that apply on its date), and the fee-payment rows follow it.
+src-4b: closed — task 0's loan installment is the level payment at the base interest rate, and the interest portions and principal balance were re-amortized from it.
+src-4c: closed — task 0's loan is recorded as never enrolled in AutoPay, with every installment paid online, so no AutoPay debit or enrollment record is expected and interest accrues at the base rate.
+src-5a: closed — task 1's personal-loan returned-payment fee is now figured from the published loan returned-fee rules (schedule amount with the first-return share; no AutoPay share and no bank-event change apply), and the partial-payment and fee-paid rows follow it.
+src-5b: closed — task 1's loan installment is the level payment at the base interest rate, with the ledger re-amortized from it.
+src-5c: closed — task 1's origination fee is the Grade B percent of the amount financed, and the net proceeds and both disbursement lines follow it.
+src-5d: closed — task 1's loan is recorded as never enrolled in AutoPay, so no enrollment, cancellation or account-change records are expected; its payments are online payments from the borrower's accounts.
+own-history: closed — the line's historical late fees were re-dated to after their late minimum payments, so the late-fee paragraph's flat clause applies to them, and task 0's historical returned-payment fees were re-priced with the returned-fee paragraph as on their booking dates, with the courtesy waiver following the first in full; both worlds were re-simulated end to end.
+no-policy-change: confirmed — line.extended.yaml and task_tools.py are byte-identical; task 1's scored values are unchanged, task 0's late fee and repayment payment were recomputed with the real tools, and every factor and edge still bears weight.

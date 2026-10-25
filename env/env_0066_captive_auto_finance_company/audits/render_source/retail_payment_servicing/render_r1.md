@@ -1,0 +1,7 @@
+# Renderer notes, retail render round 1 (saved verbatim by the coordinator from the renderer's final message; RENDER round 1: DOCS OK, 75 docs)
+
+**Non-blocking notes** (not mismatches; I rendered around none of them):
+1. **Interest bindings sit in the computation document but only one adjustment uses them.** In the good-faith policy (`per_diem`, `interest_cover`) and the catch-up policy (`per_diem`, `interest_carried`), these are listed under the calculation document because the gate requires it. Their wording lives in the overdue-interest adjustment document, whose rule sentence defines them. This only affects where a sentence is placed (recipe point 4, the kind of note the coordinator stopped routing).
+2. **Payment tools post with today's date regardless of cutoff time.** The three payment tools record the payment as posting today, while the rules say the posting day follows the cutoff rule. The tool descriptions match the tool code, so this is not a description mismatch.
+3. **A base sentence on the per diem omits "divided by 100".** In the payoff and refunds policy, the sentence reads "principal_balance times apr divided by per_diem_day_basis", but the base formula divides by 100 as well. I took the precise version from the source formula.
+4. **The good-faith overwrite drops "Before the extension is granted".** Its `replaced_by` keeps "must still post since the most recent installment due date". The ordering is still carried by the extension grant's action-form prerequisite sentence.

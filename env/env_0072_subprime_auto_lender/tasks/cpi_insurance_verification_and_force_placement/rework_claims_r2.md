@@ -1,0 +1,35 @@
+# rework_claims_r2 — cpi_insurance_verification_and_force_placement (policy_task audit revision_1)
+
+- CW-1.1/1.2 (assembly names factor quantities): delay interest, delay cap and notice credit removed; the assembly sentence of each refund now names only generic parts (proof-covered days, covered gap days, post-closing days, premium part, finance part) in a fixed order.
+- CW-1.3/1.4 (cap gated through delay days): delay cap factors removed from both refunds.
+- CW-1.5/1.6 (delay rate and days gated through each other): delay-interest factors removed; every remaining refund factor moves the refund on its own against the standard method (multiplicative shares have a standard of 1.0, additive parts a standard of 0, the proof-days method a standard of the base pro-rata days).
+- CW-1.7/1.8 (baseline sentence names factor-only quantities, serves several defaults): baseline paragraphs now state only the charge, the period days, the standard proof days (and, for the closing-period refund, the standard post-closing days) and the premium formula.
+- CW-1.9 (apr plain feeding one factor): the contract rate reads now belong to the finance factor's own bindings.
+- CW-2 (lienholder tiers reading the same flag under another filter; fax reach offset): lienholder ladders now use a waiver (closed record), a renewal-of-the-policy-on-file test (dates and insurer, no flag read) and the proof's own flag; reach ladders anchor on the closed date (start of coverage), the repossession date and the re-review date plus the minimum days — no constant-offset pair.
+- CW-3.1/3.2 (charge-count and closed-record caps): removed.
+- CW-3.3/3.4 (delay-days fall-through unreachable): removed with the delay interest.
+- CW-3.5 (inverse credit-tier comprehensive ceiling): the comprehensive ceiling now steps on vehicle value and model year; the collision ceiling steps on credit tier with better tiers more lenient; one schedule for every re-review rule.
+- CW-3.6 (feed delivery as lienholder proof): tier removed.
+- CW-3.7 (accrual to repossession date for redemption): the finance part now always runs from the posting of the premium to the contract balance to the closed date; tiers are rate cap / capitalised / never capitalised.
+- CW-4.1/4.2 (sibling delay and accrual schedules): one refund schedule shared by both refund rules (proof days, gap allowance, lienholder share, deductible share, finance factor); each rule adds one factor of its own scope (binder credit for the closing-month case, post-closing days for the closing-period case).
+- CW-4.3 (acceptance depends on arrival channel): all three re-review rules carry identical ladders and values; the channel only routes which proof entry is re-reviewed.
+- CW-5a/5b/5c (overwrite tails): each re-review rule's tail now restates everything that stays under the base proof-review rule (first reviews, agent-call proofs, proofs beginning after the closed date, the sibling channels by name, the base acceptance tests and the policy-on-file update) instead of deferring to retired clauses.
+- CW-5d (binder clause dropped silently): the binder clause is retired by a declared overwrite with its own scope sentence; proofs first rejected for their binder period are outside every re-review.
+- CW-5e (flat-cancel clause): both refund scopes exclude proofs showing coverage on or before the placement effective date; both overwrite tails keep flat cancellation for every other case.
+- CW-5f (two clauses for the closing-period charge): the closing-month tail now hands the charge running past the closed date to the closing-period rule; the closing-period rule retires both the pro-rata-from-proof and the closure clauses for its own charge and names the closing-month case.
+- CW-6a (absent-record crash): every proof read uses sentinels; no proof of the channel, or a latest entry already accepted or rejected for its binder period, gives not_applicable without a failing read (probe table in plan.md).
+- CW-6b (lienholder tier overlap): tiers are disjoint by record status and insurer/date test.
+- CW-6c/6d (cover tiers vs compute): the refund rules now name exactly which accepted entries they read (latest accepted entry per channel by effective date; the policy proof is the feed proof reaching the period, else the uploaded proof) and the compute reads exactly those.
+- CW-6e (same-day ties): every pick sentence states that the entry recorded first wins.
+- CW-6f (settlement read without contract filter): removed; every remaining contract-ledger read filters on the contract or on the linked premium charge.
+- CW-6g (notice window month boundary): notice-based factors removed.
+- CW-6h ("re-review date" vs NOW): delay days removed; the re-review date remains only in the reach test, where it is the date of the re-review entry written that day.
+- CW-6i (binder test "already passed"): sentence replaced; the carried-over tests are only those before the first rejection reason in base order, and the binder test is handled by the declared binder overwrite.
+- CW-7 (non-premium amounts in a premium refund): each refund now contains only unearned premium and the finance charge the capitalised premium accrued under the contract's simple-interest method.
+- Task 0 finding 1 / task 1 finding 2 (persona correcting the figure): correction lines removed; each borrower runs the hand-over step with whatever figure the representative states and never comments on it.
+- Task 0 finding 2 / task 1 finding 3 (contracts outside tier limits): contracts re-seeded inside Tier 5 (54 months, LTV within 115 %) and Tier 4 (60 months, LTV within 120 %) limits; ledgers re-priced from origination.
+- Task 0 finding 3 / finding 4, task 1 finding 4 (stale proof text): design rationales, factor traces, tier_taken lines, seed_consistency, necessity text and argument traces regenerated from the replayed handling-time bindings; premium totals restated from the seeded charges; not_applicable claims now true of the compute.
+- Task 1 finding 1 (second defensible amount): closed by CW-5f above.
+- Task 1 world: payoff channel and funds-final date are now records the closing-period rule reads (lien release seeded and read).
+- Observation (re-review docstrings vs not_applicable): docstrings now describe not_applicable as "no proof of this arrival channel to re-review".
+- Residual risk stated openly: the base charter offers this difficulty few real refund variations; the gap allowance, binder cap and the lienholder / deductible shares are Harborline schedules chosen to bite on the seeded worlds, worded as the company's own and shared identically by both refund rules.

@@ -1,0 +1,878 @@
+# Policy charter: Contract Pricing Agreement (contract price files, price claims, escalations, competitive matches, volume rebates, renewals).
+category: pricing
+display_name: Contract Pricing Agreement
+
+binding:
+  holding_table: pricing_agreements
+  event_tables: [pricing_items, pricing_claims, pricing_rebates]
+  status_field: status
+  variant_field: variant_name
+  quantity_fields: {rebate_balance: rebate}
+
+lifecycle:
+  states: [proposed, active, renewal_pending, expired, terminated, withdrawn]
+  transitions:
+    - {from: proposed, to: active, by: user, means: "The customer's authorized signer signs the agreement and its pricing takes effect on the effective date."}
+    - {from: proposed, to: withdrawn, by: system, means: "An unsigned proposal lapses when its validity period ends."}
+    - {from: active, to: renewal_pending, by: system, means: "The renewal window opens the tier's renewal notice period before the expiration date."}
+    - {from: renewal_pending, to: active, by: user, means: "The customer signs the renewal (or the agreement auto-renews where the tier auto-renews) and a new term begins."}
+    - {from: renewal_pending, to: expired, by: system, means: "The term ends without a renewal; customer pricing reverts to Corbett list price less the Account Price Schedule discount."}
+    - {from: active, to: terminated, by: user, means: "The customer terminates the agreement early by written notice."}
+    - {from: renewal_pending, to: terminated, by: user, means: "The customer terminates during the renewal window by written notice."}
+
+accounts:
+  - key: rebate
+    unit: USD
+    meaning: "Volume rebate earned under the agreement and not yet paid out: quarterly accruals increase it; payouts, return clawbacks and forfeitures decrease it."
+
+# ---- category-level parameter dictionary ----
+parameter_schema:
+  annual_spend_commitment_usd: "Annual net merchandise spend the customer commits to under the agreement, USD; 0 means no commitment"
+  agreement_term_months: "Length of one agreement term in months from the effective date"
+  proposal_validity_days: "Calendar days after the proposal date within which the customer must sign before the proposal lapses"
+  list_discount_pct: "Flat discount off Corbett list price for catalog items with no category discount and no contract item price; 0 means not used"
+  category_discount_schedule: "Mapping product_category -> discount percent off list for that category; categories not listed take list_discount_pct; empty mapping means no category discounts"
+  category_discount_max_pct: "Largest category discount percent the tier may carry in its schedule"
+  cost_plus_markup_pct: "Markup percent over Corbett's current supplier cost for every item priced on the cost-plus basis; 0 means the tier is not cost-plus"
+  cost_plus_min_markup_per_unit_usd: "Minimum markup per unit on cost-plus items, USD; 0.0000 means not used"
+  supplier_cost_change_notice_days: "Calendar days of notice before a supplier cost increase changes a cost-plus price; 0 means not used"
+  fixed_net_items_min: "Smallest number of contract items (fixed net prices) the agreement carries"
+  fixed_net_items_max: "Largest number of contract items (fixed net prices) the agreement may carry"
+  contract_item_min_annual_units: "Minimum expected annual usage, in selling units, for an item to be added as a contract item"
+  contract_item_removal_notice_days: "Calendar days of notice before a contract item removed by Corbett stops carrying its contract price"
+  discontinued_item_price_protection_days: "Days a Corbett-approved substitute for a discontinued contract item is billed at the discontinued item's contract price"
+  price_lock_months: "Months from the agreement effective date during which contract item prices cannot be escalated"
+  annual_escalation_cap_pct: "Largest increase, percent of the prior contract price, in one escalation of a contract item"
+  escalation_notice_days: "Calendar days between the escalation notice date and the date an escalated contract price may take effect"
+  market_basket_review_months: "Months between scheduled market-basket reviews of contract items; 0 means no scheduled review"
+  price_change_effective_basis: "Which date selects the price in effect for a billed line"
+  unit_price_decimals: "Decimal places to which every contract and computed unit price is rounded (half up)"
+  quantity_breaks_honored: "Whether Corbett list price quantity breaks apply before the discount on list-discount items"
+  special_order_markup_pct: "Markup percent over supplier cost for non-stock special-order items not on the contract"
+  special_pricing_request_business_days: "Business days to return a special pricing quote for an item not yet priced on the agreement"
+  price_claim_window_days: "Calendar days after the invoice date within which a contract price claim is accepted"
+  price_claim_min_usd: "Smallest claim amount, USD, processed; a smaller difference is not credited"
+  price_claim_desk_authority_usd: "Largest claim amount, USD, the support desk approves without Pricing Desk review"
+  price_claim_decision_business_days: "Business days within which a filed price claim is decided"
+  competitive_match_allowed: "Whether the agreement allows a competitive price match on an existing contract item"
+  competitive_match_max_reduction_pct: "Largest reduction, percent of the current contract price, a competitive match may grant"
+  competitive_match_quote_max_age_days: "Largest age in calendar days of the competitor's written quote on the date of the match request"
+  competitive_match_min_margin_pct: "Lowest gross margin percent (price minus supplier cost, over price) a matched price may carry"
+  rebate_eligible: "Whether the agreement earns a quarterly volume rebate"
+  rebate_ladder: "Ladder of quarterly qualifying spend brackets: list of {from_usd, rate_pct}; the rate of the highest bracket reached applies to the whole quarter's qualifying spend; empty list means no rebate"
+  rebate_period: "Rebate measurement period"
+  qualifying_spend_basis: "What counts toward rebate qualifying spend and commitment spend"
+  rebate_excludes_special_orders: "Whether special-order lines are excluded from rebate qualifying spend"
+  rebate_payout_days_after_period: "Calendar days after the end of the rebate period by which the rebate is paid"
+  rebate_payout_methods: "Payout methods the customer may choose"
+  rebate_min_payout_usd: "Smallest rebate balance, USD, paid out at a period end; a smaller balance carries forward"
+  rebate_clawback_on_returns: "Whether returns of merchandise counted in a paid or accrued rebate period reduce the rebate"
+  termination_rebate_forfeit: "Whether rebate accrued and unpaid is forfeited when the customer terminates early"
+  shortfall_review_threshold_pct: "At each agreement anniversary, trailing 12 month qualifying spend below this percent of the commitment moves the agreement down one tier; 0 means no review"
+  commitment_measurement_basis: "Window over which commitment spend is measured at an anniversary"
+  early_termination_notice_days: "Calendar days of written notice before an early termination takes effect"
+  renewal_notice_days: "Days before the expiration date at which the renewal window opens"
+  auto_renew_default: "Whether the agreement renews automatically for auto_renew_term_months unless either party gives notice"
+  auto_renew_term_months: "Length in months of a renewal term"
+  special_pricing_quote_validity_days: "Calendar days a special pricing quote stays open for the customer to accept it as a contract item"
+
+# ---- tier ladder (low to high) ----
+variants:
+  - name: "Corbett Account Price Schedule"
+    rank: 1
+    entry_gate: {"min_trailing_12m_purchases_usd": 0, "requires_active_credit_account": false, "requires_signed_agreement": false}
+    parameters:
+      annual_spend_commitment_usd: 0.0
+      agreement_term_months: 12
+      proposal_validity_days: 30
+      list_discount_pct: 5.0
+      category_discount_schedule: {}
+      category_discount_max_pct: 0.0
+      cost_plus_markup_pct: 0.0
+      cost_plus_min_markup_per_unit_usd: 0.0
+      supplier_cost_change_notice_days: 0
+      fixed_net_items_min: 0
+      fixed_net_items_max: 0
+      contract_item_min_annual_units: 0
+      contract_item_removal_notice_days: 0
+      discontinued_item_price_protection_days: 0
+      price_lock_months: 0
+      annual_escalation_cap_pct: 0.0
+      escalation_notice_days: 30
+      market_basket_review_months: 0
+      price_change_effective_basis: "ship_date"
+      unit_price_decimals: 4
+      quantity_breaks_honored: true
+      special_order_markup_pct: 25.0
+      special_pricing_request_business_days: 3
+      price_claim_window_days: 60
+      price_claim_min_usd: 5.0
+      price_claim_desk_authority_usd: 100.0
+      price_claim_decision_business_days: 10
+      competitive_match_allowed: false
+      competitive_match_max_reduction_pct: 0.0
+      competitive_match_quote_max_age_days: 30
+      competitive_match_min_margin_pct: 0.0
+      rebate_eligible: false
+      rebate_ladder: []
+      rebate_period: "calendar_quarter"
+      qualifying_spend_basis: "net_shipped_merchandise_less_returns"
+      rebate_excludes_special_orders: true
+      rebate_payout_days_after_period: 0
+      rebate_payout_methods: ["credit_memo"]
+      rebate_min_payout_usd: 0.0
+      rebate_clawback_on_returns: true
+      termination_rebate_forfeit: false
+      shortfall_review_threshold_pct: 0
+      commitment_measurement_basis: "trailing_12_months_net_shipped"
+      early_termination_notice_days: 30
+      renewal_notice_days: 30
+      auto_renew_default: true
+      auto_renew_term_months: 12
+      special_pricing_quote_validity_days: 30
+  - name: "Corbett Volume Discount Agreement"
+    rank: 2
+    entry_gate: {"min_trailing_12m_purchases_usd": 20000, "requires_active_credit_account": true, "requires_signed_agreement": true}
+    parameters:
+      annual_spend_commitment_usd: 25000.0
+      agreement_term_months: 12
+      proposal_validity_days: 30
+      list_discount_pct: 8.0
+      category_discount_schedule: {"fasteners": 12.0, "abrasives": 10.0, "safety_ppe": 8.0, "janitorial": 10.0, "cutting_tools": 10.0}
+      category_discount_max_pct: 15.0
+      cost_plus_markup_pct: 0.0
+      cost_plus_min_markup_per_unit_usd: 0.0
+      supplier_cost_change_notice_days: 0
+      fixed_net_items_min: 0
+      fixed_net_items_max: 0
+      contract_item_min_annual_units: 0
+      contract_item_removal_notice_days: 0
+      discontinued_item_price_protection_days: 0
+      price_lock_months: 0
+      annual_escalation_cap_pct: 0.0
+      escalation_notice_days: 30
+      market_basket_review_months: 0
+      price_change_effective_basis: "ship_date"
+      unit_price_decimals: 4
+      quantity_breaks_honored: true
+      special_order_markup_pct: 22.0
+      special_pricing_request_business_days: 3
+      price_claim_window_days: 60
+      price_claim_min_usd: 5.0
+      price_claim_desk_authority_usd: 250.0
+      price_claim_decision_business_days: 10
+      competitive_match_allowed: false
+      competitive_match_max_reduction_pct: 0.0
+      competitive_match_quote_max_age_days: 30
+      competitive_match_min_margin_pct: 0.0
+      rebate_eligible: false
+      rebate_ladder: []
+      rebate_period: "calendar_quarter"
+      qualifying_spend_basis: "net_shipped_merchandise_less_returns"
+      rebate_excludes_special_orders: true
+      rebate_payout_days_after_period: 0
+      rebate_payout_methods: ["credit_memo"]
+      rebate_min_payout_usd: 0.0
+      rebate_clawback_on_returns: true
+      termination_rebate_forfeit: false
+      shortfall_review_threshold_pct: 70
+      commitment_measurement_basis: "trailing_12_months_net_shipped"
+      early_termination_notice_days: 30
+      renewal_notice_days: 30
+      auto_renew_default: true
+      auto_renew_term_months: 12
+      special_pricing_quote_validity_days: 30
+  - name: "Corbett Category Contract"
+    rank: 3
+    entry_gate: {"min_trailing_12m_purchases_usd": 60000, "requires_active_credit_account": true, "requires_signed_agreement": true}
+    parameters:
+      annual_spend_commitment_usd: 75000.0
+      agreement_term_months: 12
+      proposal_validity_days: 30
+      list_discount_pct: 10.0
+      category_discount_schedule: {"fasteners": 20.0, "abrasives": 18.0, "safety_ppe": 15.0, "janitorial": 16.0, "cutting_tools": 18.0, "bearings_power_transmission": 12.0, "electrical": 10.0, "lighting": 14.0}
+      category_discount_max_pct: 25.0
+      cost_plus_markup_pct: 0.0
+      cost_plus_min_markup_per_unit_usd: 0.0
+      supplier_cost_change_notice_days: 0
+      fixed_net_items_min: 25
+      fixed_net_items_max: 100
+      contract_item_min_annual_units: 12
+      contract_item_removal_notice_days: 30
+      discontinued_item_price_protection_days: 90
+      price_lock_months: 6
+      annual_escalation_cap_pct: 4.0
+      escalation_notice_days: 30
+      market_basket_review_months: 12
+      price_change_effective_basis: "ship_date"
+      unit_price_decimals: 4
+      quantity_breaks_honored: false
+      special_order_markup_pct: 20.0
+      special_pricing_request_business_days: 2
+      price_claim_window_days: 90
+      price_claim_min_usd: 2.0
+      price_claim_desk_authority_usd: 500.0
+      price_claim_decision_business_days: 7
+      competitive_match_allowed: true
+      competitive_match_max_reduction_pct: 5.0
+      competitive_match_quote_max_age_days: 30
+      competitive_match_min_margin_pct: 8.0
+      rebate_eligible: false
+      rebate_ladder: []
+      rebate_period: "calendar_quarter"
+      qualifying_spend_basis: "net_shipped_merchandise_less_returns"
+      rebate_excludes_special_orders: true
+      rebate_payout_days_after_period: 0
+      rebate_payout_methods: ["credit_memo"]
+      rebate_min_payout_usd: 0.0
+      rebate_clawback_on_returns: true
+      termination_rebate_forfeit: false
+      shortfall_review_threshold_pct: 75
+      commitment_measurement_basis: "trailing_12_months_net_shipped"
+      early_termination_notice_days: 60
+      renewal_notice_days: 60
+      auto_renew_default: true
+      auto_renew_term_months: 12
+      special_pricing_quote_validity_days: 30
+  - name: "Corbett Net-Price Contract"
+    rank: 4
+    entry_gate: {"min_trailing_12m_purchases_usd": 200000, "requires_active_credit_account": true, "requires_signed_agreement": true}
+    parameters:
+      annual_spend_commitment_usd: 250000.0
+      agreement_term_months: 24
+      proposal_validity_days: 45
+      list_discount_pct: 12.0
+      category_discount_schedule: {"fasteners": 22.0, "abrasives": 20.0, "safety_ppe": 16.0, "cutting_tools": 20.0, "bearings_power_transmission": 14.0, "electrical": 12.0}
+      category_discount_max_pct: 30.0
+      cost_plus_markup_pct: 0.0
+      cost_plus_min_markup_per_unit_usd: 0.0
+      supplier_cost_change_notice_days: 0
+      fixed_net_items_min: 50
+      fixed_net_items_max: 500
+      contract_item_min_annual_units: 12
+      contract_item_removal_notice_days: 30
+      discontinued_item_price_protection_days: 90
+      price_lock_months: 12
+      annual_escalation_cap_pct: 3.5
+      escalation_notice_days: 45
+      market_basket_review_months: 12
+      price_change_effective_basis: "ship_date"
+      unit_price_decimals: 4
+      quantity_breaks_honored: false
+      special_order_markup_pct: 18.0
+      special_pricing_request_business_days: 2
+      price_claim_window_days: 90
+      price_claim_min_usd: 1.0
+      price_claim_desk_authority_usd: 1000.0
+      price_claim_decision_business_days: 5
+      competitive_match_allowed: true
+      competitive_match_max_reduction_pct: 8.0
+      competitive_match_quote_max_age_days: 45
+      competitive_match_min_margin_pct: 7.0
+      rebate_eligible: true
+      rebate_ladder: [{"from_usd": 62500.0, "rate_pct": 0.5}, {"from_usd": 125000.0, "rate_pct": 1.0}]
+      rebate_period: "calendar_quarter"
+      qualifying_spend_basis: "net_shipped_merchandise_less_returns"
+      rebate_excludes_special_orders: true
+      rebate_payout_days_after_period: 45
+      rebate_payout_methods: ["credit_memo"]
+      rebate_min_payout_usd: 250.0
+      rebate_clawback_on_returns: true
+      termination_rebate_forfeit: true
+      shortfall_review_threshold_pct: 80
+      commitment_measurement_basis: "trailing_12_months_net_shipped"
+      early_termination_notice_days: 90
+      renewal_notice_days: 90
+      auto_renew_default: false
+      auto_renew_term_months: 12
+      special_pricing_quote_validity_days: 60
+  - name: "Corbett Cost-Plus Contract"
+    rank: 5
+    entry_gate: {"min_trailing_12m_purchases_usd": 800000, "requires_active_credit_account": true, "requires_signed_agreement": true}
+    parameters:
+      annual_spend_commitment_usd: 1000000.0
+      agreement_term_months: 36
+      proposal_validity_days: 60
+      list_discount_pct: 0.0
+      category_discount_schedule: {}
+      category_discount_max_pct: 0.0
+      cost_plus_markup_pct: 12.0
+      cost_plus_min_markup_per_unit_usd: 0.05
+      supplier_cost_change_notice_days: 30
+      fixed_net_items_min: 0
+      fixed_net_items_max: 0
+      contract_item_min_annual_units: 0
+      contract_item_removal_notice_days: 0
+      discontinued_item_price_protection_days: 0
+      price_lock_months: 0
+      annual_escalation_cap_pct: 0.0
+      escalation_notice_days: 60
+      market_basket_review_months: 0
+      price_change_effective_basis: "ship_date"
+      unit_price_decimals: 4
+      quantity_breaks_honored: false
+      special_order_markup_pct: 12.0
+      special_pricing_request_business_days: 2
+      price_claim_window_days: 120
+      price_claim_min_usd: 1.0
+      price_claim_desk_authority_usd: 2500.0
+      price_claim_decision_business_days: 5
+      competitive_match_allowed: false
+      competitive_match_max_reduction_pct: 0.0
+      competitive_match_quote_max_age_days: 45
+      competitive_match_min_margin_pct: 0.0
+      rebate_eligible: true
+      rebate_ladder: [{"from_usd": 250000.0, "rate_pct": 0.5}, {"from_usd": 500000.0, "rate_pct": 1.0}]
+      rebate_period: "calendar_quarter"
+      qualifying_spend_basis: "net_shipped_merchandise_less_returns"
+      rebate_excludes_special_orders: true
+      rebate_payout_days_after_period: 45
+      rebate_payout_methods: ["credit_memo"]
+      rebate_min_payout_usd: 250.0
+      rebate_clawback_on_returns: true
+      termination_rebate_forfeit: true
+      shortfall_review_threshold_pct: 80
+      commitment_measurement_basis: "trailing_12_months_net_shipped"
+      early_termination_notice_days: 90
+      renewal_notice_days: 120
+      auto_renew_default: false
+      auto_renew_term_months: 12
+      special_pricing_quote_validity_days: 60
+  - name: "Corbett Strategic Supply Agreement"
+    rank: 6
+    entry_gate: {"min_trailing_12m_purchases_usd": 2500000, "requires_active_credit_account": true, "requires_signed_agreement": true}
+    parameters:
+      annual_spend_commitment_usd: 3000000.0
+      agreement_term_months: 36
+      proposal_validity_days: 60
+      list_discount_pct: 15.0
+      category_discount_schedule: {"fasteners": 25.0, "abrasives": 22.0, "safety_ppe": 18.0, "janitorial": 20.0, "cutting_tools": 22.0, "bearings_power_transmission": 15.0, "electrical": 14.0, "lighting": 16.0, "hand_power_tools": 12.0}
+      category_discount_max_pct: 35.0
+      cost_plus_markup_pct: 0.0
+      cost_plus_min_markup_per_unit_usd: 0.0
+      supplier_cost_change_notice_days: 0
+      fixed_net_items_min: 100
+      fixed_net_items_max: 2500
+      contract_item_min_annual_units: 6
+      contract_item_removal_notice_days: 60
+      discontinued_item_price_protection_days: 180
+      price_lock_months: 12
+      annual_escalation_cap_pct: 3.0
+      escalation_notice_days: 60
+      market_basket_review_months: 6
+      price_change_effective_basis: "ship_date"
+      unit_price_decimals: 4
+      quantity_breaks_honored: false
+      special_order_markup_pct: 15.0
+      special_pricing_request_business_days: 1
+      price_claim_window_days: 180
+      price_claim_min_usd: 0.01
+      price_claim_desk_authority_usd: 5000.0
+      price_claim_decision_business_days: 3
+      competitive_match_allowed: true
+      competitive_match_max_reduction_pct: 10.0
+      competitive_match_quote_max_age_days: 60
+      competitive_match_min_margin_pct: 6.0
+      rebate_eligible: true
+      rebate_ladder: [{"from_usd": 750000.0, "rate_pct": 1.0}, {"from_usd": 1250000.0, "rate_pct": 1.5}, {"from_usd": 2000000.0, "rate_pct": 2.0}]
+      rebate_period: "calendar_quarter"
+      qualifying_spend_basis: "net_shipped_merchandise_less_returns"
+      rebate_excludes_special_orders: true
+      rebate_payout_days_after_period: 30
+      rebate_payout_methods: ["credit_memo", "check"]
+      rebate_min_payout_usd: 100.0
+      rebate_clawback_on_returns: true
+      termination_rebate_forfeit: true
+      shortfall_review_threshold_pct: 85
+      commitment_measurement_basis: "trailing_12_months_net_shipped"
+      early_termination_notice_days: 180
+      renewal_notice_days: 180
+      auto_renew_default: false
+      auto_renew_term_months: 24
+      special_pricing_quote_validity_days: 90
+
+# ---- data flow ----
+events:
+  - type: pricing_agreement_proposed
+    target: pricing_agreements
+    mutation: create
+    meaning: "Corbett issues a contract pricing proposal to the customer at a tier with a commitment and term."
+    grain: "One row per proposal (one transaction)."
+    fields: {customer_id: "Customer proposed to.", variant_name: "Tier proposed.", agreement_number: "Agreement number assigned (CPA-...).", proposed_date: "Date the proposal was issued.", annual_spend_commitment: "Annual commitment proposed, USD.", auto_renew: "Whether the proposal auto-renews."}
+    triggers: []
+  - type: pricing_agreement_signed
+    target: pricing_agreements
+    mutation: {transition: {from: proposed, to: active}}
+    meaning: "The customer signs the proposal and the agreement takes effect."
+    grain: "One row per signature (one transaction)."
+    fields: {effective_date: "First day the agreement pricing applies.", expiration_date: "Last day of the term."}
+    triggers: []
+  - type: pricing_proposal_withdrawn
+    target: pricing_agreements
+    mutation: {transition: {from: proposed, to: withdrawn}}
+    meaning: "An unsigned proposal lapses."
+    grain: "One row per lapse (one transaction)."
+    fields: {closed_date: "Date the proposal lapsed."}
+    triggers: []
+  - type: pricing_renewal_opened
+    target: pricing_agreements
+    mutation: {transition: {from: active, to: renewal_pending}}
+    meaning: "The renewal window opens ahead of the expiration date."
+    grain: "One row per renewal window (one transaction)."
+    fields: {expiration_date: "Expiration date of the current term (unchanged)."}
+    triggers: []
+  - type: pricing_agreement_renewed
+    target: pricing_agreements
+    mutation: {transition: {from: renewal_pending, to: active}}
+    meaning: "The agreement renews for a new term."
+    grain: "One row per renewal (one transaction)."
+    fields: {effective_date: "First day of the new term.", expiration_date: "Last day of the new term."}
+    triggers: []
+  - type: pricing_agreement_expired
+    target: pricing_agreements
+    mutation: {transition: {from: renewal_pending, to: expired}}
+    meaning: "The term ends without renewal."
+    grain: "One row per expiry (one transaction)."
+    fields: {closed_date: "Day after the expiration date."}
+    triggers: []
+  - type: pricing_agreement_terminated
+    target: pricing_agreements
+    mutation: {transition: [{from: active, to: terminated}, {from: renewal_pending, to: terminated}]}
+    meaning: "The customer terminates the agreement early by written notice."
+    grain: "One row per termination (one transaction)."
+    fields: {termination_notice_date: "Date the customer's written termination notice was received.", closed_date: "Date the termination takes effect."}
+    triggers: []
+  - type: pricing_tier_changed
+    target: pricing_agreements
+    mutation: update
+    meaning: "The agreement moves to another tier at an anniversary commitment review or by a signed amendment."
+    grain: "One row per tier change (one transaction)."
+    fields: {variant_name: "New tier.", annual_spend_commitment: "Commitment under the new tier, USD."}
+    triggers: []
+  - type: pricing_item_added
+    target: pricing_items
+    meaning: "An item is added to the agreement's contract item list at a contract unit price."
+    grain: "One row per item price line taking effect."
+    distinguish_by: [sku, effective_date, change_reason]
+    fields: {sku: "Corbett item number.", product_category: "Product category of the item.", list_price: "Corbett list unit price on the effective date, USD.", supplier_cost: "Corbett supplier unit cost on the effective date, USD.", contract_unit_price: "Contract unit price set, USD to 4 decimals.", prior_unit_price: "Unit price the customer paid before this line (list less discount), USD.", quote_date: "Date of the Corbett special pricing quote being accepted.", effective_date: "First ship date the price applies.", change_reason: "Why the line was written.", change_reference: "Quote or change reference (SPQ-...)."}
+    triggers: []
+  - type: pricing_item_repriced
+    target: pricing_items
+    meaning: "A contract item's unit price changes by escalation, supplier cost change or competitive match."
+    grain: "One row per item price change taking effect."
+    distinguish_by: [sku, effective_date, change_reason]
+    fields: {sku: "Corbett item number.", product_category: "Product category.", list_price: "List unit price on the effective date, USD.", supplier_cost: "Supplier unit cost on the effective date, USD.", contract_unit_price: "New contract unit price, USD to 4 decimals.", prior_unit_price: "Contract unit price before the change, USD.", competitor_unit_price: "Competitor's quoted unit price for a competitive match; 0.0000 otherwise.", quote_date: "Date of the competitor's written quote for a competitive match; empty otherwise.", notice_date: "Date the escalation or supplier cost change notice was sent to the customer; empty for a competitive match.", effective_date: "First ship date the new price applies.", change_reason: "Why the price changed.", change_reference: "Change reference."}
+    triggers: []
+  - type: pricing_item_removed
+    target: pricing_items
+    meaning: "An item is removed from the contract item list and reverts to the tier's discount basis."
+    grain: "One row per item removal."
+    distinguish_by: [sku, effective_date]
+    fields: {sku: "Corbett item number.", product_category: "Product category.", contract_unit_price: "Contract unit price that ends, USD.", notice_date: "Date the removal notice was sent.", effective_date: "First ship date without the contract price.", change_reason: "Set to removal.", change_reference: "Change reference."}
+    triggers: []
+  - type: pricing_claim_filed
+    target: pricing_claims
+    meaning: "The customer claims that an invoiced line was billed above the price the agreement sets."
+    grain: "One row per claim on one invoice line (invoice and item)."
+    distinguish_by: [claim_reference]
+    fields: {claim_reference: "Claim reference (PCL-...).", invoice_number: "Invoice billed.", sku: "Item billed.", quantity: "Quantity billed on the line.", billed_unit_price: "Unit price billed, USD.", contract_unit_price: "Unit price the agreement sets for the ship date, USD.", claim_amount: "Computed overbilling, USD.", event_date: "Date filed.", outcome: "Set to pending."}
+    triggers: []
+  - type: pricing_claim_decided
+    target: pricing_claims
+    meaning: "A price claim is decided."
+    grain: "One row per decision on one claim."
+    distinguish_by: [claim_reference]
+    fields: {claim_reference: "Claim decided.", invoice_number: "Invoice billed.", sku: "Item billed.", quantity: "Quantity credited.", billed_unit_price: "Unit price billed, USD.", contract_unit_price: "Unit price the agreement sets, USD.", claim_amount: "Amount credited when approved, USD; 0.00 otherwise.", event_date: "Decision date.", outcome: "Decision."}
+    triggers:
+      - event: credit:credit_memo_issued
+        when: {outcome: approved}
+        map: {amount: claim_amount, source_type: price_claim_credit, source_reference: claim_reference, applied_invoice_number: invoice_number}
+  - type: pricing_rebate_accrued
+    target: pricing_rebates
+    meaning: "The volume rebate earned for a completed rebate period is accrued to the agreement."
+    grain: "One row per agreement per rebate period."
+    distinguish_by: [rebate_period]
+    fields: {rebate_period: "Rebate period YYYY-Qn.", qualifying_spend: "Qualifying spend in the period, USD.", rebate_rate_pct: "Ladder rate applied, percent.", amount: "Rebate accrued, USD.", event_date: "Accrual date (the day after the period ends).", source_reference: "Period reference."}
+    account: rebate
+    direction: in
+    triggers: []
+  - type: pricing_rebate_paid
+    target: pricing_rebates
+    meaning: "The rebate balance is paid out by credit memo or check."
+    grain: "One row per payout."
+    distinguish_by: [rebate_period, payout_method]
+    fields: {rebate_period: "Rebate period whose payout this is.", amount: "Amount paid, USD.", payout_method: "Payout method.", event_date: "Payout date.", source_reference: "Payout reference."}
+    account: rebate
+    direction: out
+    triggers:
+      - event: credit:credit_memo_issued
+        when: {payout_method: credit_memo}
+        map: {amount: amount, source_type: rebate_payout, source_reference: rebate_period}
+  - type: pricing_rebate_reversed
+    target: pricing_rebates
+    meaning: "Rebate is reduced for returns of merchandise counted in an earlier period, or forfeited on early termination."
+    grain: "One row per return clawback (per RMA) or per forfeiture."
+    distinguish_by: [rebate_period, source_reference]
+    fields: {rebate_period: "Rebate period the reversal relates to.", qualifying_spend: "Merchandise value returned (negative qualifying spend) or 0.00 for a forfeiture, USD.", rebate_rate_pct: "Rate originally applied, percent.", amount: "Rebate reversed, USD (positive).", event_date: "Reversal date.", source_reference: "RMA number for a clawback, or the agreement number for a forfeiture.", payout_method: "Set to none."}
+    account: rebate
+    direction: out
+    triggers: []
+
+# ---- derived measures ----
+measures:
+  - id: pricing_msr_period_qualifying_spend
+    window: "One calendar quarter (rebate period YYYY-Qn), by invoice date for invoices and by memo date for return credits."
+    measure: "Sum, USD, of merchandise_amount of credit_invoice_posted rows with source_type order_shipment, vmi_replenishment or vending_usage, less the merchandise value of special-order lines shipped in the quarter, less the amount of credit_memo_issued rows with source_type return_credit dated in the quarter."
+  - id: pricing_msr_trailing_12m_spend
+    window: "The 12 calendar months ending on the day before the agreement anniversary."
+    measure: "The same qualifying spend basis as pricing_msr_period_qualifying_spend summed over the window, USD."
+  - id: pricing_msr_contract_item_count
+    window: "Point in time: the date the item change takes effect."
+    measure: "Count of distinct sku values whose latest pricing_items line effective on or before that date is pricing_item_added or pricing_item_repriced (not pricing_item_removed)."
+
+# ---- policies ----
+policies:
+  - id: pricing_agg_multi_holding
+    subject: [pricing_agreement_proposed]
+    rule: >-
+      A customer holds at most one Contract Pricing Agreement; every ship-to, VMI program and vending program of the customer buys at that agreement's prices.
+      A new proposal is not issued while the customer has an agreement whose status is proposed, active or renewal_pending; a change of tier on a live agreement is made by pricing_tier_changed, never by a second agreement.
+    eligibility:
+      - id: one_live_agreement
+        applies_to: [pricing_agreement_proposed]
+        kind: dedup
+        condition: "A new proposal is not issued while the customer has an agreement whose status is proposed, active or renewal_pending"
+        evidence_fields: [pricing_agreements.customer_id, pricing_agreements.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[pricing_agreements.customer_id]]
+          action_bindings: {pricing_agreements.customer_id: customer_id}
+        dedup_contract:
+          table: pricing_agreements
+          mode: separate_record
+          object_bindings: {customer_id: customer_id}
+          duplicate_filters: {status: [proposed, active, renewal_pending]}
+          distinct_fields: []
+    params: {max_per_customer: 1}
+
+  - id: pricing_agreement_eligibility
+    subject: [pricing_agreement_proposed, pricing_agreement_signed, pricing_proposal_withdrawn]
+    rule: >-
+      A proposal is issued at the highest tier whose entry gate the customer's trailing 12 month purchases with Corbett meet, or at a lower tier the customer asks for; the commitment written on it is the tier's annual_spend_commitment_usd.
+      A tier above the Corbett Account Price Schedule is proposed only to a customer whose Commercial Credit Account status is active.
+      The customer signs no later than proposal_validity_days calendar days after the proposal date.
+      Count calendar days starting the day after the proposal date; a signature on the last day is accepted and a proposal not signed by then lapses as withdrawn.
+      Signing is the customer's own act by its authorized signer; the agreement takes effect on the signature date and its first term ends agreement_term_months calendar months later, on the day before the same calendar day (month-end falling back to the last day of the month).
+      A customer with no signed agreement buys at the Corbett Account Price Schedule, which applies without signature.
+    eligibility:
+      - id: credit_account_active
+        applies_to: [pricing_agreement_proposed]
+        kind: state
+        condition: "A tier above the Corbett Account Price Schedule is proposed only to a customer whose Commercial Credit Account status is active."
+        evidence_fields: [credit_accounts.status, credit_accounts.customer_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[credit_accounts.customer_id]]
+          action_bindings: {credit_accounts.customer_id: customer_id}
+        state_contract:
+          field: credit_accounts.status
+          allowed: [active]
+      - id: signed_inside_validity
+        applies_to: [pricing_agreement_signed]
+        kind: time
+        condition: "The customer signs no later than proposal_validity_days calendar days after the proposal date."
+        evidence_fields: [pricing_agreements.proposed_date, pricing_agreements.pricing_agreement_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[pricing_agreements.pricing_agreement_id]]
+          action_bindings: {pricing_agreements.pricing_agreement_id: pricing_agreement_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the proposal date"
+          anchor_source: pricing_agreements.proposed_date
+          relation: not_after
+          duration_source: variants.proposal_validity_days
+          unit: calendar_days
+          counting_rule: "Count calendar days starting the day after the proposal date; a signature on the last day is accepted and a proposal not signed by then lapses as withdrawn."
+          boundary: inclusive
+
+  - id: pricing_price_basis
+    subject: [pricing_item_added, pricing_item_repriced, pricing_item_removed]
+    rule: >-
+      The price of a billed line is the price in effect on the line's ship date under price_change_effective_basis, chosen in this order: first, the item's contract unit price from the latest pricing_items line for that sku effective on or before the ship date, unless that latest line is a removal; otherwise, on a cost-plus tier, Corbett's supplier cost on the ship date increased by cost_plus_markup_pct percent with at least cost_plus_min_markup_per_unit_usd markup per unit; otherwise, for a non-stock special-order item, supplier cost increased by special_order_markup_pct percent; otherwise, list price less the item category's discount from category_discount_schedule, or less list_discount_pct when the category is not in the schedule.
+      Where quantity_breaks_honored is true the list quantity-break price replaces list price before the discount.
+      No category discount in a tier's schedule exceeds its category_discount_max_pct.
+      Every unit price is rounded half up to unit_price_decimals decimal places; the extended line amount is the rounded unit price times the quantity, rounded half up to the cent.
+      Only one basis ever applies to a line: discounts never stack on a contract unit price, and a contract unit price is never replaced by a lower discount-based price.
+      An expired or terminated agreement's prices stop the day after its closing date; lines shipped from then on are priced at the Corbett Account Price Schedule.
+    eligibility: []
+    formula:
+      list_basis_price: "round(list_price * (1 - list_discount_pct / 100), 4)"
+      cost_plus_price: "round(max(supplier_cost * (1 + cost_plus_markup_pct / 100), supplier_cost + cost_plus_min_markup_per_unit_usd), 4)"
+
+  - id: pricing_evt_contract_items
+    subject: [pricing_item_added, pricing_item_removed]
+    rule: >-
+      Contract items are added only to an agreement whose status is active or renewal_pending.
+      An item is added at the price of an accepted Corbett special pricing quote, returned within special_pricing_request_business_days business days of the request; the quote is accepted no later than special_pricing_quote_validity_days calendar days after the quote date.
+      Count calendar days starting the day after the quote date; acceptance on the last day is valid, and a later acceptance needs a new quote.
+      An item is added only when its expected annual usage is at least contract_item_min_annual_units selling units and only while pricing_msr_contract_item_count stays at or below fixed_net_items_max; a tier whose fixed_net_items_max is 0 carries no contract items.
+      An agreement on a tier with contract items carries at least fixed_net_items_min of them, and its contract items are reviewed every market_basket_review_months months.
+      Corbett removes an item only after giving contract_item_removal_notice_days calendar days of notice, counted from the notice date; a customer may ask for removal of an item effective the next ship date.
+      When the manufacturer discontinues a contract item, the Corbett-approved substitute is billed at the discontinued item's contract unit price for discontinued_item_price_protection_days days from the discontinuation and is then added at its own quoted price or reverts to the discount basis.
+    eligibility:
+      - id: live_agreement_only
+        applies_to: [pricing_item_added]
+        kind: state
+        condition: "Contract items are added only to an agreement whose status is active or renewal_pending."
+        evidence_fields: [pricing_agreements.status, pricing_agreements.pricing_agreement_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[pricing_agreements.pricing_agreement_id]]
+          action_bindings: {pricing_agreements.pricing_agreement_id: pricing_agreement_id}
+        state_contract:
+          field: pricing_agreements.status
+          allowed: [active, renewal_pending]
+      - id: quote_still_valid
+        applies_to: [pricing_item_added]
+        kind: time
+        condition: "the quote is accepted no later than special_pricing_quote_validity_days calendar days after the quote date"
+        evidence_fields: [pricing_items.quote_date, pricing_items.change_reference]
+        evidence_contract:
+          authority: mixed
+          timing: pre_action
+          correlation_keys: [[pricing_items.change_reference]]
+          action_bindings: {pricing_items.change_reference: change_reference}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the quote date"
+          anchor_source: pricing_items.quote_date
+          relation: not_after
+          duration_source: variants.special_pricing_quote_validity_days
+          unit: calendar_days
+          counting_rule: "Count calendar days starting the day after the quote date; acceptance on the last day is valid, and a later acceptance needs a new quote."
+          boundary: inclusive
+    measures: [pricing_msr_contract_item_count]
+
+  - id: pricing_evt_escalation
+    subject: [pricing_item_repriced]
+    rule: >-
+      No contract item is escalated with an effective date earlier than price_lock_months calendar months after the agreement effective date.
+      Add the months to the agreement effective date by calendar month; when the target month has no such day the boundary is the last day of that month, and an escalation effective on the boundary date is allowed.
+      An escalated price takes effect no earlier than escalation_notice_days calendar days after the escalation notice date.
+      Count notice days starting the day after the escalation notice date; a price effective on the last notice day is allowed.
+      An escalation raises a contract unit price by the percentage increase in Corbett's supplier cost for that item since the item's previous price line, capped at annual_escalation_cap_pct percent of the prior contract unit price, and each item is escalated at most once in any 12 months; a supplier cost decrease never lowers a fixed contract price.
+      On the Cost-Plus tier there is no fixed price to escalate: a supplier cost increase changes the cost-plus price supplier_cost_change_notice_days calendar days after its notice date, and a supplier cost decrease changes it from the next ship date.
+      A tier with no contract items has nothing to escalate; its prices follow Corbett list price changes from the list effective date.
+    eligibility:
+      - id: price_lock_elapsed
+        applies_to: [pricing_item_repriced]
+        kind: time
+        condition: "No contract item is escalated with an effective date earlier than price_lock_months calendar months after the agreement effective date."
+        evidence_fields: [pricing_agreements.effective_date, pricing_agreements.pricing_agreement_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[pricing_agreements.pricing_agreement_id]]
+          action_bindings: {pricing_agreements.pricing_agreement_id: pricing_agreement_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the agreement effective date"
+          anchor_source: pricing_agreements.effective_date
+          relation: not_before
+          duration_source: variants.price_lock_months
+          unit: calendar_months
+          counting_rule: "Add the months to the agreement effective date by calendar month; when the target month has no such day the boundary is the last day of that month, and an escalation effective on the boundary date is allowed."
+          boundary: inclusive
+
+      - id: escalation_notice_given
+        applies_to: [pricing_item_repriced]
+        kind: time
+        condition: "An escalated price takes effect no earlier than escalation_notice_days calendar days after the escalation notice date."
+        evidence_fields: [pricing_items.notice_date, pricing_items.sku]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[pricing_items.sku]]
+          action_bindings: {pricing_items.sku: sku}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the escalation notice date"
+          anchor_source: pricing_items.notice_date
+          relation: not_before
+          duration_source: variants.escalation_notice_days
+          unit: calendar_days
+          counting_rule: "Count notice days starting the day after the escalation notice date; a price effective on the last notice day is allowed."
+          boundary: inclusive
+
+  - id: pricing_evt_competitive_match
+    subject: [pricing_item_repriced]
+    rule: >-
+      A competitive match is available only on a tier whose competitive_match_allowed is true, only for an item already on the contract item list, and only against a competitor's written quote for the same manufacturer part number in the same selling unit.
+      A competitive match is considered only when the match request is made no later than competitive_match_quote_max_age_days calendar days after the competitor's written quote date.
+      Count calendar days starting the day after the quote date; a request on the last day is considered.
+      The matched contract unit price is the highest of the competitor's unit price, the current contract unit price reduced by competitive_match_max_reduction_pct percent, and the lowest price that keeps a gross margin of competitive_match_min_margin_pct percent over Corbett's supplier cost, rounded half up to four decimals; when that result is not below the current contract unit price, no match is made.
+      A matched price takes effect from the next ship date and is not escalated before the item's next eligible escalation.
+    eligibility:
+      - id: quote_age_inside_limit
+        applies_to: [pricing_item_repriced]
+        kind: time
+        condition: "A competitive match is considered only when the match request is made no later than competitive_match_quote_max_age_days calendar days after the competitor's written quote date."
+        evidence_fields: [pricing_items.quote_date, pricing_items.sku]
+        evidence_contract:
+          authority: caller_statement
+          timing: pre_action
+          correlation_keys: [[pricing_items.sku]]
+          action_bindings: {pricing_items.sku: sku}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the competitor's written quote date"
+          anchor_source: pricing_items.quote_date
+          relation: not_after
+          duration_source: variants.competitive_match_quote_max_age_days
+          unit: calendar_days
+          counting_rule: "Count calendar days starting the day after the quote date; a request on the last day is considered."
+          boundary: inclusive
+    formula:
+      matched_price: "round(max(competitor_unit_price, prior_unit_price * (1 - competitive_match_max_reduction_pct / 100), supplier_cost / (1 - competitive_match_min_margin_pct / 100)), 4)"
+
+  - id: pricing_evt_price_claim
+    subject: [pricing_claim_filed, pricing_claim_decided]
+    rule: >-
+      A customer billed above the price pricing_price_basis sets for an invoiced line may file a contract price claim for that invoice line.
+      The claim is filed no later than price_claim_window_days calendar days after the invoice date.
+      Count calendar days starting the day after the invoice date; a claim filed on the last day is accepted.
+      Each invoice line (invoice and item) may carry only one price claim.
+      The claim amount is the billed unit price less the unit price the agreement sets for the line's ship date, times the quantity billed, rounded half up to the cent; the agreement in force is the one whose status covered the ship date, not the one in force on the claim date.
+      A claim is decided approved when the claim amount is at least price_claim_min_usd and at most price_claim_desk_authority_usd; referred_to_pricing_desk when it exceeds the desk authority; and denied when the billed price is at or below the agreement price or the claim amount is below price_claim_min_usd.
+      An approved claim is credited by a credit memo for the claim amount applied to the invoice; the claim never re-prices the item for future shipments.
+      Claims are decided within price_claim_decision_business_days business days.
+    eligibility:
+      - id: inside_claim_window
+        applies_to: [pricing_claim_filed]
+        kind: time
+        condition: "The claim is filed no later than price_claim_window_days calendar days after the invoice date."
+        evidence_fields: [credit_transactions.document_number, credit_transactions.txn_date]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[credit_transactions.document_number]]
+          action_bindings: {credit_transactions.document_number: invoice_number}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the invoice date"
+          anchor_source: credit_transactions.txn_date
+          relation: not_after
+          duration_source: variants.price_claim_window_days
+          unit: calendar_days
+          counting_rule: "Count calendar days starting the day after the invoice date; a claim filed on the last day is accepted."
+          boundary: inclusive
+      - id: one_claim_per_line
+        applies_to: [pricing_claim_filed]
+        kind: dedup
+        condition: "Each invoice line (invoice and item) may carry only one price claim."
+        evidence_fields: [pricing_claims.invoice_number, pricing_claims.sku, pricing_claims.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[pricing_claims.invoice_number, pricing_claims.sku]]
+          action_bindings: {pricing_claims.invoice_number: invoice_number, pricing_claims.sku: sku}
+        dedup_contract:
+          table: pricing_claims
+          mode: separate_record
+          object_bindings: {invoice_number: invoice_number, sku: sku}
+          duplicate_filters: {event_type: [pricing_claim_filed]}
+          distinct_fields: []
+    formula:
+      claim_amount: "round((billed_unit_price - contract_unit_price) * quantity, 2)"
+
+  - id: pricing_evt_rebate
+    subject: [pricing_rebate_accrued, pricing_rebate_paid, pricing_rebate_reversed]
+    rule: >-
+      Only a tier whose rebate_eligible is true earns a volume rebate, measured per rebate_period on qualifying_spend_basis by pricing_msr_period_qualifying_spend, with special-order lines excluded where rebate_excludes_special_orders is true.
+      The rate is the rate_pct of the highest rebate_ladder bracket whose from_usd the period's qualifying spend reaches, applied to the whole period's qualifying spend (not marginally); spend below the first bracket earns nothing.
+      Each agreement accrues at most one rebate for a rebate period, dated the day after the period ends; only periods during which the agreement was active or renewal_pending count, and a period the agreement covered only in part counts the qualifying spend shipped while it was in force.
+      The rebate balance is paid within rebate_payout_days_after_period days after the period end by the payout method the customer chose from rebate_payout_methods; a balance below rebate_min_payout_usd carries forward to the next period instead of being paid.
+      Where rebate_clawback_on_returns is true, a return credited after the period's rebate was accrued reduces the rebate by the returned merchandise value times the rate originally applied to that period, rounded half up to the cent, booked once per RMA.
+      Where termination_rebate_forfeit is true, an early termination forfeits the whole unpaid rebate balance on the termination effective date; expiry at the end of a term forfeits nothing and the final period's rebate is paid normally.
+    eligibility:
+      - id: one_accrual_per_period
+        applies_to: [pricing_rebate_accrued]
+        kind: dedup
+        condition: "Each agreement accrues at most one rebate for a rebate period, dated the day after the period ends"
+        evidence_fields: [pricing_rebates.pricing_agreement_id, pricing_rebates.rebate_period, pricing_rebates.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[pricing_rebates.pricing_agreement_id, pricing_rebates.rebate_period]]
+          action_bindings: {pricing_rebates.pricing_agreement_id: pricing_agreement_id, pricing_rebates.rebate_period: rebate_period}
+        dedup_contract:
+          table: pricing_rebates
+          mode: separate_record
+          object_bindings: {pricing_agreement_id: pricing_agreement_id, rebate_period: rebate_period}
+          duplicate_filters: {event_type: [pricing_rebate_accrued]}
+          distinct_fields: [rebate_period]
+    measures: [pricing_msr_period_qualifying_spend]
+    params:
+      per_tier:
+        Corbett Account Price Schedule: {ladder: "=rebate_ladder", min_payout: "=rebate_min_payout_usd"}
+        Corbett Volume Discount Agreement: {ladder: "=rebate_ladder", min_payout: "=rebate_min_payout_usd"}
+        Corbett Category Contract: {ladder: "=rebate_ladder", min_payout: "=rebate_min_payout_usd"}
+        Corbett Net-Price Contract: {ladder: "=rebate_ladder", min_payout: "=rebate_min_payout_usd"}
+        Corbett Cost-Plus Contract: {ladder: "=rebate_ladder", min_payout: "=rebate_min_payout_usd"}
+        Corbett Strategic Supply Agreement: {ladder: "=rebate_ladder", min_payout: "=rebate_min_payout_usd"}
+    formula:
+      amount: "round(qualifying_spend * rebate_rate_pct / 100, 2)"
+
+  - id: pricing_renewal_and_termination
+    subject: [pricing_renewal_opened, pricing_agreement_renewed, pricing_agreement_expired, pricing_agreement_terminated]
+    rule: >-
+      The renewal window opens renewal_notice_days days before the expiration date.
+      Where auto_renew_default is true and the customer has not given notice, the agreement renews on the day after the expiration date for auto_renew_term_months months; otherwise it renews only when the customer signs the renewal before the expiration date, and expires the day after the expiration date if it does not.
+      A renewal keeps the tier and contract items; contract unit prices carry into the new term and remain subject to pricing_evt_escalation.
+      An early termination takes effect no earlier than early_termination_notice_days calendar days after the date the customer's written termination notice is received.
+      Count calendar days starting the day after the notice is received; the termination takes effect on the last day of the notice period, or on a later date the notice names.
+      Termination is the customer's own act; prices stay in force until the effective date, and from the next day lines are priced at the Corbett Account Price Schedule.
+      An agreement is never terminated retroactively, and a termination notice may be withdrawn by the customer before its effective date.
+    eligibility:
+      - id: termination_notice_period
+        applies_to: [pricing_agreement_terminated]
+        kind: time
+        condition: "An early termination takes effect no earlier than early_termination_notice_days calendar days after the date the customer's written termination notice is received."
+        evidence_fields: [pricing_agreements.termination_notice_date, pricing_agreements.pricing_agreement_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[pricing_agreements.pricing_agreement_id]]
+          action_bindings: {pricing_agreements.pricing_agreement_id: pricing_agreement_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the date the customer's written termination notice is received"
+          anchor_source: pricing_agreements.termination_notice_date
+          relation: not_before
+          duration_source: variants.early_termination_notice_days
+          unit: calendar_days
+          counting_rule: "Count calendar days starting the day after the notice is received; the termination takes effect on the last day of the notice period, or on a later date the notice names."
+          boundary: inclusive
+
+  - id: pricing_commitment_review
+    subject: [pricing_tier_changed]
+    rule: >-
+      At each agreement anniversary the trailing 12 month qualifying spend measured by pricing_msr_trailing_12m_spend on commitment_measurement_basis is compared with the agreement's commitment.
+      When it is below shortfall_review_threshold_pct percent of the commitment the agreement moves down one tier to the tier named by downgrade_target, effective on the anniversary, with that tier's commitment; contract items above the lower tier's fixed_net_items_max are removed with notice under pricing_evt_contract_items, and a lower tier with no contract items reverts every item to its discount basis.
+      A tier whose shortfall_review_threshold_pct is 0 is never reviewed for shortfall.
+      A move up to a higher tier is made only by a signed amendment when the customer's trailing 12 month spend meets that tier's entry gate; a tier change never restarts the term.
+    eligibility: []
+    measures: [pricing_msr_trailing_12m_spend]
+    params:
+      per_tier:
+        Corbett Account Price Schedule: {downgrade_target: "Corbett Account Price Schedule"}
+        Corbett Volume Discount Agreement: {downgrade_target: "Corbett Account Price Schedule"}
+        Corbett Category Contract: {downgrade_target: "Corbett Volume Discount Agreement"}
+        Corbett Net-Price Contract: {downgrade_target: "Corbett Category Contract"}
+        Corbett Cost-Plus Contract: {downgrade_target: "Corbett Net-Price Contract"}
+        Corbett Strategic Supply Agreement: {downgrade_target: "Corbett Net-Price Contract"}

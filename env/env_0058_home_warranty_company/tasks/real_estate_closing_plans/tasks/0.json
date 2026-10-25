@@ -1,0 +1,2262 @@
+{
+    "frozen_time": "2026-09-15 10:20:00 EDT",
+    "design_rationale": "WORKLOG task 0 (real_estate_closing_plans, category realty), round 2. Draw (draw_counts.py --task 0): prerequisite_problems=1, factor_counts=[4, 5]; the failed-sale charge takes 5 factors, the first settlement payment takes 4.\n\n1. WHY THIS IS A GOOD TEST. A seller who withdrew her listing a week ago wants to settle what she owes for listing-period repairs, spread over a few months, paying the first part by card. The settlement rule says the payment 'is not taken until the order's billing history carries the failed-sale charge invoice billed for that service'; the ledger has none, so the agent must find the one write that books it (the failed-sale charge), price it from the order's ledgers and two other products, and only then work out the settlement plan's first payment from the seller's payment history, tenure and billing channel on other Bridgewell products. Difficulty comes from reading rules, reconciling ledgers and calculating; the tools are two atomic writes.\n\n2. SCOPE. Task 0 claims the seller side: realty_ext_failed_sale_charge (target bill_failed_sale_charge_3e9b31c4, event realty_seller_service_charge) and realty_ext_seller_settlement_payment (target pay_failed_sale_charge_by_card_a1a6aa51, event realty_payment, seller). Task 1 claims the buyer side before closing (reissued plan invoice and buyer direct card payment) with its own tools; no asset overlaps.\n\n3. POLICIES AND FACTOR CARD.\nrealty_ext_failed_sale_charge: base_policy_refs [realty_failed_sale_charges]; trigger state_due (a cancelled, never-closed listing order with seller-phase benefit owes the charge; this order was cancelled on 2026-09-08 and the first month end after it has not passed at frozen_time). Overwrite: the base lesser-of sentence is replaced by 'The failed-sale charge billed on an order is the amount this paragraph works out in place of the plain lesser-of amount, no failed-sale charge is billed when the seller-phase benefit paid is zero, and seller service call fees already collected never reduce it.' (whole scope of the base policy). Every other base clause (status listing_expired/cancelled and never closed, one per order, never on buyer-only orders, due failed_sale_bill_due_days after billing) is restated. Baseline: lesser of plan premium invoiced and seller-phase benefit paid -> 1495.0. All five adjustments are part of the billed charge itself, so nothing is left unbooked.\n - listing_cap_proration (method; date): 127 days in force -> months-begun proration, cap 1245.83; daily proration under 60 days, full premium at 180+. Baseline -> 1056.75.\n - after_hours_dispatch_recovery (parameter; history): the after-hours rate is set by the costliest trade dispatched after hours: one of the two emergency requests was hvac -> 95.00 each = 190.0 (only non-hvac emergencies -> 70.00 each). Near-miss: the routine water heater, dishwasher and garage door requests do not count. Baseline -> 727.37.\n - maintained_hvac_credit (parameter; reads the seller's hvaccare agreement and visits; hvaccare is not a category any difficulty claims, so this factor is not counted as cross-difficulty, cross_difficulty null; multi-source address AND visit count): 2 tune-ups in twelve months -> share 0.2 of net HVAC benefit = 236.0; more tune-ups give the larger share. Near-miss: tune-up 2025-09-10 is twelve months and five days before the billing date and is excluded. Baseline -> 1046.87.\n - missed_contact_service_credit (parameter; history): one re-dispatch after a missed contact window -> 40.00 (two or more -> 75.00). Baseline -> 899.87.\n - keep_home_waiver (parameter; cross-difficulty homeplan, a category the homeowner difficulty claims; multi-source start-date window AND tier monthly premium): HomeCare Silver started 3 days after end_date, monthly premium 62.99 < 70.00 -> 0.25. Baseline -> 1159.83.\n Result 869.87.\nrealty_ext_seller_settlement_payment: base_policy_refs [realty_closing_and_escrow (governs realty_payment), realty_failed_sale_charges]; trigger on_request (the seller asks to spread the charge). Overwrite, scoped: the base sentence 'The charge is billed to the seller and due failed_sale_bill_due_days calendar days after billing.' is replaced, only for a charge the seller asks to spread, by the settlement plan (first payment now, the rest in equal monthly installments, the first on the charge's due date); every other failed-sale charge stays due as base says. Baseline: pay the open failed-sale balance in full as the first payment -> 869.87. No allowance or credit is taken at payment; the part not paid now stays open on the failed-sale invoice as the scheduled installment, so the ledger after the call agrees with the plan.\n - settlement_installments (method; history; balance band, applied when the plan is set up, before any seller payment on the order): balance 869.87 in (400, 900] -> two installments, first = half the amount after the down payment rounded up; above 900 -> three, first = amount less two thirds rounded down; otherwise unsplit. Baseline -> 869.87.\n - payment_history_down_payment (parameter; cross-difficulty lineplan + homeplan returned payments): one returned payment (line plan, billed back 2026-03-04) -> 0.15; two or more -> 0.30. Baseline -> 456.68.\n - coverage_tenure_down_payment (parameter; cross-difficulty lineplan; date): earliest active plan is the line plan from 2025-12-01, 9 whole months -> 0.10 (under 6 months or none -> 0.25; 24+ -> none). The homeowner contract is in waiting_period, not active, and does not count. Baseline -> 478.43.\n - autopay_down_payment_relief (parameter; cross-difficulty lineplan billing channel): billed automatically to a card -> 0.05 (bank draft -> 0.10; utility bill or none -> 0). Baseline -> 543.67.\n Result 521.92. Every tier rests on seeded records (the charge amount, the seller's payment rows, the line plan and homeowner rows); none is fixed by the billing write's own date.\n\n4. BASE-INVARIANT CARD. Charge write: realty_failed_sale_charges.failed_sale_only_on_unclosed_order — status cancelled, closing_date empty on 58622c13-f20c-4edc-8009-e5dfc1fd788b; one_failed_sale_charge_per_order — no realty_seller_service_charge row on 58622c13-f20c-4edc-8009-e5dfc1fd788b. No time gate. Payment write: realty_closing_and_escrow has no gate applying to realty_payment -> policy_scope; the only open invoice after the billing write is the failed-sale invoice, so 'Payments are applied to the oldest open invoice first' lands it there.\n\n5. WORLD ROWS. customers: the seller. realty_contracts: the cancelled listing order (order 2026-05-04, cancelled 2026-09-08; listing agent license 2017003318 on the order). billing: plan invoice 1,495.00, order_cancelled credit 1,495.00 (nothing paid, so no credit balance or refund), five seller fees of 75.00. requests and 15 claim events: 2,030.00 authorized, 240.00 reversed (garage door repair declined), two emergencies (one hvac), one re-dispatch, two not-covered determinations. service_contractors: the six contractors on the dispatches and tune-ups. homeplan contract (Silver, waiting_period, started 2026-09-11) + first installment and its payment: keep-home waiver tier and tenure exclusion. hvaccare agreement + 3 tune-ups: maintained-system tier and near-miss. lineplan (card-billed, from 2025-12-01) + 23 billing rows including one returned payment, its fee and the repayment: payment-history, tenure and autopay tiers. Automatic clauses checked: the cancellation credit memo is present (order_cancelled trigger); no rider exists for the addon trigger; no fee refund is owed (every request was dispatched); the homeowner first installment is paid; the line plan and maintenance agreement are current; the failed-sale charge is not yet owed past a month end.\n\n6. BUSINESS-OBJECT CARD. Target: the failed-sale charge on order 58622c13-f20c-4edc-8009-e5dfc1fd788b and the seller's first settlement payment against the invoice it creates (FS-C8A1BAB2B7). Included: every billing/claim/request row with realty_contract_id 58622c13-f20c-4edc-8009-e5dfc1fd788b. Excluded: the credited plan invoice 2605044417 as an object of payment. The reversal 2605221190 settles only authorization 2605221190. The payment carries invoice_number FS-C8A1BAB2B7.\n\n7. PERSONA. Odalys, a pharmacist on a break: volunteers the goal (settle the listing-period repairs, spread if allowed, first part by card), the property and that she withdrew the listing on September 8. Gives phone/ZIP/email when asked; other coverage, the March bounced line plan payment and its repayment when asked; says she has paid nothing earlier when asked. Passive reactions: agrees if told something must be put on her account first; accepts the figure the agent says is due today; runs the handed-over payment exactly; closes. She names no figure, no invoice and no mechanism.\n\n8. PROBLEM-TREE CARD. Root realty_ext_seller_settlement_payment (owner=user tool pay_failed_sale_charge_by_card_a1a6aa51); prerequisite realty_ext_failed_sale_charge (owner=agent tool bill_failed_sale_charge_3e9b31c4). Edge kind value_input, gate failed_sale_billed, form state, sentence (negated direction): \"A seller's settlement payment toward listing-period service is not taken until the order's billing history carries the failed-sale charge invoice billed for that service.\". Four-point test: connective 'not ... until'; record-visible state (a failed-sale charge invoice on the order's billing history); no tool, id or code token; scope exactly one failed-sale invoice per order. Exactly one write in this difficulty books a failed-sale charge invoice (bill_failed_sale_charge_3e9b31c4 under realty_ext_failed_sale_charge). False at opening (ledger rows 563baf7a-cd7d-4845-a221-06e8b47cfc2c, 0e9a28e5-390f-4c46-b918-8c40004f0f60, fee rows only); flips at step 14. Order [realty_ext_failed_sale_charge, realty_ext_seller_settlement_payment]. Deletion sensitivity: payment 0.0 instead of 521.92.\n\n9. LONG AND BROAD; EASY MISTAKES. Depth: payment -> waits on charge invoice -> charge. Breadth: order dates, three order ledgers, hvaccare visits, homeplan start and tier, line plan returned payments, start date and billing channel. Mistakes: billing the plain lesser-of 1495.0; counting the 2025-09-10 tune-up; counting the reversed garage-door repair; applying the general after-hours rate; treating the waiting-period homeowner contract as active tenure; skipping the down payment; paying the whole balance; paying before billing.\n\n10. STANDARD SOLUTION AND VERIFICATION. Reads: customer, verify (phone + ZIP), realty contract, billing, requests, claim events, contractors, homeplan contract and billing, hvaccare agreement and visits, line plan and billing. Write 1 (step 14): bill_failed_sale_charge_3e9b31c4(realty_contract_id=58622c13-f20c-4edc-8009-e5dfc1fd788b, amount=869.87, due_date=2026-10-15) -> invoice FS-C8A1BAB2B7. Write 2 (step 16): unlock and hand over pay_failed_sale_charge_by_card_a1a6aa51(realty_contract_id=58622c13-f20c-4edc-8009-e5dfc1fd788b, invoice_number=FS-C8A1BAB2B7, amount=521.92). Scratch verifier replays gold with the real tools and evaluates both computes with check_compute's sandbox: charge 869.87; payment 521.92; per-factor baselines charge [('listing_cap_proration', 1056.75), ('after_hours_dispatch_recovery', 727.37), ('maintained_hvac_credit', 1046.87), ('missed_contact_service_credit', 899.87), ('keep_home_waiver', 1159.83)]; payment [('settlement_installments', 869.87), ('payment_history_down_payment', 456.68), ('coverage_tenure_down_payment', 478.43), ('autopay_down_payment_relief', 543.67)]; all-baseline charge 1495.0, payment 869.87; skip-billing payment 0.0.\n\n11. SOLVABILITY AND DRAFT RECOMPUTE. Step 14 cites cancelled status, empty closing date and the ledger without a failed-sale row; step 16 rests on prior_step 14. Draft from visible text only: payment rule -> needs a failed-sale invoice -> charge 1245.83 + 190 - 236 - 40 = 1159.83 x 0.75 = 869.87 -> settlement: down share 0.15 + 0.10 - 0.05 = 0.20 -> 173.97; two installments of the rest, first 347.95 -> 521.92. Agrees with gold.\n\n12. REVISION LOG (round 2, from the policy-task audit). F1: the settlement allowances and credit left part of the charge unbooked -> removed from the payment; the missed-contact credit moved into the billed charge; the payment is now a scheduled first payment with the rest open as installments, under a scoped overwrite of the base due-date sentence. F3: the prompt settlement allowance rested on the billing write's own date -> removed; the payment's factors now rest on seeded records. O9: the falling per-emergency rate and the uncovered-fee credit share rising with denials were replaced (after-hours rate by costliest trade; uncovered-fee credit dropped). O8: hvaccare is no longer labelled cross-difficulty. O3: the tool docstrings no longer mention when the invoice number is used. O5: compute_basis.result now quotes the sentence that combines the down payment and first installment. O6: the unstated '> 0' test is gone. O10: the order was cancelled one week before the call, before the first month end. Persona no longer scripts an installment outcome. The 'exactly twelve months' wording is gone. Gate log after the rebuild is in the final difficulty run (all gates OK; traceability lists only the unlock tool names, which have no source before the KB exists).\n ROUND 3 (render notes and re-audit observations): R2-O1 — the 'no earlier seller payment' conjunct is moved out of the installment ladder into the plan's scope ('The settlement plan is set up once, before the seller has made any payment on the order'); the ladder now selects by the balance band alone, so settlement_installments is no longer counted as multi-source (the task keeps the keep-home, maintained-system and after-hours factors as multi-source). Item 6 — the card payment tool docstring now says it records a payment with method card and no longer claims to charge a card on the profile. No scored value moved; gates re-run on the final form.\n",
+    "user_scenario": "You are Odalys Pemberton-Quayle, a soft-spoken hospital pharmacist in Dublin, Ohio, calling Bridgewell on a short break between shifts, so you are polite but keep things moving. In May your listing agent ordered a Bridgewell real estate plan with seller coverage when you put your house at 4471 Larkspur Bend Drive, Dublin, OH 43017 on the market. Last week, on September 8, you took the house off the market because you decided to stay. While it was listed Bridgewell sent people out for a few problems, the upstairs air conditioning among them. You open by saying you understand that because the house never sold you owe Bridgewell for the repairs it handled while the house was listed, and that you would like to spread what you owe over a few months if Bridgewell allows that, and pay the first part today on the card you have on file with Bridgewell. You do not know any amount, any invoice number or how the figure is worked out, and you never guess one. When the agent asks who you are, you give your full name and your phone number, 6145550127; if the agent wants a second detail you give your mailing ZIP code, 43017, and if asked for your email you spell it out as odalys.pembertonquayle@larkspurmail.com. If the agent asks which property or which plan, you describe the Larkspur Bend Drive listing you took off the market on September 8. Only if the agent asks about your other Bridgewell coverage do you say that you signed up for a homeowner plan on the same house a few days after taking it off the market, that you have had a Comfort Care heating and cooling maintenance membership on the house for a couple of years with tune-ups last fall and this spring, and that you have carried the water service line plan since last December, billed automatically to your card; if asked about missed payments you say one line plan payment bounced back in March and you paid it again a few days later. You do not remember prices or other dates. If the agent asks whether you have paid anything toward the listing-period repairs before, you say no, nothing yet. If the agent explains that something has to be put on your account before you can pay, you say that is fine and ask them to go ahead. When the agent tells you how much is due from you today, you accept that figure. Payment is something you do yourself: when the agent hands the card payment over to you with the plan number, invoice number and amount, you make that payment exactly as given, then read back the confirmation number it gives you if asked. Once the payment has gone through, you thank the agent and say goodbye.",
+    "initial_state": {
+        "customers": {
+            "77b87d94-8ed9-4374-8e0a-ba62758af3ab": {
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "full_name": "Odalys Pemberton-Quayle",
+                "customer_type": "homeowner",
+                "phone_number": "6145550127",
+                "email": "odalys.pembertonquayle@larkspurmail.com",
+                "mailing_zip": "43017",
+                "payment_card_last4": "2846",
+                "profile_opened_date": "2019-05-14",
+                "brokerage_name": "",
+                "real_estate_license_number": ""
+            }
+        },
+        "service_contractors": {
+            "aa3f99ec-e402-47a5-b9e5-eeb5c038ea7a": {
+                "service_contractor_id": "aa3f99ec-e402-47a5-b9e5-eeb5c038ea7a",
+                "business_name": "Buckeye Comfort Mechanical",
+                "trade": "hvac",
+                "service_zip_codes": "43016,43017,43065",
+                "network_status": "preferred",
+                "emergency_service": "offered",
+                "license_number": "OH-HVAC-2214405"
+            },
+            "499aed65-6b57-4108-b56b-1f5ad6f5fd9f": {
+                "service_contractor_id": "499aed65-6b57-4108-b56b-1f5ad6f5fd9f",
+                "business_name": "Tri-Village Heating & Air",
+                "trade": "hvac",
+                "service_zip_codes": "43016,43017,43065",
+                "network_status": "standard",
+                "emergency_service": "offered",
+                "license_number": "OH-HVAC-2219983"
+            },
+            "d51116e4-edeb-4222-9a28-775f9bc6501c": {
+                "service_contractor_id": "d51116e4-edeb-4222-9a28-775f9bc6501c",
+                "business_name": "Dublin Pipe & Drain",
+                "trade": "plumbing",
+                "service_zip_codes": "43016,43017,43065",
+                "network_status": "preferred",
+                "emergency_service": "offered",
+                "license_number": "OH-PL-2207716"
+            },
+            "df186fe0-6d93-4852-8420-db8c42b68692": {
+                "service_contractor_id": "df186fe0-6d93-4852-8420-db8c42b68692",
+                "business_name": "Metro Appliance Service Co.",
+                "trade": "appliance",
+                "service_zip_codes": "43016,43017,43065",
+                "network_status": "preferred",
+                "emergency_service": "not_offered",
+                "license_number": "OH-AP-2230412"
+            },
+            "24c7ef81-cc44-4333-be06-71d5aecbba02": {
+                "service_contractor_id": "24c7ef81-cc44-4333-be06-71d5aecbba02",
+                "business_name": "Sawmill Road Electric",
+                "trade": "electrical",
+                "service_zip_codes": "43016,43017,43065",
+                "network_status": "preferred",
+                "emergency_service": "offered",
+                "license_number": "OH-EL-2211868"
+            },
+            "13321daf-5762-4f64-8f3f-7b29f5ca5b93": {
+                "service_contractor_id": "13321daf-5762-4f64-8f3f-7b29f5ca5b93",
+                "business_name": "Glacier Ridge Garage Doors",
+                "trade": "garage_door",
+                "service_zip_codes": "43016,43017,43065",
+                "network_status": "standard",
+                "emergency_service": "not_offered",
+                "license_number": "OH-GD-2240095"
+            }
+        },
+        "realty_contracts": {
+            "58622c13-f20c-4edc-8009-e5dfc1fd788b": {
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "variant_name": "Bridgewell Closing Premier Two-Year",
+                "status": "cancelled",
+                "order_type": "listing_with_seller_coverage",
+                "ordering_agent_license_number": "2017003318",
+                "ordering_agent_side": "listing_agent",
+                "property_address": "4471 Larkspur Bend Drive, Dublin, OH 43017",
+                "property_zip": "43017",
+                "property_type": "single_family",
+                "unit_count": 1,
+                "square_footage": 3120,
+                "home_inspection_completed": false,
+                "certificate_of_occupancy_date": "",
+                "order_date": "2026-05-04",
+                "listing_coverage_end_date": "2026-10-31",
+                "listing_extension_count": 0,
+                "expected_closing_date": "",
+                "closing_date": "",
+                "escrow_file_number": "",
+                "coverage_start_date": "",
+                "term_end_date": "",
+                "invoice_balance": 0.0,
+                "end_date": "2026-09-08"
+            }
+        },
+        "realty_service_requests": {
+            "15f876c7-ae0b-4c2c-ba92-09da5649883e": {
+                "realty_service_request_id": "15f876c7-ae0b-4c2c-ba92-09da5649883e",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_service_request",
+                "request_date": "2026-05-20",
+                "coverage_phase": "seller_listing",
+                "covered_item": "garage_door_opener",
+                "trade": "garage_door",
+                "request_type": "new_failure",
+                "urgency": "routine",
+                "failure_description": "The garage door opener hums but the door will not lift."
+            },
+            "2644f396-5b50-4d80-83ee-d85980b02cba": {
+                "realty_service_request_id": "2644f396-5b50-4d80-83ee-d85980b02cba",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_service_request",
+                "request_date": "2026-06-09",
+                "coverage_phase": "seller_listing",
+                "covered_item": "cooling_system",
+                "trade": "hvac",
+                "request_type": "new_failure",
+                "urgency": "emergency",
+                "failure_description": "Upstairs air conditioning is blowing warm air and the house is at 88 degrees."
+            },
+            "ebc09940-3b48-433f-8892-fbdd9805f688": {
+                "realty_service_request_id": "ebc09940-3b48-433f-8892-fbdd9805f688",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_service_request",
+                "request_date": "2026-07-14",
+                "coverage_phase": "seller_listing",
+                "covered_item": "water_heater",
+                "trade": "plumbing",
+                "request_type": "new_failure",
+                "urgency": "routine",
+                "failure_description": "Water heater is leaking from the bottom and the pilot keeps going out."
+            },
+            "5dcb2410-4177-4203-abc1-46877eb229a6": {
+                "realty_service_request_id": "5dcb2410-4177-4203-abc1-46877eb229a6",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_service_request",
+                "request_date": "2026-08-03",
+                "coverage_phase": "seller_listing",
+                "covered_item": "kitchen_appliance",
+                "trade": "appliance",
+                "request_type": "new_failure",
+                "urgency": "routine",
+                "failure_description": "Dishwasher will not drain and smells burnt."
+            },
+            "9c11c557-7feb-4c5b-a2a7-f1f4d693b21d": {
+                "realty_service_request_id": "9c11c557-7feb-4c5b-a2a7-f1f4d693b21d",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_service_request",
+                "request_date": "2026-08-22",
+                "coverage_phase": "seller_listing",
+                "covered_item": "electrical",
+                "trade": "electrical",
+                "request_type": "new_failure",
+                "urgency": "emergency",
+                "failure_description": "Half the kitchen outlets went dead after the storm last night."
+            }
+        },
+        "realty_billing_entries": {
+            "563baf7a-cd7d-4845-a221-06e8b47cfc2c": {
+                "realty_billing_entry_id": "563baf7a-cd7d-4845-a221-06e8b47cfc2c",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_invoice",
+                "entry_date": "2026-05-04",
+                "amount": 1495.0,
+                "invoice_number": "2605044417",
+                "due_date": ""
+            },
+            "0e9a28e5-390f-4c46-b918-8c40004f0f60": {
+                "realty_billing_entry_id": "0e9a28e5-390f-4c46-b918-8c40004f0f60",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_credit_memo",
+                "entry_date": "2026-09-08",
+                "amount": 1495.0,
+                "invoice_number": "2605044417",
+                "credit_reason": "order_cancelled"
+            },
+            "fb927376-84c6-40d6-8e90-15b878943a46": {
+                "realty_billing_entry_id": "fb927376-84c6-40d6-8e90-15b878943a46",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_service_fee_charge",
+                "entry_date": "2026-05-20",
+                "amount": 75.0,
+                "realty_service_request_id": "15f876c7-ae0b-4c2c-ba92-09da5649883e"
+            },
+            "143b0062-317e-47b4-be1d-38f7a014de4d": {
+                "realty_billing_entry_id": "143b0062-317e-47b4-be1d-38f7a014de4d",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_service_fee_charge",
+                "entry_date": "2026-06-09",
+                "amount": 75.0,
+                "realty_service_request_id": "2644f396-5b50-4d80-83ee-d85980b02cba"
+            },
+            "ffbcdb37-2a19-4498-9f13-00c38d6d5a64": {
+                "realty_billing_entry_id": "ffbcdb37-2a19-4498-9f13-00c38d6d5a64",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_service_fee_charge",
+                "entry_date": "2026-07-14",
+                "amount": 75.0,
+                "realty_service_request_id": "ebc09940-3b48-433f-8892-fbdd9805f688"
+            },
+            "8d912628-c885-4d44-a2eb-d2daed49f8eb": {
+                "realty_billing_entry_id": "8d912628-c885-4d44-a2eb-d2daed49f8eb",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_service_fee_charge",
+                "entry_date": "2026-08-03",
+                "amount": 75.0,
+                "realty_service_request_id": "5dcb2410-4177-4203-abc1-46877eb229a6"
+            },
+            "568345a7-cbb9-4dc9-8f6a-ebbcc876386d": {
+                "realty_billing_entry_id": "568345a7-cbb9-4dc9-8f6a-ebbcc876386d",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_service_fee_charge",
+                "entry_date": "2026-08-22",
+                "amount": 75.0,
+                "realty_service_request_id": "9c11c557-7feb-4c5b-a2a7-f1f4d693b21d"
+            }
+        },
+        "realty_claim_events": {
+            "10ce17ff-cbfc-4e7d-a118-eed8973ba3d0": {
+                "realty_claim_event_id": "10ce17ff-cbfc-4e7d-a118-eed8973ba3d0",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_contractor_dispatch",
+                "realty_service_request_id": "15f876c7-ae0b-4c2c-ba92-09da5649883e",
+                "event_date": "2026-05-20",
+                "service_contractor_id": "13321daf-5762-4f64-8f3f-7b29f5ca5b93",
+                "dispatch_sequence": 1,
+                "dispatch_reason": "initial"
+            },
+            "ed72f68e-7c7b-4872-81cc-d1b9434f7cb5": {
+                "realty_claim_event_id": "ed72f68e-7c7b-4872-81cc-d1b9434f7cb5",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_coverage_determination",
+                "realty_service_request_id": "15f876c7-ae0b-4c2c-ba92-09da5649883e",
+                "event_date": "2026-05-22",
+                "covered_item": "garage_door_opener",
+                "determination_outcome": "covered"
+            },
+            "53093ebf-6ea2-4628-8634-89a6f524393d": {
+                "realty_claim_event_id": "53093ebf-6ea2-4628-8634-89a6f524393d",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_benefit_authorization",
+                "realty_service_request_id": "15f876c7-ae0b-4c2c-ba92-09da5649883e",
+                "event_date": "2026-05-22",
+                "covered_item": "garage_door_opener",
+                "authorization_number": "2605221190",
+                "resolution_type": "repair",
+                "repair_estimate": 240.0,
+                "replacement_cost": 780.0,
+                "amount": 240.0
+            },
+            "36ae90ff-14dd-43a3-b24c-80ff7c504971": {
+                "realty_claim_event_id": "36ae90ff-14dd-43a3-b24c-80ff7c504971",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_authorization_reversal",
+                "realty_service_request_id": "15f876c7-ae0b-4c2c-ba92-09da5649883e",
+                "event_date": "2026-05-26",
+                "covered_item": "garage_door_opener",
+                "reversed_authorization_number": "2605221190",
+                "reversal_reason": "customer_declined_work",
+                "amount": 240.0
+            },
+            "a2721e7f-0977-4a8d-9534-c3b1d2060fa9": {
+                "realty_claim_event_id": "a2721e7f-0977-4a8d-9534-c3b1d2060fa9",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_contractor_dispatch",
+                "realty_service_request_id": "2644f396-5b50-4d80-83ee-d85980b02cba",
+                "event_date": "2026-06-09",
+                "service_contractor_id": "aa3f99ec-e402-47a5-b9e5-eeb5c038ea7a",
+                "dispatch_sequence": 1,
+                "dispatch_reason": "initial"
+            },
+            "e6fa5f57-90ed-47a1-a5f9-ed9a1a58785b": {
+                "realty_claim_event_id": "e6fa5f57-90ed-47a1-a5f9-ed9a1a58785b",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_contractor_dispatch",
+                "realty_service_request_id": "2644f396-5b50-4d80-83ee-d85980b02cba",
+                "event_date": "2026-06-10",
+                "service_contractor_id": "499aed65-6b57-4108-b56b-1f5ad6f5fd9f",
+                "dispatch_sequence": 2,
+                "dispatch_reason": "redispatch_missed_contact"
+            },
+            "7b26d709-60ca-47a9-b9a4-591f2237afbd": {
+                "realty_claim_event_id": "7b26d709-60ca-47a9-b9a4-591f2237afbd",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_coverage_determination",
+                "realty_service_request_id": "2644f396-5b50-4d80-83ee-d85980b02cba",
+                "event_date": "2026-06-11",
+                "covered_item": "cooling_system",
+                "determination_outcome": "covered"
+            },
+            "8cea8d32-d37f-4b93-9e8e-b6e591884336": {
+                "realty_claim_event_id": "8cea8d32-d37f-4b93-9e8e-b6e591884336",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_benefit_authorization",
+                "realty_service_request_id": "2644f396-5b50-4d80-83ee-d85980b02cba",
+                "event_date": "2026-06-11",
+                "covered_item": "cooling_system",
+                "authorization_number": "2606111207",
+                "resolution_type": "repair",
+                "repair_estimate": 1180.0,
+                "replacement_cost": 6200.0,
+                "amount": 1180.0
+            },
+            "1769c0ce-bcb1-4d2e-a5ea-6b5cdd739885": {
+                "realty_claim_event_id": "1769c0ce-bcb1-4d2e-a5ea-6b5cdd739885",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_contractor_dispatch",
+                "realty_service_request_id": "ebc09940-3b48-433f-8892-fbdd9805f688",
+                "event_date": "2026-07-14",
+                "service_contractor_id": "d51116e4-edeb-4222-9a28-775f9bc6501c",
+                "dispatch_sequence": 1,
+                "dispatch_reason": "initial"
+            },
+            "392aff00-2f64-4ee3-bcf5-02460b6d2ee3": {
+                "realty_claim_event_id": "392aff00-2f64-4ee3-bcf5-02460b6d2ee3",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_coverage_determination",
+                "realty_service_request_id": "ebc09940-3b48-433f-8892-fbdd9805f688",
+                "event_date": "2026-07-16",
+                "covered_item": "water_heater",
+                "determination_outcome": "covered"
+            },
+            "44134ffd-ae09-43b6-9bfa-3788d15ca3dd": {
+                "realty_claim_event_id": "44134ffd-ae09-43b6-9bfa-3788d15ca3dd",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_benefit_authorization",
+                "realty_service_request_id": "ebc09940-3b48-433f-8892-fbdd9805f688",
+                "event_date": "2026-07-16",
+                "covered_item": "water_heater",
+                "authorization_number": "2607161344",
+                "resolution_type": "repair",
+                "repair_estimate": 610.0,
+                "replacement_cost": 1450.0,
+                "amount": 610.0
+            },
+            "0f7c13bf-1e49-4b2e-967c-2c5d26abea01": {
+                "realty_claim_event_id": "0f7c13bf-1e49-4b2e-967c-2c5d26abea01",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_contractor_dispatch",
+                "realty_service_request_id": "5dcb2410-4177-4203-abc1-46877eb229a6",
+                "event_date": "2026-08-03",
+                "service_contractor_id": "df186fe0-6d93-4852-8420-db8c42b68692",
+                "dispatch_sequence": 1,
+                "dispatch_reason": "initial"
+            },
+            "5562b805-718e-4cb7-8626-f024e06debd7": {
+                "realty_claim_event_id": "5562b805-718e-4cb7-8626-f024e06debd7",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_coverage_determination",
+                "realty_service_request_id": "5dcb2410-4177-4203-abc1-46877eb229a6",
+                "event_date": "2026-08-05",
+                "covered_item": "kitchen_appliance",
+                "determination_outcome": "not_covered",
+                "denial_reason": "preexisting_condition"
+            },
+            "505db88b-1c26-4cfc-96b6-14dfc38062f7": {
+                "realty_claim_event_id": "505db88b-1c26-4cfc-96b6-14dfc38062f7",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_contractor_dispatch",
+                "realty_service_request_id": "9c11c557-7feb-4c5b-a2a7-f1f4d693b21d",
+                "event_date": "2026-08-22",
+                "service_contractor_id": "24c7ef81-cc44-4333-be06-71d5aecbba02",
+                "dispatch_sequence": 1,
+                "dispatch_reason": "initial"
+            },
+            "33d9f53a-b89b-45f4-a08f-352524ed0322": {
+                "realty_claim_event_id": "33d9f53a-b89b-45f4-a08f-352524ed0322",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_coverage_determination",
+                "realty_service_request_id": "9c11c557-7feb-4c5b-a2a7-f1f4d693b21d",
+                "event_date": "2026-08-24",
+                "covered_item": "electrical",
+                "determination_outcome": "not_covered",
+                "denial_reason": "misuse_or_external_damage"
+            }
+        },
+        "homeplan_contracts": {
+            "faea47a2-f8ed-429b-9a44-ab2bb6a35758": {
+                "homeplan_contract_id": "faea47a2-f8ed-429b-9a44-ab2bb6a35758",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "variant_name": "Bridgewell HomeCare Silver",
+                "status": "waiting_period",
+                "property_address": "4471 Larkspur Bend Drive, Dublin, OH 43017",
+                "property_zip": "43017",
+                "property_type": "single_family",
+                "square_footage": 3120,
+                "enrollment_channel": "phone",
+                "realty_contract_id": null,
+                "start_date": "2026-09-11",
+                "term_start_date": "2026-09-11",
+                "term_end_date": "2027-09-10",
+                "coverage_effective_date": "2026-10-11",
+                "term_number": 1,
+                "billing_frequency": "monthly",
+                "service_call_fee": 125.0,
+                "auto_renew": true,
+                "renewal_notice_date": "",
+                "last_plan_change_date": "",
+                "prior_variant_name": "none",
+                "premium_balance": 0.0,
+                "suspended_date": "",
+                "end_date": ""
+            }
+        },
+        "homeplan_billing_entries": {
+            "f01697f4-e313-4c21-920b-d3a966c75322": {
+                "homeplan_billing_entry_id": "f01697f4-e313-4c21-920b-d3a966c75322",
+                "homeplan_contract_id": "faea47a2-f8ed-429b-9a44-ab2bb6a35758",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "homeplan_premium_charge",
+                "entry_date": "2026-09-11",
+                "amount": 62.99,
+                "charge_type": "monthly_installment",
+                "billing_period_start": "2026-09-11",
+                "billing_period_end": "2026-10-10"
+            },
+            "c2b3bc45-b0b2-4ee6-8cb1-36edc2bcca30": {
+                "homeplan_billing_entry_id": "c2b3bc45-b0b2-4ee6-8cb1-36edc2bcca30",
+                "homeplan_contract_id": "faea47a2-f8ed-429b-9a44-ab2bb6a35758",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "homeplan_premium_payment",
+                "entry_date": "2026-09-11",
+                "amount": 62.99,
+                "payment_reference": "2HP20260911",
+                "payment_method": "card"
+            }
+        },
+        "hvaccare_agreements": {
+            "6285d4e7-3eab-4268-8c3e-c0883985e1d4": {
+                "hvaccare_agreement_id": "6285d4e7-3eab-4268-8c3e-c0883985e1d4",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "variant_name": "Bridgewell Comfort Care Standard",
+                "status": "active",
+                "property_address": "4471 Larkspur Bend Drive, Dublin, OH 43017",
+                "property_zip": "43017",
+                "systems_enrolled": 1,
+                "equipment_summary": "Carrier 3-ton split air conditioner with 80,000 BTU gas furnace",
+                "billing_frequency": "annual",
+                "start_date": "2024-10-01",
+                "inspection_date": "2024-10-03",
+                "inspection_result": "passed",
+                "term_start_date": "2025-10-01",
+                "term_end_date": "2026-09-30",
+                "term_number": 2,
+                "auto_renew": true,
+                "renewal_notice_date": "2026-08-31",
+                "transfer_date": "",
+                "membership_balance": 0.0,
+                "visits_remaining": 0,
+                "end_date": ""
+            }
+        },
+        "hvaccare_visit_events": {
+            "e803b094-07db-49e9-a39e-0fdf6f630918": {
+                "hvaccare_visit_event_id": "e803b094-07db-49e9-a39e-0fdf6f630918",
+                "hvaccare_agreement_id": "6285d4e7-3eab-4268-8c3e-c0883985e1d4",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "hvaccare_tuneup_visit",
+                "event_date": "2025-09-10",
+                "system_number": 1,
+                "visit_season": "cooling",
+                "visit_status": "completed",
+                "service_contractor_id": "aa3f99ec-e402-47a5-b9e5-eeb5c038ea7a"
+            },
+            "ec368339-cf57-47aa-bf44-cabb47ecf24b": {
+                "hvaccare_visit_event_id": "ec368339-cf57-47aa-bf44-cabb47ecf24b",
+                "hvaccare_agreement_id": "6285d4e7-3eab-4268-8c3e-c0883985e1d4",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "hvaccare_tuneup_visit",
+                "event_date": "2025-10-14",
+                "system_number": 1,
+                "visit_season": "heating",
+                "visit_status": "completed",
+                "service_contractor_id": "aa3f99ec-e402-47a5-b9e5-eeb5c038ea7a"
+            },
+            "339b9fb3-097b-46c7-b2b2-c1af06e387ad": {
+                "hvaccare_visit_event_id": "339b9fb3-097b-46c7-b2b2-c1af06e387ad",
+                "hvaccare_agreement_id": "6285d4e7-3eab-4268-8c3e-c0883985e1d4",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "hvaccare_tuneup_visit",
+                "event_date": "2026-04-22",
+                "system_number": 1,
+                "visit_season": "cooling",
+                "visit_status": "completed",
+                "service_contractor_id": "aa3f99ec-e402-47a5-b9e5-eeb5c038ea7a"
+            }
+        },
+        "lineplan_contracts": {
+            "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21": {
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "variant_name": "Bridgewell Exterior Water Service Line Plan",
+                "status": "active",
+                "property_address": "4471 Larkspur Bend Drive, Dublin, OH 43017",
+                "property_zip": "43017",
+                "property_type": "single_family",
+                "partner_utility": "direct",
+                "billing_channel": "card",
+                "billing_frequency": "monthly",
+                "service_line_material": "copper",
+                "start_date": "2025-12-01",
+                "coverage_effective_date": "2025-12-31",
+                "term_start_date": "2025-12-01",
+                "term_end_date": "2026-11-30",
+                "term_number": 1,
+                "auto_renew": true,
+                "renewal_notice_date": "",
+                "premium_balance": 0.0,
+                "suspended_date": "",
+                "end_date": ""
+            }
+        },
+        "lineplan_billing_entries": {
+            "f0f62b37-1f1d-45cd-aa5f-d4c352f47fa7": {
+                "lineplan_billing_entry_id": "f0f62b37-1f1d-45cd-aa5f-d4c352f47fa7",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_charge",
+                "entry_date": "2025-12-01",
+                "amount": 6.49,
+                "charge_type": "monthly_premium",
+                "billing_period_start": "2025-12-01",
+                "billing_period_end": "2025-12-31"
+            },
+            "f22e78fa-38b7-45e3-b98f-171b9f9e9591": {
+                "lineplan_billing_entry_id": "f22e78fa-38b7-45e3-b98f-171b9f9e9591",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_payment",
+                "entry_date": "2025-12-01",
+                "amount": 6.49,
+                "payment_reference": "2LP20251201",
+                "payment_method": "card"
+            },
+            "2bced8a4-ec0b-4657-b329-0ad9b3b2dc81": {
+                "lineplan_billing_entry_id": "2bced8a4-ec0b-4657-b329-0ad9b3b2dc81",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_charge",
+                "entry_date": "2026-01-01",
+                "amount": 6.49,
+                "charge_type": "monthly_premium",
+                "billing_period_start": "2026-01-01",
+                "billing_period_end": "2026-01-31"
+            },
+            "fd43f83a-9d39-4bec-bd27-f8a7f038f477": {
+                "lineplan_billing_entry_id": "fd43f83a-9d39-4bec-bd27-f8a7f038f477",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_payment",
+                "entry_date": "2026-01-01",
+                "amount": 6.49,
+                "payment_reference": "2LP20260101",
+                "payment_method": "card"
+            },
+            "664f123f-2698-4281-b4c9-d6bde8fed6e1": {
+                "lineplan_billing_entry_id": "664f123f-2698-4281-b4c9-d6bde8fed6e1",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_charge",
+                "entry_date": "2026-02-01",
+                "amount": 6.49,
+                "charge_type": "monthly_premium",
+                "billing_period_start": "2026-02-01",
+                "billing_period_end": "2026-02-28"
+            },
+            "b7de2904-10bf-46a6-897c-308cbd60e7ca": {
+                "lineplan_billing_entry_id": "b7de2904-10bf-46a6-897c-308cbd60e7ca",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_payment",
+                "entry_date": "2026-02-01",
+                "amount": 6.49,
+                "payment_reference": "2LP20260201",
+                "payment_method": "card"
+            },
+            "4f4c67bf-5a80-4dfb-81f5-2e0a146d2031": {
+                "lineplan_billing_entry_id": "4f4c67bf-5a80-4dfb-81f5-2e0a146d2031",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_charge",
+                "entry_date": "2026-03-01",
+                "amount": 6.49,
+                "charge_type": "monthly_premium",
+                "billing_period_start": "2026-03-01",
+                "billing_period_end": "2026-03-31"
+            },
+            "91595487-74cb-4482-8b68-67df1a737c53": {
+                "lineplan_billing_entry_id": "91595487-74cb-4482-8b68-67df1a737c53",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_payment",
+                "entry_date": "2026-03-01",
+                "amount": 6.49,
+                "payment_reference": "2LP20260301",
+                "payment_method": "card"
+            },
+            "1705c7ca-25cf-45e5-8871-633a9b091b6e": {
+                "lineplan_billing_entry_id": "1705c7ca-25cf-45e5-8871-633a9b091b6e",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_charge",
+                "entry_date": "2026-04-01",
+                "amount": 6.49,
+                "charge_type": "monthly_premium",
+                "billing_period_start": "2026-04-01",
+                "billing_period_end": "2026-04-30"
+            },
+            "e029f067-7d38-486a-b3e2-806773f79a71": {
+                "lineplan_billing_entry_id": "e029f067-7d38-486a-b3e2-806773f79a71",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_payment",
+                "entry_date": "2026-04-01",
+                "amount": 6.49,
+                "payment_reference": "2LP20260401",
+                "payment_method": "card"
+            },
+            "92a4a33c-caac-44b0-b5bc-a826ff3747e6": {
+                "lineplan_billing_entry_id": "92a4a33c-caac-44b0-b5bc-a826ff3747e6",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_charge",
+                "entry_date": "2026-05-01",
+                "amount": 6.49,
+                "charge_type": "monthly_premium",
+                "billing_period_start": "2026-05-01",
+                "billing_period_end": "2026-05-31"
+            },
+            "2126ea7a-58d2-4338-be81-fe4660a0583f": {
+                "lineplan_billing_entry_id": "2126ea7a-58d2-4338-be81-fe4660a0583f",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_payment",
+                "entry_date": "2026-05-01",
+                "amount": 6.49,
+                "payment_reference": "2LP20260501",
+                "payment_method": "card"
+            },
+            "76eec699-b4c2-4050-85c1-55f41b640ef2": {
+                "lineplan_billing_entry_id": "76eec699-b4c2-4050-85c1-55f41b640ef2",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_charge",
+                "entry_date": "2026-06-01",
+                "amount": 6.49,
+                "charge_type": "monthly_premium",
+                "billing_period_start": "2026-06-01",
+                "billing_period_end": "2026-06-30"
+            },
+            "e366b931-905a-4b53-a3f6-4ecea7c4b283": {
+                "lineplan_billing_entry_id": "e366b931-905a-4b53-a3f6-4ecea7c4b283",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_payment",
+                "entry_date": "2026-06-01",
+                "amount": 6.49,
+                "payment_reference": "2LP20260601",
+                "payment_method": "card"
+            },
+            "0719ab5b-df33-454e-b776-20fe61190ad5": {
+                "lineplan_billing_entry_id": "0719ab5b-df33-454e-b776-20fe61190ad5",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_charge",
+                "entry_date": "2026-07-01",
+                "amount": 6.49,
+                "charge_type": "monthly_premium",
+                "billing_period_start": "2026-07-01",
+                "billing_period_end": "2026-07-31"
+            },
+            "2b20cb1f-d828-4c88-9e78-32d9f770e3b2": {
+                "lineplan_billing_entry_id": "2b20cb1f-d828-4c88-9e78-32d9f770e3b2",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_payment",
+                "entry_date": "2026-07-01",
+                "amount": 6.49,
+                "payment_reference": "2LP20260701",
+                "payment_method": "card"
+            },
+            "b1951ae7-1f4b-4fbf-b4a1-95ddce860b15": {
+                "lineplan_billing_entry_id": "b1951ae7-1f4b-4fbf-b4a1-95ddce860b15",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_charge",
+                "entry_date": "2026-08-01",
+                "amount": 6.49,
+                "charge_type": "monthly_premium",
+                "billing_period_start": "2026-08-01",
+                "billing_period_end": "2026-08-31"
+            },
+            "8fb64122-770f-4017-a799-8254599256a3": {
+                "lineplan_billing_entry_id": "8fb64122-770f-4017-a799-8254599256a3",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_payment",
+                "entry_date": "2026-08-01",
+                "amount": 6.49,
+                "payment_reference": "2LP20260801",
+                "payment_method": "card"
+            },
+            "64b68169-7b4e-4959-a422-f863fcbb25eb": {
+                "lineplan_billing_entry_id": "64b68169-7b4e-4959-a422-f863fcbb25eb",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_charge",
+                "entry_date": "2026-09-01",
+                "amount": 6.49,
+                "charge_type": "monthly_premium",
+                "billing_period_start": "2026-09-01",
+                "billing_period_end": "2026-09-30"
+            },
+            "1e61c877-94f7-459c-b878-e5249b0ca6c0": {
+                "lineplan_billing_entry_id": "1e61c877-94f7-459c-b878-e5249b0ca6c0",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_payment",
+                "entry_date": "2026-09-01",
+                "amount": 6.49,
+                "payment_reference": "2LP20260901",
+                "payment_method": "card"
+            },
+            "d45623cf-d39f-4498-a6fb-cf093e64186d": {
+                "lineplan_billing_entry_id": "d45623cf-d39f-4498-a6fb-cf093e64186d",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_charge",
+                "entry_date": "2026-03-04",
+                "amount": 6.49,
+                "charge_type": "returned_payment",
+                "payment_reference": "2LP20260301"
+            },
+            "34940ff1-c66f-4e71-a145-f0d3466b77eb": {
+                "lineplan_billing_entry_id": "34940ff1-c66f-4e71-a145-f0d3466b77eb",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_charge",
+                "entry_date": "2026-03-04",
+                "amount": 25.0,
+                "charge_type": "returned_payment_fee",
+                "payment_reference": "2LP20260301"
+            },
+            "59f06696-3110-4518-846f-e2c8fbf75778": {
+                "lineplan_billing_entry_id": "59f06696-3110-4518-846f-e2c8fbf75778",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_payment",
+                "entry_date": "2026-03-09",
+                "amount": 31.49,
+                "payment_reference": "2LP20260309",
+                "payment_method": "card"
+            }
+        },
+        "identity_verifications": {}
+    },
+    "db_closure": {
+        "realty_billing_entries": {
+            "fb927376-84c6-40d6-8e90-15b878943a46": {
+                "realty_billing_entry_id": "fb927376-84c6-40d6-8e90-15b878943a46",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_service_fee_charge",
+                "entry_date": "2026-05-20",
+                "amount": 75.0,
+                "realty_service_request_id": "15f876c7-ae0b-4c2c-ba92-09da5649883e"
+            },
+            "8d912628-c885-4d44-a2eb-d2daed49f8eb": {
+                "realty_billing_entry_id": "8d912628-c885-4d44-a2eb-d2daed49f8eb",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_service_fee_charge",
+                "entry_date": "2026-08-03",
+                "amount": 75.0,
+                "realty_service_request_id": "5dcb2410-4177-4203-abc1-46877eb229a6"
+            },
+            "0e9a28e5-390f-4c46-b918-8c40004f0f60": {
+                "realty_billing_entry_id": "0e9a28e5-390f-4c46-b918-8c40004f0f60",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_credit_memo",
+                "entry_date": "2026-09-08",
+                "amount": 1495.0,
+                "invoice_number": "2605044417",
+                "credit_reason": "order_cancelled"
+            },
+            "143b0062-317e-47b4-be1d-38f7a014de4d": {
+                "realty_billing_entry_id": "143b0062-317e-47b4-be1d-38f7a014de4d",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_service_fee_charge",
+                "entry_date": "2026-06-09",
+                "amount": 75.0,
+                "realty_service_request_id": "2644f396-5b50-4d80-83ee-d85980b02cba"
+            },
+            "568345a7-cbb9-4dc9-8f6a-ebbcc876386d": {
+                "realty_billing_entry_id": "568345a7-cbb9-4dc9-8f6a-ebbcc876386d",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_service_fee_charge",
+                "entry_date": "2026-08-22",
+                "amount": 75.0,
+                "realty_service_request_id": "9c11c557-7feb-4c5b-a2a7-f1f4d693b21d"
+            },
+            "ffbcdb37-2a19-4498-9f13-00c38d6d5a64": {
+                "realty_billing_entry_id": "ffbcdb37-2a19-4498-9f13-00c38d6d5a64",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_service_fee_charge",
+                "entry_date": "2026-07-14",
+                "amount": 75.0,
+                "realty_service_request_id": "ebc09940-3b48-433f-8892-fbdd9805f688"
+            },
+            "563baf7a-cd7d-4845-a221-06e8b47cfc2c": {
+                "realty_billing_entry_id": "563baf7a-cd7d-4845-a221-06e8b47cfc2c",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_invoice",
+                "entry_date": "2026-05-04",
+                "amount": 1495.0,
+                "invoice_number": "2605044417",
+                "due_date": ""
+            }
+        },
+        "lineplan_billing_entries": {
+            "76eec699-b4c2-4050-85c1-55f41b640ef2": {
+                "lineplan_billing_entry_id": "76eec699-b4c2-4050-85c1-55f41b640ef2",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_charge",
+                "entry_date": "2026-06-01",
+                "amount": 6.49,
+                "charge_type": "monthly_premium",
+                "billing_period_start": "2026-06-01",
+                "billing_period_end": "2026-06-30"
+            },
+            "4f4c67bf-5a80-4dfb-81f5-2e0a146d2031": {
+                "lineplan_billing_entry_id": "4f4c67bf-5a80-4dfb-81f5-2e0a146d2031",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_charge",
+                "entry_date": "2026-03-01",
+                "amount": 6.49,
+                "charge_type": "monthly_premium",
+                "billing_period_start": "2026-03-01",
+                "billing_period_end": "2026-03-31"
+            },
+            "2b20cb1f-d828-4c88-9e78-32d9f770e3b2": {
+                "lineplan_billing_entry_id": "2b20cb1f-d828-4c88-9e78-32d9f770e3b2",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_payment",
+                "entry_date": "2026-07-01",
+                "amount": 6.49,
+                "payment_reference": "2LP20260701",
+                "payment_method": "card"
+            },
+            "1705c7ca-25cf-45e5-8871-633a9b091b6e": {
+                "lineplan_billing_entry_id": "1705c7ca-25cf-45e5-8871-633a9b091b6e",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_charge",
+                "entry_date": "2026-04-01",
+                "amount": 6.49,
+                "charge_type": "monthly_premium",
+                "billing_period_start": "2026-04-01",
+                "billing_period_end": "2026-04-30"
+            },
+            "d45623cf-d39f-4498-a6fb-cf093e64186d": {
+                "lineplan_billing_entry_id": "d45623cf-d39f-4498-a6fb-cf093e64186d",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_charge",
+                "entry_date": "2026-03-04",
+                "amount": 6.49,
+                "charge_type": "returned_payment",
+                "payment_reference": "2LP20260301"
+            },
+            "1e61c877-94f7-459c-b878-e5249b0ca6c0": {
+                "lineplan_billing_entry_id": "1e61c877-94f7-459c-b878-e5249b0ca6c0",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_payment",
+                "entry_date": "2026-09-01",
+                "amount": 6.49,
+                "payment_reference": "2LP20260901",
+                "payment_method": "card"
+            },
+            "b1951ae7-1f4b-4fbf-b4a1-95ddce860b15": {
+                "lineplan_billing_entry_id": "b1951ae7-1f4b-4fbf-b4a1-95ddce860b15",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_charge",
+                "entry_date": "2026-08-01",
+                "amount": 6.49,
+                "charge_type": "monthly_premium",
+                "billing_period_start": "2026-08-01",
+                "billing_period_end": "2026-08-31"
+            },
+            "e029f067-7d38-486a-b3e2-806773f79a71": {
+                "lineplan_billing_entry_id": "e029f067-7d38-486a-b3e2-806773f79a71",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_payment",
+                "entry_date": "2026-04-01",
+                "amount": 6.49,
+                "payment_reference": "2LP20260401",
+                "payment_method": "card"
+            },
+            "f22e78fa-38b7-45e3-b98f-171b9f9e9591": {
+                "lineplan_billing_entry_id": "f22e78fa-38b7-45e3-b98f-171b9f9e9591",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_payment",
+                "entry_date": "2025-12-01",
+                "amount": 6.49,
+                "payment_reference": "2LP20251201",
+                "payment_method": "card"
+            },
+            "92a4a33c-caac-44b0-b5bc-a826ff3747e6": {
+                "lineplan_billing_entry_id": "92a4a33c-caac-44b0-b5bc-a826ff3747e6",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_charge",
+                "entry_date": "2026-05-01",
+                "amount": 6.49,
+                "charge_type": "monthly_premium",
+                "billing_period_start": "2026-05-01",
+                "billing_period_end": "2026-05-31"
+            },
+            "f0f62b37-1f1d-45cd-aa5f-d4c352f47fa7": {
+                "lineplan_billing_entry_id": "f0f62b37-1f1d-45cd-aa5f-d4c352f47fa7",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_charge",
+                "entry_date": "2025-12-01",
+                "amount": 6.49,
+                "charge_type": "monthly_premium",
+                "billing_period_start": "2025-12-01",
+                "billing_period_end": "2025-12-31"
+            },
+            "59f06696-3110-4518-846f-e2c8fbf75778": {
+                "lineplan_billing_entry_id": "59f06696-3110-4518-846f-e2c8fbf75778",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_payment",
+                "entry_date": "2026-03-09",
+                "amount": 31.49,
+                "payment_reference": "2LP20260309",
+                "payment_method": "card"
+            },
+            "e366b931-905a-4b53-a3f6-4ecea7c4b283": {
+                "lineplan_billing_entry_id": "e366b931-905a-4b53-a3f6-4ecea7c4b283",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_payment",
+                "entry_date": "2026-06-01",
+                "amount": 6.49,
+                "payment_reference": "2LP20260601",
+                "payment_method": "card"
+            },
+            "664f123f-2698-4281-b4c9-d6bde8fed6e1": {
+                "lineplan_billing_entry_id": "664f123f-2698-4281-b4c9-d6bde8fed6e1",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_charge",
+                "entry_date": "2026-02-01",
+                "amount": 6.49,
+                "charge_type": "monthly_premium",
+                "billing_period_start": "2026-02-01",
+                "billing_period_end": "2026-02-28"
+            },
+            "b7de2904-10bf-46a6-897c-308cbd60e7ca": {
+                "lineplan_billing_entry_id": "b7de2904-10bf-46a6-897c-308cbd60e7ca",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_payment",
+                "entry_date": "2026-02-01",
+                "amount": 6.49,
+                "payment_reference": "2LP20260201",
+                "payment_method": "card"
+            },
+            "91595487-74cb-4482-8b68-67df1a737c53": {
+                "lineplan_billing_entry_id": "91595487-74cb-4482-8b68-67df1a737c53",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_payment",
+                "entry_date": "2026-03-01",
+                "amount": 6.49,
+                "payment_reference": "2LP20260301",
+                "payment_method": "card"
+            },
+            "2126ea7a-58d2-4338-be81-fe4660a0583f": {
+                "lineplan_billing_entry_id": "2126ea7a-58d2-4338-be81-fe4660a0583f",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_payment",
+                "entry_date": "2026-05-01",
+                "amount": 6.49,
+                "payment_reference": "2LP20260501",
+                "payment_method": "card"
+            },
+            "0719ab5b-df33-454e-b776-20fe61190ad5": {
+                "lineplan_billing_entry_id": "0719ab5b-df33-454e-b776-20fe61190ad5",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_charge",
+                "entry_date": "2026-07-01",
+                "amount": 6.49,
+                "charge_type": "monthly_premium",
+                "billing_period_start": "2026-07-01",
+                "billing_period_end": "2026-07-31"
+            },
+            "34940ff1-c66f-4e71-a145-f0d3466b77eb": {
+                "lineplan_billing_entry_id": "34940ff1-c66f-4e71-a145-f0d3466b77eb",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_charge",
+                "entry_date": "2026-03-04",
+                "amount": 25.0,
+                "charge_type": "returned_payment_fee",
+                "payment_reference": "2LP20260301"
+            },
+            "64b68169-7b4e-4959-a422-f863fcbb25eb": {
+                "lineplan_billing_entry_id": "64b68169-7b4e-4959-a422-f863fcbb25eb",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_charge",
+                "entry_date": "2026-09-01",
+                "amount": 6.49,
+                "charge_type": "monthly_premium",
+                "billing_period_start": "2026-09-01",
+                "billing_period_end": "2026-09-30"
+            },
+            "8fb64122-770f-4017-a799-8254599256a3": {
+                "lineplan_billing_entry_id": "8fb64122-770f-4017-a799-8254599256a3",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_payment",
+                "entry_date": "2026-08-01",
+                "amount": 6.49,
+                "payment_reference": "2LP20260801",
+                "payment_method": "card"
+            },
+            "fd43f83a-9d39-4bec-bd27-f8a7f038f477": {
+                "lineplan_billing_entry_id": "fd43f83a-9d39-4bec-bd27-f8a7f038f477",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_payment",
+                "entry_date": "2026-01-01",
+                "amount": 6.49,
+                "payment_reference": "2LP20260101",
+                "payment_method": "card"
+            },
+            "2bced8a4-ec0b-4657-b329-0ad9b3b2dc81": {
+                "lineplan_billing_entry_id": "2bced8a4-ec0b-4657-b329-0ad9b3b2dc81",
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "lineplan_premium_charge",
+                "entry_date": "2026-01-01",
+                "amount": 6.49,
+                "charge_type": "monthly_premium",
+                "billing_period_start": "2026-01-01",
+                "billing_period_end": "2026-01-31"
+            }
+        },
+        "realty_claim_events": {
+            "1769c0ce-bcb1-4d2e-a5ea-6b5cdd739885": {
+                "realty_claim_event_id": "1769c0ce-bcb1-4d2e-a5ea-6b5cdd739885",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_contractor_dispatch",
+                "realty_service_request_id": "ebc09940-3b48-433f-8892-fbdd9805f688",
+                "event_date": "2026-07-14",
+                "service_contractor_id": "d51116e4-edeb-4222-9a28-775f9bc6501c",
+                "dispatch_sequence": 1,
+                "dispatch_reason": "initial"
+            },
+            "33d9f53a-b89b-45f4-a08f-352524ed0322": {
+                "realty_claim_event_id": "33d9f53a-b89b-45f4-a08f-352524ed0322",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_coverage_determination",
+                "realty_service_request_id": "9c11c557-7feb-4c5b-a2a7-f1f4d693b21d",
+                "event_date": "2026-08-24",
+                "covered_item": "electrical",
+                "determination_outcome": "not_covered",
+                "denial_reason": "misuse_or_external_damage"
+            },
+            "53093ebf-6ea2-4628-8634-89a6f524393d": {
+                "realty_claim_event_id": "53093ebf-6ea2-4628-8634-89a6f524393d",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_benefit_authorization",
+                "realty_service_request_id": "15f876c7-ae0b-4c2c-ba92-09da5649883e",
+                "event_date": "2026-05-22",
+                "covered_item": "garage_door_opener",
+                "authorization_number": "2605221190",
+                "resolution_type": "repair",
+                "repair_estimate": 240.0,
+                "replacement_cost": 780.0,
+                "amount": 240.0
+            },
+            "5562b805-718e-4cb7-8626-f024e06debd7": {
+                "realty_claim_event_id": "5562b805-718e-4cb7-8626-f024e06debd7",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_coverage_determination",
+                "realty_service_request_id": "5dcb2410-4177-4203-abc1-46877eb229a6",
+                "event_date": "2026-08-05",
+                "covered_item": "kitchen_appliance",
+                "determination_outcome": "not_covered",
+                "denial_reason": "preexisting_condition"
+            },
+            "e6fa5f57-90ed-47a1-a5f9-ed9a1a58785b": {
+                "realty_claim_event_id": "e6fa5f57-90ed-47a1-a5f9-ed9a1a58785b",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_contractor_dispatch",
+                "realty_service_request_id": "2644f396-5b50-4d80-83ee-d85980b02cba",
+                "event_date": "2026-06-10",
+                "service_contractor_id": "499aed65-6b57-4108-b56b-1f5ad6f5fd9f",
+                "dispatch_sequence": 2,
+                "dispatch_reason": "redispatch_missed_contact"
+            },
+            "8cea8d32-d37f-4b93-9e8e-b6e591884336": {
+                "realty_claim_event_id": "8cea8d32-d37f-4b93-9e8e-b6e591884336",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_benefit_authorization",
+                "realty_service_request_id": "2644f396-5b50-4d80-83ee-d85980b02cba",
+                "event_date": "2026-06-11",
+                "covered_item": "cooling_system",
+                "authorization_number": "2606111207",
+                "resolution_type": "repair",
+                "repair_estimate": 1180.0,
+                "replacement_cost": 6200.0,
+                "amount": 1180.0
+            },
+            "392aff00-2f64-4ee3-bcf5-02460b6d2ee3": {
+                "realty_claim_event_id": "392aff00-2f64-4ee3-bcf5-02460b6d2ee3",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_coverage_determination",
+                "realty_service_request_id": "ebc09940-3b48-433f-8892-fbdd9805f688",
+                "event_date": "2026-07-16",
+                "covered_item": "water_heater",
+                "determination_outcome": "covered"
+            },
+            "ed72f68e-7c7b-4872-81cc-d1b9434f7cb5": {
+                "realty_claim_event_id": "ed72f68e-7c7b-4872-81cc-d1b9434f7cb5",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_coverage_determination",
+                "realty_service_request_id": "15f876c7-ae0b-4c2c-ba92-09da5649883e",
+                "event_date": "2026-05-22",
+                "covered_item": "garage_door_opener",
+                "determination_outcome": "covered"
+            },
+            "0f7c13bf-1e49-4b2e-967c-2c5d26abea01": {
+                "realty_claim_event_id": "0f7c13bf-1e49-4b2e-967c-2c5d26abea01",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_contractor_dispatch",
+                "realty_service_request_id": "5dcb2410-4177-4203-abc1-46877eb229a6",
+                "event_date": "2026-08-03",
+                "service_contractor_id": "df186fe0-6d93-4852-8420-db8c42b68692",
+                "dispatch_sequence": 1,
+                "dispatch_reason": "initial"
+            },
+            "10ce17ff-cbfc-4e7d-a118-eed8973ba3d0": {
+                "realty_claim_event_id": "10ce17ff-cbfc-4e7d-a118-eed8973ba3d0",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_contractor_dispatch",
+                "realty_service_request_id": "15f876c7-ae0b-4c2c-ba92-09da5649883e",
+                "event_date": "2026-05-20",
+                "service_contractor_id": "13321daf-5762-4f64-8f3f-7b29f5ca5b93",
+                "dispatch_sequence": 1,
+                "dispatch_reason": "initial"
+            },
+            "505db88b-1c26-4cfc-96b6-14dfc38062f7": {
+                "realty_claim_event_id": "505db88b-1c26-4cfc-96b6-14dfc38062f7",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_contractor_dispatch",
+                "realty_service_request_id": "9c11c557-7feb-4c5b-a2a7-f1f4d693b21d",
+                "event_date": "2026-08-22",
+                "service_contractor_id": "24c7ef81-cc44-4333-be06-71d5aecbba02",
+                "dispatch_sequence": 1,
+                "dispatch_reason": "initial"
+            },
+            "7b26d709-60ca-47a9-b9a4-591f2237afbd": {
+                "realty_claim_event_id": "7b26d709-60ca-47a9-b9a4-591f2237afbd",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_coverage_determination",
+                "realty_service_request_id": "2644f396-5b50-4d80-83ee-d85980b02cba",
+                "event_date": "2026-06-11",
+                "covered_item": "cooling_system",
+                "determination_outcome": "covered"
+            },
+            "a2721e7f-0977-4a8d-9534-c3b1d2060fa9": {
+                "realty_claim_event_id": "a2721e7f-0977-4a8d-9534-c3b1d2060fa9",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_contractor_dispatch",
+                "realty_service_request_id": "2644f396-5b50-4d80-83ee-d85980b02cba",
+                "event_date": "2026-06-09",
+                "service_contractor_id": "aa3f99ec-e402-47a5-b9e5-eeb5c038ea7a",
+                "dispatch_sequence": 1,
+                "dispatch_reason": "initial"
+            },
+            "36ae90ff-14dd-43a3-b24c-80ff7c504971": {
+                "realty_claim_event_id": "36ae90ff-14dd-43a3-b24c-80ff7c504971",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_authorization_reversal",
+                "realty_service_request_id": "15f876c7-ae0b-4c2c-ba92-09da5649883e",
+                "event_date": "2026-05-26",
+                "covered_item": "garage_door_opener",
+                "reversed_authorization_number": "2605221190",
+                "reversal_reason": "customer_declined_work",
+                "amount": 240.0
+            },
+            "44134ffd-ae09-43b6-9bfa-3788d15ca3dd": {
+                "realty_claim_event_id": "44134ffd-ae09-43b6-9bfa-3788d15ca3dd",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_benefit_authorization",
+                "realty_service_request_id": "ebc09940-3b48-433f-8892-fbdd9805f688",
+                "event_date": "2026-07-16",
+                "covered_item": "water_heater",
+                "authorization_number": "2607161344",
+                "resolution_type": "repair",
+                "repair_estimate": 610.0,
+                "replacement_cost": 1450.0,
+                "amount": 610.0
+            }
+        },
+        "hvaccare_agreements": {
+            "6285d4e7-3eab-4268-8c3e-c0883985e1d4": {
+                "hvaccare_agreement_id": "6285d4e7-3eab-4268-8c3e-c0883985e1d4",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "variant_name": "Bridgewell Comfort Care Standard",
+                "status": "active",
+                "property_address": "4471 Larkspur Bend Drive, Dublin, OH 43017",
+                "property_zip": "43017",
+                "systems_enrolled": 1,
+                "equipment_summary": "Carrier 3-ton split air conditioner with 80,000 BTU gas furnace",
+                "billing_frequency": "annual",
+                "start_date": "2024-10-01",
+                "inspection_date": "2024-10-03",
+                "inspection_result": "passed",
+                "term_start_date": "2025-10-01",
+                "term_end_date": "2026-09-30",
+                "term_number": 2,
+                "auto_renew": true,
+                "renewal_notice_date": "2026-08-31",
+                "transfer_date": "",
+                "membership_balance": 0.0,
+                "visits_remaining": 0,
+                "end_date": ""
+            }
+        },
+        "realty_service_requests": {
+            "2644f396-5b50-4d80-83ee-d85980b02cba": {
+                "realty_service_request_id": "2644f396-5b50-4d80-83ee-d85980b02cba",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_service_request",
+                "request_date": "2026-06-09",
+                "coverage_phase": "seller_listing",
+                "covered_item": "cooling_system",
+                "trade": "hvac",
+                "request_type": "new_failure",
+                "urgency": "emergency",
+                "failure_description": "Upstairs air conditioning is blowing warm air and the house is at 88 degrees."
+            },
+            "9c11c557-7feb-4c5b-a2a7-f1f4d693b21d": {
+                "realty_service_request_id": "9c11c557-7feb-4c5b-a2a7-f1f4d693b21d",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_service_request",
+                "request_date": "2026-08-22",
+                "coverage_phase": "seller_listing",
+                "covered_item": "electrical",
+                "trade": "electrical",
+                "request_type": "new_failure",
+                "urgency": "emergency",
+                "failure_description": "Half the kitchen outlets went dead after the storm last night."
+            },
+            "5dcb2410-4177-4203-abc1-46877eb229a6": {
+                "realty_service_request_id": "5dcb2410-4177-4203-abc1-46877eb229a6",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_service_request",
+                "request_date": "2026-08-03",
+                "coverage_phase": "seller_listing",
+                "covered_item": "kitchen_appliance",
+                "trade": "appliance",
+                "request_type": "new_failure",
+                "urgency": "routine",
+                "failure_description": "Dishwasher will not drain and smells burnt."
+            },
+            "15f876c7-ae0b-4c2c-ba92-09da5649883e": {
+                "realty_service_request_id": "15f876c7-ae0b-4c2c-ba92-09da5649883e",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_service_request",
+                "request_date": "2026-05-20",
+                "coverage_phase": "seller_listing",
+                "covered_item": "garage_door_opener",
+                "trade": "garage_door",
+                "request_type": "new_failure",
+                "urgency": "routine",
+                "failure_description": "The garage door opener hums but the door will not lift."
+            },
+            "ebc09940-3b48-433f-8892-fbdd9805f688": {
+                "realty_service_request_id": "ebc09940-3b48-433f-8892-fbdd9805f688",
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "realty_service_request",
+                "request_date": "2026-07-14",
+                "coverage_phase": "seller_listing",
+                "covered_item": "water_heater",
+                "trade": "plumbing",
+                "request_type": "new_failure",
+                "urgency": "routine",
+                "failure_description": "Water heater is leaking from the bottom and the pilot keeps going out."
+            }
+        },
+        "hvaccare_visit_events": {
+            "ec368339-cf57-47aa-bf44-cabb47ecf24b": {
+                "hvaccare_visit_event_id": "ec368339-cf57-47aa-bf44-cabb47ecf24b",
+                "hvaccare_agreement_id": "6285d4e7-3eab-4268-8c3e-c0883985e1d4",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "hvaccare_tuneup_visit",
+                "event_date": "2025-10-14",
+                "system_number": 1,
+                "visit_season": "heating",
+                "visit_status": "completed",
+                "service_contractor_id": "aa3f99ec-e402-47a5-b9e5-eeb5c038ea7a"
+            },
+            "e803b094-07db-49e9-a39e-0fdf6f630918": {
+                "hvaccare_visit_event_id": "e803b094-07db-49e9-a39e-0fdf6f630918",
+                "hvaccare_agreement_id": "6285d4e7-3eab-4268-8c3e-c0883985e1d4",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "hvaccare_tuneup_visit",
+                "event_date": "2025-09-10",
+                "system_number": 1,
+                "visit_season": "cooling",
+                "visit_status": "completed",
+                "service_contractor_id": "aa3f99ec-e402-47a5-b9e5-eeb5c038ea7a"
+            },
+            "339b9fb3-097b-46c7-b2b2-c1af06e387ad": {
+                "hvaccare_visit_event_id": "339b9fb3-097b-46c7-b2b2-c1af06e387ad",
+                "hvaccare_agreement_id": "6285d4e7-3eab-4268-8c3e-c0883985e1d4",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "hvaccare_tuneup_visit",
+                "event_date": "2026-04-22",
+                "system_number": 1,
+                "visit_season": "cooling",
+                "visit_status": "completed",
+                "service_contractor_id": "aa3f99ec-e402-47a5-b9e5-eeb5c038ea7a"
+            }
+        },
+        "customers": {
+            "77b87d94-8ed9-4374-8e0a-ba62758af3ab": {
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "full_name": "Odalys Pemberton-Quayle",
+                "customer_type": "homeowner",
+                "phone_number": "6145550127",
+                "email": "odalys.pembertonquayle@larkspurmail.com",
+                "mailing_zip": "43017",
+                "payment_card_last4": "2846",
+                "profile_opened_date": "2019-05-14",
+                "brokerage_name": "",
+                "real_estate_license_number": ""
+            }
+        },
+        "service_contractors": {
+            "df186fe0-6d93-4852-8420-db8c42b68692": {
+                "service_contractor_id": "df186fe0-6d93-4852-8420-db8c42b68692",
+                "business_name": "Metro Appliance Service Co.",
+                "trade": "appliance",
+                "service_zip_codes": "43016,43017,43065",
+                "network_status": "preferred",
+                "emergency_service": "not_offered",
+                "license_number": "OH-AP-2230412"
+            },
+            "499aed65-6b57-4108-b56b-1f5ad6f5fd9f": {
+                "service_contractor_id": "499aed65-6b57-4108-b56b-1f5ad6f5fd9f",
+                "business_name": "Tri-Village Heating & Air",
+                "trade": "hvac",
+                "service_zip_codes": "43016,43017,43065",
+                "network_status": "standard",
+                "emergency_service": "offered",
+                "license_number": "OH-HVAC-2219983"
+            },
+            "13321daf-5762-4f64-8f3f-7b29f5ca5b93": {
+                "service_contractor_id": "13321daf-5762-4f64-8f3f-7b29f5ca5b93",
+                "business_name": "Glacier Ridge Garage Doors",
+                "trade": "garage_door",
+                "service_zip_codes": "43016,43017,43065",
+                "network_status": "standard",
+                "emergency_service": "not_offered",
+                "license_number": "OH-GD-2240095"
+            },
+            "24c7ef81-cc44-4333-be06-71d5aecbba02": {
+                "service_contractor_id": "24c7ef81-cc44-4333-be06-71d5aecbba02",
+                "business_name": "Sawmill Road Electric",
+                "trade": "electrical",
+                "service_zip_codes": "43016,43017,43065",
+                "network_status": "preferred",
+                "emergency_service": "offered",
+                "license_number": "OH-EL-2211868"
+            },
+            "d51116e4-edeb-4222-9a28-775f9bc6501c": {
+                "service_contractor_id": "d51116e4-edeb-4222-9a28-775f9bc6501c",
+                "business_name": "Dublin Pipe & Drain",
+                "trade": "plumbing",
+                "service_zip_codes": "43016,43017,43065",
+                "network_status": "preferred",
+                "emergency_service": "offered",
+                "license_number": "OH-PL-2207716"
+            },
+            "aa3f99ec-e402-47a5-b9e5-eeb5c038ea7a": {
+                "service_contractor_id": "aa3f99ec-e402-47a5-b9e5-eeb5c038ea7a",
+                "business_name": "Buckeye Comfort Mechanical",
+                "trade": "hvac",
+                "service_zip_codes": "43016,43017,43065",
+                "network_status": "preferred",
+                "emergency_service": "offered",
+                "license_number": "OH-HVAC-2214405"
+            }
+        },
+        "lineplan_contracts": {
+            "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21": {
+                "lineplan_contract_id": "1f93e5f9-cb55-46e6-838f-fc8d85f9ed21",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "variant_name": "Bridgewell Exterior Water Service Line Plan",
+                "status": "active",
+                "property_address": "4471 Larkspur Bend Drive, Dublin, OH 43017",
+                "property_zip": "43017",
+                "property_type": "single_family",
+                "partner_utility": "direct",
+                "billing_channel": "card",
+                "billing_frequency": "monthly",
+                "service_line_material": "copper",
+                "start_date": "2025-12-01",
+                "coverage_effective_date": "2025-12-31",
+                "term_start_date": "2025-12-01",
+                "term_end_date": "2026-11-30",
+                "term_number": 1,
+                "auto_renew": true,
+                "renewal_notice_date": "",
+                "premium_balance": 0.0,
+                "suspended_date": "",
+                "end_date": ""
+            }
+        },
+        "realty_contracts": {
+            "58622c13-f20c-4edc-8009-e5dfc1fd788b": {
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "variant_name": "Bridgewell Closing Premier Two-Year",
+                "status": "cancelled",
+                "order_type": "listing_with_seller_coverage",
+                "ordering_agent_license_number": "2017003318",
+                "ordering_agent_side": "listing_agent",
+                "property_address": "4471 Larkspur Bend Drive, Dublin, OH 43017",
+                "property_zip": "43017",
+                "property_type": "single_family",
+                "unit_count": 1,
+                "square_footage": 3120,
+                "home_inspection_completed": false,
+                "certificate_of_occupancy_date": "",
+                "order_date": "2026-05-04",
+                "listing_coverage_end_date": "2026-10-31",
+                "listing_extension_count": 0,
+                "expected_closing_date": "",
+                "closing_date": "",
+                "escrow_file_number": "",
+                "coverage_start_date": "",
+                "term_end_date": "",
+                "invoice_balance": 0.0,
+                "end_date": "2026-09-08"
+            }
+        },
+        "homeplan_contracts": {
+            "faea47a2-f8ed-429b-9a44-ab2bb6a35758": {
+                "homeplan_contract_id": "faea47a2-f8ed-429b-9a44-ab2bb6a35758",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "variant_name": "Bridgewell HomeCare Silver",
+                "status": "waiting_period",
+                "property_address": "4471 Larkspur Bend Drive, Dublin, OH 43017",
+                "property_zip": "43017",
+                "property_type": "single_family",
+                "square_footage": 3120,
+                "enrollment_channel": "phone",
+                "realty_contract_id": null,
+                "start_date": "2026-09-11",
+                "term_start_date": "2026-09-11",
+                "term_end_date": "2027-09-10",
+                "coverage_effective_date": "2026-10-11",
+                "term_number": 1,
+                "billing_frequency": "monthly",
+                "service_call_fee": 125.0,
+                "auto_renew": true,
+                "renewal_notice_date": "",
+                "last_plan_change_date": "",
+                "prior_variant_name": "none",
+                "premium_balance": 0.0,
+                "suspended_date": "",
+                "end_date": ""
+            }
+        },
+        "homeplan_billing_entries": {
+            "f01697f4-e313-4c21-920b-d3a966c75322": {
+                "homeplan_billing_entry_id": "f01697f4-e313-4c21-920b-d3a966c75322",
+                "homeplan_contract_id": "faea47a2-f8ed-429b-9a44-ab2bb6a35758",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "homeplan_premium_charge",
+                "entry_date": "2026-09-11",
+                "amount": 62.99,
+                "charge_type": "monthly_installment",
+                "billing_period_start": "2026-09-11",
+                "billing_period_end": "2026-10-10"
+            },
+            "c2b3bc45-b0b2-4ee6-8cb1-36edc2bcca30": {
+                "homeplan_billing_entry_id": "c2b3bc45-b0b2-4ee6-8cb1-36edc2bcca30",
+                "homeplan_contract_id": "faea47a2-f8ed-429b-9a44-ab2bb6a35758",
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "event_type": "homeplan_premium_payment",
+                "entry_date": "2026-09-11",
+                "amount": 62.99,
+                "payment_reference": "2HP20260911",
+                "payment_method": "card"
+            }
+        }
+    },
+    "db_closure_matches_initial_state": true,
+    "solvability_contract": {
+        "request_binding_version": 1,
+        "request_alignment": [
+            {
+                "claim": "The seller wants to settle what she owes for listing-period repairs on her withdrawn listing, spread over a few months if allowed, paying the first part today by card.",
+                "evidence": [
+                    "user_scenario:you would like to spread what you owe over a few months if Bridgewell allows that, and pay the first part today on the card you have on file with Bridgewell"
+                ]
+            }
+        ],
+        "gold_actions": [
+            {
+                "step": 14,
+                "business_effect": "Posts the failed-sale charge invoice on the withdrawn listing order, due 2026-10-15, raising the order invoice balance.",
+                "request_binding": {
+                    "action_semantics": "The order ended without a closing on 2026-09-08 and carries seller-phase benefit, so a failed-sale charge is owed by the state of the records; it is the only write that books the failed-sale charge invoice the settlement waits on.",
+                    "intent_source": {
+                        "kind": "initial_state",
+                        "evidence": [
+                            "initial_state.realty_contracts.58622c13-f20c-4edc-8009-e5dfc1fd788b.status",
+                            "initial_state.realty_contracts.58622c13-f20c-4edc-8009-e5dfc1fd788b.closing_date",
+                            "initial_state.realty_claim_events.8cea8d32-d37f-4b93-9e8e-b6e591884336.amount"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "a listing order cancelled before any closing, with seller-phase benefit paid and no failed-sale charge billed yet",
+                        "evidence": [
+                            "initial_state.realty_contracts.58622c13-f20c-4edc-8009-e5dfc1fd788b.status",
+                            "initial_state.realty_billing_entries.563baf7a-cd7d-4845-a221-06e8b47cfc2c.event_type"
+                        ],
+                        "action_arg": "realty_contract_id",
+                        "value": "58622c13-f20c-4edc-8009-e5dfc1fd788b"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "performed_by_this_tool",
+                    "fact": "The failed-sale charge invoice is posted by this write on the spot.",
+                    "evidence": [
+                        "initial_state.realty_contracts.58622c13-f20c-4edc-8009-e5dfc1fd788b.status"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "realty_failed_sale_charges",
+                        "eligibility_id": "failed_sale_only_on_unclosed_order",
+                        "condition": "A failed-sale charge is billed only on an order in status listing_expired or cancelled that never recorded a closing.",
+                        "evidence": [
+                            "initial_state.realty_contracts.58622c13-f20c-4edc-8009-e5dfc1fd788b.status",
+                            "initial_state.realty_contracts.58622c13-f20c-4edc-8009-e5dfc1fd788b.closing_date",
+                            "initial_state.realty_contracts.58622c13-f20c-4edc-8009-e5dfc1fd788b.realty_contract_id"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "realty_contracts.realty_contract_id",
+                                "source": "initial_state.realty_contracts.58622c13-f20c-4edc-8009-e5dfc1fd788b.realty_contract_id",
+                                "action_arg": "realty_contract_id"
+                            }
+                        ],
+                        "satisfied": true
+                    },
+                    {
+                        "policy_id": "realty_failed_sale_charges",
+                        "eligibility_id": "one_failed_sale_charge_per_order",
+                        "condition": "Only one failed-sale charge is billed per order.",
+                        "evidence": [
+                            "initial_state.realty_billing_entries.563baf7a-cd7d-4845-a221-06e8b47cfc2c.realty_contract_id",
+                            "initial_state.realty_billing_entries.563baf7a-cd7d-4845-a221-06e8b47cfc2c.event_type",
+                            "initial_state.realty_billing_entries.0e9a28e5-390f-4c46-b918-8c40004f0f60.event_type"
+                        ],
+                        "evidence_bindings": [
+                            {
+                                "gate_field": "realty_billing_entries.realty_contract_id",
+                                "source": "initial_state.realty_billing_entries.563baf7a-cd7d-4845-a221-06e8b47cfc2c.realty_contract_id",
+                                "action_arg": "realty_contract_id"
+                            }
+                        ],
+                        "satisfied": true
+                    }
+                ]
+            },
+            {
+                "step": 16,
+                "business_effect": "The seller posts the first settlement payment by card against the failed-sale invoice; the rest of the charge stays open and falls due in the monthly installment on the charge due date.",
+                "request_binding": {
+                    "action_semantics": "The caller asks to spread what she owes and pay the first part herself by card; that selects a seller settlement payment against the failed-sale invoice under the settlement plan, not a charge, credit or refund.",
+                    "intent_source": {
+                        "kind": "user_scenario",
+                        "evidence": [
+                            "user_scenario:you would like to spread what you owe over a few months if Bridgewell allows that, and pay the first part today on the card you have on file with Bridgewell"
+                        ]
+                    },
+                    "discriminator": {
+                        "business_meaning": "spread what you owe over a few months",
+                        "evidence": [
+                            "user_scenario:you would like to spread what you owe over a few months if Bridgewell allows that, and pay the first part today on the card you have on file with Bridgewell"
+                        ],
+                        "action_arg": "invoice_number",
+                        "value": "FS-C8A1BAB2B7"
+                    }
+                },
+                "stage_provenance": {
+                    "kind": "established_by_prior_tool",
+                    "fact": "The failed-sale charge invoice being paid was posted by the billing write earlier in this call.",
+                    "evidence": [
+                        "prior_step:14"
+                    ]
+                },
+                "base_preconditions": [
+                    {
+                        "policy_id": "realty_closing_and_escrow",
+                        "eligibility_id": "policy_scope",
+                        "condition": "Payments are applied to the oldest open invoice first; the escrow-window gates of this policy govern coverage activation and voiding, not a payment.",
+                        "evidence": [
+                            "prior_step:14",
+                            "initial_state.realty_billing_entries.0e9a28e5-390f-4c46-b918-8c40004f0f60.amount"
+                        ],
+                        "evidence_bindings": [],
+                        "satisfied": true
+                    }
+                ]
+            }
+        ],
+        "temporal_feasibility": [],
+        "required_user_inputs": [
+            {
+                "information": "Phone number used to locate and verify the caller",
+                "source": "user_scenario:6145550127"
+            },
+            {
+                "information": "Mailing ZIP code as the second verification credential",
+                "source": "user_scenario:43017"
+            },
+            {
+                "information": "Which property and order the call is about",
+                "source": "user_scenario:4471 Larkspur Bend Drive, Dublin, OH 43017"
+            },
+            {
+                "information": "That she has made no earlier payment toward the listing-period repairs",
+                "source": "user_scenario:you say no, nothing yet"
+            },
+            {
+                "information": "That she asks to spread the charge and pay the first part by card on file",
+                "source": "user_scenario:you would like to spread what you owe over a few months if Bridgewell allows that, and pay the first part today on the card you have on file with Bridgewell"
+            }
+        ],
+        "seed_consistency": [
+            {
+                "row": "initial_state.realty_contracts.58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                "policy_id": "realty_closing_and_escrow",
+                "check": "Listing order on Bridgewell Closing Premier Two-Year ordered 2026-05-04 by the listing agent (license 2017003318 on the order), listing_coverage_end_date 2026-10-31 = order_date + 180 seller_coverage_max_days, no extension, cancelled by the agent before closing on 2026-09-08 (end_date), no closing fields, invoice balance 0.00 = invoice 1,495.00 less the full order_cancelled credit.",
+                "evidence": [
+                    "initial_state.realty_contracts.58622c13-f20c-4edc-8009-e5dfc1fd788b.order_date",
+                    "initial_state.realty_contracts.58622c13-f20c-4edc-8009-e5dfc1fd788b.end_date",
+                    "initial_state.realty_contracts.58622c13-f20c-4edc-8009-e5dfc1fd788b.ordering_agent_license_number"
+                ]
+            },
+            {
+                "row": "initial_state.realty_billing_entries.563baf7a-cd7d-4845-a221-06e8b47cfc2c",
+                "policy_id": "realty_premium_pricing",
+                "check": "Plan premium invoice 1,495.00 = base_premium 1,495.00 for a single-family home of 3,120 sq ft (below 5,000, no unit or condo adjustment), invoiced once at order while in listing_coverage.",
+                "evidence": [
+                    "initial_state.realty_contracts.58622c13-f20c-4edc-8009-e5dfc1fd788b.square_footage"
+                ]
+            },
+            {
+                "row": "initial_state.realty_billing_entries.0e9a28e5-390f-4c46-b918-8c40004f0f60",
+                "policy_id": "realty_cancellation_and_credits",
+                "check": "Order cancelled before closing on 2026-09-08: plan invoice 2605044417 credited in full (1,495.00, order_cancelled) on the cancellation date; one credit per invoice and reason; nothing was paid on it, so no credit balance or refund arises.",
+                "evidence": [
+                    "initial_state.realty_billing_entries.563baf7a-cd7d-4845-a221-06e8b47cfc2c.invoice_number"
+                ]
+            },
+            {
+                "row": "initial_state.realty_service_requests.2644f396-5b50-4d80-83ee-d85980b02cba",
+                "policy_id": "realty_evt_service_request_and_fees",
+                "check": "Seller-phase new_failure request placed by the seller while the order was in listing_coverage (between 2026-05-04 and 2026-09-08).",
+                "evidence": [
+                    "initial_state.realty_service_requests.2644f396-5b50-4d80-83ee-d85980b02cba.request_date"
+                ]
+            },
+            {
+                "row": "initial_state.realty_billing_entries.143b0062-317e-47b4-be1d-38f7a014de4d",
+                "policy_id": "realty_evt_service_request_and_fees",
+                "check": "Seller service call fee 75.00 (seller_service_call_fee of the plan) charged once on the new_failure request on its request date; not refundable (the request was dispatched).",
+                "evidence": [
+                    "initial_state.realty_billing_entries.143b0062-317e-47b4-be1d-38f7a014de4d.realty_service_request_id"
+                ]
+            },
+            {
+                "row": "initial_state.realty_service_requests.ebc09940-3b48-433f-8892-fbdd9805f688",
+                "policy_id": "realty_evt_service_request_and_fees",
+                "check": "Seller-phase new_failure request placed by the seller while the order was in listing_coverage (between 2026-05-04 and 2026-09-08).",
+                "evidence": [
+                    "initial_state.realty_service_requests.ebc09940-3b48-433f-8892-fbdd9805f688.request_date"
+                ]
+            },
+            {
+                "row": "initial_state.realty_billing_entries.ffbcdb37-2a19-4498-9f13-00c38d6d5a64",
+                "policy_id": "realty_evt_service_request_and_fees",
+                "check": "Seller service call fee 75.00 (seller_service_call_fee of the plan) charged once on the new_failure request on its request date; not refundable (the request was dispatched).",
+                "evidence": [
+                    "initial_state.realty_billing_entries.ffbcdb37-2a19-4498-9f13-00c38d6d5a64.realty_service_request_id"
+                ]
+            },
+            {
+                "row": "initial_state.realty_service_requests.5dcb2410-4177-4203-abc1-46877eb229a6",
+                "policy_id": "realty_evt_service_request_and_fees",
+                "check": "Seller-phase new_failure request placed by the seller while the order was in listing_coverage (between 2026-05-04 and 2026-09-08).",
+                "evidence": [
+                    "initial_state.realty_service_requests.5dcb2410-4177-4203-abc1-46877eb229a6.request_date"
+                ]
+            },
+            {
+                "row": "initial_state.realty_billing_entries.8d912628-c885-4d44-a2eb-d2daed49f8eb",
+                "policy_id": "realty_evt_service_request_and_fees",
+                "check": "Seller service call fee 75.00 (seller_service_call_fee of the plan) charged once on the new_failure request on its request date; not refundable (the request was dispatched).",
+                "evidence": [
+                    "initial_state.realty_billing_entries.8d912628-c885-4d44-a2eb-d2daed49f8eb.realty_service_request_id"
+                ]
+            },
+            {
+                "row": "initial_state.realty_service_requests.9c11c557-7feb-4c5b-a2a7-f1f4d693b21d",
+                "policy_id": "realty_evt_service_request_and_fees",
+                "check": "Seller-phase new_failure request placed by the seller while the order was in listing_coverage (between 2026-05-04 and 2026-09-08).",
+                "evidence": [
+                    "initial_state.realty_service_requests.9c11c557-7feb-4c5b-a2a7-f1f4d693b21d.request_date"
+                ]
+            },
+            {
+                "row": "initial_state.realty_billing_entries.568345a7-cbb9-4dc9-8f6a-ebbcc876386d",
+                "policy_id": "realty_evt_service_request_and_fees",
+                "check": "Seller service call fee 75.00 (seller_service_call_fee of the plan) charged once on the new_failure request on its request date; not refundable (the request was dispatched).",
+                "evidence": [
+                    "initial_state.realty_billing_entries.568345a7-cbb9-4dc9-8f6a-ebbcc876386d.realty_service_request_id"
+                ]
+            },
+            {
+                "row": "initial_state.realty_service_requests.15f876c7-ae0b-4c2c-ba92-09da5649883e",
+                "policy_id": "realty_evt_service_request_and_fees",
+                "check": "Seller-phase new_failure request placed by the seller while the order was in listing_coverage (between 2026-05-04 and 2026-09-08).",
+                "evidence": [
+                    "initial_state.realty_service_requests.15f876c7-ae0b-4c2c-ba92-09da5649883e.request_date"
+                ]
+            },
+            {
+                "row": "initial_state.realty_billing_entries.fb927376-84c6-40d6-8e90-15b878943a46",
+                "policy_id": "realty_evt_service_request_and_fees",
+                "check": "Seller service call fee 75.00 (seller_service_call_fee of the plan) charged once on the new_failure request on its request date; not refundable (the request was dispatched).",
+                "evidence": [
+                    "initial_state.realty_billing_entries.fb927376-84c6-40d6-8e90-15b878943a46.realty_service_request_id"
+                ]
+            },
+            {
+                "row": "initial_state.realty_claim_events.10ce17ff-cbfc-4e7d-a118-eed8973ba3d0",
+                "policy_id": "realty_evt_dispatch",
+                "check": "Initial dispatch to the garage door contractor serving 43017.",
+                "evidence": [
+                    "initial_state.realty_claim_events.10ce17ff-cbfc-4e7d-a118-eed8973ba3d0.event_date"
+                ]
+            },
+            {
+                "row": "initial_state.realty_claim_events.a2721e7f-0977-4a8d-9534-c3b1d2060fa9",
+                "policy_id": "realty_evt_dispatch",
+                "check": "Initial emergency dispatch to the preferred HVAC contractor.",
+                "evidence": [
+                    "initial_state.realty_claim_events.a2721e7f-0977-4a8d-9534-c3b1d2060fa9.event_date"
+                ]
+            },
+            {
+                "row": "initial_state.realty_claim_events.e6fa5f57-90ed-47a1-a5f9-ed9a1a58785b",
+                "policy_id": "realty_evt_dispatch",
+                "check": "Second dispatch (sequence 2) to another HVAC contractor after the first missed the emergency contact window.",
+                "evidence": [
+                    "initial_state.realty_claim_events.e6fa5f57-90ed-47a1-a5f9-ed9a1a58785b.event_date"
+                ]
+            },
+            {
+                "row": "initial_state.realty_claim_events.1769c0ce-bcb1-4d2e-a5ea-6b5cdd739885",
+                "policy_id": "realty_evt_dispatch",
+                "check": "Initial dispatch to the plumbing contractor.",
+                "evidence": [
+                    "initial_state.realty_claim_events.1769c0ce-bcb1-4d2e-a5ea-6b5cdd739885.event_date"
+                ]
+            },
+            {
+                "row": "initial_state.realty_claim_events.0f7c13bf-1e49-4b2e-967c-2c5d26abea01",
+                "policy_id": "realty_evt_dispatch",
+                "check": "Initial dispatch to the appliance contractor.",
+                "evidence": [
+                    "initial_state.realty_claim_events.0f7c13bf-1e49-4b2e-967c-2c5d26abea01.event_date"
+                ]
+            },
+            {
+                "row": "initial_state.realty_claim_events.505db88b-1c26-4cfc-96b6-14dfc38062f7",
+                "policy_id": "realty_evt_dispatch",
+                "check": "Initial emergency dispatch to the electrical contractor.",
+                "evidence": [
+                    "initial_state.realty_claim_events.505db88b-1c26-4cfc-96b6-14dfc38062f7.event_date"
+                ]
+            },
+            {
+                "row": "initial_state.realty_claim_events.ed72f68e-7c7b-4872-81cc-d1b9434f7cb5",
+                "policy_id": "realty_evt_coverage_determination",
+                "check": "Garage door opener covered (plan cap above 0.00).",
+                "evidence": [
+                    "initial_state.realty_claim_events.ed72f68e-7c7b-4872-81cc-d1b9434f7cb5.event_date"
+                ]
+            },
+            {
+                "row": "initial_state.realty_claim_events.7b26d709-60ca-47a9-b9a4-591f2237afbd",
+                "policy_id": "realty_evt_coverage_determination",
+                "check": "Cooling covered in the seller phase (seller_hvac_covered true).",
+                "evidence": [
+                    "initial_state.realty_claim_events.7b26d709-60ca-47a9-b9a4-591f2237afbd.event_date"
+                ]
+            },
+            {
+                "row": "initial_state.realty_claim_events.392aff00-2f64-4ee3-bcf5-02460b6d2ee3",
+                "policy_id": "realty_evt_coverage_determination",
+                "check": "Water heater covered.",
+                "evidence": [
+                    "initial_state.realty_claim_events.392aff00-2f64-4ee3-bcf5-02460b6d2ee3.event_date"
+                ]
+            },
+            {
+                "row": "initial_state.realty_claim_events.5562b805-718e-4cb7-8626-f024e06debd7",
+                "policy_id": "realty_evt_coverage_determination",
+                "check": "Dishwasher not covered: pre-existing before order_date.",
+                "evidence": [
+                    "initial_state.realty_claim_events.5562b805-718e-4cb7-8626-f024e06debd7.event_date"
+                ]
+            },
+            {
+                "row": "initial_state.realty_claim_events.33d9f53a-b89b-45f4-a08f-352524ed0322",
+                "policy_id": "realty_evt_coverage_determination",
+                "check": "Electrical not covered: storm damage is an external cause.",
+                "evidence": [
+                    "initial_state.realty_claim_events.33d9f53a-b89b-45f4-a08f-352524ed0322.event_date"
+                ]
+            },
+            {
+                "row": "initial_state.realty_claim_events.53093ebf-6ea2-4628-8634-89a6f524393d",
+                "policy_id": "realty_evt_benefit_authorization",
+                "check": "Repair 240.00 (estimate below 0.6 x 780.00), within the 2,000.00 seller item cap.",
+                "evidence": [
+                    "initial_state.realty_claim_events.53093ebf-6ea2-4628-8634-89a6f524393d.event_date"
+                ]
+            },
+            {
+                "row": "initial_state.realty_claim_events.36ae90ff-14dd-43a3-b24c-80ff7c504971",
+                "policy_id": "realty_evt_benefit_authorization",
+                "check": "Repair declined by the seller before work: authorization 2605221190 reversed in full.",
+                "evidence": [
+                    "initial_state.realty_claim_events.36ae90ff-14dd-43a3-b24c-80ff7c504971.event_date"
+                ]
+            },
+            {
+                "row": "initial_state.realty_claim_events.8cea8d32-d37f-4b93-9e8e-b6e591884336",
+                "policy_id": "realty_evt_benefit_authorization",
+                "check": "Repair 1,180.00 (estimate below 0.6 x 6,200.00), within the seller item cap 2,000.00 and aggregate 4,000.00.",
+                "evidence": [
+                    "initial_state.realty_claim_events.8cea8d32-d37f-4b93-9e8e-b6e591884336.event_date"
+                ]
+            },
+            {
+                "row": "initial_state.realty_claim_events.44134ffd-ae09-43b6-9bfa-3788d15ca3dd",
+                "policy_id": "realty_evt_benefit_authorization",
+                "check": "Repair 610.00 (estimate below 0.6 x 1,450.00), within caps; seller aggregate used 1,790.00 net.",
+                "evidence": [
+                    "initial_state.realty_claim_events.44134ffd-ae09-43b6-9bfa-3788d15ca3dd.event_date"
+                ]
+            }
+        ]
+    },
+    "evaluation_criteria": [
+        {
+            "owner": "agent",
+            "tool": "find_customers",
+            "arguments": {
+                "phone_number": "6145550127"
+            },
+            "objective": "Locate the caller profile from the phone number she states.",
+            "necessity": "Every later read and write needs her customer reference."
+        },
+        {
+            "owner": "agent",
+            "tool": "verify_customer_identity",
+            "arguments": {
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab",
+                "phone_number": "6145550127",
+                "mailing_zip": "43017"
+            },
+            "objective": "Verify the caller with two stated credentials (phone number and mailing ZIP).",
+            "necessity": "Identity must be verified before account details are discussed or any charge or payment is handled."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_realty_contracts",
+            "arguments": {
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab"
+            },
+            "objective": "Read the withdrawn listing order: status cancelled, no closing, plan Bridgewell Closing Premier Two-Year, order_date 2026-05-04, end_date 2026-09-08, property address.",
+            "necessity": "Gives the failed-sale eligibility (cancelled, never closed), the days in force for the listing cap proration, the end date the keep-home window counts from, and the plan."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_realty_billing_entries",
+            "arguments": {
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b"
+            },
+            "objective": "Read the order ledger: the plan invoice, its full order_cancelled credit, five seller service call fees, no failed-sale charge and no seller payment.",
+            "necessity": "Supplies the plan premium invoiced, shows that no failed-sale charge is billed yet (the state the settlement payment waits on) and that the seller has made no earlier payment (installment split)."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_realty_service_requests",
+            "arguments": {
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b"
+            },
+            "objective": "Read the five seller-phase requests with urgency and trade.",
+            "necessity": "Counts the emergency seller-phase requests and whether one was in the hvac trade, for the after-hours dispatch recovery."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_realty_claim_events",
+            "arguments": {
+                "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b"
+            },
+            "objective": "Read dispatches, determinations, authorizations and the reversal on the order.",
+            "necessity": "Gives the seller-phase benefit paid (authorizations less the reversal), the net cooling benefit for the maintained-system credit, and the one re-dispatch after a missed contact window for the missed-contact service credit."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_service_contractors",
+            "arguments": {},
+            "objective": "List the network contractors named on the dispatches and tune-ups.",
+            "necessity": "Shows that the second cooling dispatch went to a different contractor because the first missed the emergency contact window, the re-dispatch the missed-contact service credit counts."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_homeplan_contracts",
+            "arguments": {
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab"
+            },
+            "objective": "Read the seller homeowner contract on the same address: HomeCare Silver, start_date 2026-09-11, status waiting_period.",
+            "necessity": "Decides the keep-home waiver tier (start 3 days after the end date; tier monthly premium below the upper threshold) and shows the contract is not yet active for the tenure count."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_homeplan_billing_entries",
+            "arguments": {
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab"
+            },
+            "objective": "Read the homeowner billing rows: the first installment and its payment, no returned payment.",
+            "necessity": "Counts returned payments on homeowner contracts for the payment-history down payment share."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_hvaccare_agreements",
+            "arguments": {
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab"
+            },
+            "objective": "Read the seller HVAC maintenance agreement: active, same property address.",
+            "necessity": "The maintained-system credit applies only to an active maintenance agreement on the same address."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_hvaccare_visit_events",
+            "arguments": {
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab"
+            },
+            "objective": "Read the tune-up visits: 2025-09-10 (outside twelve months), 2025-10-14 and 2026-04-22.",
+            "necessity": "Counts completed tune-ups in the twelve months before the billing date for the maintained-system credit tier."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_lineplan_contracts",
+            "arguments": {
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab"
+            },
+            "objective": "Read the seller line plan: Exterior Water Service Line Plan, active since 2025-12-01, billed to a card.",
+            "necessity": "Gives the coverage tenure (start date) and the billing channel (card) for the tenure share and the autopay relief."
+        },
+        {
+            "owner": "agent",
+            "tool": "find_lineplan_billing_entries",
+            "arguments": {
+                "customer_id": "77b87d94-8ed9-4374-8e0a-ba62758af3ab"
+            },
+            "objective": "Read the line plan billing: monthly premiums and payments, and the returned payment billed back on 2026-03-04.",
+            "necessity": "Counts the returned payments in the twelve months before settlement for the payment-history down payment share."
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "bill_failed_sale_charge_3e9b31c4"
+            },
+            "objective": "Unlock the failed-sale billing write.",
+            "necessity": "First half of the unlock/call pair for the failed-sale charge; no DB effect."
+        },
+        {
+            "owner": "agent",
+            "tool": "call_agent_discoverable_tool",
+            "arguments": {
+                "tool_name": "bill_failed_sale_charge_3e9b31c4",
+                "arguments": {
+                    "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                    "amount": 869.87,
+                    "due_date": "2026-10-15"
+                }
+            },
+            "objective": "Bill the failed-sale charge on the withdrawn listing order, due 30 days after billing.",
+            "necessity": "realty_ext_failed_sale_charge computes the amount; the settlement payment waits on the failed-sale charge invoice this write posts.",
+            "argument_uniqueness_tracing": {
+                "realty_contract_id": "(1) 58622c13-f20c-4edc-8009-e5dfc1fd788b. (2) Basis: the real estate contract lookup by the caller's customer reference returns one order, the Larkspur Bend Drive listing order in status cancelled; the tool docstring: 'the real estate contract (plan) number of the listing order being billed, as shown by the real estate contract lookup for the seller'. (3) Uniqueness: the seller holds no other real estate contract, and a failed-sale charge attaches to the order that ended without a closing.",
+                "amount": "869.87. Factors at handling time (before this write): plan premium invoiced = 1,495.00 (one plan invoice; the order_cancelled credit does not reduce it); seller-phase benefit paid = 2,030.00 authorized - 240.00 reversed = 1790.0; listing_cap_proration: order in force 127 days (2026-05-04 to 2026-09-08), at least 60 and fewer than 180, so the cap is 1,495.00 x 5 months begun / 6 = 1245.83 (baseline full premium gives 1056.75); lesser of cap and benefit = 1245.83; after_hours_dispatch_recovery: two emergency seller-phase requests, one of them in the hvac trade (cooling 2026-06-09; electrical 2026-08-22), so the hvac after-hours rate 95.00 x 2 = 190.0 (baseline none gives 727.37); maintained_hvac_credit: active Comfort Care agreement on the same address with two completed tune-ups in the last twelve months (2025-10-14, 2026-04-22; 2025-09-10 falls outside), share 0.2 of net cooling benefit 1,180.00 = 236.0 (baseline none gives 1046.87); missed_contact_service_credit: one re-dispatch after a missed contact window (cooling, 2026-06-10) -> 40.00 (baseline none gives 899.87); floored subtotal = 1245.83 + 190.0 - 236.0 - 40.0 = 1159.83; keep_home_waiver: HomeCare Silver homeowner contract on the same address started 2026-09-11, 3 days after the end date, tier monthly premium 62.99 below 70.00, share 0.25 (baseline none gives 1159.83); charge = 1159.83 x 0.75 = 869.87 rounded to the cent. With every factor at its baseline the charge would be 1495.0.",
+                "due_date": "(1) 2026-10-15. (2) Basis: the policy rule 'the charge is due failed_sale_bill_due_days calendar days after the billing date, so its due date is the billing date plus failed_sale_bill_due_days calendar days'; failed_sale_bill_due_days is 30 on Bridgewell Closing Premier Two-Year; the billing date is today, 2026-09-15. (3) Uniqueness: 2026-09-15 plus 30 calendar days is 2026-10-15; no other anchor is stated."
+            }
+        },
+        {
+            "owner": "agent",
+            "tool": "unlock_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "pay_failed_sale_charge_by_card_a1a6aa51"
+            },
+            "objective": "Unlock the seller card payment and hand it to the caller.",
+            "necessity": "The settlement payment is the customer’s own write; the agent unlocks it and hands it over with the plan number, invoice number and amount."
+        },
+        {
+            "owner": "user",
+            "tool": "call_user_discoverable_tool",
+            "arguments": {
+                "tool_name": "pay_failed_sale_charge_by_card_a1a6aa51",
+                "arguments": {
+                    "realty_contract_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+                    "invoice_number": "FS-C8A1BAB2B7",
+                    "amount": 521.92
+                }
+            },
+            "objective": "The seller pays the first settlement payment on the failed-sale invoice with her card on file.",
+            "necessity": "realty_ext_seller_settlement_payment computes the amount on the world after the charge is billed; the customer runs the payment herself.",
+            "argument_uniqueness_tracing": {
+                "realty_contract_id": "(1) 58622c13-f20c-4edc-8009-e5dfc1fd788b. (2) Basis: the order the failed-sale charge was just billed on; the billing receipt returns realty_contract_id 58622c13-f20c-4edc-8009-e5dfc1fd788b. (3) Uniqueness: the payment settles the failed-sale invoice on that order and the seller holds no other real estate contract.",
+                "invoice_number": "(1) FS-C8A1BAB2B7. (2) Basis: the receipt of the billing write at step 14 returns invoice_number FS-C8A1BAB2B7, which the billing history now shows on the failed-sale charge; the payment docstring asks for 'the failed-sale invoice number being paid, as shown on the failed-sale charge in the plan's billing history'. (3) Uniqueness: it is the only failed-sale invoice on the order; the plan invoice 2605044417 is fully credited and is not what the seller is settling.",
+                "amount": "521.92. On the world after the charge is billed: open failed-sale balance = 869.87 billed - 0.0 paid by the seller = 869.87; payment_history_down_payment: one returned payment in twelve months (the line plan payment billed back on 2026-03-04; no homeowner returned payment) -> 0.15 (baseline none gives 456.68); coverage_tenure_down_payment: earliest active line plan or homeowner contract is the line plan started 2025-12-01, 9 whole months (the homeowner contract is in waiting_period, not active) -> 0.10 (baseline none gives 478.43); autopay_down_payment_relief: active line plan billed automatically to a card -> 0.05 (baseline none gives 543.67); down payment share 0.15 + 0.10 - 0.05 = 0.20, down payment = 869.87 x 0.20 = 173.97; settlement_installments: the plan is set up now (no seller payment on the order yet) and the open balance is above 400.00 but not above 900.00 -> two installments; the amount after the down payment, 695.90, halved and rounded up = 347.95 (baseline unsplit gives 869.87); first settlement payment = 173.97 + 347.95 = 521.92. With every factor at its baseline the payment would be 869.87."
+            }
+        }
+    ],
+    "computations": [
+        {
+            "policy_id": "realty_ext_failed_sale_charge",
+            "target_holding_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+            "step": 14,
+            "arg": "amount",
+            "expected": 869.87,
+            "factor_trace": [
+                "listing_cap_proration (method): order in force 127 days (2026-05-04 to 2026-09-08) -> tier 'at least 60 but fewer than 180 days': cap = 1,495.00 x 5 months begun / 6 = 1245.83; baseline (full premium 1,495.00) gives 1056.75.",
+                "after_hours_dispatch_recovery (parameter): 2 emergency seller-phase requests, 1 in the hvac trade (cooling 2026-06-09; electrical 2026-08-22) -> hvac after-hours rate 95.00 x 2 = 190.0; baseline (no cost) gives 727.37.",
+                "maintained_hvac_credit (parameter; reads hvaccare, an unclaimed category, so not counted as cross-difficulty; multi-source): active Comfort Care Standard on 4471 Larkspur Bend Drive AND 2 completed tune-ups in twelve months (2025-10-14, 2026-04-22; 2025-09-10 is outside) -> share 0.2 of net HVAC benefit 1180.0 = 236.0; baseline (no credit) gives 1046.87.",
+                "missed_contact_service_credit (parameter): 1 re-dispatch after a missed contact window (cooling, 2026-06-10) -> 40.00; baseline (no credit) gives 899.87.",
+                "keep_home_waiver (parameter, cross-difficulty homeplan, multi-source): HomeCare Silver on the same address started 2026-09-11, 3 days after end_date, tier monthly premium 62.99 below 70.00 -> waiver share 0.25; baseline (no waiver) gives 1159.83.",
+                "premium_invoiced = 1495.0; seller_benefit_paid = 2030.0 - 240.0 = 1790.0; lesser_amount = 1245.83; floored_subtotal = 1159.83; result = 1159.83 x 0.75 = 869.87."
+            ],
+            "baseline_result": 1495.0,
+            "factor_sensitivity": [
+                {
+                    "factor": "listing_cap_proration",
+                    "tier_taken": "ended at least daily_proration_max_days but fewer than seller_coverage_max_days days after order_date",
+                    "baseline_result": 1056.75
+                },
+                {
+                    "factor": "after_hours_dispatch_recovery",
+                    "tier_taken": "at least one emergency seller-phase request in the hvac trade",
+                    "baseline_result": 727.37
+                },
+                {
+                    "factor": "maintained_hvac_credit",
+                    "tier_taken": "active maintenance agreement on the same address AND at least maintained_visit_count tune-ups in twelve months",
+                    "baseline_result": 1046.87
+                },
+                {
+                    "factor": "missed_contact_service_credit",
+                    "tier_taken": "exactly one re-dispatch after a missed contact window",
+                    "baseline_result": 899.87
+                },
+                {
+                    "factor": "keep_home_waiver",
+                    "tier_taken": "homeowner contract on the same address started within the window AND tier monthly premium below keep_home_upper_monthly",
+                    "baseline_result": 1159.83
+                }
+            ]
+        },
+        {
+            "policy_id": "realty_ext_seller_settlement_payment",
+            "target_holding_id": "58622c13-f20c-4edc-8009-e5dfc1fd788b",
+            "step": 16,
+            "arg": "amount",
+            "expected": 521.92,
+            "factor_trace": [
+                "settlement_installments (method): plan set up with no seller payment on the order yet; open balance 869.87 above 400.00 and not above 900.00 -> two installments, first = half of 695.90 rounded up = 347.95; baseline (unsplit) gives 869.87.",
+                "payment_history_down_payment (parameter, cross-difficulty lineplan): 1 returned line plan payment + 0 returned homeowner payments in twelve months -> 0.15; baseline (none) gives 456.68.",
+                "coverage_tenure_down_payment (parameter, cross-difficulty lineplan): 9 whole months since the active line plan started 2025-12-01 (the homeowner contract is not yet active) -> 0.10; baseline (none) gives 478.43.",
+                "autopay_down_payment_relief (parameter, cross-difficulty lineplan): active line plan billed automatically to a card -> 0.05 relief; baseline (none) gives 543.67.",
+                "failed_sale_billed = 869.87 (written by step 14); down share 0.20 -> down payment 173.97; result = 173.97 + 347.95 = 521.92."
+            ],
+            "baseline_result": 869.87,
+            "factor_sensitivity": [
+                {
+                    "factor": "settlement_installments",
+                    "tier_taken": "open balance above two_installment_floor but no more than three_installment_floor",
+                    "baseline_result": 869.87
+                },
+                {
+                    "factor": "payment_history_down_payment",
+                    "tier_taken": "exactly one returned payment in the last twelve months",
+                    "baseline_result": 456.68
+                },
+                {
+                    "factor": "coverage_tenure_down_payment",
+                    "tier_taken": "at least tenure_short_months but fewer than tenure_mid_months whole months",
+                    "baseline_result": 478.43
+                },
+                {
+                    "factor": "autopay_down_payment_relief",
+                    "tier_taken": "the seller's active line plan is billed automatically to a card",
+                    "baseline_result": 543.67
+                }
+            ]
+        }
+    ],
+    "prerequisite_closure": {
+        "root_problem": "realty_ext_seller_settlement_payment",
+        "edges": [
+            {
+                "from": "realty_ext_seller_settlement_payment",
+                "to": "realty_ext_failed_sale_charge",
+                "kind": "value_input",
+                "gate": "failed_sale_billed",
+                "form": "state",
+                "condition": "realty_billing_entries carries a realty_seller_service_charge row for the order (the failed-sale charge invoice), so the failed-sale charges billed on the order are above zero.",
+                "policy_source": "A seller's settlement payment toward listing-period service is not taken until the order's billing history carries the failed-sale charge invoice billed for that service.",
+                "resolved_by": "bill_failed_sale_charge_3e9b31c4",
+                "unresolved_at_frozen_time": {
+                    "why_false": "The order was cancelled on 2026-09-08, a week before the call and before the first month end after it; its ledger holds only the plan invoice, its full credit memo and five service call fees, so the failed-sale charges billed on the order are 0.00.",
+                    "evidence": [
+                        "initial_state.realty_billing_entries.563baf7a-cd7d-4845-a221-06e8b47cfc2c.event_type = realty_invoice",
+                        "initial_state.realty_billing_entries.0e9a28e5-390f-4c46-b918-8c40004f0f60.event_type = realty_credit_memo",
+                        "initial_state.realty_billing_entries.143b0062-317e-47b4-be1d-38f7a014de4d.event_type = realty_service_fee_charge",
+                        "initial_state.realty_contracts.58622c13-f20c-4edc-8009-e5dfc1fd788b.end_date = 2026-09-08"
+                    ],
+                    "flips_to_true_by": "The billing write at step 14 posts a realty_seller_service_charge row of 869.87 (invoice FS-C8A1BAB2B7, due 2026-10-15); failed_sale_billed becomes 869.87."
+                }
+            }
+        ],
+        "resolution_order": [
+            "realty_ext_failed_sale_charge",
+            "realty_ext_seller_settlement_payment"
+        ],
+        "order_uniqueness": "One edge only (a chain of two problems): the failed-sale charge must be billed before the settlement payment, as the prerequisite sentence states; there are no parallel prerequisites to reorder.",
+        "edge_load_bearing": [
+            {
+                "edge": "realty_ext_seller_settlement_payment -> realty_ext_failed_sale_charge",
+                "skipped_effect": "Skipping the billing write leaves failed_sale_billed at 0.00, so the first settlement payment recomputes to 0.0 instead of 521.92; the terminal ledger also lacks the failed-sale invoice FS-C8A1BAB2B7 and the payment would name an invoice that does not exist."
+            }
+        ],
+        "no_user_hint": "The persona asks to settle what she owes for listing-period repairs, spread if allowed, paying the first part by card; it never says that nothing has been billed, never mentions a failed-sale charge or an invoice to be issued, and never names a step to do first. Its only reference to a prior step is passive: if the agent explains something must be put on her account first, she agrees.",
+        "tools_do_not_block": "pay_failed_sale_charge_by_card_a1a6aa51 (task_tools.py) reads the contract only to copy the payer and current balance, then creates the payment row and updates the balance; it never checks whether a failed-sale invoice exists, never refuses and never hints. bill_failed_sale_charge_3e9b31c4 likewise posts the charge without checking status, dedup or amount."
+    },
+    "charter_scope": {
+        "extended_policies": [
+            "realty_ext_failed_sale_charge",
+            "realty_ext_seller_settlement_payment"
+        ],
+        "task_tools": [
+            "bill_failed_sale_charge_3e9b31c4",
+            "pay_failed_sale_charge_by_card_a1a6aa51"
+        ]
+    },
+    "required_documents": [
+        "realty_ext_failed_sale_charge",
+        "realty_ext_seller_settlement_payment"
+    ]
+}

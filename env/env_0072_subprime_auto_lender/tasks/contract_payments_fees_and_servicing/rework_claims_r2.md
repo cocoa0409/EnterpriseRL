@@ -1,0 +1,12 @@
+# rework claims — round 2 (policy-task audit revision_1)
+- CW-1: months rule defines and uses "the signing date" (the date the borrower signs) for every delinquency and spacing test; compute already keyed to that date.
+- CW-2: every "whole calendar months" window rewritten in the rolling convention (later than / on or before the same calendar day N months before the date, month-end fallback); seasoning and remaining term counted as monthly due dates; repeat-statement and autopay-history windows removed with their factors.
+- CW-3: payoff rule no longer asserts funds-final timing; it sets a same-day payoff good-through date (posting date plus review days, per diem through it) and the weekend days carry it to Monday (Friday 3, Saturday 2, Sunday 1).
+- CW-4: assembly sentences of the fee, months, returned-item fee and statement are generic (no factor quantity named); payoff assembly rewritten the same way.
+- CW-5: statement business-day anchor relabelled as a parameter factor.
+- CW-6: late-return handling replaced by bank-charge recovery (state schedule); repeat-statement shortening replaced by remittance-method days; statement recovery shortening replaced by insurance-lapse shortening (cpi cross-difficulty); payoff autopay-history hold replaced by referral-history review.
+- CW-7: recovery reads use the unique reinstated case (CFIELD) and an EXISTS test for cured recalled cases; every latest-row read states its same-date tie rule (first recorded).
+- CW-8: fee prerequisite sentence requires an agreement signed and not yet applied; condition updated to match.
+- CW-9: seeds regenerated with one late charge per delinquency stretch (oldest unpaid installment only); seed_consistency and rationale texts rewritten; no stale claim remains.
+- O-5/realism: returned-item fee bounded by a state cap schedule; zero fees never booked; T1 moved to Florida with a CPI record; half-cent ties removed from seeds.
+- O-11/O-15: fee replaced_by is self-contained; payoff state_gate names contract_servicing_events.effective_date.

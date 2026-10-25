@@ -1,0 +1,35 @@
+# rework r2 claims — card_billing_and_disputes
+
+- F1 / T0-F1 → The double-posting notice now finds its twin postings from the account's most recently posted foreign transaction fee: the purchase it was assessed against, plus the other posting from the same merchant on the same transaction date. The rule's opening sentence was rewritten to cover foreign-currency or outside-US purchases. Rule and compute now select the same pair, and no merchant-category filter is left without a basis in the rule. The task 0 business-object card and tracing were restated the same way.
+- F2 / T0-F2 → The conversion-fee ladder is struck. The foreign transaction fee posted against the posting in error is now a plain related charge (Reg Z related charge actually imposed). The notice keeps its drawn factor count through a new parameter factor, the grace-test exclusion, which reads the error-period statement's promotional balance plus any disputed amount it excluded, or the excluded amount alone, or zero; the billed-interest test uses it. The notice now has two parameter and three method factors. Task 0's factor trace, sensitivities, all-baseline figure and rationale were updated.
+- F3 / T1-F1 → Each prerequisite sentence and its condition are now exactly as wide as the one object its depended-on policy resolves:
+  - Line review: waits on the foreign purchase carrying the most recent foreign transaction fee, when it posted twice.
+  - Catch-up and courtesy: wait on the cardmember's most recent refund settled to the card tender, when its card credits fall short of it.
+  - The missing-credit notice now names that same object, and states that a fully credited refund, or no refund at all, is outside its scope with a zero amount.
+  - The task-side closure edges carry the new sentences and conditions verbatim.
+- T0-F3 → Every stale statement of the old line figure is corrected: the tracing headline, the solvability business effect and the combined-cap precondition. The REVISIONS note now records this.
+- T1-F2 → The "empty dispute table" / "no dispute exists" statements in both missing-credit edges and in the base-invariant card are replaced. They now name the earlier withdrawn filing on another purchase and state that no credit-not-posted filing names the coat posting. The same false claim in task 0's rationale ("no dispute exists") was corrected the same way.
+- T1-F3 → The relationship-spend evidence is restated as the rule's own aggregate in the factor trace, the factor card and the scored-argument tracing.
+- O1 → Every rolling-window phrase in the rules, compute basis, ladders, tier names and task proof text now reads "fewer than N full calendar months before today", matching the computed window.
+- O2 → The line-review rule states its scope: a cardmember holding no other card account. A cardmember with accounts on both networks is sized under the base rule and the combined limit alone.
+- O3 → Billed-interest tiers are restated: whole base when the error alone cost the grace period; a day-prorated share when the posting in error falls in the latest billing period; a balance share otherwise. Unbilled-interest tiers now depend on when the posting in error posted and on whether purchase interest was charged (no accrual while the grace period holds), not on later payments.
+- O4 → The conversion-fee parameter with formula-differing tiers is gone. The catch-up promotional add-on keeps its parameter label; each of its tiers selects a single add-on amount.
+- O5 → No change: the courtesy overwrite's replaced_by already scopes the partial credit by name, and the event-field wording sits outside the cited base policies.
+- O6 → The courtesy baseline sentence no longer restates the payment test. The test is now stated once in the scoped overwrite and once in the prerequisite sentence, which is also the quote for the result gate.
+- O7 → No change: two tasks cannot cover every event type in the blueprint's claim. Recorded as an observation.
+- O8 → No change: the billing-error states in the seeds are the premises the dispute policies address.
+- O9 → No change: read isolation forbids checking other difficulties' modules.
+- O10 → The credit-line tool no longer writes account status. It still takes the status argument (the blueprint's binding for the active-status gate) and echoes it on the receipt.
+- Courtesy method factor (whole class: every method tier reachable at the write) → Cure-speed tiers are now a sliding bonus up to the fast-cure limit, a flat deduction past a new slow-cure limit, and none in between. All three are reachable once the payment test is met.
+- Absent records and edge cases → Guards and matching rule sentences were added:
+  - No foreign fee, or no twin: the notice amount is zero.
+  - No refund, or a fully credited refund: zero.
+  - No late fee: no catch-up amount and no courtesy credit.
+  - Missing dates no longer break the day counts.
+  - Interest parts are zero when the interest base is zero, which avoids division edges.
+- First-match and decoy probes → These ran on scratch copies; none changed a scored value or raised an error:
+  - A closed higher-tier membership is ignored by the active-membership read, for both the line review and the courtesy credit.
+  - An older foreign fee does not move the twin anchor.
+  - An older refund, or a newer refund to another tender, does not move the missing-credit object.
+- Rounding → The notice result sentences now say the sum is rounded half up to the cent, matching where the rounding happens in compute.
+- Proof sweep → The design rationales, closures, objective/necessity texts, factor traces, tracing and solvability texts of both tasks were re-checked against initial_state. Every cited row path holds.

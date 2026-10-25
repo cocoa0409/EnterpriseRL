@@ -1,0 +1,19 @@
+# rework r2 — claims (finch_circle_rewards)
+
+- F1 (undeclared override of the base card-bonus sentence): loyalty_ext_missing_points_credit now declares two further overwrite entries on loyalty_evt_points_earn — the purchase/bonus-event earning sentence and the card-bonus sentence — each with a replaced_by scoped to the claimed unit of a request this policy handles and leaving every other purchase under the base earning rule; both sentences are in the rule.
+- F2 (card-floor ladders with unreachable fall-throughs, no method): the floor tier's credit is now base plumbing (floor map), not a factor; allowance_standing is a ladder on the late-fee count; delay_anchor has three reachable anchors (enrolment after the card status, status review, account opening) and changes which date the delay is counted from; a bridal allowance (active Wedding Registry) was added; every ladder divides the members who reach a card floor.
+- Task 0 seed card status_review_date (not producible): the card now reached Platinum Mastercard at the January annual review on the previous year's card spend, which is seeded as pre-enrolment unlinked purchases with their payments; the membership was enrolled afterwards at the entry tier, so the floor is owed since enrolment.
+- Task 0 seed alteration rows (class closure): the complimentary hem now sits on a regular-price purchase as the alteration charter requires, and the sleeve job is charged at the class price list with charter turnaround dates.
+- Task 0 seed card history (class closure): the returned payment, its fee and the late fee were removed so no card row depends on statement facts the world does not hold; balances recomputed.
+- Task 1 seed restocking fee (not producible): the restocking fee, refund, card credit and the unit's net paid now follow the order charter's refund formula; the deduction and the reinstatement were recomputed on those rows.
+- Task 1 seed card status_review_date (class closure): moved to the annual review date of the card charter.
+- O1: prerequisite sentence of the late credit now reads "shows at least the Finch Circle tier", matching its condition.
+- O2: the deduction prerequisite sentence and its condition both cover refunded returns of purchases that earned points.
+- O3/O4: card reads are object-keyed — the floor card is chosen by an active-card chain and its dates are read for that card only; late fees are counted over the customer's card accounts as the rule states.
+- O5: courtesy baseline sentences reworded (validity days are the day count; the day count starts from the tier days) so no flat sentence competes with the return-share ladder; compute_basis updated.
+- O6: the "most recently lapsed note" restriction is declared as an overwrite of the base reissue-eligibility sentence with a scoped replaced_by that keeps the base exclusions.
+- O7: method factors kept only where tiers select different formulas or anchors on reachable inputs (dating anchor, delay anchor, refund and card bases, share basis, return-share rule).
+- O8: event clawback is keyed on the return reason (fault returns keep event points) and the card-clawback-by-account-status factor was replaced by a negative-balance relief, so no ladder rewards a late return or a closed card; the tier cushion became a return-frequency cushion.
+- Rounding: every rule that states half-up rounding to the cent or to whole points now has an explicit half-up expression at the same place in compute.
+- Decoy and absent-record probes run on scratch copies (closed second card, cancelled or other-type registry, older unlinked purchase, missing registry); results matched the rules; zero-division and missing-date edges guarded.
+- Proof text: design_rationale, prerequisite_closure, objectives/necessities, factor traces and sensitivities, argument tracing, solvability contract and plan.md rewritten against the new worlds and charter.

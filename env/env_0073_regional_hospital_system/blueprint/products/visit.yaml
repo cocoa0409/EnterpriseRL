@@ -1,0 +1,700 @@
+# Product charter — Appointment Scheduling. Riverbend Regional Health, Patient Access Center.
+category: visit
+display_name: Appointment Scheduling
+
+binding:
+  holding_table: appointments
+  event_tables: [appointment_transactions]
+  status_field: status
+  variant_field: variant_name
+  quantity_fields: {missed_fee_balance_usd: missed_visit_fees}
+
+lifecycle:
+  states: [booked, confirmed, checked_in, completed, cancelled, no_show]
+  transitions:
+    - {from: booked, to: confirmed, by: user, means: The patient confirms the appointment from a reminder.}
+    - {from: booked, to: cancelled, by: agent, means: The appointment is cancelled at the patient's request or by Riverbend.}
+    - {from: confirmed, to: cancelled, by: agent, means: A confirmed appointment is cancelled at the patient's request or by Riverbend.}
+    - {from: booked, to: checked_in, by: agent, means: The patient arrives (or joins the video room) and is checked in.}
+    - {from: confirmed, to: checked_in, by: agent, means: The patient arrives and is checked in.}
+    - {from: checked_in, to: completed, by: system, means: The visit is completed and documented.}
+    - {from: booked, to: no_show, by: system, means: The patient does not arrive within the auto-mark minutes.}
+    - {from: confirmed, to: no_show, by: system, means: The patient does not arrive within the auto-mark minutes.}
+
+accounts:
+  - key: missed_visit_fees
+    unit: USD
+    meaning: No-show and late-cancellation fees owed on the appointment; assessments add to it, payments and waivers reduce it.
+
+# ---- category-level parameter dictionary ----
+parameter_schema:
+  booking_horizon_days: integer calendar days ahead within which an appointment may be booked
+  min_lead_hours: integer hours between booking and the scheduled start below which the slot cannot be booked
+  visit_length_minutes: integer scheduled length of the slot in minutes
+  arrival_minutes_before: integer minutes before the scheduled start the patient is asked to arrive (or log in)
+  late_arrival_grace_minutes: integer minutes after the scheduled start within which a late patient is still seen
+  late_arrival_policy: enum what happens to a patient arriving after the grace minutes
+  late_cancel_window_hours: integer hours before the scheduled start inside which a patient cancellation counts as late
+  cancel_notice_basis: enum how cancellation notice is measured
+  no_show_fee_usd: USD fee for a no-show
+  late_cancellation_fee_usd: USD fee for a late cancellation by the patient
+  first_occurrence_waived: boolean — whether the first no-show or late cancellation in the rolling count window carries no fee
+  medicaid_fee_prohibited: boolean — whether patients with Medicaid (BadgerCare Plus) coverage are never charged missed-appointment fees
+  fee_waiver_reasons: list of waiver_reason values that waive a missed-appointment fee
+  fee_statement_after_days: integer calendar days after assessment before a fee appears on the patient statement
+  count_window_months: integer rolling months over which no-shows and late cancellations are counted
+  no_show_restriction_count: integer no-shows in the count window at which booking is restricted
+  no_show_restriction_type: enum restriction applied at the count
+  dismissal_review_count: integer no-shows in the count window at which the clinic reviews dismissal from the practice
+  reschedule_limit: integer patient reschedules allowed per appointment before it must be cancelled and rebooked
+  reminder_days_before: list of days before the appointment on which reminders go out
+  reminder_channels: list of reminder channels
+  confirmation_required: boolean — whether the patient must confirm the appointment from the reminder
+  confirmation_call_hours: integer hours before the start when staff call a patient who has not confirmed (0 = no call)
+  referral_required: boolean — whether a referral or order must be on file before booking
+  prior_auth_lead_business_days: integer business days before the appointment by which a required payer authorization must be approved, or the appointment is rescheduled
+  preregistration_required: boolean — whether pre-registration (demographics, coverage, consent) must be completed before the visit
+  preregistration_deadline_hours: integer hours before the start by which pre-registration must be complete
+  fasting_hours: integer hours of fasting required before the visit (0 = none)
+  prep_instructions_days_before: integer days before the visit the preparation instructions are sent (0 = none)
+  escort_required: boolean — whether an adult escort must drive the patient home
+  patient_location_in_state_required: boolean — whether the patient must be physically in Wisconsin during the visit
+  tech_check_minutes: integer minutes before a video visit the device check opens
+  self_scheduling_allowed: boolean — whether the patient may book through the portal
+  portal_cancel_allowed: boolean — whether the patient may cancel through the portal
+  cancellation_channels: list of channels through which the patient may cancel
+  waitlist_offer_hours: integer hours before start within which a freed slot is offered to the waitlist
+  interpreter_booking_lead_hours: integer hours before start by which an in-person interpreter must be booked
+  riverbend_cancel_priority: boolean — whether a patient whose appointment Riverbend cancels gets the first available slot and no fee
+  max_future_appointments_per_department: integer future appointments a patient may hold in one department
+  check_in_methods: list of check-in methods
+  weather_closure_waiver: boolean — whether fees are waived for appointments missed during a declared weather closure
+  hospitalization_waiver: boolean — whether fees are waived when the patient was hospitalized at the appointment time
+  riverbend_delay_waiver_minutes: integer minutes of Riverbend-caused delay after which a patient leaving is not a no-show
+  medicare_fee_policy: enum how Medicare patients are treated for missed-appointment fees
+  fee_cap_per_12_months_usd: USD maximum missed-appointment fees assessed to one patient in the count window
+  no_show_auto_mark_minutes: integer minutes after the scheduled start at which an unchecked appointment is marked no-show
+  booking_channels: list of booking channels
+  reschedule_resets_fee: boolean — whether rescheduling inside the late-cancellation window counts as a late cancellation
+  fee_dispute_days: integer calendar days after a fee is assessed within which the patient may dispute it
+
+# ---- tier ladder (low to high) ----
+variants:
+- name: Primary Care Office Visit
+  rank: 1
+  entry_gate: {department: PRIMARY_CARE, order_or_referral: none}
+  parameters:
+    booking_horizon_days: 90
+    min_lead_hours: 2
+    visit_length_minutes: 20
+    arrival_minutes_before: 15
+    late_arrival_grace_minutes: 10
+    late_arrival_policy: RESCHEDULE_AS_LATE_CANCELLATION
+    late_cancel_window_hours: 24
+    cancel_notice_basis: HOURS_BEFORE_SCHEDULED_START
+    no_show_fee_usd: 25.0
+    late_cancellation_fee_usd: 0.0
+    first_occurrence_waived: true
+    medicaid_fee_prohibited: true
+    fee_waiver_reasons: &id001 [MEDICAID_MEMBER, FIRST_OCCURRENCE, WEATHER_CLOSURE, PATIENT_HOSPITALIZED, RIVERBEND_DELAY]
+    fee_statement_after_days: 14
+    count_window_months: 12
+    no_show_restriction_count: 3
+    no_show_restriction_type: SAME_DAY_ONLY_SCHEDULING
+    dismissal_review_count: 5
+    reschedule_limit: 3
+    reminder_days_before: [2]
+    reminder_channels: &id002 [SMS, EMAIL, AUTOMATED_CALL]
+    confirmation_required: false
+    confirmation_call_hours: 0
+    referral_required: false
+    prior_auth_lead_business_days: 0
+    preregistration_required: false
+    preregistration_deadline_hours: 0
+    fasting_hours: 0
+    prep_instructions_days_before: 0
+    escort_required: false
+    patient_location_in_state_required: false
+    tech_check_minutes: 0
+    self_scheduling_allowed: true
+    portal_cancel_allowed: true
+    cancellation_channels: [PATIENT_PORTAL, CALL_CENTER, SMS_REPLY]
+    waitlist_offer_hours: 48
+    interpreter_booking_lead_hours: 48
+    riverbend_cancel_priority: true
+    max_future_appointments_per_department: 2
+    check_in_methods: [FRONT_DESK, KIOSK, PORTAL_ECHECKIN]
+    weather_closure_waiver: true
+    hospitalization_waiver: true
+    riverbend_delay_waiver_minutes: 30
+    medicare_fee_policy: SAME_AS_ALL_NON_MEDICAID_PATIENTS
+    fee_cap_per_12_months_usd: 75.0
+    no_show_auto_mark_minutes: 30
+    booking_channels: [PATIENT_PORTAL, CALL_CENTER, IN_CLINIC]
+    reschedule_resets_fee: true
+    fee_dispute_days: 60
+- name: Telehealth Video Visit
+  rank: 2
+  entry_gate: {department: TELEHEALTH, order_or_referral: none; established patients of the visiting provider, patient_location: in Wisconsin at visit time}
+  parameters:
+    booking_horizon_days: 30
+    min_lead_hours: 1
+    visit_length_minutes: 15
+    arrival_minutes_before: 10
+    late_arrival_grace_minutes: 10
+    late_arrival_policy: RESCHEDULE_AS_LATE_CANCELLATION
+    late_cancel_window_hours: 2
+    cancel_notice_basis: HOURS_BEFORE_SCHEDULED_START
+    no_show_fee_usd: 0.0
+    late_cancellation_fee_usd: 0.0
+    first_occurrence_waived: true
+    medicaid_fee_prohibited: true
+    fee_waiver_reasons: *id001
+    fee_statement_after_days: 14
+    count_window_months: 12
+    no_show_restriction_count: 3
+    no_show_restriction_type: SAME_DAY_ONLY_SCHEDULING
+    dismissal_review_count: 5
+    reschedule_limit: 3
+    reminder_days_before: [1]
+    reminder_channels: *id002
+    confirmation_required: false
+    confirmation_call_hours: 0
+    referral_required: false
+    prior_auth_lead_business_days: 0
+    preregistration_required: false
+    preregistration_deadline_hours: 0
+    fasting_hours: 0
+    prep_instructions_days_before: 0
+    escort_required: false
+    patient_location_in_state_required: true
+    tech_check_minutes: 15
+    self_scheduling_allowed: true
+    portal_cancel_allowed: true
+    cancellation_channels: [PATIENT_PORTAL, CALL_CENTER, SMS_REPLY]
+    waitlist_offer_hours: 24
+    interpreter_booking_lead_hours: 24
+    riverbend_cancel_priority: true
+    max_future_appointments_per_department: 2
+    check_in_methods: [VIDEO_WAITING_ROOM]
+    weather_closure_waiver: true
+    hospitalization_waiver: true
+    riverbend_delay_waiver_minutes: 15
+    medicare_fee_policy: SAME_AS_ALL_NON_MEDICAID_PATIENTS
+    fee_cap_per_12_months_usd: 0.0
+    no_show_auto_mark_minutes: 20
+    booking_channels: [PATIENT_PORTAL, CALL_CENTER]
+    reschedule_resets_fee: true
+    fee_dispute_days: 60
+- name: Specialty New-Patient Consultation
+  rank: 3
+  entry_gate: {department: SPECIALTY_CLINIC, order_or_referral: referral from a treating provider}
+  parameters:
+    booking_horizon_days: 180
+    min_lead_hours: 24
+    visit_length_minutes: 60
+    arrival_minutes_before: 20
+    late_arrival_grace_minutes: 15
+    late_arrival_policy: RESCHEDULE_AS_LATE_CANCELLATION
+    late_cancel_window_hours: 24
+    cancel_notice_basis: HOURS_BEFORE_SCHEDULED_START
+    no_show_fee_usd: 50.0
+    late_cancellation_fee_usd: 25.0
+    first_occurrence_waived: true
+    medicaid_fee_prohibited: true
+    fee_waiver_reasons: *id001
+    fee_statement_after_days: 14
+    count_window_months: 12
+    no_show_restriction_count: 3
+    no_show_restriction_type: PROVIDER_REVIEW_BEFORE_BOOKING
+    dismissal_review_count: 5
+    reschedule_limit: 2
+    reminder_days_before: [7, 2]
+    reminder_channels: *id002
+    confirmation_required: true
+    confirmation_call_hours: 48
+    referral_required: true
+    prior_auth_lead_business_days: 0
+    preregistration_required: true
+    preregistration_deadline_hours: 48
+    fasting_hours: 0
+    prep_instructions_days_before: 0
+    escort_required: false
+    patient_location_in_state_required: false
+    tech_check_minutes: 0
+    self_scheduling_allowed: false
+    portal_cancel_allowed: true
+    cancellation_channels: [PATIENT_PORTAL, CALL_CENTER, SMS_REPLY]
+    waitlist_offer_hours: 72
+    interpreter_booking_lead_hours: 48
+    riverbend_cancel_priority: true
+    max_future_appointments_per_department: 2
+    check_in_methods: [FRONT_DESK, KIOSK, PORTAL_ECHECKIN]
+    weather_closure_waiver: true
+    hospitalization_waiver: true
+    riverbend_delay_waiver_minutes: 30
+    medicare_fee_policy: SAME_AS_ALL_NON_MEDICAID_PATIENTS
+    fee_cap_per_12_months_usd: 150.0
+    no_show_auto_mark_minutes: 30
+    booking_channels: [CALL_CENTER, REFERRAL_QUEUE]
+    reschedule_resets_fee: true
+    fee_dispute_days: 60
+- name: Diagnostic Imaging Appointment (MRI/CT)
+  rank: 4
+  entry_gate: {department: IMAGING, order_or_referral: signed imaging order}
+  parameters:
+    booking_horizon_days: 60
+    min_lead_hours: 24
+    visit_length_minutes: 45
+    arrival_minutes_before: 30
+    late_arrival_grace_minutes: 15
+    late_arrival_policy: RESCHEDULE_AS_LATE_CANCELLATION
+    late_cancel_window_hours: 24
+    cancel_notice_basis: HOURS_BEFORE_SCHEDULED_START
+    no_show_fee_usd: 50.0
+    late_cancellation_fee_usd: 25.0
+    first_occurrence_waived: true
+    medicaid_fee_prohibited: true
+    fee_waiver_reasons: *id001
+    fee_statement_after_days: 14
+    count_window_months: 12
+    no_show_restriction_count: 2
+    no_show_restriction_type: PROVIDER_REVIEW_BEFORE_BOOKING
+    dismissal_review_count: 4
+    reschedule_limit: 2
+    reminder_days_before: [7, 2]
+    reminder_channels: *id002
+    confirmation_required: true
+    confirmation_call_hours: 48
+    referral_required: true
+    prior_auth_lead_business_days: 5
+    preregistration_required: true
+    preregistration_deadline_hours: 48
+    fasting_hours: 4
+    prep_instructions_days_before: 3
+    escort_required: false
+    patient_location_in_state_required: false
+    tech_check_minutes: 0
+    self_scheduling_allowed: false
+    portal_cancel_allowed: true
+    cancellation_channels: [PATIENT_PORTAL, CALL_CENTER]
+    waitlist_offer_hours: 48
+    interpreter_booking_lead_hours: 48
+    riverbend_cancel_priority: true
+    max_future_appointments_per_department: 3
+    check_in_methods: [FRONT_DESK, KIOSK]
+    weather_closure_waiver: true
+    hospitalization_waiver: true
+    riverbend_delay_waiver_minutes: 30
+    medicare_fee_policy: SAME_AS_ALL_NON_MEDICAID_PATIENTS
+    fee_cap_per_12_months_usd: 150.0
+    no_show_auto_mark_minutes: 30
+    booking_channels: [CALL_CENTER, REFERRAL_QUEUE]
+    reschedule_resets_fee: true
+    fee_dispute_days: 60
+- name: Infusion Therapy Chair Appointment
+  rank: 5
+  entry_gate: {department: ONCOLOGY_INFUSION, order_or_referral: signed treatment plan}
+  parameters:
+    booking_horizon_days: 90
+    min_lead_hours: 48
+    visit_length_minutes: 120
+    arrival_minutes_before: 15
+    late_arrival_grace_minutes: 15
+    late_arrival_policy: RESCHEDULE_AS_LATE_CANCELLATION
+    late_cancel_window_hours: 48
+    cancel_notice_basis: HOURS_BEFORE_SCHEDULED_START
+    no_show_fee_usd: 0.0
+    late_cancellation_fee_usd: 0.0
+    first_occurrence_waived: true
+    medicaid_fee_prohibited: true
+    fee_waiver_reasons: *id001
+    fee_statement_after_days: 14
+    count_window_months: 12
+    no_show_restriction_count: 3
+    no_show_restriction_type: CARE_TEAM_OUTREACH
+    dismissal_review_count: 6
+    reschedule_limit: 4
+    reminder_days_before: [3, 1]
+    reminder_channels: *id002
+    confirmation_required: true
+    confirmation_call_hours: 48
+    referral_required: true
+    prior_auth_lead_business_days: 7
+    preregistration_required: true
+    preregistration_deadline_hours: 72
+    fasting_hours: 0
+    prep_instructions_days_before: 2
+    escort_required: false
+    patient_location_in_state_required: false
+    tech_check_minutes: 0
+    self_scheduling_allowed: false
+    portal_cancel_allowed: true
+    cancellation_channels: [PATIENT_PORTAL, CALL_CENTER]
+    waitlist_offer_hours: 72
+    interpreter_booking_lead_hours: 48
+    riverbend_cancel_priority: true
+    max_future_appointments_per_department: 30
+    check_in_methods: [FRONT_DESK]
+    weather_closure_waiver: true
+    hospitalization_waiver: true
+    riverbend_delay_waiver_minutes: 45
+    medicare_fee_policy: SAME_AS_ALL_NON_MEDICAID_PATIENTS
+    fee_cap_per_12_months_usd: 0.0
+    no_show_auto_mark_minutes: 45
+    booking_channels: [CALL_CENTER, IN_CLINIC]
+    reschedule_resets_fee: true
+    fee_dispute_days: 60
+- name: Pre-Admission Testing Appointment
+  rank: 6
+  entry_gate: {department: PRE_ADMISSION_TESTING, order_or_referral: scheduled surgery case}
+  parameters:
+    booking_horizon_days: 30
+    min_lead_hours: 24
+    visit_length_minutes: 45
+    arrival_minutes_before: 15
+    late_arrival_grace_minutes: 15
+    late_arrival_policy: RESCHEDULE_AS_LATE_CANCELLATION
+    late_cancel_window_hours: 24
+    cancel_notice_basis: HOURS_BEFORE_SCHEDULED_START
+    no_show_fee_usd: 0.0
+    late_cancellation_fee_usd: 0.0
+    first_occurrence_waived: true
+    medicaid_fee_prohibited: true
+    fee_waiver_reasons: *id001
+    fee_statement_after_days: 14
+    count_window_months: 12
+    no_show_restriction_count: 3
+    no_show_restriction_type: SURGEON_OFFICE_REVIEW
+    dismissal_review_count: 5
+    reschedule_limit: 2
+    reminder_days_before: [3, 1]
+    reminder_channels: *id002
+    confirmation_required: false
+    confirmation_call_hours: 0
+    referral_required: true
+    prior_auth_lead_business_days: 0
+    preregistration_required: true
+    preregistration_deadline_hours: 24
+    fasting_hours: 8
+    prep_instructions_days_before: 3
+    escort_required: false
+    patient_location_in_state_required: false
+    tech_check_minutes: 0
+    self_scheduling_allowed: false
+    portal_cancel_allowed: true
+    cancellation_channels: [PATIENT_PORTAL, CALL_CENTER]
+    waitlist_offer_hours: 24
+    interpreter_booking_lead_hours: 48
+    riverbend_cancel_priority: true
+    max_future_appointments_per_department: 2
+    check_in_methods: [FRONT_DESK, KIOSK]
+    weather_closure_waiver: true
+    hospitalization_waiver: true
+    riverbend_delay_waiver_minutes: 30
+    medicare_fee_policy: SAME_AS_ALL_NON_MEDICAID_PATIENTS
+    fee_cap_per_12_months_usd: 0.0
+    no_show_auto_mark_minutes: 30
+    booking_channels: [CALL_CENTER, REFERRAL_QUEUE]
+    reschedule_resets_fee: true
+    fee_dispute_days: 60
+- name: Outpatient Procedure Appointment
+  rank: 7
+  entry_gate: {department: SURGERY_CENTER, order_or_referral: surgical case request and consent}
+  parameters:
+    booking_horizon_days: 120
+    min_lead_hours: 72
+    visit_length_minutes: 90
+    arrival_minutes_before: 60
+    late_arrival_grace_minutes: 0
+    late_arrival_policy: RESCHEDULE_AS_LATE_CANCELLATION
+    late_cancel_window_hours: 72
+    cancel_notice_basis: HOURS_BEFORE_SCHEDULED_START
+    no_show_fee_usd: 75.0
+    late_cancellation_fee_usd: 50.0
+    first_occurrence_waived: true
+    medicaid_fee_prohibited: true
+    fee_waiver_reasons: *id001
+    fee_statement_after_days: 14
+    count_window_months: 12
+    no_show_restriction_count: 2
+    no_show_restriction_type: SURGEON_OFFICE_REVIEW
+    dismissal_review_count: 3
+    reschedule_limit: 2
+    reminder_days_before: [7, 2]
+    reminder_channels: *id002
+    confirmation_required: true
+    confirmation_call_hours: 72
+    referral_required: true
+    prior_auth_lead_business_days: 10
+    preregistration_required: true
+    preregistration_deadline_hours: 72
+    fasting_hours: 8
+    prep_instructions_days_before: 7
+    escort_required: true
+    patient_location_in_state_required: false
+    tech_check_minutes: 0
+    self_scheduling_allowed: false
+    portal_cancel_allowed: false
+    cancellation_channels: [CALL_CENTER]
+    waitlist_offer_hours: 96
+    interpreter_booking_lead_hours: 72
+    riverbend_cancel_priority: true
+    max_future_appointments_per_department: 2
+    check_in_methods: [FRONT_DESK]
+    weather_closure_waiver: true
+    hospitalization_waiver: true
+    riverbend_delay_waiver_minutes: 60
+    medicare_fee_policy: SAME_AS_ALL_NON_MEDICAID_PATIENTS
+    fee_cap_per_12_months_usd: 150.0
+    no_show_auto_mark_minutes: 30
+    booking_channels: [CALL_CENTER, REFERRAL_QUEUE]
+    reschedule_resets_fee: true
+    fee_dispute_days: 60
+
+# ---- data flow (every write is an event) ----
+events:
+  - type: visit_booked
+    target: appointments
+    mutation: create
+    meaning: An appointment is booked for the patient.
+    grain: one row per appointment booked
+    fields: {appointment_id: new appointment id, customer_id: the patient, variant_name: visit type, booking_channel: channel, booked_date: booking date, appointment_date: scheduled date, appointment_time: scheduled start, provider_name: provider or modality, referral_number: referral or order reference, prior_auth_status: authorization status, preregistration_complete: "false", reschedule_count: "0", cancelled_by: NONE}
+    triggers: []
+  - type: visit_confirmed
+    target: appointments
+    mutation: {transition: {from: booked, to: confirmed}}
+    meaning: The patient confirms the appointment.
+    grain: one row per transaction
+    fields: {status: confirmed}
+    triggers: []
+  - type: visit_rescheduled
+    target: appointments
+    mutation: update
+    meaning: The appointment moves to a new date or time.
+    grain: one row per transaction
+    fields: {appointment_date: new date, appointment_time: new start, provider_name: provider of the new slot, reschedule_count: reschedules used}
+    triggers: []
+  - type: visit_cancelled
+    target: appointments
+    mutation: {transition: [{from: booked, to: cancelled}, {from: confirmed, to: cancelled}]}
+    meaning: The appointment is cancelled by the patient or by Riverbend.
+    grain: one row per transaction
+    fields: {status: cancelled, cancelled_date: cancellation date, cancel_notice_hours: hours of notice, cancelled_by: who cancelled}
+    triggers: []
+  - type: visit_checked_in
+    target: appointments
+    mutation: {transition: [{from: booked, to: checked_in}, {from: confirmed, to: checked_in}]}
+    meaning: The patient is checked in and the visit is registered.
+    grain: one row per transaction
+    fields: {status: checked_in, encounter_id: hospital account registered}
+    triggers:
+      - event: encounter:encounter_registered
+        map: {encounter_id: encounter_id}
+  - type: visit_completed
+    target: appointments
+    mutation: {transition: {from: checked_in, to: completed}}
+    meaning: The visit is completed.
+    grain: one row per transaction
+    fields: {status: completed}
+    triggers: []
+  - type: visit_no_show
+    target: appointments
+    mutation: {transition: [{from: booked, to: no_show}, {from: confirmed, to: no_show}]}
+    meaning: The patient does not arrive.
+    grain: one row per transaction
+    fields: {status: no_show}
+    triggers: []
+  - type: visit_prerequisites_updated
+    target: appointments
+    mutation: update
+    meaning: Pre-registration, referral or authorization status on the appointment is updated.
+    grain: one row per transaction
+    fields: {preregistration_complete: pre-registration state, referral_number: referral or order reference, prior_auth_status: authorization status}
+    triggers: []
+  - type: visit_reminder_sent
+    target: appointment_transactions
+    meaning: A reminder, preparation instruction or confirmation call goes out.
+    grain: one row per outreach type per days-before on the appointment
+    distinguish_by: [reminder_type, days_before]
+    fields: {reminder_type: outreach kind, days_before: days before the appointment, reminder_channel: channel, posting_date: date sent, amount: always 0.00}
+    triggers: []
+  - type: visit_fee_assessed
+    target: appointment_transactions
+    meaning: A no-show or late-cancellation fee is assessed.
+    grain: one row per fee type on the appointment
+    distinguish_by: [fee_type]
+    fields: {fee_type: fee kind, amount: fee, posting_date: assessment date}
+    account: missed_visit_fees
+    direction: in
+    triggers: []
+  - type: visit_fee_waived
+    target: appointment_transactions
+    meaning: An assessed fee is waived.
+    grain: one row per fee type per waiver reason
+    distinguish_by: [fee_type, waiver_reason]
+    fields: {fee_type: fee kind, waiver_reason: reason, amount: amount waived, posting_date: posting date}
+    account: missed_visit_fees
+    direction: out
+    triggers: []
+  - type: visit_fee_paid
+    target: appointment_transactions
+    meaning: The patient pays a missed-appointment fee.
+    grain: one row per payment confirmation
+    distinguish_by: [payment_reference]
+    fields: {payment_reference: confirmation number, amount: amount paid, posting_date: posting date}
+    account: missed_visit_fees
+    direction: out
+    triggers: []
+
+# ---- derived measures ----
+measures:
+  - id: visit_msr_no_shows_window
+    window: rolling count_window_months months ending on the appointment date being decided
+    measure: count of the patient's appointments in status no_show (across all departments) with appointment_date in the window
+  - id: visit_msr_missed_events_window
+    window: rolling count_window_months months ending on the appointment date being decided
+    measure: count of the patient's no_show appointments plus patient cancellations with cancel_notice_hours below the tier's late_cancel_window_hours, in the window
+  - id: visit_msr_fees_window
+    window: rolling count_window_months months ending on the assessment date
+    measure: sum of visit_fee_assessed amounts of the patient less waived amounts, in the window
+
+# ---- policies ----
+policies:
+  - id: visit_agg_multi_holding
+    subject: [visit_booked]
+    rule: >-
+      A patient may hold many appointments, but at most max_future_appointments_per_department future appointments (booked or confirmed) in one department; a recurring infusion series books each chair session as its own appointment.
+    eligibility: []
+    params:
+      max_per_customer: null
+      per_tier:
+        "Primary Care Office Visit": {max_future: "=max_future_appointments_per_department"}
+        "Telehealth Video Visit": {max_future: "=max_future_appointments_per_department"}
+        "Specialty New-Patient Consultation": {max_future: "=max_future_appointments_per_department"}
+        "Diagnostic Imaging Appointment (MRI/CT)": {max_future: "=max_future_appointments_per_department"}
+        "Infusion Therapy Chair Appointment": {max_future: "=max_future_appointments_per_department"}
+        "Pre-Admission Testing Appointment": {max_future: "=max_future_appointments_per_department"}
+        "Outpatient Procedure Appointment": {max_future: "=max_future_appointments_per_department"}
+  - id: visit_agg_attendance_history
+    subject: [visit_booked, visit_fee_assessed]
+    rule: >-
+      Attendance is judged across all of the patient's appointments in all departments over the rolling count_window_months. When the patient reaches the tier's no_show_restriction_count no-shows (visit_msr_no_shows_window), new bookings in that tier follow no_show_restriction_type; at dismissal_review_count no-shows the clinic reviews dismissal. A missed-appointment fee is not assessed when it would take the patient's net fees in the window (visit_msr_fees_window) above fee_cap_per_12_months_usd.
+    eligibility: []
+    params:
+      count_window_months: "=count_window_months"
+      per_tier:
+        "Primary Care Office Visit": {restriction_count: "=no_show_restriction_count", restriction_type: "=no_show_restriction_type", dismissal_count: "=dismissal_review_count", fee_cap: "=fee_cap_per_12_months_usd"}
+        "Telehealth Video Visit": {restriction_count: "=no_show_restriction_count", restriction_type: "=no_show_restriction_type", dismissal_count: "=dismissal_review_count", fee_cap: "=fee_cap_per_12_months_usd"}
+        "Specialty New-Patient Consultation": {restriction_count: "=no_show_restriction_count", restriction_type: "=no_show_restriction_type", dismissal_count: "=dismissal_review_count", fee_cap: "=fee_cap_per_12_months_usd"}
+        "Diagnostic Imaging Appointment (MRI/CT)": {restriction_count: "=no_show_restriction_count", restriction_type: "=no_show_restriction_type", dismissal_count: "=dismissal_review_count", fee_cap: "=fee_cap_per_12_months_usd"}
+        "Infusion Therapy Chair Appointment": {restriction_count: "=no_show_restriction_count", restriction_type: "=no_show_restriction_type", dismissal_count: "=dismissal_review_count", fee_cap: "=fee_cap_per_12_months_usd"}
+        "Pre-Admission Testing Appointment": {restriction_count: "=no_show_restriction_count", restriction_type: "=no_show_restriction_type", dismissal_count: "=dismissal_review_count", fee_cap: "=fee_cap_per_12_months_usd"}
+        "Outpatient Procedure Appointment": {restriction_count: "=no_show_restriction_count", restriction_type: "=no_show_restriction_type", dismissal_count: "=dismissal_review_count", fee_cap: "=fee_cap_per_12_months_usd"}
+    measures: [visit_msr_no_shows_window, visit_msr_fees_window]
+  - id: visit_booking_rules
+    subject: [visit_booked, visit_prerequisites_updated]
+    rule: >-
+      A slot may be booked no further ahead than booking_horizon_days and no later than min_lead_hours before its start, through the tier's booking_channels (the portal only where self_scheduling_allowed is true). Where referral_required is true a referral or order must be on file before booking. Where the patient's payer requires authorization for the service, it must be APPROVED no later than prior_auth_lead_business_days business days before the appointment, or the appointment is rescheduled. Where preregistration_required is true, pre-registration is completed no later than preregistration_deadline_hours before the start. A video visit requires the patient to be in Wisconsin during the visit (patient_location_in_state_required). An in-person interpreter is booked no later than interpreter_booking_lead_hours before the start.
+    eligibility: []
+    params:
+      per_tier:
+        "Primary Care Office Visit": {horizon: "=booking_horizon_days", lead_hours: "=min_lead_hours", channels: "=booking_channels", self_scheduling: "=self_scheduling_allowed", referral: "=referral_required", auth_lead_bd: "=prior_auth_lead_business_days", prereg: "=preregistration_required", prereg_hours: "=preregistration_deadline_hours", in_state: "=patient_location_in_state_required", interpreter_hours: "=interpreter_booking_lead_hours"}
+        "Telehealth Video Visit": {horizon: "=booking_horizon_days", lead_hours: "=min_lead_hours", channels: "=booking_channels", self_scheduling: "=self_scheduling_allowed", referral: "=referral_required", auth_lead_bd: "=prior_auth_lead_business_days", prereg: "=preregistration_required", prereg_hours: "=preregistration_deadline_hours", in_state: "=patient_location_in_state_required", interpreter_hours: "=interpreter_booking_lead_hours"}
+        "Specialty New-Patient Consultation": {horizon: "=booking_horizon_days", lead_hours: "=min_lead_hours", channels: "=booking_channels", self_scheduling: "=self_scheduling_allowed", referral: "=referral_required", auth_lead_bd: "=prior_auth_lead_business_days", prereg: "=preregistration_required", prereg_hours: "=preregistration_deadline_hours", in_state: "=patient_location_in_state_required", interpreter_hours: "=interpreter_booking_lead_hours"}
+        "Diagnostic Imaging Appointment (MRI/CT)": {horizon: "=booking_horizon_days", lead_hours: "=min_lead_hours", channels: "=booking_channels", self_scheduling: "=self_scheduling_allowed", referral: "=referral_required", auth_lead_bd: "=prior_auth_lead_business_days", prereg: "=preregistration_required", prereg_hours: "=preregistration_deadline_hours", in_state: "=patient_location_in_state_required", interpreter_hours: "=interpreter_booking_lead_hours"}
+        "Infusion Therapy Chair Appointment": {horizon: "=booking_horizon_days", lead_hours: "=min_lead_hours", channels: "=booking_channels", self_scheduling: "=self_scheduling_allowed", referral: "=referral_required", auth_lead_bd: "=prior_auth_lead_business_days", prereg: "=preregistration_required", prereg_hours: "=preregistration_deadline_hours", in_state: "=patient_location_in_state_required", interpreter_hours: "=interpreter_booking_lead_hours"}
+        "Pre-Admission Testing Appointment": {horizon: "=booking_horizon_days", lead_hours: "=min_lead_hours", channels: "=booking_channels", self_scheduling: "=self_scheduling_allowed", referral: "=referral_required", auth_lead_bd: "=prior_auth_lead_business_days", prereg: "=preregistration_required", prereg_hours: "=preregistration_deadline_hours", in_state: "=patient_location_in_state_required", interpreter_hours: "=interpreter_booking_lead_hours"}
+        "Outpatient Procedure Appointment": {horizon: "=booking_horizon_days", lead_hours: "=min_lead_hours", channels: "=booking_channels", self_scheduling: "=self_scheduling_allowed", referral: "=referral_required", auth_lead_bd: "=prior_auth_lead_business_days", prereg: "=preregistration_required", prereg_hours: "=preregistration_deadline_hours", in_state: "=patient_location_in_state_required", interpreter_hours: "=interpreter_booking_lead_hours"}
+  - id: visit_reminders_and_preparation
+    subject: [visit_reminder_sent, visit_confirmed]
+    rule: >-
+      Reminders go out reminder_days_before the appointment through reminder_channels; preparation instructions (fasting_hours, escort_required) go out prep_instructions_days_before; where confirmation_required is true and the patient has not confirmed, staff call confirmation_call_hours before the start. Each outreach type is sent once per days-before value. The patient is asked to arrive arrival_minutes_before the start (tech_check_minutes early for video visits). Only the patient confirms an appointment.
+    eligibility: []
+    params:
+      per_tier:
+        "Primary Care Office Visit": {reminder_days: "=reminder_days_before", confirmation: "=confirmation_required", call_hours: "=confirmation_call_hours", prep_days: "=prep_instructions_days_before", fasting: "=fasting_hours", escort: "=escort_required", arrival: "=arrival_minutes_before", tech_check: "=tech_check_minutes"}
+        "Telehealth Video Visit": {reminder_days: "=reminder_days_before", confirmation: "=confirmation_required", call_hours: "=confirmation_call_hours", prep_days: "=prep_instructions_days_before", fasting: "=fasting_hours", escort: "=escort_required", arrival: "=arrival_minutes_before", tech_check: "=tech_check_minutes"}
+        "Specialty New-Patient Consultation": {reminder_days: "=reminder_days_before", confirmation: "=confirmation_required", call_hours: "=confirmation_call_hours", prep_days: "=prep_instructions_days_before", fasting: "=fasting_hours", escort: "=escort_required", arrival: "=arrival_minutes_before", tech_check: "=tech_check_minutes"}
+        "Diagnostic Imaging Appointment (MRI/CT)": {reminder_days: "=reminder_days_before", confirmation: "=confirmation_required", call_hours: "=confirmation_call_hours", prep_days: "=prep_instructions_days_before", fasting: "=fasting_hours", escort: "=escort_required", arrival: "=arrival_minutes_before", tech_check: "=tech_check_minutes"}
+        "Infusion Therapy Chair Appointment": {reminder_days: "=reminder_days_before", confirmation: "=confirmation_required", call_hours: "=confirmation_call_hours", prep_days: "=prep_instructions_days_before", fasting: "=fasting_hours", escort: "=escort_required", arrival: "=arrival_minutes_before", tech_check: "=tech_check_minutes"}
+        "Pre-Admission Testing Appointment": {reminder_days: "=reminder_days_before", confirmation: "=confirmation_required", call_hours: "=confirmation_call_hours", prep_days: "=prep_instructions_days_before", fasting: "=fasting_hours", escort: "=escort_required", arrival: "=arrival_minutes_before", tech_check: "=tech_check_minutes"}
+        "Outpatient Procedure Appointment": {reminder_days: "=reminder_days_before", confirmation: "=confirmation_required", call_hours: "=confirmation_call_hours", prep_days: "=prep_instructions_days_before", fasting: "=fasting_hours", escort: "=escort_required", arrival: "=arrival_minutes_before", tech_check: "=tech_check_minutes"}
+      reminder_channels: "=reminder_channels"
+  - id: visit_reschedule_and_cancellation
+    subject: [visit_rescheduled, visit_cancelled]
+    rule: >-
+      A patient may reschedule an appointment up to reschedule_limit times; beyond that it is cancelled and rebooked. A patient cancellation counts as late when cancel_notice_hours, measured as whole hours before the scheduled start (cancel_notice_basis), is below late_cancel_window_hours; a reschedule inside that window counts as a late cancellation where reschedule_resets_fee is true. A patient cancels through the tier's cancellation_channels. When Riverbend cancels, the patient is offered the first available slot and is never charged (riverbend_cancel_priority). A freed slot inside waitlist_offer_hours is offered to the waitlist.
+    eligibility: []
+    params:
+      per_tier:
+        "Primary Care Office Visit": {reschedule_limit: "=reschedule_limit", late_window: "=late_cancel_window_hours", channels: "=cancellation_channels", portal_cancel: "=portal_cancel_allowed", waitlist_hours: "=waitlist_offer_hours"}
+        "Telehealth Video Visit": {reschedule_limit: "=reschedule_limit", late_window: "=late_cancel_window_hours", channels: "=cancellation_channels", portal_cancel: "=portal_cancel_allowed", waitlist_hours: "=waitlist_offer_hours"}
+        "Specialty New-Patient Consultation": {reschedule_limit: "=reschedule_limit", late_window: "=late_cancel_window_hours", channels: "=cancellation_channels", portal_cancel: "=portal_cancel_allowed", waitlist_hours: "=waitlist_offer_hours"}
+        "Diagnostic Imaging Appointment (MRI/CT)": {reschedule_limit: "=reschedule_limit", late_window: "=late_cancel_window_hours", channels: "=cancellation_channels", portal_cancel: "=portal_cancel_allowed", waitlist_hours: "=waitlist_offer_hours"}
+        "Infusion Therapy Chair Appointment": {reschedule_limit: "=reschedule_limit", late_window: "=late_cancel_window_hours", channels: "=cancellation_channels", portal_cancel: "=portal_cancel_allowed", waitlist_hours: "=waitlist_offer_hours"}
+        "Pre-Admission Testing Appointment": {reschedule_limit: "=reschedule_limit", late_window: "=late_cancel_window_hours", channels: "=cancellation_channels", portal_cancel: "=portal_cancel_allowed", waitlist_hours: "=waitlist_offer_hours"}
+        "Outpatient Procedure Appointment": {reschedule_limit: "=reschedule_limit", late_window: "=late_cancel_window_hours", channels: "=cancellation_channels", portal_cancel: "=portal_cancel_allowed", waitlist_hours: "=waitlist_offer_hours"}
+      cancel_notice_basis: "=cancel_notice_basis"
+      reschedule_resets_fee: "=reschedule_resets_fee"
+      riverbend_cancel_priority: "=riverbend_cancel_priority"
+  - id: visit_attendance_and_check_in
+    subject: [visit_checked_in, visit_completed, visit_no_show]
+    rule: >-
+      A patient is checked in through the tier's check_in_methods. A patient arriving within late_arrival_grace_minutes after the start is seen; later arrivals are handled under late_arrival_policy. An appointment not checked in by no_show_auto_mark_minutes after the start is marked no-show, unless Riverbend was running more than riverbend_delay_waiver_minutes late and the patient left, which is recorded as a Riverbend cancellation instead. Check-in registers the hospital account for the visit.
+    eligibility: []
+    params:
+      per_tier:
+        "Primary Care Office Visit": {check_in: "=check_in_methods", grace: "=late_arrival_grace_minutes", auto_mark: "=no_show_auto_mark_minutes", delay_minutes: "=riverbend_delay_waiver_minutes"}
+        "Telehealth Video Visit": {check_in: "=check_in_methods", grace: "=late_arrival_grace_minutes", auto_mark: "=no_show_auto_mark_minutes", delay_minutes: "=riverbend_delay_waiver_minutes"}
+        "Specialty New-Patient Consultation": {check_in: "=check_in_methods", grace: "=late_arrival_grace_minutes", auto_mark: "=no_show_auto_mark_minutes", delay_minutes: "=riverbend_delay_waiver_minutes"}
+        "Diagnostic Imaging Appointment (MRI/CT)": {check_in: "=check_in_methods", grace: "=late_arrival_grace_minutes", auto_mark: "=no_show_auto_mark_minutes", delay_minutes: "=riverbend_delay_waiver_minutes"}
+        "Infusion Therapy Chair Appointment": {check_in: "=check_in_methods", grace: "=late_arrival_grace_minutes", auto_mark: "=no_show_auto_mark_minutes", delay_minutes: "=riverbend_delay_waiver_minutes"}
+        "Pre-Admission Testing Appointment": {check_in: "=check_in_methods", grace: "=late_arrival_grace_minutes", auto_mark: "=no_show_auto_mark_minutes", delay_minutes: "=riverbend_delay_waiver_minutes"}
+        "Outpatient Procedure Appointment": {check_in: "=check_in_methods", grace: "=late_arrival_grace_minutes", auto_mark: "=no_show_auto_mark_minutes", delay_minutes: "=riverbend_delay_waiver_minutes"}
+      late_arrival_policy: "=late_arrival_policy"
+  - id: visit_missed_fees
+    subject: [visit_fee_assessed, visit_fee_waived]
+    rule: >-
+      A no-show carries no_show_fee_usd and a late patient cancellation carries late_cancellation_fee_usd, each assessed once per appointment and fee type. The fee is waived, once per reason, when the patient's coverage is BadgerCare Plus (medicaid_fee_prohibited), when it is the patient's first no-show or late cancellation in the count window (first_occurrence_waived, visit_msr_missed_events_window), when Riverbend declared a weather closure (weather_closure_waiver), when the patient was hospitalized at the time (hospitalization_waiver), or when Riverbend's delay caused the miss; Medicare patients are treated as every other non-Medicaid patient (medicare_fee_policy). A fee appears on the patient statement fee_statement_after_days after assessment and may be disputed within fee_dispute_days.
+    eligibility:
+      - id: one_fee_per_type
+        applies_to: [visit_fee_assessed]
+        kind: dedup
+        condition: A no-show carries no_show_fee_usd and a late patient cancellation carries late_cancellation_fee_usd, each assessed once per appointment and fee type.
+        evidence_fields: [appointment_transactions.appointment_id, appointment_transactions.fee_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[appointment_transactions.appointment_id]]
+          action_bindings: {appointment_transactions.appointment_id: appointment_id}
+        dedup_contract:
+          table: appointment_transactions
+          mode: separate_record
+          object_bindings: {appointment_id: appointment_id}
+          duplicate_filters: {event_type: [visit_fee_assessed]}
+          distinct_fields: [fee_type]
+    params:
+      per_tier:
+        "Primary Care Office Visit": {no_show_fee: "=no_show_fee_usd", late_cancel_fee: "=late_cancellation_fee_usd"}
+        "Telehealth Video Visit": {no_show_fee: "=no_show_fee_usd", late_cancel_fee: "=late_cancellation_fee_usd"}
+        "Specialty New-Patient Consultation": {no_show_fee: "=no_show_fee_usd", late_cancel_fee: "=late_cancellation_fee_usd"}
+        "Diagnostic Imaging Appointment (MRI/CT)": {no_show_fee: "=no_show_fee_usd", late_cancel_fee: "=late_cancellation_fee_usd"}
+        "Infusion Therapy Chair Appointment": {no_show_fee: "=no_show_fee_usd", late_cancel_fee: "=late_cancellation_fee_usd"}
+        "Pre-Admission Testing Appointment": {no_show_fee: "=no_show_fee_usd", late_cancel_fee: "=late_cancellation_fee_usd"}
+        "Outpatient Procedure Appointment": {no_show_fee: "=no_show_fee_usd", late_cancel_fee: "=late_cancellation_fee_usd"}
+      first_occurrence_waived: "=first_occurrence_waived"
+      medicaid_fee_prohibited: "=medicaid_fee_prohibited"
+      fee_waiver_reasons: "=fee_waiver_reasons"
+      weather_closure_waiver: "=weather_closure_waiver"
+      hospitalization_waiver: "=hospitalization_waiver"
+      medicare_fee_policy: "=medicare_fee_policy"
+      fee_statement_after_days: "=fee_statement_after_days"
+      fee_dispute_days: "=fee_dispute_days"
+    measures: [visit_msr_missed_events_window]
+  - id: visit_fee_payment
+    subject: [visit_fee_paid]
+    rule: >-
+      A missed-appointment fee is paid by the patient like any other patient balance and is never added to a payment plan or to a financial assistance award; a fee under dispute is not collected until the dispute is answered.
+    eligibility: []
+    params: {fee_dispute_days: "=fee_dispute_days"}

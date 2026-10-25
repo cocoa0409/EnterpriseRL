@@ -1,0 +1,5 @@
+# rework claims, round 5 (policy-task audit revision_4)
+
+- CG4-N1 (a) → In recovery_ext_agency_fee, the low-value reduction sentence and its compute_basis quote now compare against "the standard agency recovery fee", the quantity the baseline sentence defines, instead of the class fee "taken before any state limit". The book_value_reduction low-tier method text was updated to match. The generic combination sentence keeps its order and names no factor quantity. No compute change.
+- CG4-N1 (b) → In recovery_ext_surrender_fee, the same change: the comparison is against "the standard voluntary surrender fee", as defined by its baseline. The surrender_value_basis low-tier method text was updated to match. No compute change.
+- Class sweep → A scripted check of every factor's own compute_basis sentences and ladder text in all five policies, against the business terms of every other factor in the same policy, found no remaining mention. Every compute_basis quote and replaced_by is still verbatim in its rule. No figure, world or combination sentence changed.

@@ -1,0 +1,668 @@
+# Transaction Disputes charter — Meridian Fleet Payments. A dispute case is opened on one posted
+# purchase of a fleet's card program; the case type (merchant error, duplicate posting, credit not
+# processed, counterfeit fraud, lost or stolen card fraud, employee misuse review) fixes the filing
+# window, the evidence, provisional credit, chargeback rights and who bears the loss. Dispute credits
+# bill on the fleet's credit line statement.
+category: dispute
+display_name: Transaction Disputes
+
+binding:
+  holding_table: dispute_cases
+  event_tables: [dispute_entries]
+  status_field: status
+  variant_field: variant_name
+
+lifecycle:
+  states: [opened, pending_affidavit, under_review, chargeback_filed, resolved_fleet_favor, resolved_merchant_favor, withdrawn]
+  transitions:
+    - {from: opened, to: pending_affidavit, by: agent, means: "A case type that needs a signed affidavit waits for it after the request is sent to the account administrator."}
+    - {from: pending_affidavit, to: under_review, by: user, means: "The fleet's authorized account administrator signs and submits the dispute affidavit through the secure portal."}
+    - {from: opened, to: under_review, by: agent, means: "A case type that needs no affidavit goes straight to review once its evidence is recorded."}
+    - {from: under_review, to: chargeback_filed, by: system, means: "A purchase that cleared through the Mastercard network is charged back to the merchant's acquirer."}
+    - {from: under_review, to: resolved_fleet_favor, by: system, means: "The review finds the fleet is not liable for the disputed amount."}
+    - {from: under_review, to: resolved_merchant_favor, by: system, means: "The review finds the charge valid or the fleet liable."}
+    - {from: chargeback_filed, to: resolved_fleet_favor, by: system, means: "The chargeback stands (no representment, or the representment fails)."}
+    - {from: chargeback_filed, to: resolved_merchant_favor, by: system, means: "The merchant's representment succeeds."}
+    - {from: opened, to: withdrawn, by: user, means: "The fleet's authorized administrator withdraws the case before review."}
+    - {from: pending_affidavit, to: withdrawn, by: system, means: "The affidavit was not received by its due date and the case lapses."}
+
+accounts:
+  - key: dispute_credit
+    unit: USD
+    meaning: "Credits Meridian grants the fleet on disputed purchases: provisional and final credits book in; reversals of provisional credit book out."
+
+parameter_schema:
+  filing_window_days: Calendar days after the statement date of the statement that billed the purchase within which the case must be opened (integer days).
+  min_dispute_amount_usd: Smallest disputed amount accepted as a case (USD; 0.01 = any amount).
+  partial_dispute_allowed: Whether only part of the purchase may be disputed (boolean).
+  disputed_amount_basis: How disputed_amount is figured (enum excess_quantity_or_price | full_net_amount | promised_credit).
+  related_fees_credited: Whether a credit on the case also credits the purchase's out-of-network, manual-entry and cross-border fees when the full purchase is credited (boolean).
+  provisional_credit_eligible: Whether a provisional credit is given while the case is reviewed (boolean).
+  provisional_credit_business_days: Business days after the case reaches under_review within which the provisional credit posts (integer; 0 = none).
+  provisional_credit_min_amount_usd: Disputed amount at or above which a provisional credit is given (USD).
+  provisional_credit_pct: Percent of the credited amount given provisionally (percent; 0.00 = none).
+  provisional_reversal_notice_days: Calendar days after a merchant-favor resolution on which a provisional credit is reversed (integer days).
+  affidavit_required: Whether the account administrator's signed affidavit is required (boolean).
+  affidavit_due_days: Calendar days after affidavit_requested_on within which the signed affidavit must be received (integer; 0 = none required).
+  police_report_required: Whether a police report number must accompany the affidavit (boolean).
+  card_block_required: Whether the card must already be closed (or a compromised replacement ordered) before the case is opened (boolean).
+  card_in_possession_required: Whether the fleet attests the genuine card was in its possession when the purchase was made (boolean).
+  coverage_hours_before_report: Hours before the recorded lost or stolen report moment within which unauthorized purchases are not charged to the fleet (integer hours; 0 = none).
+  fleet_liability_default: Who bears a purchase the review cannot attribute to merchant error or fraud (enum fleet | issuer).
+  misuse_after_cancellation_covered: Whether purchases authorized after the recorded cancellation moment of the card are not charged to the fleet (boolean).
+  chargeback_eligible: Whether a purchase that cleared through Mastercard (out_of_network site) may be charged back (boolean).
+  chargeback_time_limit_days: Calendar days after the purchase's post_date within which Meridian can still file a Mastercard chargeback (integer; 0 = not eligible).
+  chargeback_reason_category: Mastercard dispute category used (enum point_of_interaction_error | cardholder_dispute | fraud | not_applicable).
+  representment_days: Calendar days the acquirer has to represent after a chargeback (integer days).
+  network_merchant_response_days: Calendar days a Meridian network or partner merchant has to answer a dispute (integer days).
+  investigation_target_days: Calendar days from under_review within which the case is normally resolved (integer days).
+  max_resolution_days: Calendar days from opened_on by which every case is resolved (integer days).
+  tank_overfill_tolerance_pct: Percent above the card's recorded tank capacity beyond which posted gallons are treated as a merchant quantity error (percent; 0.00 = not used).
+  duplicate_match_window_hours: Hours within which an earlier purchase on the same card, site and amount makes a post a duplicate (integer; 0 = not used).
+  merchant_credit_wait_days: Calendar days after the merchant's credit promise date before a credit-not-processed case may be opened (integer; 0 = not used).
+  merchant_contact_required_first: Whether the fleet must first have asked the merchant to correct the charge (boolean).
+  documentation_required: Evidence the case needs (enum receipt_or_pump_reading | statement_lines | credit_promise | affidavit | affidavit_and_police_report | affidavit_and_cancellation_record).
+  pump_inspection_request: Whether the site's weights-and-measures pump inspection record is requested (boolean).
+  odometer_evidence_used: Whether the odometer entries on the card's purchases are weighed in the review (boolean).
+  card_reissue_on_claim: Card action that accompanies the case (enum none | compromised_replacement | lost_stolen_replacement).
+  fraud_claims_before_program_hold: Fraud claims on one program within 30 days after which a fraud hold is placed on the program (integer; 0 = not used).
+  claims_per_card_12m_before_review: Cases on one card within rolling 12 months after which the next case goes to senior review (integer).
+  credited_gallons_excluded_from_rebate: Whether gallons on a purchase credited in full by the case stop counting toward volume rebates (boolean).
+  withdrawal_allowed: Whether the fleet may withdraw before review (boolean).
+  refile_allowed: Whether a resolved or withdrawn case may be refiled on the same purchase (boolean).
+  status_update_days: Calendar days between status notices to the fleet while a case is open (integer days).
+  max_open_cases_per_purchase: Open cases allowed on one purchase (integer).
+  affidavit_signer: Who signs the affidavit (enum account_administrator | not_applicable).
+  liability_review_basis: Moment the liability review keys on (enum posting_record | genuine_card_possession | report_moment | cancellation_moment).
+  merchant_credit_supersedes: Whether a merchant credit posted on the purchase during the case replaces the issuer's credit (boolean).
+  late_fee_exclusion_while_open: Whether the open disputed amount is left out of the credit line's past-due amount (boolean).
+  written_resolution_notice: Whether the resolution is sent in writing with the reason (boolean).
+  network_scope: Purchases the case type covers (enum all_networks).
+  fet_credit_netted: Whether the credited amount is reduced by the share of any federal excise tax credit the purchase earned on the credited gallons (boolean).
+  senior_review_amount_usd: Disputed amount at or above which the case goes to senior review (USD).
+
+variants:
+  - name: Merchant Error Dispute (Quantity or Price)
+    rank: 1
+    entry_gate:
+      disputed_purchase_kind: posted_purchase
+      card_status: any
+    parameters:
+      filing_window_days: 60
+      min_dispute_amount_usd: 10.0
+      partial_dispute_allowed: true
+      disputed_amount_basis: excess_quantity_or_price
+      related_fees_credited: false
+      provisional_credit_eligible: true
+      provisional_credit_business_days: 10
+      provisional_credit_min_amount_usd: 25.0
+      provisional_credit_pct: 100.0
+      provisional_reversal_notice_days: 10
+      affidavit_required: false
+      affidavit_due_days: 0
+      police_report_required: false
+      card_block_required: false
+      card_in_possession_required: false
+      coverage_hours_before_report: 0
+      fleet_liability_default: fleet
+      misuse_after_cancellation_covered: false
+      chargeback_eligible: true
+      chargeback_time_limit_days: 120
+      chargeback_reason_category: point_of_interaction_error
+      representment_days: 45
+      network_merchant_response_days: 30
+      investigation_target_days: 45
+      max_resolution_days: 90
+      tank_overfill_tolerance_pct: 5.0
+      duplicate_match_window_hours: 0
+      merchant_credit_wait_days: 0
+      merchant_contact_required_first: true
+      documentation_required: receipt_or_pump_reading
+      pump_inspection_request: true
+      odometer_evidence_used: true
+      card_reissue_on_claim: none
+      fraud_claims_before_program_hold: 0
+      claims_per_card_12m_before_review: 4
+      credited_gallons_excluded_from_rebate: true
+      withdrawal_allowed: true
+      refile_allowed: false
+      status_update_days: 10
+      max_open_cases_per_purchase: 1
+      affidavit_signer: not_applicable
+      liability_review_basis: posting_record
+      merchant_credit_supersedes: true
+      late_fee_exclusion_while_open: true
+      written_resolution_notice: true
+      network_scope: all_networks
+      fet_credit_netted: true
+      senior_review_amount_usd: 2500.0
+  - name: Duplicate Posting Dispute
+    rank: 2
+    entry_gate:
+      disputed_purchase_kind: posted_purchase_with_matching_earlier_post
+      card_status: any
+    parameters:
+      filing_window_days: 60
+      min_dispute_amount_usd: 0.01
+      partial_dispute_allowed: false
+      disputed_amount_basis: full_net_amount
+      related_fees_credited: true
+      provisional_credit_eligible: true
+      provisional_credit_business_days: 5
+      provisional_credit_min_amount_usd: 0.01
+      provisional_credit_pct: 100.0
+      provisional_reversal_notice_days: 10
+      affidavit_required: false
+      affidavit_due_days: 0
+      police_report_required: false
+      card_block_required: false
+      card_in_possession_required: false
+      coverage_hours_before_report: 0
+      fleet_liability_default: fleet
+      misuse_after_cancellation_covered: false
+      chargeback_eligible: true
+      chargeback_time_limit_days: 120
+      chargeback_reason_category: point_of_interaction_error
+      representment_days: 45
+      network_merchant_response_days: 30
+      investigation_target_days: 30
+      max_resolution_days: 60
+      tank_overfill_tolerance_pct: 0.0
+      duplicate_match_window_hours: 24
+      merchant_credit_wait_days: 0
+      merchant_contact_required_first: false
+      documentation_required: statement_lines
+      pump_inspection_request: false
+      odometer_evidence_used: false
+      card_reissue_on_claim: none
+      fraud_claims_before_program_hold: 0
+      claims_per_card_12m_before_review: 4
+      credited_gallons_excluded_from_rebate: true
+      withdrawal_allowed: true
+      refile_allowed: false
+      status_update_days: 10
+      max_open_cases_per_purchase: 1
+      affidavit_signer: not_applicable
+      liability_review_basis: posting_record
+      merchant_credit_supersedes: true
+      late_fee_exclusion_while_open: true
+      written_resolution_notice: true
+      network_scope: all_networks
+      fet_credit_netted: true
+      senior_review_amount_usd: 5000.0
+  - name: Credit Not Processed Dispute
+    rank: 3
+    entry_gate:
+      disputed_purchase_kind: posted_purchase_with_merchant_credit_promise
+      card_status: any
+    parameters:
+      filing_window_days: 60
+      min_dispute_amount_usd: 10.0
+      partial_dispute_allowed: true
+      disputed_amount_basis: promised_credit
+      related_fees_credited: false
+      provisional_credit_eligible: false
+      provisional_credit_business_days: 0
+      provisional_credit_min_amount_usd: 0.0
+      provisional_credit_pct: 0.0
+      provisional_reversal_notice_days: 0
+      affidavit_required: false
+      affidavit_due_days: 0
+      police_report_required: false
+      card_block_required: false
+      card_in_possession_required: false
+      coverage_hours_before_report: 0
+      fleet_liability_default: fleet
+      misuse_after_cancellation_covered: false
+      chargeback_eligible: true
+      chargeback_time_limit_days: 120
+      chargeback_reason_category: cardholder_dispute
+      representment_days: 45
+      network_merchant_response_days: 30
+      investigation_target_days: 45
+      max_resolution_days: 90
+      tank_overfill_tolerance_pct: 0.0
+      duplicate_match_window_hours: 0
+      merchant_credit_wait_days: 15
+      merchant_contact_required_first: true
+      documentation_required: credit_promise
+      pump_inspection_request: false
+      odometer_evidence_used: false
+      card_reissue_on_claim: none
+      fraud_claims_before_program_hold: 0
+      claims_per_card_12m_before_review: 4
+      credited_gallons_excluded_from_rebate: false
+      withdrawal_allowed: true
+      refile_allowed: false
+      status_update_days: 10
+      max_open_cases_per_purchase: 1
+      affidavit_signer: not_applicable
+      liability_review_basis: posting_record
+      merchant_credit_supersedes: true
+      late_fee_exclusion_while_open: true
+      written_resolution_notice: true
+      network_scope: all_networks
+      fet_credit_netted: false
+      senior_review_amount_usd: 2500.0
+  - name: Counterfeit Card Fraud Claim
+    rank: 4
+    entry_gate:
+      disputed_purchase_kind: posted_purchase_genuine_card_in_possession
+      card_status: closed_or_compromised_replacement_ordered
+    parameters:
+      filing_window_days: 90
+      min_dispute_amount_usd: 0.01
+      partial_dispute_allowed: false
+      disputed_amount_basis: full_net_amount
+      related_fees_credited: true
+      provisional_credit_eligible: true
+      provisional_credit_business_days: 5
+      provisional_credit_min_amount_usd: 0.01
+      provisional_credit_pct: 100.0
+      provisional_reversal_notice_days: 10
+      affidavit_required: true
+      affidavit_due_days: 15
+      police_report_required: false
+      card_block_required: true
+      card_in_possession_required: true
+      coverage_hours_before_report: 0
+      fleet_liability_default: issuer
+      misuse_after_cancellation_covered: false
+      chargeback_eligible: true
+      chargeback_time_limit_days: 120
+      chargeback_reason_category: fraud
+      representment_days: 45
+      network_merchant_response_days: 30
+      investigation_target_days: 60
+      max_resolution_days: 120
+      tank_overfill_tolerance_pct: 0.0
+      duplicate_match_window_hours: 0
+      merchant_credit_wait_days: 0
+      merchant_contact_required_first: false
+      documentation_required: affidavit
+      pump_inspection_request: false
+      odometer_evidence_used: true
+      card_reissue_on_claim: compromised_replacement
+      fraud_claims_before_program_hold: 5
+      claims_per_card_12m_before_review: 2
+      credited_gallons_excluded_from_rebate: true
+      withdrawal_allowed: true
+      refile_allowed: false
+      status_update_days: 7
+      max_open_cases_per_purchase: 1
+      affidavit_signer: account_administrator
+      liability_review_basis: genuine_card_possession
+      merchant_credit_supersedes: true
+      late_fee_exclusion_while_open: true
+      written_resolution_notice: true
+      network_scope: all_networks
+      fet_credit_netted: true
+      senior_review_amount_usd: 1000.0
+  - name: Lost or Stolen Card Fraud Claim
+    rank: 5
+    entry_gate:
+      disputed_purchase_kind: posted_purchase_after_card_left_possession
+      card_status: closed_lost_or_stolen
+    parameters:
+      filing_window_days: 90
+      min_dispute_amount_usd: 0.01
+      partial_dispute_allowed: false
+      disputed_amount_basis: full_net_amount
+      related_fees_credited: true
+      provisional_credit_eligible: true
+      provisional_credit_business_days: 5
+      provisional_credit_min_amount_usd: 0.01
+      provisional_credit_pct: 100.0
+      provisional_reversal_notice_days: 10
+      affidavit_required: true
+      affidavit_due_days: 15
+      police_report_required: true
+      card_block_required: true
+      card_in_possession_required: false
+      coverage_hours_before_report: 24
+      fleet_liability_default: fleet
+      misuse_after_cancellation_covered: false
+      chargeback_eligible: true
+      chargeback_time_limit_days: 120
+      chargeback_reason_category: fraud
+      representment_days: 45
+      network_merchant_response_days: 30
+      investigation_target_days: 60
+      max_resolution_days: 120
+      tank_overfill_tolerance_pct: 0.0
+      duplicate_match_window_hours: 0
+      merchant_credit_wait_days: 0
+      merchant_contact_required_first: false
+      documentation_required: affidavit_and_police_report
+      pump_inspection_request: false
+      odometer_evidence_used: true
+      card_reissue_on_claim: lost_stolen_replacement
+      fraud_claims_before_program_hold: 5
+      claims_per_card_12m_before_review: 2
+      credited_gallons_excluded_from_rebate: true
+      withdrawal_allowed: true
+      refile_allowed: false
+      status_update_days: 7
+      max_open_cases_per_purchase: 1
+      affidavit_signer: account_administrator
+      liability_review_basis: report_moment
+      merchant_credit_supersedes: true
+      late_fee_exclusion_while_open: true
+      written_resolution_notice: true
+      network_scope: all_networks
+      fet_credit_netted: true
+      senior_review_amount_usd: 1000.0
+  - name: Employee Misuse Review
+    rank: 6
+    entry_gate:
+      disputed_purchase_kind: posted_purchase_by_fleet_driver
+      card_status: any
+    parameters:
+      filing_window_days: 60
+      min_dispute_amount_usd: 0.01
+      partial_dispute_allowed: false
+      disputed_amount_basis: full_net_amount
+      related_fees_credited: false
+      provisional_credit_eligible: false
+      provisional_credit_business_days: 0
+      provisional_credit_min_amount_usd: 0.0
+      provisional_credit_pct: 0.0
+      provisional_reversal_notice_days: 0
+      affidavit_required: true
+      affidavit_due_days: 15
+      police_report_required: false
+      card_block_required: false
+      card_in_possession_required: false
+      coverage_hours_before_report: 0
+      fleet_liability_default: fleet
+      misuse_after_cancellation_covered: true
+      chargeback_eligible: false
+      chargeback_time_limit_days: 0
+      chargeback_reason_category: not_applicable
+      representment_days: 0
+      network_merchant_response_days: 0
+      investigation_target_days: 30
+      max_resolution_days: 60
+      tank_overfill_tolerance_pct: 0.0
+      duplicate_match_window_hours: 0
+      merchant_credit_wait_days: 0
+      merchant_contact_required_first: false
+      documentation_required: affidavit_and_cancellation_record
+      pump_inspection_request: false
+      odometer_evidence_used: true
+      card_reissue_on_claim: none
+      fraud_claims_before_program_hold: 0
+      claims_per_card_12m_before_review: 3
+      credited_gallons_excluded_from_rebate: false
+      withdrawal_allowed: true
+      refile_allowed: false
+      status_update_days: 10
+      max_open_cases_per_purchase: 1
+      affidavit_signer: account_administrator
+      liability_review_basis: cancellation_moment
+      merchant_credit_supersedes: true
+      late_fee_exclusion_while_open: true
+      written_resolution_notice: true
+      network_scope: all_networks
+      fet_credit_netted: false
+      senior_review_amount_usd: 1000.0
+
+events:
+  - type: dispute_open
+    target: dispute_cases
+    mutation: create
+    meaning: "A dispute case is opened on one posted purchase."
+    grain: "One row per case."
+    fields:
+      dispute_case_id: "Reference of the case."
+      customer_id: "The fleet."
+      program_id: "Program the purchase posted to."
+      program_txn_id: "The disputed purchase."
+      fleet_card_id: "Card used for the purchase."
+      statement_id: "Statement that billed the purchase."
+      variant_name: "Case type."
+      opened_on: "Date the case was opened."
+      claimed_gallons: "Gallons the fleet says were dispensed (quantity cases); 0.000 otherwise."
+      claimed_unit_price: "Price per gallon the fleet says applied (price cases); 0.000 otherwise."
+      promised_credit_amount: "Credit the merchant promised (credit-not-processed cases); 0.00 otherwise."
+      disputed_amount: "Amount in dispute, figured by the case type's disputed_amount_basis."
+    triggers: []
+  - type: dispute_request_affidavit
+    target: dispute_cases
+    mutation: {transition: {from: opened, to: pending_affidavit}}
+    meaning: "The affidavit is requested from the account administrator."
+    grain: "One row per request."
+    fields: {affidavit_requested_on: "Date the request was sent."}
+    triggers: []
+  - type: dispute_affidavit_submit
+    target: dispute_cases
+    mutation: {transition: {from: pending_affidavit, to: under_review}}
+    meaning: "The account administrator signs and submits the affidavit."
+    grain: "One row per affidavit."
+    fields:
+      affidavit_received_on: "Date the signed affidavit was received."
+      police_report_number: "Police report number given with the affidavit, exactly as the fleet states it; empty when none."
+    triggers: []
+  - type: dispute_begin_review
+    target: dispute_cases
+    mutation: {transition: {from: opened, to: under_review}}
+    meaning: "A case needing no affidavit goes to review."
+    grain: "One row per case moved to review."
+    fields: {review_started_on: "Date review began."}
+    triggers: []
+  - type: dispute_chargeback
+    target: dispute_cases
+    mutation: {transition: {from: under_review, to: chargeback_filed}}
+    meaning: "A Mastercard chargeback is filed."
+    grain: "One row per chargeback."
+    fields: {chargeback_filed_on: "Filing date."}
+    triggers: []
+  - type: dispute_resolve_fleet
+    target: dispute_cases
+    mutation: {transition: {from: under_review, to: resolved_fleet_favor}}
+    meaning: "Review resolves the case in the fleet's favor."
+    grain: "One row per resolution."
+    fields:
+      resolved_on: "Resolution date."
+      liability: "merchant or issuer."
+    triggers: []
+  - type: dispute_resolve_merchant
+    target: dispute_cases
+    mutation: {transition: {from: under_review, to: resolved_merchant_favor}}
+    meaning: "Review resolves the case against the fleet."
+    grain: "One row per resolution."
+    fields:
+      resolved_on: "Resolution date."
+      liability: "Always fleet."
+    triggers: []
+  - type: dispute_chargeback_won
+    target: dispute_cases
+    mutation: {transition: {from: chargeback_filed, to: resolved_fleet_favor}}
+    meaning: "The chargeback stands."
+    grain: "One row per resolution."
+    fields:
+      resolved_on: "Resolution date."
+      liability: "Always merchant."
+    triggers: []
+  - type: dispute_chargeback_lost
+    target: dispute_cases
+    mutation: {transition: {from: chargeback_filed, to: resolved_merchant_favor}}
+    meaning: "The merchant's representment succeeds."
+    grain: "One row per resolution."
+    fields:
+      resolved_on: "Resolution date."
+      liability: "Always fleet."
+    triggers: []
+  - type: dispute_withdraw
+    target: dispute_cases
+    mutation: {transition: {from: opened, to: withdrawn}}
+    meaning: "The fleet's administrator withdraws the case."
+    grain: "One row per withdrawal."
+    fields: {resolved_on: "Withdrawal date."}
+    triggers: []
+  - type: dispute_affidavit_lapse
+    target: dispute_cases
+    mutation: {transition: {from: pending_affidavit, to: withdrawn}}
+    meaning: "The case lapses because the affidavit was not received in time."
+    grain: "One row per lapsed case."
+    fields: {resolved_on: "Day after the affidavit due date."}
+    triggers: []
+  - type: dispute_provisional_credit
+    target: dispute_entries
+    meaning: "A provisional credit posts while the case is reviewed."
+    grain: "One row per case given provisional credit."
+    distinguish_by: [entry_date]
+    fields:
+      dispute_entry_id: "Reference of the credit."
+      dispute_case_id: "The case."
+      entry_date: "Posting date."
+      amount: "Credit (positive)."
+      fees_included_amount: "Part of amount that credits the purchase's per-transaction fees; 0.00 when none."
+    account: dispute_credit
+    direction: in
+    triggers: []
+  - type: dispute_final_credit
+    target: dispute_entries
+    meaning: "A final credit posts on a case resolved in the fleet's favor that had no provisional credit."
+    grain: "One row per case credited at resolution."
+    distinguish_by: [entry_date]
+    fields:
+      dispute_entry_id: "Reference of the credit."
+      dispute_case_id: "The case."
+      entry_date: "Resolution date."
+      amount: "Credit (positive)."
+      fees_included_amount: "Part of amount that credits the purchase's per-transaction fees; 0.00 when none."
+    account: dispute_credit
+    direction: in
+    triggers: []
+  - type: dispute_provisional_reversal
+    target: dispute_entries
+    meaning: "A provisional credit is reversed because the case was resolved against the fleet or the merchant posted its own credit."
+    grain: "One row per reversed provisional credit."
+    distinguish_by: [original_entry_id]
+    fields:
+      dispute_entry_id: "Reference of the reversal."
+      dispute_case_id: "The case."
+      original_entry_id: "The provisional credit reversed."
+      entry_date: "Reversal date."
+      amount: "Amount reversed (positive)."
+      reversal_reason: "merchant_favor, merchant_credit_posted or case_withdrawn."
+    account: dispute_credit
+    direction: out
+    triggers: []
+
+measures:
+  - id: dispute_msr_cases_on_card_12m
+    window: "Rolling 12 months ending on the day before opened_on."
+    measure: "Count of dispute_cases on the same fleet_card_id."
+  - id: dispute_msr_fraud_claims_program_30d
+    window: "Rolling 30 days ending on opened_on, inclusive."
+    measure: "Count of dispute_cases of type Counterfeit Card Fraud Claim or Lost or Stolen Card Fraud Claim on the same program, withdrawn cases excluded."
+  - id: dispute_msr_open_cases_on_purchase
+    window: "Current state."
+    measure: "Count of dispute_cases on the same program_txn_id in status opened, pending_affidavit, under_review or chargeback_filed."
+
+policies:
+  - id: dispute_agg_multi_holding
+    subject: [dispute_open]
+    rule: "A customer may have any number of dispute cases (max_per_customer null), but each case concerns exactly one posted purchase and a purchase may carry at most max_open_cases_per_purchase open case; several purchases are disputed as several cases. A purchase whose case was resolved or withdrawn is never disputed again (refile_allowed)."
+    eligibility: []
+    params: {max_per_customer: null, max_open_cases_per_purchase: =max_open_cases_per_purchase, refile_allowed: =refile_allowed}
+    measures: [dispute_msr_open_cases_on_purchase]
+  - id: dispute_agg_program_fraud
+    subject: [dispute_open, dispute_resolve_fleet]
+    rule: "Cases are also read across a program and a card: when dispute_msr_fraud_claims_program_30d reaches fraud_claims_before_program_hold, the program is put on a fraud hold under the Fleet Card Program charter's suspension rule; when dispute_msr_cases_on_card_12m has reached claims_per_card_12m_before_review, or the disputed_amount is at or above senior_review_amount_usd, the case is decided by senior review rather than by the standard review. A fraud claim also carries the card action card_reissue_on_claim, booked under the Fleet Cards charter."
+    eligibility: []
+    params: {fraud_claims_before_program_hold: =fraud_claims_before_program_hold, claims_per_card_12m_before_review: =claims_per_card_12m_before_review, senior_review_amount_usd: =senior_review_amount_usd, card_reissue_on_claim: =card_reissue_on_claim}
+    measures: [dispute_msr_fraud_claims_program_30d, dispute_msr_cases_on_card_12m]
+  - id: dispute_open_rule
+    subject: [dispute_open]
+    rule: "A case names the purchase, the card it was made on and the statement that billed it. The case is opened no later than filing_window_days calendar days after the statement date of the statement that billed the purchase. The window is counted in calendar days starting the day after the statement date, and a case opened on the last day of the window is in time. A purchase already carrying a dispute case is not disputed again. The disputed_amount is figured by disputed_amount_basis: excess_quantity_or_price is, when the fleet states claimed_gallons, net_amount times (gallons less claimed_gallons) divided by gallons, and otherwise (unit_price less claimed_unit_price) times gallons, rounded half up to the cent; full_net_amount is the purchase's net_amount less merchant credits already posted against it; promised_credit is promised_credit_amount, never above net_amount. A case is not opened when the disputed_amount is below min_dispute_amount_usd, when partial_dispute_allowed is false and less than the whole purchase is disputed, when merchant_contact_required_first is true and the fleet has not first asked the merchant, before merchant_credit_wait_days calendar days have passed since the merchant's credit promise, or, where card_block_required is true, before the card is closed or a compromised replacement has been ordered for it."
+    eligibility:
+      - id: within_filing_window
+        applies_to: [dispute_open]
+        kind: time
+        condition: "The case is opened no later than filing_window_days calendar days after the statement date of the statement that billed the purchase."
+        evidence_fields: [credit_statements.statement_date, credit_statements.statement_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[credit_statements.statement_id]]
+          action_bindings: {credit_statements.statement_id: statement_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: "the statement date of the statement that billed the purchase"
+          anchor_source: credit_statements.statement_date
+          relation: not_after
+          duration_source: variants.filing_window_days
+          unit: calendar_days
+          counting_rule: "The window is counted in calendar days starting the day after the statement date, and a case opened on the last day of the window is in time."
+          boundary: inclusive
+      - id: one_case_per_purchase
+        applies_to: [dispute_open]
+        kind: dedup
+        condition: "A purchase already carrying a dispute case is not disputed again."
+        evidence_fields: [dispute_cases.program_txn_id, dispute_cases.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[dispute_cases.program_txn_id]]
+          action_bindings: {dispute_cases.program_txn_id: program_txn_id}
+        dedup_contract:
+          table: dispute_cases
+          mode: separate_record
+          object_bindings: {program_txn_id: program_txn_id}
+          duplicate_filters: {status: [opened, pending_affidavit, under_review, chargeback_filed, resolved_fleet_favor, resolved_merchant_favor, withdrawn]}
+          distinct_fields: []
+    params:
+      per_tier:
+        Merchant Error Dispute (Quantity or Price): {filing_window_days: =filing_window_days, min_dispute_amount_usd: =min_dispute_amount_usd, disputed_amount_basis: =disputed_amount_basis}
+        Duplicate Posting Dispute: {filing_window_days: =filing_window_days, min_dispute_amount_usd: =min_dispute_amount_usd, disputed_amount_basis: =disputed_amount_basis}
+        Credit Not Processed Dispute: {filing_window_days: =filing_window_days, min_dispute_amount_usd: =min_dispute_amount_usd, disputed_amount_basis: =disputed_amount_basis}
+        Counterfeit Card Fraud Claim: {filing_window_days: =filing_window_days, min_dispute_amount_usd: =min_dispute_amount_usd, disputed_amount_basis: =disputed_amount_basis}
+        Lost or Stolen Card Fraud Claim: {filing_window_days: =filing_window_days, min_dispute_amount_usd: =min_dispute_amount_usd, disputed_amount_basis: =disputed_amount_basis}
+        Employee Misuse Review: {filing_window_days: =filing_window_days, min_dispute_amount_usd: =min_dispute_amount_usd, disputed_amount_basis: =disputed_amount_basis}
+  - id: dispute_affidavit_rule
+    subject: [dispute_request_affidavit, dispute_affidavit_submit, dispute_affidavit_lapse, dispute_begin_review]
+    rule: "A case type whose affidavit_required is true moves to pending_affidavit when the affidavit request is sent to the account administrator; only the fleet's authorized account administrator (affidavit_signer) can sign and submit it, through the secure portal, because it attests facts under the fleet's own signature (for a counterfeit claim, that the genuine card was in the fleet's possession; for a lost or stolen claim, with the police report number where police_report_required is true; for an employee misuse review, the cancellation record of the driver's card). An affidavit not received within affidavit_due_days calendar days after affidavit_requested_on lets the case lapse to withdrawn on the following day. A case type needing no affidavit moves to under_review once its documentation_required evidence is recorded."
+    eligibility: []
+    params: {affidavit_required: =affidavit_required, affidavit_due_days: =affidavit_due_days, affidavit_signer: =affidavit_signer, police_report_required: =police_report_required, documentation_required: =documentation_required, card_in_possession_required: =card_in_possession_required}
+  - id: dispute_evt_provisional_credit
+    subject: [dispute_provisional_credit]
+    rule: "A provisional credit posts within provisional_credit_business_days business days after the case reaches under_review when the case type's provisional_credit_eligible is true and the disputed_amount is at or above provisional_credit_min_amount_usd. The credited amount of a case is its disputed_amount, plus, where related_fees_credited is true and the whole purchase is disputed, the purchase's out-of-network, manual-entry and cross-border fees net of any reversal of them (fees_included_amount records this part), less, where fet_credit_netted is true, the federal excise tax credit the purchase earned times the credited share of its gallons. The provisional credit is provisional_credit_pct percent of the credited amount, rounded half up to the cent. One provisional credit at most per case."
+    eligibility: []
+    params:
+      per_tier:
+        Merchant Error Dispute (Quantity or Price): {provisional_credit_eligible: =provisional_credit_eligible, provisional_credit_min_amount_usd: =provisional_credit_min_amount_usd, provisional_credit_pct: =provisional_credit_pct, related_fees_credited: =related_fees_credited, fet_credit_netted: =fet_credit_netted}
+        Duplicate Posting Dispute: {provisional_credit_eligible: =provisional_credit_eligible, provisional_credit_min_amount_usd: =provisional_credit_min_amount_usd, provisional_credit_pct: =provisional_credit_pct, related_fees_credited: =related_fees_credited, fet_credit_netted: =fet_credit_netted}
+        Credit Not Processed Dispute: {provisional_credit_eligible: =provisional_credit_eligible, provisional_credit_min_amount_usd: =provisional_credit_min_amount_usd, provisional_credit_pct: =provisional_credit_pct, related_fees_credited: =related_fees_credited, fet_credit_netted: =fet_credit_netted}
+        Counterfeit Card Fraud Claim: {provisional_credit_eligible: =provisional_credit_eligible, provisional_credit_min_amount_usd: =provisional_credit_min_amount_usd, provisional_credit_pct: =provisional_credit_pct, related_fees_credited: =related_fees_credited, fet_credit_netted: =fet_credit_netted}
+        Lost or Stolen Card Fraud Claim: {provisional_credit_eligible: =provisional_credit_eligible, provisional_credit_min_amount_usd: =provisional_credit_min_amount_usd, provisional_credit_pct: =provisional_credit_pct, related_fees_credited: =related_fees_credited, fet_credit_netted: =fet_credit_netted}
+        Employee Misuse Review: {provisional_credit_eligible: =provisional_credit_eligible, provisional_credit_min_amount_usd: =provisional_credit_min_amount_usd, provisional_credit_pct: =provisional_credit_pct, related_fees_credited: =related_fees_credited, fet_credit_netted: =fet_credit_netted}
+  - id: dispute_liability
+    subject: [dispute_resolve_fleet, dispute_resolve_merchant]
+    rule: "The review decides liability by liability_review_basis. posting_record: a quantity or price case is in the fleet's favor when the receipt or pump reading supports it or the posted gallons exceed the card's tank_capacity_gal by more than tank_overfill_tolerance_pct percent; a duplicate posting is in the fleet's favor when an earlier purchase on the same card, site_number and net_amount posted within duplicate_match_window_hours hours before it and was not itself credited; a credit-not-processed case is in the fleet's favor when the merchant cannot show the credit. genuine_card_possession: a counterfeit purchase made while the fleet held the genuine card is not the fleet's. report_moment: a lost or stolen card purchase is not the fleet's when it was authorized at or after the moment coverage_hours_before_report hours before the card's recorded closed_on and closed_time, and is the fleet's when authorized earlier. cancellation_moment: an employee misuse purchase is the fleet's when authorized before the recorded cancellation moment of the card, and, where misuse_after_cancellation_covered is true, not the fleet's when authorized after it. A purchase the review cannot attribute is borne by fleet_liability_default. A merchant credit posted on the purchase during the case resolves it in the fleet's favor with the merchant's credit taking the place of the issuer's (merchant_credit_supersedes). Cases are resolved within investigation_target_days of review and never later than max_resolution_days after opened_on; the fleet gets a status notice every status_update_days and a written resolution."
+    eligibility: []
+    params:
+      per_tier:
+        Merchant Error Dispute (Quantity or Price): {liability_review_basis: =liability_review_basis, coverage_hours_before_report: =coverage_hours_before_report, tank_overfill_tolerance_pct: =tank_overfill_tolerance_pct, duplicate_match_window_hours: =duplicate_match_window_hours, fleet_liability_default: =fleet_liability_default}
+        Duplicate Posting Dispute: {liability_review_basis: =liability_review_basis, coverage_hours_before_report: =coverage_hours_before_report, tank_overfill_tolerance_pct: =tank_overfill_tolerance_pct, duplicate_match_window_hours: =duplicate_match_window_hours, fleet_liability_default: =fleet_liability_default}
+        Credit Not Processed Dispute: {liability_review_basis: =liability_review_basis, coverage_hours_before_report: =coverage_hours_before_report, tank_overfill_tolerance_pct: =tank_overfill_tolerance_pct, duplicate_match_window_hours: =duplicate_match_window_hours, fleet_liability_default: =fleet_liability_default}
+        Counterfeit Card Fraud Claim: {liability_review_basis: =liability_review_basis, coverage_hours_before_report: =coverage_hours_before_report, tank_overfill_tolerance_pct: =tank_overfill_tolerance_pct, duplicate_match_window_hours: =duplicate_match_window_hours, fleet_liability_default: =fleet_liability_default}
+        Lost or Stolen Card Fraud Claim: {liability_review_basis: =liability_review_basis, coverage_hours_before_report: =coverage_hours_before_report, tank_overfill_tolerance_pct: =tank_overfill_tolerance_pct, duplicate_match_window_hours: =duplicate_match_window_hours, fleet_liability_default: =fleet_liability_default}
+        Employee Misuse Review: {liability_review_basis: =liability_review_basis, coverage_hours_before_report: =coverage_hours_before_report, tank_overfill_tolerance_pct: =tank_overfill_tolerance_pct, duplicate_match_window_hours: =duplicate_match_window_hours, fleet_liability_default: =fleet_liability_default}
+  - id: dispute_chargeback_rule
+    subject: [dispute_chargeback, dispute_chargeback_won, dispute_chargeback_lost]
+    rule: "Only a purchase posted at an out_of_network site cleared through Mastercard and can be charged back; purchases at in_network and partner sites are resolved with the merchant under the Meridian network agreement, which gives the merchant network_merchant_response_days to answer. A chargeback is filed under chargeback_reason_category when chargeback_eligible is true and the filing date is no later than chargeback_time_limit_days calendar days after the purchase's post_date; past that limit the case is decided by the review alone. The acquirer has representment_days to represent; with no representment the chargeback stands."
+    eligibility: []
+    params: {chargeback_eligible: =chargeback_eligible, chargeback_time_limit_days: =chargeback_time_limit_days, chargeback_reason_category: =chargeback_reason_category, representment_days: =representment_days, network_merchant_response_days: =network_merchant_response_days, network_scope: =network_scope}
+  - id: dispute_evt_credit_settlement
+    subject: [dispute_final_credit, dispute_provisional_reversal]
+    rule: "A case resolved in the fleet's favor keeps any provisional credit as final; when it had no provisional credit, a final credit of the credited amount posts on the resolution date, unless a merchant credit superseded it. A case resolved in the merchant's favor has its provisional credit reversed in full provisional_reversal_notice_days calendar days after resolved_on, reason merchant_favor. When the merchant posts its own credit on the purchase while a provisional credit stands, the provisional credit is reversed on the merchant credit's post_date, reason merchant_credit_posted. A withdrawn or lapsed case keeps no credit: any provisional credit is reversed on the withdrawal or lapse date, reason case_withdrawn. Gallons of a purchase credited in full stop counting toward volume rebates where credited_gallons_excluded_from_rebate is true."
+    eligibility: []
+    params: {provisional_reversal_notice_days: =provisional_reversal_notice_days, merchant_credit_supersedes: =merchant_credit_supersedes, credited_gallons_excluded_from_rebate: =credited_gallons_excluded_from_rebate, late_fee_exclusion_while_open: =late_fee_exclusion_while_open, written_resolution_notice: =written_resolution_notice}
+  - id: dispute_withdraw_rule
+    subject: [dispute_withdraw]
+    rule: "Only the fleet's authorized account administrator may withdraw a case, and only before review (withdrawal_allowed); a withdrawn case is never refiled. odometer_evidence_used and pump_inspection_request set the evidence weighed in review for each case type."
+    eligibility: []
+    params: {withdrawal_allowed: =withdrawal_allowed, odometer_evidence_used: =odometer_evidence_used, pump_inspection_request: =pump_inspection_request, investigation_target_days: =investigation_target_days, max_resolution_days: =max_resolution_days, status_update_days: =status_update_days}

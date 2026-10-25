@@ -1,0 +1,927 @@
+# Policy charter: TimeBank Prepaid Service Hours (prepaid blocks of professional services hours).
+category: timebank
+display_name: TimeBank Prepaid Service Hours
+
+binding:
+  holding_table: timebank_blocks
+  event_tables: [timebank_hours_ledger, timebank_billing]
+  intake_tables: [timebank_orders]
+  status_field: status
+  variant_field: variant_name
+  quantity_fields: {hours_balance: hours, balance_due_usd: receivable}
+
+lifecycle:
+  states: [pending_payment, active, depleted, expired, cancelled]
+  transitions:
+    - {from: pending_payment, to: active, by: agent, means: "The block is activated on its activation basis (full payment, or signature for blocks sold on terms) and its hours are granted."}
+    - {from: pending_payment, to: cancelled, by: user, means: "The client cancels a block order before it is activated."}
+    - {from: active, to: depleted, by: system, means: "The block's hour balance reaches zero."}
+    - {from: depleted, to: active, by: agent, means: "A draw reversal restores hours to a depleted block before its expiry date."}
+    - {from: active, to: expired, by: system, means: "The block passes its expiry date with hours left, which are forfeited."}
+    - {from: active, to: expired, by: agent, means: "The block's remaining hours are rolled into a newly activated block and the rest forfeited, retiring the block before its expiry date."}
+
+accounts:
+  - key: hours
+    unit: hours
+    meaning: Prepaid service hours remaining on the block.
+  - key: receivable
+    unit: USD
+    meaning: Amount the client owes on the block; charges increase it and payments and credits reduce it.
+
+
+# ---- category-level parameter dictionary ----
+parameter_schema:
+  block_hours: Service hours granted by the block (hours)
+  hourly_rate_usd: Effective prepaid rate per block hour (USD per hour)
+  block_list_price_usd: List price of the block before any discount, block_hours times hourly_rate_usd (USD)
+  clearpath_discount_pct: Discount off block_list_price_usd when the client holds an active ClearPath agreement at or above clearpath_discount_min_rank on the order date (percent)
+  clearpath_discount_min_rank: Lowest ClearPath tier rank that qualifies for the block discount (rank 1-6)
+  activation_basis: What activates the block (enum full_payment / signature)
+  invoice_due_days: Calendar days after the block invoice posted date by which payment is due (integer days; 0 means due on receipt)
+  validity_months: Months from activation during which hours may be drawn (integer months)
+  extension_allowed: Whether the expiry date may be extended for a fee (switch)
+  extension_months: Months added to the expiry date by one extension (integer months)
+  extension_fee_pct: Extension fee as a percent of the remaining hours valued at hourly_rate_usd (percent)
+  max_extensions_per_block: Most extensions one block may receive (integer)
+  rollover_allowed: Whether unused hours may roll into a new block bought before expiry (switch)
+  rollover_cap_pct: Most hours that may roll over, as a percent of the expiring block's block_hours (percent)
+  rollover_purchase_window_days: Days before the expiring block's expiry date from which a new block qualifies to receive its rollover (integer days)
+  rollover_requires_same_or_larger_block: Whether the receiving block must be the same size or larger than the expiring block (switch)
+  low_balance_alert_pct: Balance, as a percent of block_hours, at or below which a low-balance notice is sent and auto-replenish fires (percent)
+  auto_replenish_available: Whether the block may be set to auto-replenish (switch)
+  business_hours_days: Days of the week that count as TimeBank business hours (day range)
+  business_hours_start: Start of TimeBank business hours, US Eastern (HH:MM)
+  business_hours_end: End of TimeBank business hours, US Eastern (HH:MM)
+  observed_holiday_list: Holidays on which all work is drawn at holiday_multiplier (list)
+  billing_increment_minutes: Increment worked minutes are rounded up to before conversion (integer minutes)
+  minimum_draw_minutes_remote: Minimum minutes drawn per remote work session (integer minutes)
+  minimum_draw_minutes_onsite: Minimum minutes drawn per onsite visit (integer minutes)
+  onsite_trip_hours: Block hours drawn as travel for each onsite visit (hours per visit)
+  after_hours_multiplier: Block hours drawn per worked hour outside business hours on a business day (factor)
+  emergency_multiplier: Block hours drawn per worked hour on emergency work dispatched outside business hours at the client's request (factor)
+  holiday_multiplier: Block hours drawn per worked hour on weekends and observed holidays (factor)
+  senior_engineer_ratio: Block hours drawn per worked hour by a senior engineer (factor)
+  architect_ratio: Block hours drawn per worked hour by a solutions architect (factor)
+  technician_ratio: Block hours drawn per worked hour by a technician (factor)
+  project_work_eligible: Whether time-and-materials project work may be drawn from the block (switch)
+  eligible_work_types: Kinds of work that may be drawn from the block (list of work_type values)
+  overage_hourly_rate_usd: Rate per block hour for work beyond every available balance (USD per hour)
+  overage_cap_hours_monthly: Block hours of overage per calendar month beyond which further non-emergency work needs the authorized contact's written approval (hours)
+  dispute_window_days: Calendar days after a draw's entry date within which the client may dispute it (integer days)
+  hours_statement_cadence: How often an hours statement is emailed to the authorized contact (enum monthly / weekly)
+  priority_scheduling: Whether block work is scheduled ahead of uncommitted time-and-materials requests (switch)
+  named_engineer: Whether a named engineer is assigned to block work (switch)
+  refundable_unused_hours: Whether unused hours are refundable or convertible to credit (switch)
+  late_fee_pct_monthly: Monthly late fee on an unpaid block invoice past the grace period (percent)
+  late_fee_grace_days: Calendar days after the due date before a late fee is assessed (integer days)
+  late_fee_minimum_usd: Minimum late fee per invoice per month (USD)
+  draw_hold_days_past_due: Days an invoice of a signature-activated block may be past due before draws are put on hold (integer days)
+  card_payment_max_usd: Largest invoice that may be paid by card (USD)
+  draw_rounding_hours: Precision converted block hours are rounded half up to (hours)
+  auto_replenish_max_per_block: Most auto-replenishment orders a single block may trigger (integer)
+  rolled_hours_roll_again: Whether hours that already rolled over may roll over a second time (switch)
+
+# ---- tier ladder (low to high) ----
+variants:
+- name: TimeBank 10-Hour Block
+  rank: 1
+  entry_gate:
+    active_clearpath_required: false
+    signed_order_form_required: true
+  parameters:
+    block_hours: 10
+    hourly_rate_usd: 165.0
+    block_list_price_usd: 1650.0
+    clearpath_discount_pct: 0.0
+    clearpath_discount_min_rank: 3
+    activation_basis: full_payment
+    invoice_due_days: 0
+    validity_months: 6
+    extension_allowed: false
+    extension_months: 0
+    extension_fee_pct: 0.0
+    max_extensions_per_block: 0
+    rollover_allowed: false
+    rollover_cap_pct: 0
+    rollover_purchase_window_days: 0
+    rollover_requires_same_or_larger_block: true
+    low_balance_alert_pct: 20
+    auto_replenish_available: true
+    business_hours_days: Mon-Fri
+    business_hours_start: 08:00
+    business_hours_end: '18:00'
+    observed_holiday_list:
+    - New Year's Day
+    - Memorial Day
+    - Independence Day
+    - Labor Day
+    - Thanksgiving Day
+    - Christmas Day
+    billing_increment_minutes: 30
+    minimum_draw_minutes_remote: 30
+    minimum_draw_minutes_onsite: 120
+    onsite_trip_hours: 1.0
+    after_hours_multiplier: 1.5
+    emergency_multiplier: 2.0
+    holiday_multiplier: 2.0
+    senior_engineer_ratio: 1.5
+    architect_ratio: 2.0
+    technician_ratio: 1.0
+    project_work_eligible: false
+    eligible_work_types:
+    - remote_support
+    - onsite_support
+    - travel
+    overage_hourly_rate_usd: 185.0
+    overage_cap_hours_monthly: 5
+    dispute_window_days: 30
+    hours_statement_cadence: monthly
+    priority_scheduling: false
+    named_engineer: false
+    refundable_unused_hours: false
+    late_fee_pct_monthly: 1.5
+    late_fee_grace_days: 5
+    late_fee_minimum_usd: 25.0
+    draw_hold_days_past_due: 0
+    card_payment_max_usd: 5000.0
+    draw_rounding_hours: 0.01
+    auto_replenish_max_per_block: 1
+    rolled_hours_roll_again: false
+- name: TimeBank 20-Hour Block
+  rank: 2
+  entry_gate:
+    active_clearpath_required: false
+    signed_order_form_required: true
+  parameters:
+    block_hours: 20
+    hourly_rate_usd: 158.0
+    block_list_price_usd: 3160.0
+    clearpath_discount_pct: 0.0
+    clearpath_discount_min_rank: 3
+    activation_basis: full_payment
+    invoice_due_days: 0
+    validity_months: 12
+    extension_allowed: true
+    extension_months: 3
+    extension_fee_pct: 10.0
+    max_extensions_per_block: 1
+    rollover_allowed: true
+    rollover_cap_pct: 25
+    rollover_purchase_window_days: 60
+    rollover_requires_same_or_larger_block: true
+    low_balance_alert_pct: 20
+    auto_replenish_available: true
+    business_hours_days: Mon-Fri
+    business_hours_start: 08:00
+    business_hours_end: '18:00'
+    observed_holiday_list:
+    - New Year's Day
+    - Memorial Day
+    - Independence Day
+    - Labor Day
+    - Thanksgiving Day
+    - Christmas Day
+    billing_increment_minutes: 15
+    minimum_draw_minutes_remote: 15
+    minimum_draw_minutes_onsite: 60
+    onsite_trip_hours: 1.0
+    after_hours_multiplier: 1.5
+    emergency_multiplier: 2.0
+    holiday_multiplier: 2.0
+    senior_engineer_ratio: 1.25
+    architect_ratio: 1.75
+    technician_ratio: 1.0
+    project_work_eligible: false
+    eligible_work_types:
+    - remote_support
+    - onsite_support
+    - travel
+    overage_hourly_rate_usd: 180.0
+    overage_cap_hours_monthly: 10
+    dispute_window_days: 30
+    hours_statement_cadence: monthly
+    priority_scheduling: false
+    named_engineer: false
+    refundable_unused_hours: false
+    late_fee_pct_monthly: 1.5
+    late_fee_grace_days: 5
+    late_fee_minimum_usd: 25.0
+    draw_hold_days_past_due: 0
+    card_payment_max_usd: 5000.0
+    draw_rounding_hours: 0.01
+    auto_replenish_max_per_block: 1
+    rolled_hours_roll_again: false
+- name: TimeBank 40-Hour Block
+  rank: 3
+  entry_gate:
+    active_clearpath_required: false
+    signed_order_form_required: true
+  parameters:
+    block_hours: 40
+    hourly_rate_usd: 150.0
+    block_list_price_usd: 6000.0
+    clearpath_discount_pct: 3.0
+    clearpath_discount_min_rank: 3
+    activation_basis: full_payment
+    invoice_due_days: 15
+    validity_months: 12
+    extension_allowed: true
+    extension_months: 3
+    extension_fee_pct: 10.0
+    max_extensions_per_block: 1
+    rollover_allowed: true
+    rollover_cap_pct: 25
+    rollover_purchase_window_days: 60
+    rollover_requires_same_or_larger_block: true
+    low_balance_alert_pct: 20
+    auto_replenish_available: true
+    business_hours_days: Mon-Fri
+    business_hours_start: 08:00
+    business_hours_end: '18:00'
+    observed_holiday_list:
+    - New Year's Day
+    - Memorial Day
+    - Independence Day
+    - Labor Day
+    - Thanksgiving Day
+    - Christmas Day
+    billing_increment_minutes: 15
+    minimum_draw_minutes_remote: 15
+    minimum_draw_minutes_onsite: 60
+    onsite_trip_hours: 0.5
+    after_hours_multiplier: 1.5
+    emergency_multiplier: 2.0
+    holiday_multiplier: 2.0
+    senior_engineer_ratio: 1.25
+    architect_ratio: 1.5
+    technician_ratio: 1.0
+    project_work_eligible: true
+    eligible_work_types:
+    - remote_support
+    - onsite_support
+    - project_work
+    - travel
+    overage_hourly_rate_usd: 175.0
+    overage_cap_hours_monthly: 20
+    dispute_window_days: 30
+    hours_statement_cadence: monthly
+    priority_scheduling: false
+    named_engineer: false
+    refundable_unused_hours: false
+    late_fee_pct_monthly: 1.5
+    late_fee_grace_days: 5
+    late_fee_minimum_usd: 25.0
+    draw_hold_days_past_due: 0
+    card_payment_max_usd: 10000.0
+    draw_rounding_hours: 0.01
+    auto_replenish_max_per_block: 1
+    rolled_hours_roll_again: false
+- name: TimeBank 80-Hour Block
+  rank: 4
+  entry_gate:
+    active_clearpath_required: false
+    signed_order_form_required: true
+  parameters:
+    block_hours: 80
+    hourly_rate_usd: 142.0
+    block_list_price_usd: 11360.0
+    clearpath_discount_pct: 3.0
+    clearpath_discount_min_rank: 3
+    activation_basis: full_payment
+    invoice_due_days: 15
+    validity_months: 12
+    extension_allowed: true
+    extension_months: 3
+    extension_fee_pct: 10.0
+    max_extensions_per_block: 1
+    rollover_allowed: true
+    rollover_cap_pct: 50
+    rollover_purchase_window_days: 60
+    rollover_requires_same_or_larger_block: true
+    low_balance_alert_pct: 15
+    auto_replenish_available: true
+    business_hours_days: Mon-Fri
+    business_hours_start: 08:00
+    business_hours_end: '18:00'
+    observed_holiday_list:
+    - New Year's Day
+    - Memorial Day
+    - Independence Day
+    - Labor Day
+    - Thanksgiving Day
+    - Christmas Day
+    billing_increment_minutes: 15
+    minimum_draw_minutes_remote: 15
+    minimum_draw_minutes_onsite: 60
+    onsite_trip_hours: 0.5
+    after_hours_multiplier: 1.5
+    emergency_multiplier: 2.0
+    holiday_multiplier: 2.0
+    senior_engineer_ratio: 1.25
+    architect_ratio: 1.5
+    technician_ratio: 1.0
+    project_work_eligible: true
+    eligible_work_types:
+    - remote_support
+    - onsite_support
+    - project_work
+    - travel
+    overage_hourly_rate_usd: 170.0
+    overage_cap_hours_monthly: 40
+    dispute_window_days: 45
+    hours_statement_cadence: monthly
+    priority_scheduling: true
+    named_engineer: false
+    refundable_unused_hours: false
+    late_fee_pct_monthly: 1.5
+    late_fee_grace_days: 10
+    late_fee_minimum_usd: 35.0
+    draw_hold_days_past_due: 0
+    card_payment_max_usd: 10000.0
+    draw_rounding_hours: 0.01
+    auto_replenish_max_per_block: 1
+    rolled_hours_roll_again: false
+- name: TimeBank 160-Hour Block
+  rank: 5
+  entry_gate:
+    active_clearpath_required: true
+    signed_order_form_required: true
+  parameters:
+    block_hours: 160
+    hourly_rate_usd: 135.0
+    block_list_price_usd: 21600.0
+    clearpath_discount_pct: 5.0
+    clearpath_discount_min_rank: 3
+    activation_basis: signature
+    invoice_due_days: 30
+    validity_months: 12
+    extension_allowed: true
+    extension_months: 6
+    extension_fee_pct: 7.5
+    max_extensions_per_block: 1
+    rollover_allowed: true
+    rollover_cap_pct: 50
+    rollover_purchase_window_days: 90
+    rollover_requires_same_or_larger_block: true
+    low_balance_alert_pct: 10
+    auto_replenish_available: true
+    business_hours_days: Mon-Fri
+    business_hours_start: 07:00
+    business_hours_end: '19:00'
+    observed_holiday_list:
+    - New Year's Day
+    - Memorial Day
+    - Independence Day
+    - Labor Day
+    - Thanksgiving Day
+    - Christmas Day
+    billing_increment_minutes: 15
+    minimum_draw_minutes_remote: 15
+    minimum_draw_minutes_onsite: 60
+    onsite_trip_hours: 0.0
+    after_hours_multiplier: 1.25
+    emergency_multiplier: 1.75
+    holiday_multiplier: 1.75
+    senior_engineer_ratio: 1.25
+    architect_ratio: 1.5
+    technician_ratio: 1.0
+    project_work_eligible: true
+    eligible_work_types:
+    - remote_support
+    - onsite_support
+    - project_work
+    - travel
+    overage_hourly_rate_usd: 165.0
+    overage_cap_hours_monthly: 80
+    dispute_window_days: 45
+    hours_statement_cadence: weekly
+    priority_scheduling: true
+    named_engineer: true
+    refundable_unused_hours: false
+    late_fee_pct_monthly: 1.5
+    late_fee_grace_days: 10
+    late_fee_minimum_usd: 50.0
+    draw_hold_days_past_due: 30
+    card_payment_max_usd: 10000.0
+    draw_rounding_hours: 0.01
+    auto_replenish_max_per_block: 1
+    rolled_hours_roll_again: false
+- name: TimeBank 320-Hour Block
+  rank: 6
+  entry_gate:
+    active_clearpath_required: true
+    signed_order_form_required: true
+  parameters:
+    block_hours: 320
+    hourly_rate_usd: 128.0
+    block_list_price_usd: 40960.0
+    clearpath_discount_pct: 5.0
+    clearpath_discount_min_rank: 3
+    activation_basis: signature
+    invoice_due_days: 30
+    validity_months: 18
+    extension_allowed: true
+    extension_months: 6
+    extension_fee_pct: 7.5
+    max_extensions_per_block: 2
+    rollover_allowed: true
+    rollover_cap_pct: 50
+    rollover_purchase_window_days: 90
+    rollover_requires_same_or_larger_block: true
+    low_balance_alert_pct: 10
+    auto_replenish_available: true
+    business_hours_days: Mon-Fri
+    business_hours_start: 07:00
+    business_hours_end: '19:00'
+    observed_holiday_list:
+    - New Year's Day
+    - Memorial Day
+    - Independence Day
+    - Labor Day
+    - Thanksgiving Day
+    - Christmas Day
+    billing_increment_minutes: 15
+    minimum_draw_minutes_remote: 15
+    minimum_draw_minutes_onsite: 60
+    onsite_trip_hours: 0.0
+    after_hours_multiplier: 1.25
+    emergency_multiplier: 1.5
+    holiday_multiplier: 1.5
+    senior_engineer_ratio: 1.0
+    architect_ratio: 1.25
+    technician_ratio: 1.0
+    project_work_eligible: true
+    eligible_work_types:
+    - remote_support
+    - onsite_support
+    - project_work
+    - travel
+    overage_hourly_rate_usd: 160.0
+    overage_cap_hours_monthly: 160
+    dispute_window_days: 60
+    hours_statement_cadence: weekly
+    priority_scheduling: true
+    named_engineer: true
+    refundable_unused_hours: false
+    late_fee_pct_monthly: 1.5
+    late_fee_grace_days: 10
+    late_fee_minimum_usd: 50.0
+    draw_hold_days_past_due: 30
+    card_payment_max_usd: 10000.0
+    draw_rounding_hours: 0.01
+    auto_replenish_max_per_block: 1
+    rolled_hours_roll_again: false
+
+
+events:
+  - type: timebank_block_ordered
+    target: timebank_blocks
+    mutation: create
+    meaning: A signed order form for a prepaid block is booked.
+    grain: One block record per signed order.
+    fields: {customer_id: Client organisation., variant_name: Block size., order_date: Signature date., hours_purchased: Equal to block_hours., block_price_usd: Price after any discount., auto_replenish: Auto-replenish setting on the order., rollover_source_block_id: Expiring block whose hours will roll in (empty if none).}
+    triggers:
+      - event: timebank:timebank_block_invoice
+        map: {}
+  - type: timebank_block_activated
+    target: timebank_blocks
+    mutation: {transition: {from: pending_payment, to: active}}
+    meaning: The block is activated and its validity period starts.
+    grain: One transaction per block.
+    fields: {activation_date: Activation date., expiry_date: Last day of the validity period.}
+    triggers:
+      - event: timebank:timebank_hours_granted
+        map: {}
+  - type: timebank_order_cancelled
+    target: timebank_blocks
+    mutation: {transition: {from: pending_payment, to: cancelled}}
+    meaning: The client cancels the order before activation.
+    grain: One transaction per block.
+    fields: {closed_date: Cancellation date.}
+    triggers:
+      - event: timebank:timebank_order_credit
+        map: {}
+  - type: timebank_block_depleted
+    target: timebank_blocks
+    mutation: {transition: {from: active, to: depleted}}
+    meaning: The block's balance reaches zero.
+    grain: One transaction per depletion.
+    fields: {depleted_date: Date the balance reached zero.}
+    triggers: []
+  - type: timebank_block_restored
+    target: timebank_blocks
+    mutation: {transition: {from: depleted, to: active}}
+    meaning: A draw reversal restores hours to a depleted block.
+    grain: One transaction per restoration.
+    fields: {depleted_date: Retained as the date of the depletion that ended.}
+    triggers: []
+  - type: timebank_block_expired
+    target: timebank_blocks
+    mutation: {transition: {from: active, to: expired}}
+    meaning: The block passes its expiry date, or is retired early by a rollover; remaining hours not rolled are forfeited.
+    grain: One transaction per block.
+    fields: {closed_date: Day after the expiry date (or the rollover date when retired by a rollover).}
+    triggers:
+      - event: timebank:timebank_hours_forfeited
+        map: {}
+  - type: timebank_block_extended
+    target: timebank_blocks
+    mutation: update
+    meaning: A signed paid extension moves the expiry date.
+    grain: One transaction per extension.
+    fields: {expiry_date: New expiry date., extension_count: Incremented.}
+    triggers:
+      - event: timebank:timebank_extension_fee
+        map: {}
+  - type: timebank_settings_changed
+    target: timebank_blocks
+    mutation: update
+    meaning: A signed request turns auto-replenish on or off.
+    grain: One transaction per change.
+    fields: {auto_replenish: New setting.}
+    triggers: []
+  - type: timebank_hours_granted
+    target: timebank_hours_ledger
+    meaning: The block's purchased hours are granted at activation.
+    grain: One row per block.
+    distinguish_by: [entry_date]
+    fields: {hours: Hours granted., entry_date: Activation date.}
+    account: hours
+    direction: in
+    triggers: []
+  - type: timebank_hours_drawn
+    target: timebank_hours_ledger
+    meaning: Hours are drawn for work performed on a ticket or a time-and-materials statement of work.
+    grain: One row per work session per block (a session split across blocks gives one row per block).
+    distinguish_by: [ticket_number, sow_number, entry_date, work_type, time_band, resource_level]
+    fields: {hours: Converted block hours drawn from this block., entry_date: Date worked., work_type: Kind of work., time_band: Time band., resource_level: Who worked., worked_minutes: Minutes after rounding and minimums., ticket_number: Ticket (empty for project work)., sow_number: Statement of work (empty for tickets).}
+    account: hours
+    direction: out
+    triggers: []
+  - type: timebank_draw_reversed
+    target: timebank_hours_ledger
+    meaning: A disputed or mistaken draw is reversed in whole or in part.
+    grain: One row per draw reversed.
+    distinguish_by: [original_ledger_entry_id]
+    fields: {original_ledger_entry_id: The draw reversed., hours: Hours restored., entry_date: Reversal date.}
+    account: hours
+    direction: in
+    triggers: []
+  - type: timebank_hours_rolled_out
+    target: timebank_hours_ledger
+    meaning: Unused hours leave an expiring block toward a new block.
+    grain: One row per rollover.
+    distinguish_by: [counterpart_block_id]
+    fields: {hours: Hours rolled out., entry_date: Rollover date., counterpart_block_id: Receiving block.}
+    account: hours
+    direction: out
+    triggers: []
+  - type: timebank_hours_rolled_in
+    target: timebank_hours_ledger
+    meaning: Rolled-over hours arrive on the new block.
+    grain: One row per rollover.
+    distinguish_by: [counterpart_block_id]
+    fields: {hours: Hours rolled in., entry_date: Rollover date., counterpart_block_id: Expiring block.}
+    account: hours
+    direction: in
+    triggers: []
+  - type: timebank_hours_forfeited
+    target: timebank_hours_ledger
+    meaning: Hours left on a block at expiry or beyond the rollover cap are forfeited.
+    grain: One row per block.
+    distinguish_by: [entry_date]
+    fields: {hours: Hours forfeited., entry_date: Forfeiture date.}
+    account: hours
+    direction: out
+    triggers: []
+  - type: timebank_block_invoice
+    target: timebank_billing
+    meaning: The block price is invoiced on the order date.
+    grain: One row per block.
+    distinguish_by: [invoice_number]
+    fields: {amount_usd: Block price., invoice_number: Invoice., posted_date: Order date., billing_period: Month of order.}
+    account: receivable
+    direction: in
+    triggers: []
+  - type: timebank_overage_charge
+    target: timebank_billing
+    meaning: Work beyond every available balance is invoiced.
+    grain: One row per work session in overage.
+    distinguish_by: [ticket_number, sow_number, billing_period, overage_hours]
+    fields: {overage_hours: Block hours in overage., amount_usd: Amount., invoice_number: Invoice., posted_date: Posting date., billing_period: Month worked., ticket_number: Ticket., sow_number: Statement of work.}
+    account: receivable
+    direction: in
+    triggers: []
+  - type: timebank_extension_fee
+    target: timebank_billing
+    meaning: The fee for a paid extension is invoiced.
+    grain: One row per extension.
+    distinguish_by: [invoice_number]
+    fields: {amount_usd: Fee., invoice_number: Invoice., posted_date: Extension date., billing_period: Month of extension.}
+    account: receivable
+    direction: in
+    triggers: []
+  - type: timebank_payment
+    target: timebank_billing
+    meaning: A payment is applied to an invoice.
+    grain: One row per remittance per invoice.
+    distinguish_by: [payment_reference, invoice_number]
+    fields: {payment_reference: Remittance reference., amount_usd: Amount applied., invoice_number: Invoice paid., posted_date: Date received.}
+    account: receivable
+    direction: out
+    triggers: []
+  - type: timebank_late_fee
+    target: timebank_billing
+    meaning: A late fee is assessed on a past-due invoice.
+    grain: One row per invoice per month assessed.
+    distinguish_by: [invoice_number, billing_period]
+    fields: {invoice_number: Past-due invoice., billing_period: Month assessed., amount_usd: Fee., posted_date: Assessment date.}
+    account: receivable
+    direction: in
+    triggers: []
+  - type: timebank_order_credit
+    target: timebank_billing
+    meaning: The block invoice is credited in full when an order is cancelled before activation.
+    grain: One row per cancelled block.
+    distinguish_by: [invoice_number]
+    fields: {amount_usd: Credit., invoice_number: Block invoice credited., posted_date: Cancellation date., billing_period: Month of cancellation.}
+    account: receivable
+    direction: out
+    triggers: []
+
+
+measures:
+  - id: timebank_msr_overage_hours_month
+    window: The calendar month (US Eastern) of the work session being decided, up to but excluding that session.
+    measure: Sum of overage_hours over the client's timebank_overage_charge rows whose billing_period is that month.
+  - id: timebank_msr_active_blocks_fefo
+    window: Point in time, immediately before the draw being decided.
+    measure: The client's blocks whose status is active, ordered by expiry_date ascending and then by activation_date ascending, each with its hours_balance.
+
+policies:
+  - id: timebank_agg_multi_holding
+    subject: [timebank_block_ordered]
+    rule: >-
+      A client may hold any number of prepaid blocks, of the same or different sizes, at the same time; each block keeps its
+      own price, validity period, balance and settings, and blocks are combined only by the draw order of
+      timebank_agg_draw_order.
+    eligibility: []
+    params:
+      max_per_customer: null
+
+  - id: timebank_agg_draw_order
+    subject: [timebank_hours_drawn, timebank_overage_charge, timebank_block_depleted]
+    rule: >-
+      Hours for a work session are drawn from the client's active block with the earliest expiry_date first, and on equal
+      expiry dates from the block activated first (timebank_msr_active_blocks_fefo). When the session's converted hours
+      exceed that block's balance, the block is drawn to zero and the remainder is drawn from the next block in the same
+      order, one draw row per block. A block whose balance reaches zero moves to depleted on the same day. When every active
+      block is exhausted, the remainder is billed as an overage at the overage_hourly_rate_usd of the last block drawn, or of
+      the client's most recently activated block when no block had hours, rounded half up to the cent. Overage in one
+      calendar month beyond that block's overage_cap_hours_monthly (timebank_msr_overage_hours_month) needs the authorized
+      contact's written approval before further non-emergency work is scheduled; emergency work is never held for approval.
+    eligibility: []
+    measures: [timebank_msr_active_blocks_fefo, timebank_msr_overage_hours_month]
+    formula:
+      amount_usd: round(overage_hours * overage_hourly_rate_usd, 2)
+
+  - id: timebank_ordering_and_pricing
+    subject: [timebank_block_ordered, timebank_block_invoice]
+    rule: >-
+      A block is bought from the authorized contact's signed order form, except an auto-replenishment order, which the client
+      pre-authorised by setting auto_replenish on the depleting block. The 160-hour and 320-hour blocks may be ordered only
+      while the client holds a ClearPath agreement whose status is active. The block price is block_list_price_usd reduced by
+      clearpath_discount_pct when, on the order date, the client holds a ClearPath agreement whose status is active and whose
+      tier rank is at least clearpath_discount_min_rank, rounded half up to the cent; otherwise it is block_list_price_usd.
+      The block price is invoiced on the order date and falls due invoice_due_days calendar days later (on receipt when 0).
+    eligibility:
+      - id: large_block_requires_clearpath
+        applies_to: [timebank_block_ordered]
+        kind: state
+        condition: The 160-hour and 320-hour blocks may be ordered only while the client holds a ClearPath agreement whose status is active.
+        evidence_fields: [managed_agreements.customer_id, managed_agreements.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[managed_agreements.customer_id]]
+          action_bindings: {managed_agreements.customer_id: customer_id}
+        state_contract:
+          field: managed_agreements.status
+          allowed: [active]
+    params:
+      per_tier:
+        TimeBank 10-Hour Block: {list_price: =block_list_price_usd, discount_pct: =clearpath_discount_pct}
+        TimeBank 20-Hour Block: {list_price: =block_list_price_usd, discount_pct: =clearpath_discount_pct}
+        TimeBank 40-Hour Block: {list_price: =block_list_price_usd, discount_pct: =clearpath_discount_pct}
+        TimeBank 80-Hour Block: {list_price: =block_list_price_usd, discount_pct: =clearpath_discount_pct}
+        TimeBank 160-Hour Block: {list_price: =block_list_price_usd, discount_pct: =clearpath_discount_pct}
+        TimeBank 320-Hour Block: {list_price: =block_list_price_usd, discount_pct: =clearpath_discount_pct}
+    formula:
+      amount_usd: round(block_list_price_usd * (1 - clearpath_discount_pct / 100), 2)
+
+  - id: timebank_activation_and_validity
+    subject: [timebank_block_activated, timebank_hours_granted, timebank_order_cancelled, timebank_order_credit, timebank_block_expired, timebank_hours_forfeited]
+    rule: >-
+      A block whose activation_basis is full_payment is activated only after its block invoice has been paid in full. A block
+      whose activation_basis is signature is activated on the day its order is signed. Activation grants block_hours hours.
+      The expiry_date is the day before the same day of the month validity_months calendar months after the activation date;
+      when that day does not exist in the target month, the last day of the target month is used as the anniversary. Hours
+      may be drawn for work performed on or before the expiry_date. On the day after the expiry_date a block that is still
+      active expires and its remaining hours are forfeited unless they were rolled into a new block; a depleted block simply
+      stays depleted. An order may be cancelled by the client only before activation, and its block invoice is then
+      credited in full; once activated, unused hours are never refunded or converted into credit against other services
+      because refundable_unused_hours is false.
+    eligibility:
+      - id: paid_before_activation
+        applies_to: [timebank_block_activated]
+        kind: authorization
+        condition: A block whose activation_basis is full_payment is activated only after its block invoice has been paid in full.
+        evidence_fields: [timebank_billing.timebank_block_id, timebank_billing.event_type, timebank_billing.invoice_number, timebank_billing.amount_usd]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[timebank_billing.timebank_block_id]]
+          action_bindings: {timebank_billing.timebank_block_id: timebank_block_id}
+
+  - id: timebank_draw_conversion
+    subject: [timebank_hours_drawn]
+    rule: >-
+      A work session is drawn only for a work_type listed in the block's eligible_work_types; project_work is drawn only
+      where project_work_eligible is true and only under a time-and-materials statement of work, never under a fixed-fee
+      one. Work that the client's ClearPath agreement already includes, hardware, licences and monthly fees are never drawn
+      from a block. Hours may be drawn only from a block whose status is active. Worked minutes are the recorded minutes
+      rounded up to billing_increment_minutes and never less than minimum_draw_minutes_remote for a remote session or
+      minimum_draw_minutes_onsite for an onsite visit. The time band is holiday on weekends and observed holidays, emergency
+      for work dispatched outside business hours at the client's request to restore a down system, after_hours for other
+      work outside business_hours_start to business_hours_end on business days (business_hours_days, excluding the
+      observed_holiday_list), and business_hours otherwise; only one
+      band applies to a session, in that order of precedence. Converted block hours equal worked minutes divided by 60, times
+      the resource ratio (technician_ratio, senior_engineer_ratio or architect_ratio), times the band multiplier
+      (holiday_multiplier, emergency_multiplier or after_hours_multiplier, and 1 in business hours), rounded half up to
+      draw_rounding_hours. Each onsite visit additionally draws onsite_trip_hours as a separate travel row at the business
+      hours band with no ratio applied.
+    eligibility:
+      - id: draw_active_block
+        applies_to: [timebank_hours_drawn]
+        kind: state
+        condition: Hours may be drawn only from a block whose status is active.
+        evidence_fields: [timebank_blocks.timebank_block_id, timebank_blocks.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[timebank_blocks.timebank_block_id]]
+          action_bindings: {timebank_blocks.timebank_block_id: timebank_block_id}
+        state_contract:
+          field: timebank_blocks.status
+          allowed: [active]
+    formula:
+      ratio: architect_ratio if resource_level == "architect" else (senior_engineer_ratio if resource_level == "senior_engineer" else technician_ratio)
+      multiplier: holiday_multiplier if time_band == "holiday" else (emergency_multiplier if time_band == "emergency" else (after_hours_multiplier if time_band == "after_hours" else 1))
+      hours: round(worked_minutes / 60 * ratio * multiplier, 2)
+
+  - id: timebank_draw_disputes
+    subject: [timebank_draw_reversed, timebank_block_restored]
+    rule: >-
+      A client may dispute a draw it believes was mistaken or over-converted. A draw may be disputed only within
+      dispute_window_days calendar days after the draw's entry date. The window is counted in calendar days from the draw's
+      entry_date, that date being day 0, and a dispute raised on the last day is in time. A draw is reversed at most once,
+      and the hours restored never exceed the hours of that draw. The reversal restores the hours to the block the draw was
+      taken from; a reversal can be posted only while that block's status is active or depleted, and a depleted block that
+      regains hours before its expiry date returns to active. Disputes about overage charges are invoice disputes handled
+      by the accounting team, not reversals.
+    eligibility:
+      - id: dispute_window
+        applies_to: [timebank_draw_reversed]
+        kind: time
+        condition: A draw may be disputed only within dispute_window_days calendar days after the draw's entry date.
+        evidence_fields: [timebank_hours_ledger.timebank_ledger_entry_id, timebank_hours_ledger.entry_date]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[timebank_hours_ledger.timebank_ledger_entry_id]]
+          action_bindings: {timebank_hours_ledger.timebank_ledger_entry_id: original_ledger_entry_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the draw's entry date
+          anchor_source: timebank_hours_ledger.entry_date
+          relation: not_after
+          duration_source: variants.dispute_window_days
+          unit: calendar_days
+          counting_rule: The window is counted in calendar days from the draw's entry_date, that date being day 0, and a dispute raised on the last day is in time.
+          boundary: inclusive
+      - id: one_reversal_per_draw
+        applies_to: [timebank_draw_reversed]
+        kind: dedup
+        condition: A draw is reversed at most once, and the hours restored never exceed the hours of that draw.
+        evidence_fields: [timebank_hours_ledger.original_ledger_entry_id, timebank_hours_ledger.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[timebank_hours_ledger.original_ledger_entry_id]]
+          action_bindings: {timebank_hours_ledger.original_ledger_entry_id: original_ledger_entry_id}
+        dedup_contract:
+          table: timebank_hours_ledger
+          mode: separate_record
+          object_bindings: {original_ledger_entry_id: original_ledger_entry_id}
+          duplicate_filters: {event_type: [timebank_draw_reversed]}
+          distinct_fields: []
+      - id: reversal_block_status
+        applies_to: [timebank_draw_reversed]
+        kind: state
+        condition: a reversal can be posted only while that block's status is active or depleted
+        evidence_fields: [timebank_blocks.timebank_block_id, timebank_blocks.status]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[timebank_blocks.timebank_block_id]]
+          action_bindings: {timebank_blocks.timebank_block_id: timebank_block_id}
+        state_contract:
+          field: timebank_blocks.status
+          allowed: [active, depleted]
+
+  - id: timebank_rollover_and_extension
+    subject: [timebank_hours_rolled_out, timebank_hours_rolled_in, timebank_block_extended, timebank_extension_fee, timebank_block_expired]
+    rule: >-
+      Where rollover_allowed is true on the expiring block, its unused hours may roll into a new block that the client
+      orders as a rollover order. A new block qualifies to receive a rollover only when it is ordered within
+      rollover_purchase_window_days calendar days before the expiring block's expiry date. The window opens
+      rollover_purchase_window_days calendar days before the expiry_date and closes at the end of the expiry_date itself.
+      Because rollover_requires_same_or_larger_block is true, the new block must be the same size or larger than
+      the expiring block. The rollover is posted on the day the new
+      block is activated: the expiring block's balance, capped at block_hours times rollover_cap_pct divided by 100 of the
+      expiring block, rolls out of it and into the new block, any balance above the cap is forfeited, and the expiring
+      block expires that day. Rolled-in hours share the new block's expiry date and, because rolled_hours_roll_again is
+      false, never roll over a second time. Where
+      extension_allowed is true, a block may instead be extended by extension_months, at most max_extensions_per_block
+      times. An extension must be signed no later than the block's expiry date. The expiry date itself is the last day an
+      extension can be signed. The extension fee is extension_fee_pct percent of hours_balance valued at hourly_rate_usd,
+      rounded half up to the cent, invoiced when the extension takes effect; a block whose hours were rolled out cannot be
+      extended.
+    eligibility:
+      - id: rollover_order_window
+        applies_to: [timebank_hours_rolled_in]
+        kind: time
+        condition: A new block qualifies to receive a rollover only when it is ordered within rollover_purchase_window_days calendar days before the expiring block's expiry date.
+        evidence_fields: [timebank_blocks.timebank_block_id, timebank_blocks.expiry_date]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[timebank_blocks.timebank_block_id]]
+          action_bindings: {timebank_blocks.timebank_block_id: rollover_source_block_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the expiring block's expiry date
+          anchor_source: timebank_blocks.expiry_date
+          relation: not_before
+          duration_source: variants.rollover_purchase_window_days
+          unit: calendar_days
+          counting_rule: The window opens rollover_purchase_window_days calendar days before the expiry_date and closes at the end of the expiry_date itself.
+          boundary: inclusive
+      - id: extension_before_expiry
+        applies_to: [timebank_block_extended]
+        kind: time
+        condition: An extension must be signed no later than the block's expiry date.
+        evidence_fields: [timebank_blocks.timebank_block_id, timebank_blocks.expiry_date]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[timebank_blocks.timebank_block_id]]
+          action_bindings: {timebank_blocks.timebank_block_id: timebank_block_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the block's expiry date
+          anchor_source: timebank_blocks.expiry_date
+          relation: not_after
+          duration_source: params.extension_lead_days
+          unit: calendar_days
+          counting_rule: The expiry date itself is the last day an extension can be signed.
+          boundary: inclusive
+    params:
+      extension_lead_days: 0
+    formula:
+      rollover_hours: min(hours_balance, block_hours * rollover_cap_pct / 100)
+      amount_usd: round(extension_fee_pct / 100 * hours_balance * hourly_rate_usd, 2)
+
+  - id: timebank_low_balance_and_replenish
+    subject: [timebank_settings_changed, timebank_block_ordered, timebank_block_depleted]
+    rule: >-
+      When a draw leaves a block's balance at or below low_balance_alert_pct percent of its block_hours, a low-balance notice
+      is emailed to the authorized contact. If that block's auto_replenish is true and auto_replenish_available is true, the
+      same draw also books one new block of the same size for the client, priced under timebank_ordering_and_pricing on the
+      day of the draw, with no new order form; a block triggers auto-replenishment at most
+      auto_replenish_max_per_block times. Auto-replenish is turned on
+      or off only by the authorized contact's signed request.
+    eligibility: []
+
+  - id: timebank_billing_and_entitlements
+    subject: [timebank_payment, timebank_late_fee, timebank_block_invoice]
+    rule: >-
+      A payment is applied to the invoice its remittance names, otherwise to the oldest open invoice first, one entry per
+      invoice applied; card payments are accepted only for an invoice whose total does not exceed card_payment_max_usd. On
+      the first day of each calendar month every invoice still unpaid more than late_fee_grace_days calendar days after its
+      due date is assessed one late fee of late_fee_pct_monthly percent of its unpaid balance, or late_fee_minimum_usd if
+      greater, rounded half up to the cent. For a block activated on signature whose invoice is more than
+      draw_hold_days_past_due days past due, new draws are put on hold until it is paid and the work is billed as overage in
+      the meantime. Hours statements are emailed on hours_statement_cadence; priority_scheduling and named_engineer are
+      entitlements of the block size, not billed separately.
+    eligibility: []

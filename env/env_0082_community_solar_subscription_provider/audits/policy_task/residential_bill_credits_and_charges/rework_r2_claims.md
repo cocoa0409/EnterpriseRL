@@ -1,0 +1,38 @@
+# rework round 2 — claims (residential_bill_credits_and_charges); item ids and dispositions only
+
+- CG-1: closed — fbp_standing removed; the final-balance payment's baseline is every open line and its fourth factor is the pending-statement method (inputs: the unpriced latest posting's credit value and the open estimate it replaces), whose tier pairs each have a distinguishing input.
+- CG-2: closed — rpp_return_record removed; the replacement payment carries the same mirrored pending-statement method over the every-open-line baseline.
+- CG-3: closed — est_credit_rate relabelled parameter: its tiers select a weight (full, narrow-band weight, none) on the relative change.
+- CG-4: closed — both late-fee overwrite tails now partition identically: the charge of the month named on the latest returned-payment line goes to the reopened-charge rule, the latest-invoiced actual dual charge that is not that charge goes to the overdue-charge rule, every other late fee stays under the base sentence quoted in both.
+- CG-5: closed — the reopened charge (late fee and the replacement payment's reopened fees) is the latest-invoiced actual dual charge of that month, with the re-post case and the same-day tie stated; compute takes the same row.
+- CG-6: closed — the dispute-hold ladder (both payments) has a third tier for a dispute naming a payment, returned-payment or credit line (no hold), and the fee tier lists the fee kinds; compute tests the same kinds; probed.
+- CG-7: closed — the appositive gloss is removed from the priced-on tier in both late-fee rules and ladders; rule words and compute now say the unpaid amount plus the most recent post-due payment.
+- CG-8: closed — the small-item tier now reads "it is the returned amount itself"; no "never exceeds the item" promise remains.
+- CG-9: closed — both late-fee rules write no fee only when the product rounds to 0.00; compute tests the rounded product.
+- CG-10: closed — the capacity factor requires the latest subscriber change's effective_date to be on or before today; probed with a future filing.
+- CG-11: closed — the replacement payment's second prerequisite sentence and condition now name the charge of the month on the latest returned-payment line, the same scope as the reopened-charge rule.
+- CG-12: closed — all four prerequisite sentences carry the carve-out "wherever the <rule> bills / writes one", so each wait is satisfiable when the depended-on rule writes nothing (no estimate, disputed or fully banked charge, rounded-zero fee).
+- CG-14: disputed with evidence — base eligibility one_charge_per_credit has applies_to [home_charge_billed], so without the overwrite it governs every estimate write, which by the base rule carries no credit line; the extended estimate rule narrows that clause's reach to credit lines and restates it for them, which is a scope conflict on the same subject, not a non-conflicting clause; the overwrite stays.
+- CG-15: closed — baseline.params now list only keys their paragraphs state (payments: none; returned fee: the plan fee).
+- CG-16: closed — rpf_reversal_time removed; replaced by rpf_committed_term (R1 plan-term key read from term_months and term_end_date), recorded in the lever catalogue.
+- CG-17: closed — check tier removed from the multipliers (a returned check takes the fall-through), a returned check's fee is capped at the plan's own returned-payment fee and every returned-payment fee at a fee ceiling; no statutory figure is cited.
+- CG-18: closed — both payment policies overwrite the payment-application order (an open-disputed line and its late fees are settled by no payment; each payment records the statement month of the oldest open line it settles); both payment tools take that month as an argument; every unpaid definition cites that recording rule; every seeded payment is labelled accordingly.
+- F-T0-1: closed — the task-0 waitlist reservation is now submitted after the residential share closed, so the account holds no open share and the requested size lies inside the headroom on its submission date.
+- F-T0-2: closed — task-0 payments follow the overwritten order: the partial payment is recorded against the July charge because the disputed June charge and its fee are settled by no payment while the dispute (now received before the payment) is open; the priced-amount factor's weight rests on that recorded month.
+- F-T1-1: closed — the task-1 reservation requests the minimum class size, inside the account headroom computed from the larger share and the usage on file at submission.
+- F-T1-2: closed — task-1 ledger rebuilt so every payment settles the oldest open line: July paid late with its fee before the card payment, the card payment settled only August, the later partial payment settles the reopened August charge because the disputed September charge is held.
+- T0 finding 1: closed with CG-1. T0 finding 2: closed with CG-3. T0 finding 3: closed with F-T0-1. T0 finding 4: closed with F-T0-2 / CG-18.
+- T0 finding 5 (observation): kept — the persona accepts the quoted final-balance figure; the payment rule states which lines stay open (dispute hold, fee share, estimate share).
+- T0 finding 6 (observation): kept — the persona phone numbers come from the coordinator's identifier band.
+- T1 finding 1: closed with CG-2. T1 finding 2: closed with CG-16. T1 finding 3: closed with F-T1-1. T1 finding 4: closed with F-T1-2 / CG-18.
+- T1 finding 5 (observation): moot — the return-record tier no longer exists.
+- O-1: kept as observation — two late-fee tools resolved by the now-agreeing overwrite scopes.
+- O-2: closed — the estimate rule bills estimates only on dual-billed subscriptions (consolidated subscriptions wait for the statement), consistent with the tool's fixed dual arrangement.
+- O-3: kept — billable_status includes closed.
+- O-4: kept — Access plans without recertification never reach the Access tier; rule-consistent.
+- O-5: kept — only the most recently received open dispute is read (DSL reach); stated in every rule that reads it.
+- O-6: partly closed — fee-share selections leave out fees held for a dispute; the reopened late fee can still carry both the fee share and the reversal share, stated as deductions taken once each on their own lines.
+- O-7: closed — open estimates now exclude an estimate held for a dispute and the estimate replaced by an unpriced posting.
+- O-8: kept — shared deduction bases are plain selections each with its own reads (A5).
+- AMENDMENT 1.4: applied — estimate run haircut and lag percentage removed (no percentage cut on estimates of charges).
+- AMENDMENT 1.2: lever catalogue written in the worklog; remaining R6 factors listed there with the reason no honest lever replaces them.

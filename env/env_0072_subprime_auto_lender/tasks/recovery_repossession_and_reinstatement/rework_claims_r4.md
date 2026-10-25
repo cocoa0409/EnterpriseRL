@@ -1,0 +1,5 @@
+# rework claims, round 4 (render_r1)
+
+- S1 → Rewrote the storage-charging sentence in both expense-payment policies, in the rule sentence and in overwrite[3].replaced_by, which stay word-for-word identical within each policy. Each now names its own scope ("charged as this rule sets out") and its sibling by name ("charged by its own reinstatement/redemption expense payment rule"). It no longer lists any factor or defers its own storage to another rule. The release/sale and quote storage clause is unchanged.
+- S1 class sweep → No other rule or replaced_by sentence lists or names more than one factor quantity. The assembly sentences stay generic and their order is unchanged. No compute, figure, world or combination sentence changed, and no compute_basis quote touched the edited sentence.
+- Docstring note → Both borrower payment tool docstrings no longer claim payment "through a certified payment channel", which the body does not record. Tool names, signatures and parameters are unchanged.

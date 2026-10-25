@@ -1,0 +1,23 @@
+# Source mismatches reported by the oxygen renderer (agent ad62be1b46c8063f3), round 1 — verbatim
+# Coordinator verified item 1 against oxygen.extended.yaml (overwrite of oxygen_evt_monthly_billing: superseded clause covers every equipment month; replacement lives in a policy scoped to paid-in-full months).
+
+1. **Overwrite wider than its replacement (equipment months).** The retired base clauses in `oxygen_evt_monthly_billing` cover every equipment month: *"The month's fee is `stationary_monthly_fee`, adjusted for the prescribed flow in force on the month's first day: above `high_flow_threshold_lpm` the stationary fee rises by `high_flow_uplift_pct` percent"* and *"The allowed amount is the fee times the coverage class's allowed_pct_of_fee_schedule divided by 100, rounded to the cent half up."* The replacement policy `oxygen_ext_paid_in_full_equipment_month` applies only to *"An equipment month that the coverage paid in full, leaving no patient share because the plan's out-of-pocket maximum was already met"*. Months that leave a patient share now have no fee or allowed-amount rule in force.
+2. **Same scope gap for contents months.** The retired clause is *"After the cap, classes with a `post_cap_contents_hcpcs` other than none bill one contents month at `post_cap_contents_monthly_fee` times … rounded to the cent half up."* The replacement policy `oxygen_ext_paid_in_full_contents_month` covers only *"A contents month after the payment cap that the coverage paid in full, leaving no patient share…"*.
+3. **The equipment computation rule depends on a factor's binding.**
+   - `baseline.rule` says *"The standard month's fee is the class's `stationary_monthly_fee` plus the class's `portable_addon_monthly_fee` when portable equipment is billable."*
+   - The definition (*"Portable equipment is billable when the class carries a portable add-on, mobility within the home is documented…"*) is the binding `portable_billable`, which belongs to the factor `flow_fee_combination`.
+   - I stated the definition in both the computation document and the factor document so the computation document works on its own.
+4. **A factor that computes with another factor's output.** `flow_fee_combination` computes `MX(stationary_share * (100 + high_flow_rate_pct) / 100, …)`, and `high_flow_rate_pct` is the output of the factor `payer_high_flow_rate`. The flow document says only "the high-flow percentage".
+5. **A factor tier defined on another factor's output (`oxygen_ext_stay_suspension_day`).**
+   - The `established_other_rental` ladder reads *"when: the evidence comes from the PAP device record"*, which is the output of `stay_evidence_source`.
+   - The compute re-derives that test as `EXISTS('pap', status='suspended') and stay_start > F('setup_date')`, without the `F('status') == 'rental_active'` check that `stay_evidence_day` applies.
+   - This doesn't change the result today, because a failed status check already sends the date to the report day.
+6. **Average with zero refills (`refill_size_rate`).** The rule reads *"…by `small_refill_pct` percent when they average `small_refill_cylinders` or fewer"* and says nothing about a history with no cylinder refills. The compute is `refill_cylinders / MX(refills_on_record, 1) … <= K('small_refill_cylinders')`, so zero refills averages 0 and takes 90%. A Liquid Oxygen System patient, who has no cylinder refills, hits this case.
+7. **No coverage-inactive denial (`oxygen_ext_new_primary_first_day`).**
+   - The rule's *"The denial window: the most recent coverage-inactive denial from the earlier coverage was adjudicated no more than…"* and *"The denial lag: that coverage-inactive denial was adjudicated no more than … after the new coverage's effective date"* are silent when no such denial exists.
+   - The compute treats the two differently: the window defaults to `… or NOW` and passes, while the lag defaults to `… or '2999-12-31'` and fails.
+   - As a result, the `covered_day_anchor` tier *"the last month the earlier coverage paid began on or after the effective date"* can only take effect when a coverage-inactive denial exists.
+
+**Minor mismatches**
+- The `oxygen_ext_stay_suspension_day` overwrite retires *"An inpatient or skilled nursing admission suspends the record with the admission date as suspended_date"*, which includes the trigger itself. Its `replaced_by` covers only the dating. The extended rule restates the trigger only for a stay *"that is reported after it began"*.
+- In `paid_month_span`, the rule's *"the first day of the most recent paid equipment month"* has no coverage filter. The compute filters `coverage_id=F('coverage_id')`.

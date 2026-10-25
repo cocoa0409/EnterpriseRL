@@ -1,0 +1,4 @@
+S1: closed — the Servicemember offer-terms overwrite now retires only the installment clause and leaves the rate clause in force, and both Servicemember replacements describe the covered-date installment one way, as the plan installment recorded when the benefit was applied, which is what the compute uses.
+S2: not changed — coordinator decision: the generic assembly sentences stay where the source puts them.
+S3: closed — the single-other-loan reason is now a company fact in business words, true to the loan product's limit on open loans and its bar on new applications while a loan is charged off; no rule text uses an authoring term.
+S4: closed — the reduced-payment ceiling is stated as taken on the loan's own scheduled installment on the decision date, never on a replaced payment base, and the settlement term's bounds are stated as the program's own minimum and maximum; every other cap and floor is a fixed figure no rule replaces.

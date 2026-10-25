@@ -1,0 +1,1001 @@
+# Fleet Card Program charter — Meridian Fleet Payments. The card program a fleet holds: the network it
+# buys on, the purchase scope its cards may carry, the per-card and program fees, the per-transaction
+# fees, Level-3 fuel transaction posting, merchant reversals and the federal excise tax credit for
+# exempt fleets. Every program bills through the fleet's single commercial credit line (credit charter).
+category: program
+display_name: Fleet Card Program
+
+binding:
+  holding_table: fleet_programs
+  event_tables: [program_transactions, program_charges]
+  status_field: status
+  variant_field: variant_name
+
+lifecycle:
+  states: [applied, active, suspended, closed]
+  transitions:
+    - {from: applied, to: active, by: system, means: "Underwriting approves the program application and the program opens for card orders and purchases."}
+    - {from: applied, to: closed, by: system, means: "Underwriting declines the program application; no card is ever issued under it."}
+    - {from: active, to: suspended, by: agent, means: "The program is placed on hold because the credit line billing it is suspended or a confirmed fraud hold is required; every card on it declines while suspended."}
+    - {from: suspended, to: active, by: agent, means: "The hold is lifted once the credit line billing the program is active again or the fraud hold is cleared."}
+    - {from: active, to: closed, by: user, means: "The fleet's authorized account administrator instructs closure of the program in writing; every card on it is closed with it."}
+    - {from: suspended, to: closed, by: agent, means: "A suspended program is closed because the credit line billing it has been closed."}
+
+accounts:
+  - key: program_charges
+    unit: USD
+    meaning: "Charges posted to the program and not yet offset — purchases and program fees book in; merchant reversals, fee reversals and federal excise tax credits book out. The credit charter's statement bills the net of a cycle's movements."
+
+parameter_schema:
+  nonfuel_mastercard_acceptance: Whether All-Purchase cards on the program are also accepted at non-fuel Mastercard merchants (boolean); when false, non-fuel purchases are possible only at network and partner sites and in-network service shops.
+  canada_acceptance: Whether cards on the program are accepted at Canadian fuel sites (boolean).
+  max_purchase_scope: Broadest product restriction a card on the program may carry (enum fuel_only | fuel_and_maintenance | all_purchases).
+  entry_min_active_cards: Minimum active cards across all of the customer's programs on the application date for the tier to be opened or moved to (integer, cards).
+  max_active_cards: Maximum cards in status active or ordered on this one program at any time (integer, cards).
+  card_fee_ladder: 'Monthly per-card fee by fleet-size band: list of {from_cards, to_cards (null = no upper bound), fee_usd}; the band is the fleet-size band defined in program_agg_fleet_size_band (USD per billed card per cycle).'
+  fee_free_cards: Number of counted cards per program per cycle carried without a per-card fee (integer, cards).
+  card_fee_count_basis: 'Which cards count for the per-card fee (enum active_any_day_of_cycle: a card counts if its status was active on any day of the cycle).'
+  new_card_first_cycle_card_fee: Whether a card first activated inside a cycle is counted in that first cycle (enum charged | waived).
+  monthly_program_fee_usd: Program fee assessed once per monthly fee cycle (USD).
+  program_fee_waiver_gallons: Billed fuel gallons on the program within the fee cycle at or above which the program fee is waived (integer gallons; 0 = no gallon waiver exists for the tier).
+  program_fee_waived_first_cycles: Number of fee cycles, counted from the cycle containing the activation date, in which the program fee is not assessed (integer cycles).
+  oon_fee_usd: Out-of-network fee per fuel purchase posted at an out_of_network site (USD per transaction).
+  oon_fee_cycle_cap_usd: Maximum total out-of-network fees assessed on the program in one fee cycle (USD).
+  partner_discount_cpg_gasoline: Partner-site discount on unleaded regular, midgrade and premium gallons (USD per gallon).
+  partner_discount_cpg_diesel: Partner-site discount on diesel gallons (USD per gallon; never on dyed diesel or DEF).
+  partner_discount_max_gallons_per_txn: Gallons per transaction on which the partner-site discount is given (integer gallons).
+  partner_discount_full_serve: Whether the partner-site discount also applies at full-serve islands (boolean; self-serve always qualifies).
+  manual_entry_fee_usd: Fee per purchase authorized by key entry or voice authorization instead of a card read (USD per transaction).
+  manual_entry_fee_cycle_cap_usd: Maximum total manual-entry fees assessed on the program in one fee cycle (USD).
+  manual_entry_waiver_days: Calendar days, counted from the order date of a replacement for a damaged card, during which key-entered purchases on that damaged card carry no manual-entry fee (integer days; 0 = no waiver).
+  intl_fee_pct: Cross-border fee on purchases at Canadian sites, percent of the purchase net amount (percent; 0.00 where Canada acceptance is off).
+  ifta_reporting_available: Whether the quarterly IFTA jurisdiction fuel report can be enrolled on the program (boolean).
+  ifta_report_fee_usd: Fee per calendar quarter for the IFTA jurisdiction fuel report while enrolled (USD per quarter).
+  mobile_wallet_payments: Whether drivers may pay at the pump with the Meridian Fleet app (boolean; posts with entry method mobile_wallet).
+  mobile_fueling_access: Whether on-site mobile fueling vendors may be paid with program cards (boolean; posts with site service mobile_fueling).
+  max_control_profiles: Maximum purchase-control profiles that may be in force on the program at once (integer).
+  custom_time_windows: Whether a purchase-control profile on the program may carry its own day-of-week and time-of-day window (boolean).
+  setup_fee_usd: One-time program setup fee assessed on activation (USD).
+  early_termination_months: Months from the activation date within which a customer-instructed closure carries the early termination fee (integer months; 0 = none).
+  early_termination_fee_usd: Fee for a customer-instructed closure inside the early termination period (USD).
+  closure_notice_days: Calendar days of written notice before a customer-instructed closure takes effect (integer days; 0 = effective on the instruction date).
+  tier_review_interval_months: Months between scheduled tier reviews of the program (integer months).
+  downgrade_review_active_cards: Active cards across all programs below which a program is moved down at its tier review (integer cards; 0 = never moved down on card count).
+  maintain_min_monthly_gallons: Average billed fuel gallons per month over the review period below which a program is moved down at its tier review (integer gallons; 0 = no gallon test).
+  tier_upgrade_effective: When an approved tier upgrade takes effect (enum next_cycle_start).
+  tier_downgrade_effective: When a tier downgrade takes effect (enum next_cycle_start).
+  inactivity_close_months: Consecutive calendar months with no posted purchase after which the program is closed for inactivity (integer months).
+  posting_business_days: Business days (Monday-Friday, excluding US federal holidays) within which a purchase posts after its transaction date (integer days).
+  level3_statement_detail: Whether the statement carries line-item Level-3 detail (gallons, price per gallon, product, odometer) for every purchase (boolean).
+  fet_exempt_billing_available: Whether federal excise tax exempt billing can be set up on the program for an eligible fleet (boolean).
+  driver_id_prompting: Driver ID prompting available at the pump (enum not_available | optional).
+  odometer_prompting: Odometer prompting at the pump (enum optional).
+  tank_capacity_check_available: Whether a purchase-control profile on the program may decline fuel above the vehicle's recorded tank capacity (boolean).
+  decline_alerts: Real-time decline alert channels (enum email | email_and_text | email_text_and_api).
+  fraud_monitoring: Fraud monitoring level applied to purchases (enum standard | enhanced).
+  reporting_package: Online reporting package (enum basic | standard | advanced).
+  data_feed_access: Transaction data delivery to the fleet's systems (enum none | daily_file | api).
+  dedicated_account_manager: Whether a named account manager is assigned (boolean).
+  support_hours: Fleet support line hours (enum business_hours | extended_hours | all_hours).
+
+variants:
+  - name: Meridian Fleet Essential
+    rank: 1
+    entry_gate:
+      min_active_cards: 1
+      max_active_cards: 10
+      credit_line_status: active
+      min_credit_line_rank: 1
+    parameters:
+      nonfuel_mastercard_acceptance: false
+      canada_acceptance: false
+      max_purchase_scope: fuel_only
+      entry_min_active_cards: 1
+      max_active_cards: 10
+      card_fee_ladder: [{from_cards: 1, to_cards: 24, fee_usd: 2.95}, {from_cards: 25, to_cards: 99, fee_usd: 2.95}, {from_cards: 100, to_cards: 249, fee_usd: 2.95}, {from_cards: 250, to_cards: null, fee_usd: 2.95}]
+      fee_free_cards: 0
+      card_fee_count_basis: active_any_day_of_cycle
+      new_card_first_cycle_card_fee: charged
+      monthly_program_fee_usd: 0.0
+      program_fee_waiver_gallons: 0
+      program_fee_waived_first_cycles: 0
+      oon_fee_usd: 4.95
+      oon_fee_cycle_cap_usd: 99.0
+      partner_discount_cpg_gasoline: 0.03
+      partner_discount_cpg_diesel: 0.02
+      partner_discount_max_gallons_per_txn: 25
+      partner_discount_full_serve: false
+      manual_entry_fee_usd: 3.0
+      manual_entry_fee_cycle_cap_usd: 30.0
+      manual_entry_waiver_days: 0
+      intl_fee_pct: 0.0
+      ifta_reporting_available: false
+      ifta_report_fee_usd: 0.0
+      mobile_wallet_payments: false
+      mobile_fueling_access: false
+      max_control_profiles: 1
+      custom_time_windows: false
+      setup_fee_usd: 0.0
+      early_termination_months: 0
+      early_termination_fee_usd: 0.0
+      closure_notice_days: 0
+      tier_review_interval_months: 12
+      downgrade_review_active_cards: 0
+      maintain_min_monthly_gallons: 0
+      tier_upgrade_effective: next_cycle_start
+      tier_downgrade_effective: next_cycle_start
+      inactivity_close_months: 12
+      posting_business_days: 2
+      level3_statement_detail: false
+      fet_exempt_billing_available: true
+      driver_id_prompting: not_available
+      odometer_prompting: optional
+      tank_capacity_check_available: false
+      decline_alerts: email
+      fraud_monitoring: standard
+      reporting_package: basic
+      data_feed_access: none
+      dedicated_account_manager: false
+      support_hours: business_hours
+  - name: Meridian Fleet Standard
+    rank: 2
+    entry_gate:
+      min_active_cards: 5
+      max_active_cards: 50
+      credit_line_status: active
+      min_credit_line_rank: 1
+    parameters:
+      nonfuel_mastercard_acceptance: false
+      canada_acceptance: false
+      max_purchase_scope: fuel_and_maintenance
+      entry_min_active_cards: 5
+      max_active_cards: 50
+      card_fee_ladder: [{from_cards: 1, to_cards: 24, fee_usd: 2.5}, {from_cards: 25, to_cards: 99, fee_usd: 2.25}, {from_cards: 100, to_cards: 249, fee_usd: 2.0}, {from_cards: 250, to_cards: null, fee_usd: 2.0}]
+      fee_free_cards: 2
+      card_fee_count_basis: active_any_day_of_cycle
+      new_card_first_cycle_card_fee: charged
+      monthly_program_fee_usd: 0.0
+      program_fee_waiver_gallons: 0
+      program_fee_waived_first_cycles: 0
+      oon_fee_usd: 3.95
+      oon_fee_cycle_cap_usd: 125.0
+      partner_discount_cpg_gasoline: 0.04
+      partner_discount_cpg_diesel: 0.03
+      partner_discount_max_gallons_per_txn: 30
+      partner_discount_full_serve: false
+      manual_entry_fee_usd: 3.0
+      manual_entry_fee_cycle_cap_usd: 45.0
+      manual_entry_waiver_days: 7
+      intl_fee_pct: 0.0
+      ifta_reporting_available: true
+      ifta_report_fee_usd: 25.0
+      mobile_wallet_payments: true
+      mobile_fueling_access: false
+      max_control_profiles: 3
+      custom_time_windows: true
+      setup_fee_usd: 0.0
+      early_termination_months: 0
+      early_termination_fee_usd: 0.0
+      closure_notice_days: 0
+      tier_review_interval_months: 12
+      downgrade_review_active_cards: 3
+      maintain_min_monthly_gallons: 300
+      tier_upgrade_effective: next_cycle_start
+      tier_downgrade_effective: next_cycle_start
+      inactivity_close_months: 12
+      posting_business_days: 2
+      level3_statement_detail: true
+      fet_exempt_billing_available: true
+      driver_id_prompting: optional
+      odometer_prompting: optional
+      tank_capacity_check_available: true
+      decline_alerts: email
+      fraud_monitoring: standard
+      reporting_package: basic
+      data_feed_access: none
+      dedicated_account_manager: false
+      support_hours: business_hours
+  - name: Meridian Fleet Plus
+    rank: 3
+    entry_gate:
+      min_active_cards: 15
+      max_active_cards: 150
+      credit_line_status: active
+      min_credit_line_rank: 2
+    parameters:
+      nonfuel_mastercard_acceptance: false
+      canada_acceptance: true
+      max_purchase_scope: fuel_and_maintenance
+      entry_min_active_cards: 15
+      max_active_cards: 150
+      card_fee_ladder: [{from_cards: 1, to_cards: 24, fee_usd: 2.25}, {from_cards: 25, to_cards: 99, fee_usd: 1.95}, {from_cards: 100, to_cards: 249, fee_usd: 1.75}, {from_cards: 250, to_cards: null, fee_usd: 1.5}]
+      fee_free_cards: 5
+      card_fee_count_basis: active_any_day_of_cycle
+      new_card_first_cycle_card_fee: charged
+      monthly_program_fee_usd: 9.95
+      program_fee_waiver_gallons: 2500
+      program_fee_waived_first_cycles: 1
+      oon_fee_usd: 3.5
+      oon_fee_cycle_cap_usd: 150.0
+      partner_discount_cpg_gasoline: 0.05
+      partner_discount_cpg_diesel: 0.05
+      partner_discount_max_gallons_per_txn: 40
+      partner_discount_full_serve: false
+      manual_entry_fee_usd: 2.5
+      manual_entry_fee_cycle_cap_usd: 60.0
+      manual_entry_waiver_days: 7
+      intl_fee_pct: 2.0
+      ifta_reporting_available: true
+      ifta_report_fee_usd: 19.95
+      mobile_wallet_payments: true
+      mobile_fueling_access: false
+      max_control_profiles: 5
+      custom_time_windows: true
+      setup_fee_usd: 0.0
+      early_termination_months: 12
+      early_termination_fee_usd: 150.0
+      closure_notice_days: 30
+      tier_review_interval_months: 6
+      downgrade_review_active_cards: 10
+      maintain_min_monthly_gallons: 1500
+      tier_upgrade_effective: next_cycle_start
+      tier_downgrade_effective: next_cycle_start
+      inactivity_close_months: 18
+      posting_business_days: 2
+      level3_statement_detail: true
+      fet_exempt_billing_available: true
+      driver_id_prompting: optional
+      odometer_prompting: optional
+      tank_capacity_check_available: true
+      decline_alerts: email_and_text
+      fraud_monitoring: standard
+      reporting_package: standard
+      data_feed_access: daily_file
+      dedicated_account_manager: false
+      support_hours: extended_hours
+  - name: Meridian Fleet Universal
+    rank: 4
+    entry_gate:
+      min_active_cards: 10
+      max_active_cards: 250
+      credit_line_status: active
+      min_credit_line_rank: 3
+    parameters:
+      nonfuel_mastercard_acceptance: true
+      canada_acceptance: true
+      max_purchase_scope: all_purchases
+      entry_min_active_cards: 10
+      max_active_cards: 250
+      card_fee_ladder: [{from_cards: 1, to_cards: 24, fee_usd: 3.25}, {from_cards: 25, to_cards: 99, fee_usd: 2.95}, {from_cards: 100, to_cards: 249, fee_usd: 2.75}, {from_cards: 250, to_cards: null, fee_usd: 2.5}]
+      fee_free_cards: 0
+      card_fee_count_basis: active_any_day_of_cycle
+      new_card_first_cycle_card_fee: charged
+      monthly_program_fee_usd: 14.95
+      program_fee_waiver_gallons: 3500
+      program_fee_waived_first_cycles: 1
+      oon_fee_usd: 2.95
+      oon_fee_cycle_cap_usd: 175.0
+      partner_discount_cpg_gasoline: 0.04
+      partner_discount_cpg_diesel: 0.04
+      partner_discount_max_gallons_per_txn: 40
+      partner_discount_full_serve: false
+      manual_entry_fee_usd: 2.5
+      manual_entry_fee_cycle_cap_usd: 60.0
+      manual_entry_waiver_days: 10
+      intl_fee_pct: 2.0
+      ifta_reporting_available: true
+      ifta_report_fee_usd: 19.95
+      mobile_wallet_payments: true
+      mobile_fueling_access: false
+      max_control_profiles: 5
+      custom_time_windows: true
+      setup_fee_usd: 49.0
+      early_termination_months: 12
+      early_termination_fee_usd: 195.0
+      closure_notice_days: 30
+      tier_review_interval_months: 6
+      downgrade_review_active_cards: 5
+      maintain_min_monthly_gallons: 1000
+      tier_upgrade_effective: next_cycle_start
+      tier_downgrade_effective: next_cycle_start
+      inactivity_close_months: 18
+      posting_business_days: 1
+      level3_statement_detail: true
+      fet_exempt_billing_available: true
+      driver_id_prompting: optional
+      odometer_prompting: optional
+      tank_capacity_check_available: true
+      decline_alerts: email_and_text
+      fraud_monitoring: enhanced
+      reporting_package: standard
+      data_feed_access: daily_file
+      dedicated_account_manager: false
+      support_hours: all_hours
+  - name: Meridian Fleet Premier
+    rank: 5
+    entry_gate:
+      min_active_cards: 50
+      max_active_cards: 1000
+      credit_line_status: active
+      min_credit_line_rank: 4
+    parameters:
+      nonfuel_mastercard_acceptance: true
+      canada_acceptance: true
+      max_purchase_scope: all_purchases
+      entry_min_active_cards: 50
+      max_active_cards: 1000
+      card_fee_ladder: [{from_cards: 1, to_cards: 24, fee_usd: 2.75}, {from_cards: 25, to_cards: 99, fee_usd: 2.45}, {from_cards: 100, to_cards: 249, fee_usd: 2.15}, {from_cards: 250, to_cards: null, fee_usd: 1.85}]
+      fee_free_cards: 10
+      card_fee_count_basis: active_any_day_of_cycle
+      new_card_first_cycle_card_fee: waived
+      monthly_program_fee_usd: 24.95
+      program_fee_waiver_gallons: 10000
+      program_fee_waived_first_cycles: 2
+      oon_fee_usd: 2.5
+      oon_fee_cycle_cap_usd: 250.0
+      partner_discount_cpg_gasoline: 0.06
+      partner_discount_cpg_diesel: 0.07
+      partner_discount_max_gallons_per_txn: 60
+      partner_discount_full_serve: true
+      manual_entry_fee_usd: 2.0
+      manual_entry_fee_cycle_cap_usd: 90.0
+      manual_entry_waiver_days: 10
+      intl_fee_pct: 1.5
+      ifta_reporting_available: true
+      ifta_report_fee_usd: 9.95
+      mobile_wallet_payments: true
+      mobile_fueling_access: true
+      max_control_profiles: 15
+      custom_time_windows: true
+      setup_fee_usd: 0.0
+      early_termination_months: 24
+      early_termination_fee_usd: 495.0
+      closure_notice_days: 30
+      tier_review_interval_months: 6
+      downgrade_review_active_cards: 35
+      maintain_min_monthly_gallons: 7500
+      tier_upgrade_effective: next_cycle_start
+      tier_downgrade_effective: next_cycle_start
+      inactivity_close_months: 24
+      posting_business_days: 1
+      level3_statement_detail: true
+      fet_exempt_billing_available: true
+      driver_id_prompting: optional
+      odometer_prompting: optional
+      tank_capacity_check_available: true
+      decline_alerts: email_and_text
+      fraud_monitoring: enhanced
+      reporting_package: advanced
+      data_feed_access: api
+      dedicated_account_manager: true
+      support_hours: all_hours
+  - name: Meridian Fleet Enterprise
+    rank: 6
+    entry_gate:
+      min_active_cards: 250
+      max_active_cards: 5000
+      credit_line_status: active
+      min_credit_line_rank: 5
+    parameters:
+      nonfuel_mastercard_acceptance: true
+      canada_acceptance: true
+      max_purchase_scope: all_purchases
+      entry_min_active_cards: 250
+      max_active_cards: 5000
+      card_fee_ladder: [{from_cards: 1, to_cards: 24, fee_usd: 1.95}, {from_cards: 25, to_cards: 99, fee_usd: 1.65}, {from_cards: 100, to_cards: 249, fee_usd: 1.35}, {from_cards: 250, to_cards: null, fee_usd: 1.1}]
+      fee_free_cards: 25
+      card_fee_count_basis: active_any_day_of_cycle
+      new_card_first_cycle_card_fee: waived
+      monthly_program_fee_usd: 49.0
+      program_fee_waiver_gallons: 50000
+      program_fee_waived_first_cycles: 3
+      oon_fee_usd: 1.95
+      oon_fee_cycle_cap_usd: 500.0
+      partner_discount_cpg_gasoline: 0.08
+      partner_discount_cpg_diesel: 0.1
+      partner_discount_max_gallons_per_txn: 150
+      partner_discount_full_serve: true
+      manual_entry_fee_usd: 1.5
+      manual_entry_fee_cycle_cap_usd: 150.0
+      manual_entry_waiver_days: 14
+      intl_fee_pct: 1.0
+      ifta_reporting_available: true
+      ifta_report_fee_usd: 0.0
+      mobile_wallet_payments: true
+      mobile_fueling_access: true
+      max_control_profiles: 50
+      custom_time_windows: true
+      setup_fee_usd: 0.0
+      early_termination_months: 36
+      early_termination_fee_usd: 1500.0
+      closure_notice_days: 60
+      tier_review_interval_months: 3
+      downgrade_review_active_cards: 175
+      maintain_min_monthly_gallons: 40000
+      tier_upgrade_effective: next_cycle_start
+      tier_downgrade_effective: next_cycle_start
+      inactivity_close_months: 24
+      posting_business_days: 1
+      level3_statement_detail: true
+      fet_exempt_billing_available: true
+      driver_id_prompting: optional
+      odometer_prompting: optional
+      tank_capacity_check_available: true
+      decline_alerts: email_text_and_api
+      fraud_monitoring: enhanced
+      reporting_package: advanced
+      data_feed_access: api
+      dedicated_account_manager: true
+      support_hours: all_hours
+
+events:
+  - type: program_open
+    target: fleet_programs
+    mutation: create
+    meaning: "A fleet applies for a card program at a chosen tier, billed through its commercial credit line."
+    grain: "One row per program application."
+    fields:
+      program_id: "Reference of the new program."
+      customer_id: "The fleet applying."
+      credit_line_id: "The customer's credit line that will bill the program."
+      program_number: "Program account number printed on statements and cards."
+      variant_name: "Official tier name applied for."
+      opened_on: "Application date."
+      tier_effective_on: "Date the applied-for tier takes effect; equals the application date at opening."
+    triggers: []
+  - type: program_activate
+    target: fleet_programs
+    mutation: {transition: {from: applied, to: active}}
+    meaning: "Underwriting approves the application and the program becomes usable."
+    grain: "One row per program approval."
+    fields:
+      activated_on: "Approval date."
+    triggers: []
+  - type: program_decline
+    target: fleet_programs
+    mutation: {transition: {from: applied, to: closed}}
+    meaning: "Underwriting declines the program application."
+    grain: "One row per declined application."
+    fields:
+      closed_on: "Decline date."
+      close_reason: "Always application_declined."
+    triggers: []
+  - type: program_suspend
+    target: fleet_programs
+    mutation: {transition: {from: active, to: suspended}}
+    meaning: "The program is placed on hold; its cards decline while it is suspended."
+    grain: "One row per suspension."
+    fields: {status: "Becomes suspended."}
+    triggers: []
+  - type: program_reinstate
+    target: fleet_programs
+    mutation: {transition: {from: suspended, to: active}}
+    meaning: "A suspended program is returned to active."
+    grain: "One row per reinstatement."
+    fields: {status: "Becomes active."}
+    triggers: []
+  - type: program_close
+    target: fleet_programs
+    mutation: {transition: {from: active, to: closed}}
+    meaning: "The fleet's authorized administrator instructs closure of an active program, or the program is closed for inactivity."
+    grain: "One row per closure."
+    fields:
+      closed_on: "Date the closure takes effect."
+      close_reason: "customer_instruction or inactivity."
+    triggers: []
+  - type: program_close_suspended
+    target: fleet_programs
+    mutation: {transition: {from: suspended, to: closed}}
+    meaning: "A suspended program is closed because the credit line billing it was closed."
+    grain: "One row per closure."
+    fields:
+      closed_on: "Closure date."
+      close_reason: "Always credit_line_closed."
+    triggers: []
+  - type: program_tier_change
+    target: fleet_programs
+    mutation: update
+    meaning: "The program moves to another tier at a tier review or on the fleet's request."
+    grain: "One row per tier change."
+    fields:
+      variant_name: "The new official tier name."
+      prior_variant_name: "The tier held immediately before this change."
+      tier_effective_on: "First day of the billing cycle following the change, on which the new tier takes effect."
+    triggers: []
+  - type: program_fet_status_change
+    target: fleet_programs
+    mutation: update
+    meaning: "Federal excise tax exempt billing is set up, activated or ended on the program."
+    grain: "One row per status change."
+    fields:
+      fet_exemption_status: "New exemption billing status."
+      fet_certificate_on: "Date the fleet's signed exemption certificate was received; empty when none is on file."
+    triggers: []
+  - type: program_ifta_enrollment
+    target: fleet_programs
+    mutation: update
+    meaning: "The fleet enrolls in or leaves the quarterly IFTA jurisdiction fuel report."
+    grain: "One row per enrollment change."
+    fields: {ifta_reporting: "true while enrolled."}
+    triggers: []
+  - type: program_fuel_purchase
+    target: program_transactions
+    meaning: "A fuel purchase (gasoline, diesel, dyed diesel or DEF) posts to the program with Level-3 data."
+    grain: "One row per posted fuel purchase, identified by the merchant transaction reference."
+    distinguish_by: [txn_ref]
+    fields:
+      program_txn_id: "Reference of the posted purchase."
+      fleet_card_id: "Card used."
+      txn_ref: "Merchant transaction reference printed on the statement."
+      txn_date: "Date of the purchase at the site."
+      txn_time: "Local time of the purchase."
+      post_date: "Date the purchase posted to the program."
+      merchant_name: "Site name."
+      site_number: "Site number."
+      site_state: "Two-letter US state or Canadian province of the site."
+      site_country: "US or CA."
+      network: "in_network, partner or out_of_network."
+      site_service: "self_serve, full_serve or mobile_fueling."
+      product_code: "Fuel product."
+      gallons: "Gallons dispensed."
+      unit_price: "Pump price per gallon before any discount."
+      gross_amount: "Gallons times unit price."
+      partner_discount_amount: "Partner-site discount; 0.00 where none applies."
+      net_amount: "Gross amount less partner discount; the amount billed."
+      odometer: "Odometer entered at the pump; 0 when not prompted."
+      driver_prompt_number: "Driver ID entered at the pump; empty when not prompted."
+      entry_method: "How the card was read."
+    account: program_charges
+    direction: in
+    triggers:
+      - event: program:program_oon_fee
+        when: {network: out_of_network}
+        map: {related_txn_id: program_txn_id, charge_date: post_date}
+      - event: program:program_manual_entry_fee
+        when: {entry_method: [key_entered, voice_authorization]}
+        map: {related_txn_id: program_txn_id, charge_date: post_date}
+      - event: program:program_intl_fee
+        when: {site_country: CA}
+        map: {related_txn_id: program_txn_id, charge_date: post_date}
+  - type: program_nonfuel_purchase
+    target: program_transactions
+    meaning: "A maintenance, car wash, motor oil or merchandise purchase posts to the program."
+    grain: "One row per posted non-fuel purchase, identified by the merchant transaction reference."
+    distinguish_by: [txn_ref]
+    fields:
+      program_txn_id: "Reference of the posted purchase."
+      fleet_card_id: "Card used."
+      txn_ref: "Merchant transaction reference."
+      txn_date: "Date of the purchase."
+      txn_time: "Local time of the purchase."
+      post_date: "Posting date."
+      merchant_name: "Merchant name."
+      site_number: "Site or merchant number."
+      site_state: "State or province."
+      site_country: "US or CA."
+      network: "in_network, partner or out_of_network."
+      site_service: "Always not_applicable."
+      product_code: "Non-fuel product code."
+      gallons: "Always 0.000."
+      unit_price: "Always 0.000."
+      gross_amount: "Purchase amount."
+      partner_discount_amount: "Always 0.00."
+      net_amount: "Equals the gross amount."
+      odometer: "Odometer entered; 0 when not prompted."
+      driver_prompt_number: "Driver ID entered; empty when not prompted."
+      entry_method: "How the card was read."
+    account: program_charges
+    direction: in
+    triggers:
+      - event: program:program_manual_entry_fee
+        when: {entry_method: [key_entered, voice_authorization]}
+        map: {related_txn_id: program_txn_id, charge_date: post_date}
+      - event: program:program_intl_fee
+        when: {site_country: CA}
+        map: {related_txn_id: program_txn_id, charge_date: post_date}
+  - type: program_txn_reversal
+    target: program_transactions
+    meaning: "The merchant posts a credit against an earlier purchase (pump error, duplicate post, refund)."
+    grain: "One row per merchant credit, identified by its own merchant reference and the purchase it credits."
+    distinguish_by: [txn_ref, original_txn_id]
+    fields:
+      program_txn_id: "Reference of the credit."
+      fleet_card_id: "Card of the original purchase."
+      txn_ref: "Merchant reference of the credit."
+      txn_date: "Date the merchant issued the credit."
+      post_date: "Posting date of the credit."
+      merchant_name: "Merchant of the original purchase."
+      product_code: "Product code of the original purchase."
+      gallons: "Gallons credited (positive; 0.000 for a non-fuel credit)."
+      unit_price: "Unit price of the original purchase."
+      gross_amount: "Gross amount credited (positive)."
+      partner_discount_amount: "Partner discount reversed with the credit (positive or 0.00)."
+      net_amount: "Net amount credited (positive)."
+      original_txn_id: "The purchase being credited."
+      reversal_reason: "merchant_credit, duplicate_post or pump_malfunction."
+    account: program_charges
+    direction: out
+    triggers: []
+  - type: program_card_fee
+    target: program_charges
+    meaning: "The monthly per-card fee for one fee cycle."
+    grain: "One row per program per fee cycle."
+    distinguish_by: [cycle_start]
+    fields:
+      program_charge_id: "Reference of the fee."
+      charge_date: "Assessment date: the first day after the fee cycle."
+      cycle_start: "First day of the fee cycle (calendar month)."
+      cycle_end: "Last day of the fee cycle."
+      active_card_count: "Cards on the program counted for the cycle."
+      billed_card_count: "Counted cards less fee-free cards, never below 0."
+      unit_amount: "Per-card fee from the fleet-size band."
+      amount: "Billed cards times per-card fee (0.00 is recorded when no card is billed)."
+    account: program_charges
+    direction: in
+    triggers: []
+  - type: program_monthly_fee
+    target: program_charges
+    meaning: "The monthly program fee for one fee cycle."
+    grain: "One row per program per fee cycle in which the fee is assessed."
+    distinguish_by: [cycle_start]
+    fields:
+      program_charge_id: "Reference of the fee."
+      charge_date: "Assessment date."
+      cycle_start: "First day of the fee cycle."
+      cycle_end: "Last day of the fee cycle."
+      gallons: "Billed fuel gallons on the program in the fee cycle."
+      amount: "Program fee assessed."
+    account: program_charges
+    direction: in
+    triggers: []
+  - type: program_oon_fee
+    target: program_charges
+    meaning: "Out-of-network fee on one fuel purchase."
+    grain: "One row per out-of-network fuel purchase charged."
+    distinguish_by: [related_txn_id]
+    fields:
+      program_charge_id: "Reference of the fee."
+      related_txn_id: "The fuel purchase charged."
+      charge_date: "Posting date of that purchase."
+      cycle_start: "First day of the fee cycle containing the charge date."
+      cycle_end: "Last day of that fee cycle."
+      amount: "Fee assessed after the cycle cap (0.00 when the cap is already reached)."
+    account: program_charges
+    direction: in
+    triggers: []
+  - type: program_manual_entry_fee
+    target: program_charges
+    meaning: "Manual-entry fee on one key-entered or voice-authorized purchase."
+    grain: "One row per manually authorized purchase charged."
+    distinguish_by: [related_txn_id]
+    fields:
+      program_charge_id: "Reference of the fee."
+      related_txn_id: "The purchase charged."
+      charge_date: "Posting date of that purchase."
+      cycle_start: "First day of the fee cycle."
+      cycle_end: "Last day of the fee cycle."
+      amount: "Fee assessed after the cycle cap and any waiver (0.00 when waived or capped)."
+    account: program_charges
+    direction: in
+    triggers: []
+  - type: program_intl_fee
+    target: program_charges
+    meaning: "Cross-border fee on one purchase at a Canadian site."
+    grain: "One row per Canadian purchase charged."
+    distinguish_by: [related_txn_id]
+    fields:
+      program_charge_id: "Reference of the fee."
+      related_txn_id: "The Canadian purchase."
+      charge_date: "Posting date of that purchase."
+      unit_amount: "Fee percent applied."
+      amount: "Fee assessed."
+    account: program_charges
+    direction: in
+    triggers: []
+  - type: program_ifta_report_fee
+    target: program_charges
+    meaning: "Quarterly fee for the IFTA jurisdiction fuel report."
+    grain: "One row per program per calendar quarter enrolled."
+    distinguish_by: [cycle_start]
+    fields:
+      program_charge_id: "Reference of the fee."
+      charge_date: "First day after the quarter."
+      cycle_start: "First day of the calendar quarter."
+      cycle_end: "Last day of the calendar quarter."
+      amount: "Fee assessed."
+    account: program_charges
+    direction: in
+    triggers: []
+  - type: program_setup_fee
+    target: program_charges
+    meaning: "One-time setup fee on program activation."
+    grain: "One row per program activation."
+    distinguish_by: [charge_date]
+    fields:
+      program_charge_id: "Reference of the fee."
+      charge_date: "Activation date."
+      amount: "Setup fee of the tier; no row is written where the tier's setup fee is 0.00."
+    account: program_charges
+    direction: in
+    triggers: []
+  - type: program_early_termination_fee
+    target: program_charges
+    meaning: "Early termination fee on a customer-instructed closure inside the early termination period."
+    grain: "One row per closure."
+    distinguish_by: [charge_date]
+    fields:
+      program_charge_id: "Reference of the fee."
+      charge_date: "Closure effective date."
+      amount: "Fee assessed; no row is written for a closure outside the early termination period."
+    account: program_charges
+    direction: in
+    triggers: []
+  - type: program_fet_credit
+    target: program_charges
+    meaning: "Federal excise tax credit on one taxable fuel purchase by an exempt fleet."
+    grain: "One row per credited fuel purchase."
+    distinguish_by: [related_txn_id]
+    fields:
+      program_charge_id: "Reference of the credit."
+      related_txn_id: "The fuel purchase credited."
+      charge_date: "Posting date of that purchase."
+      gallons: "Gallons of the purchase."
+      unit_amount: "Federal excise tax rate per gallon applied."
+      amount: "Credit (positive)."
+    account: program_charges
+    direction: out
+    triggers: []
+  - type: program_fet_credit_reversal
+    target: program_charges
+    meaning: "A federal excise tax credit is offset because the merchant credited the purchase it was earned on."
+    grain: "One row per merchant credit that offsets a federal excise tax credit."
+    distinguish_by: [original_charge_id, related_txn_id]
+    fields:
+      program_charge_id: "Reference of the offset."
+      original_charge_id: "The federal excise tax credit offset."
+      related_txn_id: "The merchant credit (program_txn_reversal) that caused the offset."
+      charge_date: "Posting date of the merchant credit."
+      gallons: "Gallons credited by the merchant."
+      unit_amount: "Rate of the original credit."
+      amount: "Offset amount (positive)."
+    account: program_charges
+    direction: in
+    triggers: []
+  - type: program_fee_reversal
+    target: program_charges
+    meaning: "A program fee is reversed in full because it was assessed contrary to the fee schedule or its purchase was fully credited."
+    grain: "One row per reversed fee."
+    distinguish_by: [original_charge_id]
+    fields:
+      program_charge_id: "Reference of the reversal."
+      original_charge_id: "The fee reversed."
+      charge_date: "Reversal date."
+      amount: "Amount reversed (positive)."
+      reversal_reason: "assessed_in_error or transaction_credited."
+    account: program_charges
+    direction: out
+    triggers: []
+
+measures:
+  - id: program_msr_counted_cards
+    window: "One fee cycle (calendar month) of one program."
+    measure: "Count of fleet_cards on the program whose activated_on is on or before cycle_end and whose closed_on is empty or on or after cycle_start (a card active on any day of the cycle, suspended days included); under new_card_first_cycle_card_fee = waived, cards whose activated_on falls inside the cycle are left out."
+  - id: program_msr_fleet_counted_cards
+    window: "One fee cycle (calendar month), across every program the customer holds."
+    measure: "Count of fleet_cards on any of the customer's programs whose activated_on is on or before cycle_end and whose closed_on is empty or on or after cycle_start."
+  - id: program_msr_cycle_billed_gallons
+    window: "One fee cycle (calendar month) of one program, by post_date."
+    measure: "Sum of gallons of program_fuel_purchase rows posted in the cycle less the sum of gallons of program_txn_reversal rows posted in the cycle."
+  - id: program_msr_cycle_oon_fees
+    window: "One fee cycle (calendar month) of one program, by charge_date, before the fee being assessed."
+    measure: "Sum of amount of program_oon_fee rows already assessed in the cycle, less any program_fee_reversal amounts reversing them."
+  - id: program_msr_cycle_manual_fees
+    window: "One fee cycle (calendar month) of one program, by charge_date, before the fee being assessed."
+    measure: "Sum of amount of program_manual_entry_fee rows already assessed in the cycle, less any program_fee_reversal amounts reversing them."
+  - id: program_msr_months_since_purchase
+    window: "From the post_date of the program's latest program_fuel_purchase or program_nonfuel_purchase (or activated_on when none) to today."
+    measure: "Whole calendar months elapsed, counted by month-day anniversary."
+  - id: program_msr_review_avg_gallons
+    window: "The tier_review_interval_months full calendar months ending on the last day before the review date."
+    measure: "program_msr_cycle_billed_gallons summed over those months divided by the number of months."
+
+policies:
+  - id: program_agg_multi_holding
+    subject: [program_open]
+    rule: "A customer may hold up to the max_per_customer number of programs in status applied, active or suspended at the same time; closed programs do not count. Every program a customer holds is billed through that customer's one credit line, and a program application names that credit line. A further application beyond the cap is not opened; the fleet may instead add cards to an existing program within its tier's max_active_cards."
+    eligibility: []
+    params: {max_per_customer: 3}
+  - id: program_agg_fleet_size_band
+    subject: [program_card_fee, program_open, program_tier_change]
+    rule: "The fleet-size band is set by program_msr_fleet_counted_cards: the total cards counted for the same fee cycle across all of the customer's programs, not the cards on one program. The per-card fee of every program is the fee_usd of the card_fee_ladder band of that program's own tier whose from_cards to to_cards range contains the fleet-size band count (both ends inclusive; a null to_cards has no upper bound). For an application or a tier move, entry_min_active_cards is tested against the active cards across all of the customer's programs on the application date."
+    eligibility: []
+    params:
+      per_tier:
+        Meridian Fleet Essential: {card_fee_ladder: =card_fee_ladder, entry_min_active_cards: =entry_min_active_cards}
+        Meridian Fleet Standard: {card_fee_ladder: =card_fee_ladder, entry_min_active_cards: =entry_min_active_cards}
+        Meridian Fleet Plus: {card_fee_ladder: =card_fee_ladder, entry_min_active_cards: =entry_min_active_cards}
+        Meridian Fleet Universal: {card_fee_ladder: =card_fee_ladder, entry_min_active_cards: =entry_min_active_cards}
+        Meridian Fleet Premier: {card_fee_ladder: =card_fee_ladder, entry_min_active_cards: =entry_min_active_cards}
+        Meridian Fleet Enterprise: {card_fee_ladder: =card_fee_ladder, entry_min_active_cards: =entry_min_active_cards}
+    measures: [program_msr_fleet_counted_cards]
+  - id: program_open_eligibility
+    subject: [program_open, program_activate, program_decline]
+    rule: "A program application is taken only on a credit line that can bill it. The credit line named on the application is in status active. The applied-for tier's entry gate must hold on the application date: active cards across all of the customer's programs of at least the tier's min_active_cards, and the credit line's tier rank (its rank in the credit charter's ladder) of at least min_credit_line_rank; a tier whose gate does not hold is not applied for, and the fleet is offered the highest tier whose gate holds. Underwriting approves (program_activate) or declines (program_decline); approval sets activated_on, which anchors every first-cycle waiver, the setup fee and the early termination period."
+    eligibility:
+      - id: credit_line_active
+        applies_to: [program_open]
+        kind: state
+        condition: "The credit line named on the application is in status active."
+        evidence_fields: [credit_lines.status, credit_lines.credit_line_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[credit_lines.credit_line_id]]
+          action_bindings: {credit_lines.credit_line_id: credit_line_id}
+        state_contract:
+          field: credit_lines.status
+          allowed: [active]
+  - id: program_evt_purchase_posting
+    subject: [program_fuel_purchase, program_nonfuel_purchase]
+    rule: "Every purchase posts with its Level-3 data. For fuel, gross_amount is gallons times unit_price rounded half up to the cent. A partner-site discount applies only to a fuel purchase whose network is partner, whose product_code is unleaded_regular, unleaded_midgrade, unleaded_premium or diesel, and whose site_service is self_serve (or full_serve where the tier's partner_discount_full_serve is true): partner_discount_amount is the lesser of gallons and partner_discount_max_gallons_per_txn, times partner_discount_cpg_gasoline for the three unleaded grades or partner_discount_cpg_diesel for diesel, rounded half up to the cent; every other purchase carries 0.00. net_amount is gross_amount less partner_discount_amount. Dyed diesel and DEF never earn a partner discount. A non-fuel purchase carries gallons 0.000, unit_price 0.000 and net_amount equal to gross_amount. A purchase posts under the tier in effect on its post_date (the current tier from tier_effective_on onward, prior_variant_name before it). A purchase posts within posting_business_days of its txn_date."
+    eligibility: []
+    params:
+      per_tier:
+        Meridian Fleet Essential: {partner_discount_cpg_gasoline: =partner_discount_cpg_gasoline, partner_discount_cpg_diesel: =partner_discount_cpg_diesel, partner_discount_max_gallons_per_txn: =partner_discount_max_gallons_per_txn}
+        Meridian Fleet Standard: {partner_discount_cpg_gasoline: =partner_discount_cpg_gasoline, partner_discount_cpg_diesel: =partner_discount_cpg_diesel, partner_discount_max_gallons_per_txn: =partner_discount_max_gallons_per_txn}
+        Meridian Fleet Plus: {partner_discount_cpg_gasoline: =partner_discount_cpg_gasoline, partner_discount_cpg_diesel: =partner_discount_cpg_diesel, partner_discount_max_gallons_per_txn: =partner_discount_max_gallons_per_txn}
+        Meridian Fleet Universal: {partner_discount_cpg_gasoline: =partner_discount_cpg_gasoline, partner_discount_cpg_diesel: =partner_discount_cpg_diesel, partner_discount_max_gallons_per_txn: =partner_discount_max_gallons_per_txn}
+        Meridian Fleet Premier: {partner_discount_cpg_gasoline: =partner_discount_cpg_gasoline, partner_discount_cpg_diesel: =partner_discount_cpg_diesel, partner_discount_max_gallons_per_txn: =partner_discount_max_gallons_per_txn}
+        Meridian Fleet Enterprise: {partner_discount_cpg_gasoline: =partner_discount_cpg_gasoline, partner_discount_cpg_diesel: =partner_discount_cpg_diesel, partner_discount_max_gallons_per_txn: =partner_discount_max_gallons_per_txn}
+    formula:
+      gross_amount: "round(gallons * unit_price, 2)"
+      net_amount: "gross_amount - partner_discount_amount"
+  - id: program_evt_card_fee
+    subject: [program_card_fee]
+    rule: "The fee cycle for program fees is the calendar month. On the first day after each fee cycle one per-card fee row is written for every program that was active or suspended on any day of the cycle. active_card_count is program_msr_counted_cards for the cycle. billed_card_count is active_card_count less the tier's fee_free_cards, never below 0. unit_amount is the per-card fee set by program_agg_fleet_size_band, and amount is billed_card_count times unit_amount. The tier is the one in effect on cycle_end. A cycle with no billed card records 0.00. A per-card fee is never prorated by days."
+    eligibility: []
+    params:
+      per_tier:
+        Meridian Fleet Essential: {fee_free_cards: =fee_free_cards, new_card_first_cycle_card_fee: =new_card_first_cycle_card_fee}
+        Meridian Fleet Standard: {fee_free_cards: =fee_free_cards, new_card_first_cycle_card_fee: =new_card_first_cycle_card_fee}
+        Meridian Fleet Plus: {fee_free_cards: =fee_free_cards, new_card_first_cycle_card_fee: =new_card_first_cycle_card_fee}
+        Meridian Fleet Universal: {fee_free_cards: =fee_free_cards, new_card_first_cycle_card_fee: =new_card_first_cycle_card_fee}
+        Meridian Fleet Premier: {fee_free_cards: =fee_free_cards, new_card_first_cycle_card_fee: =new_card_first_cycle_card_fee}
+        Meridian Fleet Enterprise: {fee_free_cards: =fee_free_cards, new_card_first_cycle_card_fee: =new_card_first_cycle_card_fee}
+    formula:
+      billed_card_count: "max(active_card_count - fee_free_cards, 0)"
+      amount: "round(billed_card_count * unit_amount, 2)"
+    measures: [program_msr_counted_cards]
+  - id: program_evt_monthly_fee
+    subject: [program_monthly_fee]
+    rule: "The monthly program fee is assessed on the first day after each fee cycle for a program that was active or suspended on any day of the cycle, at the monthly_program_fee_usd of the tier in effect on cycle_end. The fee is not assessed, and no row is written, in any of these cases: the tier's monthly_program_fee_usd is 0.00; the cycle is one of the first program_fee_waived_first_cycles fee cycles counted from the cycle containing activated_on; or the tier's program_fee_waiver_gallons is above 0 and program_msr_cycle_billed_gallons for the cycle is at or above it. gallons on the row records program_msr_cycle_billed_gallons."
+    eligibility: []
+    params:
+      per_tier:
+        Meridian Fleet Essential: {monthly_program_fee_usd: =monthly_program_fee_usd, program_fee_waiver_gallons: =program_fee_waiver_gallons, program_fee_waived_first_cycles: =program_fee_waived_first_cycles}
+        Meridian Fleet Standard: {monthly_program_fee_usd: =monthly_program_fee_usd, program_fee_waiver_gallons: =program_fee_waiver_gallons, program_fee_waived_first_cycles: =program_fee_waived_first_cycles}
+        Meridian Fleet Plus: {monthly_program_fee_usd: =monthly_program_fee_usd, program_fee_waiver_gallons: =program_fee_waiver_gallons, program_fee_waived_first_cycles: =program_fee_waived_first_cycles}
+        Meridian Fleet Universal: {monthly_program_fee_usd: =monthly_program_fee_usd, program_fee_waiver_gallons: =program_fee_waiver_gallons, program_fee_waived_first_cycles: =program_fee_waived_first_cycles}
+        Meridian Fleet Premier: {monthly_program_fee_usd: =monthly_program_fee_usd, program_fee_waiver_gallons: =program_fee_waiver_gallons, program_fee_waived_first_cycles: =program_fee_waived_first_cycles}
+        Meridian Fleet Enterprise: {monthly_program_fee_usd: =monthly_program_fee_usd, program_fee_waiver_gallons: =program_fee_waiver_gallons, program_fee_waived_first_cycles: =program_fee_waived_first_cycles}
+    measures: [program_msr_cycle_billed_gallons]
+  - id: program_evt_oon_fee
+    subject: [program_oon_fee]
+    rule: "Every fuel purchase posted at an out_of_network site carries one out-of-network fee row at the oon_fee_usd of the tier in effect on its post_date. The fee cycle is the calendar month of the charge_date. The amount is the lesser of oon_fee_usd and the tier's oon_fee_cycle_cap_usd less program_msr_cycle_oon_fees, never below 0.00; once the cap is reached the row records 0.00. Purchases at in_network and partner sites and all non-fuel purchases carry no out-of-network fee."
+    eligibility: []
+    params:
+      per_tier:
+        Meridian Fleet Essential: {oon_fee_usd: =oon_fee_usd, oon_fee_cycle_cap_usd: =oon_fee_cycle_cap_usd}
+        Meridian Fleet Standard: {oon_fee_usd: =oon_fee_usd, oon_fee_cycle_cap_usd: =oon_fee_cycle_cap_usd}
+        Meridian Fleet Plus: {oon_fee_usd: =oon_fee_usd, oon_fee_cycle_cap_usd: =oon_fee_cycle_cap_usd}
+        Meridian Fleet Universal: {oon_fee_usd: =oon_fee_usd, oon_fee_cycle_cap_usd: =oon_fee_cycle_cap_usd}
+        Meridian Fleet Premier: {oon_fee_usd: =oon_fee_usd, oon_fee_cycle_cap_usd: =oon_fee_cycle_cap_usd}
+        Meridian Fleet Enterprise: {oon_fee_usd: =oon_fee_usd, oon_fee_cycle_cap_usd: =oon_fee_cycle_cap_usd}
+    formula:
+      amount: "max(min(oon_fee_usd, oon_fee_cycle_cap_usd - program_msr_cycle_oon_fees), 0)"
+    measures: [program_msr_cycle_oon_fees]
+  - id: program_evt_manual_entry_fee
+    subject: [program_manual_entry_fee]
+    rule: "Every purchase whose entry_method is key_entered or voice_authorization carries one manual-entry fee row at the manual_entry_fee_usd of the tier in effect on its post_date, capped so that the cycle's manual-entry fees do not exceed manual_entry_fee_cycle_cap_usd (the amount is the lesser of the fee and the cap less program_msr_cycle_manual_fees, never below 0.00). The fee is waived (the row records 0.00) when the purchase was made with a card for which a card_replacement row with reason_code damaged exists in the card records and the purchase's txn_date is on or after that replacement's event_date and no more than manual_entry_waiver_days calendar days after it; a tier whose manual_entry_waiver_days is 0 has no such waiver."
+    eligibility: []
+    params:
+      per_tier:
+        Meridian Fleet Essential: {manual_entry_fee_usd: =manual_entry_fee_usd, manual_entry_fee_cycle_cap_usd: =manual_entry_fee_cycle_cap_usd, manual_entry_waiver_days: =manual_entry_waiver_days}
+        Meridian Fleet Standard: {manual_entry_fee_usd: =manual_entry_fee_usd, manual_entry_fee_cycle_cap_usd: =manual_entry_fee_cycle_cap_usd, manual_entry_waiver_days: =manual_entry_waiver_days}
+        Meridian Fleet Plus: {manual_entry_fee_usd: =manual_entry_fee_usd, manual_entry_fee_cycle_cap_usd: =manual_entry_fee_cycle_cap_usd, manual_entry_waiver_days: =manual_entry_waiver_days}
+        Meridian Fleet Universal: {manual_entry_fee_usd: =manual_entry_fee_usd, manual_entry_fee_cycle_cap_usd: =manual_entry_fee_cycle_cap_usd, manual_entry_waiver_days: =manual_entry_waiver_days}
+        Meridian Fleet Premier: {manual_entry_fee_usd: =manual_entry_fee_usd, manual_entry_fee_cycle_cap_usd: =manual_entry_fee_cycle_cap_usd, manual_entry_waiver_days: =manual_entry_waiver_days}
+        Meridian Fleet Enterprise: {manual_entry_fee_usd: =manual_entry_fee_usd, manual_entry_fee_cycle_cap_usd: =manual_entry_fee_cycle_cap_usd, manual_entry_waiver_days: =manual_entry_waiver_days}
+    measures: [program_msr_cycle_manual_fees]
+  - id: program_evt_intl_fee
+    subject: [program_intl_fee]
+    rule: "A purchase at a site whose site_country is CA carries a cross-border fee of intl_fee_pct percent of the purchase's net_amount, rounded half up to the cent, at the tier in effect on its post_date; unit_amount records the percent. Purchases at US sites carry none. A program whose tier has canada_acceptance false cannot post a Canadian purchase, so no fee arises on it."
+    eligibility: []
+    params: {intl_fee_pct: =intl_fee_pct, canada_acceptance: =canada_acceptance}
+    formula:
+      amount: "round(net_amount * intl_fee_pct / 100, 2)"
+  - id: program_evt_fet_credit
+    subject: [program_fet_credit, program_fet_credit_reversal, program_fet_status_change]
+    rule: "Federal excise tax exempt billing is available only to a customer whose fleet_type is state_local_government or nonprofit_educational, on a program whose tier has fet_exempt_billing_available true, after the fleet's signed exemption certificate is received (fet_certificate_on set and fet_exemption_status moved to active). The program's fet_exemption_status is active. While it is active, every program_fuel_purchase posted at a US site whose txn_date is on or after fet_certificate_on earns one credit row: gallons times the federal rate for its product (fet_rate_gasoline_per_gal for unleaded_regular, unleaded_midgrade and unleaded_premium; fet_rate_diesel_per_gal for diesel), rounded half up to the cent; unit_amount records the rate. Dyed diesel (sold untaxed), DEF, non-fuel purchases and Canadian purchases earn no credit. Purchases dated before fet_certificate_on are not credited retroactively by the program; the fleet claims those from the IRS itself. When the merchant later credits a purchase that earned a federal excise tax credit, the credit is offset by a program_fet_credit_reversal for the credited gallons times the same rate, rounded half up to the cent. When fet_exemption_status moves to ended, purchases dated after the end earn no credit."
+    eligibility:
+      - id: fet_status_active
+        applies_to: [program_fet_credit]
+        kind: state
+        condition: "The program's fet_exemption_status is active."
+        evidence_fields: [fleet_programs.fet_exemption_status, fleet_programs.program_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[fleet_programs.program_id]]
+          action_bindings: {fleet_programs.program_id: program_id}
+        state_contract:
+          field: fleet_programs.fet_exemption_status
+          allowed: [active]
+    params: {fet_rate_gasoline_per_gal: 0.183, fet_rate_diesel_per_gal: 0.243, fet_exempt_billing_available: =fet_exempt_billing_available}
+    formula:
+      amount: "round(gallons * unit_amount, 2)"
+  - id: program_evt_txn_reversal
+    subject: [program_txn_reversal]
+    rule: "A merchant credit is posted only as the merchant sends it and always names the purchase it credits (original_txn_id). Its gallons, gross_amount, partner_discount_amount and net_amount are positive and never exceed those of the original purchase less any earlier credits against it. A credit equal to the original purchase's remaining net_amount is a full credit; anything less is a partial credit. A credit posts in the fee cycle of its own post_date, not that of the purchase. Credits the issuer grants on a dispute are not merchant credits; they are booked by the dispute charter."
+    eligibility: []
+  - id: program_evt_fee_reversal
+    subject: [program_fee_reversal]
+    rule: "A program fee row is reversed in full, naming it as original_charge_id, in exactly two cases: the fee was assessed contrary to this charter's fee rules (wrong tier, wrong count, a waiver that applied, a purchase that did not qualify), reason assessed_in_error; or the out-of-network, manual-entry or cross-border fee belongs to a purchase that the merchant later credited in full, reason transaction_credited. A partially credited purchase keeps its per-transaction fee. A fee assessed correctly is never reversed as a courtesy. A fee is reversed at most once. When an assessed-in-error fee is replaced by the correct amount, the reversal books first and the correct fee is booked as a new row for the same cycle or purchase."
+    eligibility:
+      - id: not_already_reversed
+        applies_to: [program_fee_reversal]
+        kind: dedup
+        condition: "A fee is reversed at most once."
+        evidence_fields: [program_charges.original_charge_id, program_charges.event_type]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[program_charges.original_charge_id]]
+          action_bindings: {program_charges.original_charge_id: original_charge_id}
+        dedup_contract:
+          table: program_charges
+          mode: separate_record
+          object_bindings: {original_charge_id: original_charge_id}
+          duplicate_filters: {event_type: [program_fee_reversal]}
+          distinct_fields: []
+  - id: program_tier_review
+    subject: [program_tier_change]
+    rule: "A program moves tier at its scheduled tier review every tier_review_interval_months from activated_on, or earlier on the fleet's request for an upgrade. An upgrade requires the new tier's entry gate to hold on the request date. At a review, a program is moved down one tier when active cards across all programs are below the tier's downgrade_review_active_cards or program_msr_review_avg_gallons is below maintain_min_monthly_gallons (a 0 threshold is never failed). Upgrades and downgrades both take effect at the start of the next billing cycle (tier_upgrade_effective, tier_downgrade_effective): tier_effective_on records that date and prior_variant_name the tier held before it. Fees for a fee cycle use the tier in effect on cycle_end; per-transaction fees use the tier in effect on the purchase's post_date. A tier move is not a closure and carries no early termination fee. A downgrade that would leave more cards on the program than the lower tier's max_active_cards is not made; the program stays on its tier until the next review."
+    eligibility: []
+    params:
+      per_tier:
+        Meridian Fleet Essential: {tier_review_interval_months: =tier_review_interval_months, downgrade_review_active_cards: =downgrade_review_active_cards, maintain_min_monthly_gallons: =maintain_min_monthly_gallons}
+        Meridian Fleet Standard: {tier_review_interval_months: =tier_review_interval_months, downgrade_review_active_cards: =downgrade_review_active_cards, maintain_min_monthly_gallons: =maintain_min_monthly_gallons}
+        Meridian Fleet Plus: {tier_review_interval_months: =tier_review_interval_months, downgrade_review_active_cards: =downgrade_review_active_cards, maintain_min_monthly_gallons: =maintain_min_monthly_gallons}
+        Meridian Fleet Universal: {tier_review_interval_months: =tier_review_interval_months, downgrade_review_active_cards: =downgrade_review_active_cards, maintain_min_monthly_gallons: =maintain_min_monthly_gallons}
+        Meridian Fleet Premier: {tier_review_interval_months: =tier_review_interval_months, downgrade_review_active_cards: =downgrade_review_active_cards, maintain_min_monthly_gallons: =maintain_min_monthly_gallons}
+        Meridian Fleet Enterprise: {tier_review_interval_months: =tier_review_interval_months, downgrade_review_active_cards: =downgrade_review_active_cards, maintain_min_monthly_gallons: =maintain_min_monthly_gallons}
+    measures: [program_msr_review_avg_gallons]
+  - id: program_lifecycle
+    subject: [program_suspend, program_reinstate, program_close, program_close_suspended]
+    rule: "A program is suspended when the credit line billing it is suspended, and reinstated when that credit line returns to active; a confirmed fraud hold suspends only the program it concerns and is lifted when the fraud review clears. A program in status suspended is closed when its credit line closes. An active program is closed on the written instruction of the fleet's authorized account administrator, effective closure_notice_days calendar days after the instruction date (on the instruction date when 0), or by the system once program_msr_months_since_purchase reaches inactivity_close_months. Fees continue to accrue on a suspended program. Closure ends every card on the program."
+    eligibility: []
+    params: {closure_notice_days: =closure_notice_days, inactivity_close_months: =inactivity_close_months}
+    measures: [program_msr_months_since_purchase]
+  - id: program_evt_one_time_fees
+    subject: [program_setup_fee, program_early_termination_fee, program_activate]
+    rule: "On activation a setup fee row is written at the tier's setup_fee_usd, charge_date equal to activated_on; no row is written where the tier's setup_fee_usd is 0.00. A closure on the administrator's instruction whose effective date is before the date early_termination_months calendar months after activated_on (same day of month, falling back to the month's last day when that day does not exist) carries one early termination fee at early_termination_fee_usd of the tier held at closure; a closure on or after that date, a closure for inactivity, a closure following a credit line closure and a tier move carry none."
+    eligibility: []
+    params:
+      per_tier:
+        Meridian Fleet Essential: {setup_fee_usd: =setup_fee_usd, early_termination_months: =early_termination_months, early_termination_fee_usd: =early_termination_fee_usd}
+        Meridian Fleet Standard: {setup_fee_usd: =setup_fee_usd, early_termination_months: =early_termination_months, early_termination_fee_usd: =early_termination_fee_usd}
+        Meridian Fleet Plus: {setup_fee_usd: =setup_fee_usd, early_termination_months: =early_termination_months, early_termination_fee_usd: =early_termination_fee_usd}
+        Meridian Fleet Universal: {setup_fee_usd: =setup_fee_usd, early_termination_months: =early_termination_months, early_termination_fee_usd: =early_termination_fee_usd}
+        Meridian Fleet Premier: {setup_fee_usd: =setup_fee_usd, early_termination_months: =early_termination_months, early_termination_fee_usd: =early_termination_fee_usd}
+        Meridian Fleet Enterprise: {setup_fee_usd: =setup_fee_usd, early_termination_months: =early_termination_months, early_termination_fee_usd: =early_termination_fee_usd}
+  - id: program_evt_ifta_report
+    subject: [program_ifta_enrollment, program_ifta_report_fee]
+    rule: "A program may enroll in the quarterly IFTA jurisdiction fuel report only where its tier's ifta_reporting_available is true. The report lists billed fuel gallons by site_state for the calendar quarter; it is a reporting service and files nothing with any jurisdiction for the fleet. On the first day after each calendar quarter in which ifta_reporting was true on the quarter's last day, one fee row at the tier's ifta_report_fee_usd is written; no row is written where that fee is 0.00. Leaving the report stops the fee from the next quarter."
+    eligibility: []
+    params: {ifta_reporting_available: =ifta_reporting_available, ifta_report_fee_usd: =ifta_report_fee_usd}
+  - id: program_purchase_scope
+    subject: [program_nonfuel_purchase, program_fuel_purchase]
+    rule: "The cards on a program may carry a product restriction no broader than the tier's max_purchase_scope, and the program may hold no more than max_control_profiles purchase-control profiles in force and max_active_cards cards in status active or ordered. Non-fuel purchases at non-fuel Mastercard merchants post only where the tier's nonfuel_mastercard_acceptance is true. Mobile-wallet purchases post only where mobile_wallet_payments is true, mobile fueling only where mobile_fueling_access is true, and Canadian purchases only where canada_acceptance is true. Driver ID prompting (driver_id_prompting), odometer prompting (odometer_prompting), tank-capacity checks (tank_capacity_check_available) and custom time windows (custom_time_windows) are available to purchase-control profiles as the tier sets them. The tier also sets the fleet's service entitlements: level3_statement_detail, decline_alerts, fraud_monitoring, reporting_package, data_feed_access, dedicated_account_manager and support_hours."
+    eligibility: []
+    params: {max_purchase_scope: =max_purchase_scope, max_control_profiles: =max_control_profiles, max_active_cards: =max_active_cards, nonfuel_mastercard_acceptance: =nonfuel_mastercard_acceptance, mobile_wallet_payments: =mobile_wallet_payments, mobile_fueling_access: =mobile_fueling_access}

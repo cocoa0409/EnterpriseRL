@@ -1,0 +1,5 @@
+# rework claims — round 7 (policy audit revision_6, deficiency_balance_resolution)
+- R-HANDIN (lump-sum hardship-document sentence, first clause): the sentence now reads, in one sentence, that where the borrower hands in one or more hardship documents with the request the offer records the first of them in the order ssa_award_letter, medical_disability_statement, unemployment_determination, and where none is handed in an offer carrying a hardship reduction records the document it rests on in the same order; otherwise none. The task 1 tracing quote was updated verbatim; task 1 design_rationale §17 records the round.
+- O16 (same-day re-quote after a handed-in document earns the reduction): no change — rule ("the offers read are those already recorded on the account when the amount is figured") and compute agree, and a document on file counting toward later figures is the intended, realistic effect.
+- O17 (schema gloss of hardship_document): no change — blueprint frozen.
+- No figure, world, combination sentence or other policy changed.

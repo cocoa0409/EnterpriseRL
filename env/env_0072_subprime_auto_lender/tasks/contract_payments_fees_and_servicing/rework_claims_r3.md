@@ -1,0 +1,6 @@
+# rework claims — round 3 (policy-task audit revision_2)
+- N-1: payoff-statement remittance-method ladder's last tier now covers every other payment source explicitly (recurring autopay drafts, third-party remittances, or no payments), so every payment_channel a posted payment can carry falls in exactly one stated tier; factor ladder text updated to match.
+- N-2: the remittance-method rule now states that payments count whether or not later returned (as the compute counts them); task 1 traces and rationale now say the returned one-time payment is counted.
+- Class sweep (payment-source coverage): every other channel-keyed ladder (returned-item failed-payment offset, bank-charge recovery, payoff returned-channel review) already ends in an "otherwise" tier; no further member.
+- Class sweep (returned/reversed rows in counts): every posted-payment count and latest-payment read already says "returned or not" or handles the returned case; late-charge counts (late-charge first-delinquency count, statement window) and the extension fee's late-charge credit now state "waived or not", matching the compute.
+- Combination sentences unchanged in order and wording; no task figure moved; task 0 untouched apart from the wording note in its rationale.

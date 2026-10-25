@@ -1,0 +1,732 @@
+# Product charter — Patient Payment Plan. Riverbend Regional Health, Patient Financial Services.
+category: plan
+display_name: Patient Payment Plan
+
+binding:
+  holding_table: payment_plans
+  event_tables: [plan_transactions]
+  status_field: status
+  variant_field: variant_name
+  quantity_fields: {plan_balance: plan_balance}
+
+lifecycle:
+  states: [pending_signature, active, past_due, defaulted, paid_off, cancelled]
+  transitions:
+    - {from: pending_signature, to: active, by: user, means: The patient signs the plan agreement (and pays any down payment) and the plan starts.}
+    - {from: pending_signature, to: cancelled, by: system, means: The signature deadline lapses without a signature.}
+    - {from: active, to: past_due, by: system, means: An installment remains unpaid past its grace days.}
+    - {from: past_due, to: active, by: system, means: The patient pays every missed installment and the plan is current again.}
+    - {from: past_due, to: active, by: agent, means: A representative re-ages the plan, moving the missed amount to the end of the term.}
+    - {from: past_due, to: defaulted, by: system, means: The plan reaches the missed-installment count for default.}
+    - {from: defaulted, to: active, by: agent, means: A representative reinstates the plan after the catch-up payment inside the reinstatement window.}
+    - {from: active, to: paid_off, by: system, means: The plan balance reaches zero.}
+    - {from: past_due, to: paid_off, by: system, means: The plan balance reaches zero while past due (lump-sum payoff or adjustments).}
+    - {from: active, to: cancelled, by: user, means: The patient cancels the plan and the remaining balances return to standard statements.}
+
+accounts:
+  - key: plan_balance
+    unit: USD
+    meaning: The amount still owed under the plan; enrolled encounter balances add to it, installments (including the down payment) and reductions from adjustments on the enrolled encounters reduce it.
+
+# ---- category-level parameter dictionary ----
+parameter_schema:
+  min_enrolled_balance_usd: USD minimum total enrolled balance at plan creation for the tier
+  max_enrolled_balance_usd: USD maximum total enrolled balance for the tier
+  max_term_months: integer maximum number of monthly installments (excluding the down payment)
+  min_monthly_payment_usd: USD floor of the monthly installment
+  down_payment_pct: percent of the enrolled balance due as a down payment at signing (0 = none)
+  installment_rounding: 'rounding basis of the monthly installment: half-up to the cent, the final installment absorbing any remainder'
+  interest_rate_pct: annual percent interest on plan balances (Riverbend plans are interest-free)
+  setup_fee_usd: USD fee to open a plan
+  late_fee_usd: USD fee for a late or missed installment
+  returned_payment_fee_usd: USD fee for a returned ACH draft or check
+  early_payoff_penalty_usd: USD penalty for paying a plan off early
+  signature_deadline_days: integer calendar days after the plan is offered (created) within which the patient must sign the agreement
+  first_due_days_after_signing: integer minimum calendar days between the signing date and the first installment due date
+  due_day_options: list of days of the month the patient may choose as the installment due day
+  autopay_required: boolean — whether automatic payment by ACH or card is required on the tier
+  autopay_methods: list of autopay methods offered
+  autopay_retry_days: integer calendar days after a failed autopay draft before the single retry
+  autopay_retry_count: integer number of retries of a failed autopay draft
+  plan_payment_channels: list of channels through which an installment may be paid
+  grace_days: integer calendar days after an installment due date before the installment counts as missed
+  missed_installments_to_default: integer consecutive missed installments at which a past_due plan defaults
+  default_notice_days: integer calendar days between the default notice and the earliest collection action on the plan's encounters
+  reage_max_per_plan: integer number of times a past_due plan may be re-aged over its life
+  reage_min_installments_paid: integer installments (excluding the down payment) that must have been paid on the plan before it may be re-aged
+  reage_method: enum how a re-age treats the missed amount
+  reinstatement_window_days: integer calendar days after the default date within which a defaulted plan may be reinstated
+  reinstatement_catch_up_pct: percent of the missed installment amount that must be paid to reinstate a defaulted plan
+  reinstatements_per_plan: integer number of reinstatements allowed over the plan's life
+  add_on_allowed: boolean — whether new eligible balances may be added to an open plan
+  add_on_max_per_12_months: integer number of add-on enrollments allowed in any rolling 12 months
+  add_on_term_extension_months: integer months added to the remaining term when a balance is added (never beyond max_term_months counted from the first due date)
+  add_on_recalc_basis: enum how the installment is recomputed after an add-on
+  tier_overflow_rule: enum what happens when an add-on pushes the plan balance above the tier maximum
+  eligible_encounter_status: list of encounter account statuses whose balances may be enrolled
+  insurance_pending_excluded: boolean — balances on accounts still awaiting insurance adjudication are never enrolled
+  disputed_balance_excluded: boolean — an account on a CHARGE_DISPUTE or GFE_DISPUTE_PENDING hold is not enrolled until the dispute is resolved
+  bad_debt_enrollment_allowed: boolean — whether a balance placed with the collection agency may be enrolled without first being recalled
+  fap_pending_pause_days: integer calendar days installments may be paused while a financial assistance application is pending
+  eca_protection_while_current: boolean — encounters in an active plan receive no final notice, placement or credit reporting
+  plan_statement_lead_days: integer calendar days before each due date that the plan statement is sent
+  overpayment_application: enum how a payment above the installment is applied
+  payment_application_order: enum order in which an installment is applied to the enrolled encounters
+  terms_changes_per_plan: integer number of patient-requested due-day or installment-amount changes allowed over the plan's life
+  min_requested_installment_pct_of_computed: percent — a patient-requested lower installment may not fall below this percent of the computed installment and never below the tier floor
+  skip_payments_per_plan: integer installments the patient may skip (moved to the end of the term) over the plan's life
+  max_open_plans: integer number of plans a patient may have in pending_signature, active or past_due status at once
+  credit_reporting_while_on_plan: boolean — whether plan balances are ever credit-reported
+  hardship_income_loss_pct: percent loss of household income in the last 6 months that qualifies for the hardship plan
+  hardship_balance_threshold_usd: USD total enrolled balance above which the hardship plan is available without an income-loss showing
+  agreement_form: name of the plan agreement the patient signs
+
+# ---- tier ladder (low to high) ----
+variants:
+- name: Riverbend Short-Term Payment Plan
+  rank: 1
+  entry_gate: {enrolled_balance_usd_min: 50.0, enrolled_balance_usd_max: 499.99, requires: none beyond eligible balances}
+  parameters:
+    min_enrolled_balance_usd: 50.0
+    max_enrolled_balance_usd: 499.99
+    max_term_months: 6
+    min_monthly_payment_usd: 25.0
+    down_payment_pct: 0.0
+    installment_rounding: ROUND_HALF_UP_CENT_FINAL_ABSORBS
+    interest_rate_pct: 0.0
+    setup_fee_usd: 0.0
+    late_fee_usd: 0.0
+    returned_payment_fee_usd: 0.0
+    early_payoff_penalty_usd: 0.0
+    signature_deadline_days: 14
+    first_due_days_after_signing: 25
+    due_day_options: &id001 [1, 15]
+    autopay_required: false
+    autopay_methods: &id002 [ACH, CARD]
+    autopay_retry_days: 3
+    autopay_retry_count: 1
+    plan_payment_channels: &id003 [AUTOPAY_ACH, AUTOPAY_CARD, PORTAL_CARD, PHONE_CARD, MAILED_CHECK]
+    grace_days: 10
+    missed_installments_to_default: 2
+    default_notice_days: 30
+    reage_max_per_plan: 1
+    reage_min_installments_paid: 1
+    reage_method: MISSED_AMOUNT_MOVED_TO_END_OF_TERM
+    reinstatement_window_days: 30
+    reinstatement_catch_up_pct: 100.0
+    reinstatements_per_plan: 0
+    add_on_allowed: false
+    add_on_max_per_12_months: 0
+    add_on_term_extension_months: 0
+    add_on_recalc_basis: NEW_PLAN_BALANCE_OVER_REMAINING_TERM
+    tier_overflow_rule: REOFFER_ON_NEXT_TIER
+    eligible_encounter_status: &id004 [patient_due]
+    insurance_pending_excluded: true
+    disputed_balance_excluded: true
+    bad_debt_enrollment_allowed: false
+    fap_pending_pause_days: 60
+    eca_protection_while_current: true
+    plan_statement_lead_days: 21
+    overpayment_application: REDUCE_REMAINING_TERM
+    payment_application_order: OLDEST_SERVICE_START_DATE_FIRST
+    terms_changes_per_plan: 1
+    min_requested_installment_pct_of_computed: 100.0
+    skip_payments_per_plan: 0
+    max_open_plans: 1
+    credit_reporting_while_on_plan: false
+    hardship_income_loss_pct: 25.0
+    hardship_balance_threshold_usd: 25000.0
+    agreement_form: Riverbend Patient Payment Plan Agreement (PFS-210)
+- name: Riverbend Standard Payment Plan
+  rank: 2
+  entry_gate: {enrolled_balance_usd_min: 500.0, enrolled_balance_usd_max: 1999.99, requires: none beyond eligible balances}
+  parameters:
+    min_enrolled_balance_usd: 500.0
+    max_enrolled_balance_usd: 1999.99
+    max_term_months: 12
+    min_monthly_payment_usd: 50.0
+    down_payment_pct: 0.0
+    installment_rounding: ROUND_HALF_UP_CENT_FINAL_ABSORBS
+    interest_rate_pct: 0.0
+    setup_fee_usd: 0.0
+    late_fee_usd: 0.0
+    returned_payment_fee_usd: 0.0
+    early_payoff_penalty_usd: 0.0
+    signature_deadline_days: 14
+    first_due_days_after_signing: 25
+    due_day_options: *id001
+    autopay_required: false
+    autopay_methods: *id002
+    autopay_retry_days: 3
+    autopay_retry_count: 1
+    plan_payment_channels: *id003
+    grace_days: 10
+    missed_installments_to_default: 2
+    default_notice_days: 30
+    reage_max_per_plan: 1
+    reage_min_installments_paid: 2
+    reage_method: MISSED_AMOUNT_MOVED_TO_END_OF_TERM
+    reinstatement_window_days: 30
+    reinstatement_catch_up_pct: 100.0
+    reinstatements_per_plan: 1
+    add_on_allowed: true
+    add_on_max_per_12_months: 2
+    add_on_term_extension_months: 0
+    add_on_recalc_basis: NEW_PLAN_BALANCE_OVER_REMAINING_TERM
+    tier_overflow_rule: REOFFER_ON_NEXT_TIER
+    eligible_encounter_status: *id004
+    insurance_pending_excluded: true
+    disputed_balance_excluded: true
+    bad_debt_enrollment_allowed: false
+    fap_pending_pause_days: 60
+    eca_protection_while_current: true
+    plan_statement_lead_days: 21
+    overpayment_application: REDUCE_REMAINING_TERM
+    payment_application_order: OLDEST_SERVICE_START_DATE_FIRST
+    terms_changes_per_plan: 2
+    min_requested_installment_pct_of_computed: 100.0
+    skip_payments_per_plan: 0
+    max_open_plans: 1
+    credit_reporting_while_on_plan: false
+    hardship_income_loss_pct: 25.0
+    hardship_balance_threshold_usd: 25000.0
+    agreement_form: Riverbend Patient Payment Plan Agreement (PFS-210)
+- name: Riverbend Extended Payment Plan
+  rank: 3
+  entry_gate: {enrolled_balance_usd_min: 2000.0, enrolled_balance_usd_max: 4999.99, requires: down payment and autopay}
+  parameters:
+    min_enrolled_balance_usd: 2000.0
+    max_enrolled_balance_usd: 4999.99
+    max_term_months: 24
+    min_monthly_payment_usd: 75.0
+    down_payment_pct: 10.0
+    installment_rounding: ROUND_HALF_UP_CENT_FINAL_ABSORBS
+    interest_rate_pct: 0.0
+    setup_fee_usd: 0.0
+    late_fee_usd: 0.0
+    returned_payment_fee_usd: 0.0
+    early_payoff_penalty_usd: 0.0
+    signature_deadline_days: 14
+    first_due_days_after_signing: 25
+    due_day_options: *id001
+    autopay_required: true
+    autopay_methods: *id002
+    autopay_retry_days: 3
+    autopay_retry_count: 1
+    plan_payment_channels: *id003
+    grace_days: 15
+    missed_installments_to_default: 2
+    default_notice_days: 30
+    reage_max_per_plan: 1
+    reage_min_installments_paid: 3
+    reage_method: MISSED_AMOUNT_MOVED_TO_END_OF_TERM
+    reinstatement_window_days: 45
+    reinstatement_catch_up_pct: 100.0
+    reinstatements_per_plan: 1
+    add_on_allowed: true
+    add_on_max_per_12_months: 3
+    add_on_term_extension_months: 6
+    add_on_recalc_basis: NEW_PLAN_BALANCE_OVER_REMAINING_TERM
+    tier_overflow_rule: REOFFER_ON_NEXT_TIER
+    eligible_encounter_status: *id004
+    insurance_pending_excluded: true
+    disputed_balance_excluded: true
+    bad_debt_enrollment_allowed: false
+    fap_pending_pause_days: 60
+    eca_protection_while_current: true
+    plan_statement_lead_days: 21
+    overpayment_application: REDUCE_REMAINING_TERM
+    payment_application_order: OLDEST_SERVICE_START_DATE_FIRST
+    terms_changes_per_plan: 2
+    min_requested_installment_pct_of_computed: 100.0
+    skip_payments_per_plan: 1
+    max_open_plans: 1
+    credit_reporting_while_on_plan: false
+    hardship_income_loss_pct: 25.0
+    hardship_balance_threshold_usd: 25000.0
+    agreement_form: Riverbend Patient Payment Plan Agreement (PFS-210)
+- name: Riverbend Long-Term Payment Plan
+  rank: 4
+  entry_gate: {enrolled_balance_usd_min: 5000.0, enrolled_balance_usd_max: 24999.99, requires: down payment and autopay}
+  parameters:
+    min_enrolled_balance_usd: 5000.0
+    max_enrolled_balance_usd: 24999.99
+    max_term_months: 36
+    min_monthly_payment_usd: 100.0
+    down_payment_pct: 10.0
+    installment_rounding: ROUND_HALF_UP_CENT_FINAL_ABSORBS
+    interest_rate_pct: 0.0
+    setup_fee_usd: 0.0
+    late_fee_usd: 0.0
+    returned_payment_fee_usd: 0.0
+    early_payoff_penalty_usd: 0.0
+    signature_deadline_days: 14
+    first_due_days_after_signing: 25
+    due_day_options: *id001
+    autopay_required: true
+    autopay_methods: *id002
+    autopay_retry_days: 3
+    autopay_retry_count: 1
+    plan_payment_channels: *id003
+    grace_days: 15
+    missed_installments_to_default: 3
+    default_notice_days: 30
+    reage_max_per_plan: 2
+    reage_min_installments_paid: 3
+    reage_method: MISSED_AMOUNT_MOVED_TO_END_OF_TERM
+    reinstatement_window_days: 60
+    reinstatement_catch_up_pct: 100.0
+    reinstatements_per_plan: 1
+    add_on_allowed: true
+    add_on_max_per_12_months: 3
+    add_on_term_extension_months: 6
+    add_on_recalc_basis: NEW_PLAN_BALANCE_OVER_REMAINING_TERM
+    tier_overflow_rule: REOFFER_ON_NEXT_TIER
+    eligible_encounter_status: *id004
+    insurance_pending_excluded: true
+    disputed_balance_excluded: true
+    bad_debt_enrollment_allowed: false
+    fap_pending_pause_days: 60
+    eca_protection_while_current: true
+    plan_statement_lead_days: 21
+    overpayment_application: REDUCE_REMAINING_TERM
+    payment_application_order: OLDEST_SERVICE_START_DATE_FIRST
+    terms_changes_per_plan: 2
+    min_requested_installment_pct_of_computed: 100.0
+    skip_payments_per_plan: 1
+    max_open_plans: 1
+    credit_reporting_while_on_plan: false
+    hardship_income_loss_pct: 25.0
+    hardship_balance_threshold_usd: 25000.0
+    agreement_form: Riverbend Patient Payment Plan Agreement (PFS-210)
+- name: Riverbend Assistance-Linked Payment Plan
+  rank: 5
+  entry_gate: {enrolled_balance_usd_min: 25.0, enrolled_balance_usd_max: 50000.0, requires: 'an approved financial assistance award with a partial discount (80%, 60% or 40% charity discount, or medical hardship) on the date the plan is created'}
+  parameters:
+    min_enrolled_balance_usd: 25.0
+    max_enrolled_balance_usd: 50000.0
+    max_term_months: 48
+    min_monthly_payment_usd: 20.0
+    down_payment_pct: 0.0
+    installment_rounding: ROUND_HALF_UP_CENT_FINAL_ABSORBS
+    interest_rate_pct: 0.0
+    setup_fee_usd: 0.0
+    late_fee_usd: 0.0
+    returned_payment_fee_usd: 0.0
+    early_payoff_penalty_usd: 0.0
+    signature_deadline_days: 21
+    first_due_days_after_signing: 30
+    due_day_options: *id001
+    autopay_required: false
+    autopay_methods: *id002
+    autopay_retry_days: 3
+    autopay_retry_count: 1
+    plan_payment_channels: *id003
+    grace_days: 20
+    missed_installments_to_default: 3
+    default_notice_days: 30
+    reage_max_per_plan: 2
+    reage_min_installments_paid: 1
+    reage_method: MISSED_AMOUNT_MOVED_TO_END_OF_TERM
+    reinstatement_window_days: 60
+    reinstatement_catch_up_pct: 50.0
+    reinstatements_per_plan: 2
+    add_on_allowed: true
+    add_on_max_per_12_months: 4
+    add_on_term_extension_months: 12
+    add_on_recalc_basis: NEW_PLAN_BALANCE_OVER_REMAINING_TERM
+    tier_overflow_rule: REOFFER_ON_NEXT_TIER
+    eligible_encounter_status: *id004
+    insurance_pending_excluded: true
+    disputed_balance_excluded: true
+    bad_debt_enrollment_allowed: false
+    fap_pending_pause_days: 90
+    eca_protection_while_current: true
+    plan_statement_lead_days: 21
+    overpayment_application: REDUCE_REMAINING_TERM
+    payment_application_order: OLDEST_SERVICE_START_DATE_FIRST
+    terms_changes_per_plan: 3
+    min_requested_installment_pct_of_computed: 75.0
+    skip_payments_per_plan: 2
+    max_open_plans: 1
+    credit_reporting_while_on_plan: false
+    hardship_income_loss_pct: 25.0
+    hardship_balance_threshold_usd: 25000.0
+    agreement_form: Riverbend Patient Payment Plan Agreement (PFS-210)
+- name: Riverbend Hardship Payment Plan
+  rank: 6
+  entry_gate: {enrolled_balance_usd_min: 25.0, enrolled_balance_usd_max: 50000.0, requires: 'a documented loss of household income of at least 25 percent in the last 6 months, or enrolled balances above 25000.00'}
+  parameters:
+    min_enrolled_balance_usd: 25.0
+    max_enrolled_balance_usd: 50000.0
+    max_term_months: 60
+    min_monthly_payment_usd: 10.0
+    down_payment_pct: 0.0
+    installment_rounding: ROUND_HALF_UP_CENT_FINAL_ABSORBS
+    interest_rate_pct: 0.0
+    setup_fee_usd: 0.0
+    late_fee_usd: 0.0
+    returned_payment_fee_usd: 0.0
+    early_payoff_penalty_usd: 0.0
+    signature_deadline_days: 21
+    first_due_days_after_signing: 30
+    due_day_options: *id001
+    autopay_required: false
+    autopay_methods: *id002
+    autopay_retry_days: 3
+    autopay_retry_count: 1
+    plan_payment_channels: *id003
+    grace_days: 30
+    missed_installments_to_default: 3
+    default_notice_days: 30
+    reage_max_per_plan: 2
+    reage_min_installments_paid: 1
+    reage_method: MISSED_AMOUNT_MOVED_TO_END_OF_TERM
+    reinstatement_window_days: 90
+    reinstatement_catch_up_pct: 50.0
+    reinstatements_per_plan: 2
+    add_on_allowed: true
+    add_on_max_per_12_months: 4
+    add_on_term_extension_months: 12
+    add_on_recalc_basis: NEW_PLAN_BALANCE_OVER_REMAINING_TERM
+    tier_overflow_rule: REOFFER_ON_NEXT_TIER
+    eligible_encounter_status: *id004
+    insurance_pending_excluded: true
+    disputed_balance_excluded: true
+    bad_debt_enrollment_allowed: false
+    fap_pending_pause_days: 90
+    eca_protection_while_current: true
+    plan_statement_lead_days: 21
+    overpayment_application: REDUCE_REMAINING_TERM
+    payment_application_order: OLDEST_SERVICE_START_DATE_FIRST
+    terms_changes_per_plan: 3
+    min_requested_installment_pct_of_computed: 50.0
+    skip_payments_per_plan: 3
+    max_open_plans: 1
+    credit_reporting_while_on_plan: false
+    hardship_income_loss_pct: 25.0
+    hardship_balance_threshold_usd: 25000.0
+    agreement_form: Riverbend Patient Payment Plan Agreement (PFS-210)
+
+# ---- data flow (every write is an event) ----
+events:
+  - type: plan_created
+    target: payment_plans
+    mutation: create
+    meaning: A payment plan is set up on the patient's eligible balances and the agreement is offered for signature.
+    grain: one row per plan offered
+    fields: {plan_id: new plan id, customer_id: the patient, variant_name: plan tier, offered_date: creation date, due_day_of_month: chosen due day, first_due_date: due date of installment 1, next_due_date: same as first_due_date, term_months: installments in the schedule, monthly_payment_usd: computed installment, down_payment_usd: down payment due at signing, autopay_method: autopay chosen, missed_installments: "0", reage_count: "0", reinstatement_count: "0", terms_change_count: "0"}
+    triggers: []
+  - type: plan_balance_enrolled
+    target: plan_transactions
+    meaning: One encounter's patient balance is enrolled in the plan (at creation or as an add-on).
+    grain: one row per encounter enrolled per enrollment date
+    distinguish_by: [encounter_id, posting_date]
+    fields: {encounter_id: enrolled account, amount: balance enrolled, posting_date: enrollment date}
+    account: plan_balance
+    direction: in
+    triggers: []
+  - type: plan_installment_paid
+    target: plan_transactions
+    meaning: An installment (or the down payment) is paid on the plan.
+    grain: one row per installment payment confirmation
+    distinguish_by: [installment_number, payment_reference]
+    fields: {installment_number: installment paid (0 = down payment), due_date: installment due date, payment_reference: confirmation number, plan_payment_channel: how paid, amount: amount paid, posting_date: posting date}
+    account: plan_balance
+    direction: out
+    triggers:
+      - event: encounter:encounter_payment_posted
+        map: {payment_channel: PAYMENT_PLAN_INSTALLMENT, payment_reference: payment_reference, amount: amount, posting_date: posting_date}
+  - type: plan_balance_reduced
+    target: plan_transactions
+    meaning: An enrolled balance is reduced because the underlying account was adjusted or withdrawn.
+    grain: one row per encounter per reduction reason per posting date
+    distinguish_by: [encounter_id, reduction_reason, posting_date]
+    fields: {encounter_id: enrolled account adjusted, reduction_reason: why reduced, amount: reduction, posting_date: posting date}
+    account: plan_balance
+    direction: out
+    triggers: []
+  - type: plan_terms_modified
+    target: payment_plans
+    mutation: update
+    meaning: The installment schedule is recomputed or changed (add-on, reduction, patient-requested change, skip).
+    grain: one row per transaction
+    fields: {monthly_payment_usd: new installment, term_months: new schedule length, next_due_date: next due date, due_day_of_month: due day, terms_change_count: patient-requested changes used, skip_count: skips used, autopay_method: autopay on file}
+    triggers: []
+  - type: plan_signed
+    target: payment_plans
+    mutation: {transition: {from: pending_signature, to: active}}
+    meaning: The patient signs the agreement and the plan starts.
+    grain: one row per transaction
+    fields: {status: active, signed_date: signature date, autopay_method: autopay authorized at signing}
+    triggers: []
+  - type: plan_offer_lapsed
+    target: payment_plans
+    mutation: {transition: {from: pending_signature, to: cancelled}}
+    meaning: The signature deadline passes without a signature.
+    grain: one row per transaction
+    fields: {status: cancelled, closed_date: lapse date}
+    triggers: []
+  - type: plan_installment_missed
+    target: payment_plans
+    mutation: {transition: {from: active, to: past_due}}
+    meaning: An installment is unpaid past its grace days.
+    grain: one row per transaction
+    fields: {status: past_due, missed_installments: consecutive missed count}
+    triggers: []
+  - type: plan_brought_current
+    target: payment_plans
+    mutation: {transition: {from: past_due, to: active}}
+    meaning: The patient pays every missed installment.
+    grain: one row per transaction
+    fields: {status: active, missed_installments: reset to 0, next_due_date: next unpaid due date}
+    triggers: []
+  - type: plan_reaged
+    target: payment_plans
+    mutation: {transition: {from: past_due, to: active}}
+    meaning: A representative re-ages a past-due plan, moving the missed amount to the end of the term.
+    grain: one row per transaction
+    fields: {status: active, missed_installments: reset to 0, reage_count: re-ages used including this one, term_months: schedule extended by the missed installments, next_due_date: next due date after the re-age}
+    triggers: []
+  - type: plan_defaulted
+    target: payment_plans
+    mutation: {transition: {from: past_due, to: defaulted}}
+    meaning: The plan defaults at the missed-installment limit.
+    grain: one row per transaction
+    fields: {status: defaulted, default_date: default date}
+    triggers: []
+  - type: plan_reinstated
+    target: payment_plans
+    mutation: {transition: {from: defaulted, to: active}}
+    meaning: A defaulted plan is reinstated after the catch-up payment.
+    grain: one row per transaction
+    fields: {status: active, missed_installments: reset to 0, reinstatement_count: reinstatements used including this one, next_due_date: next due date}
+    triggers: []
+  - type: plan_paid_off
+    target: payment_plans
+    mutation: {transition: [{from: active, to: paid_off}, {from: past_due, to: paid_off}]}
+    meaning: The plan balance reaches zero.
+    grain: one row per transaction
+    fields: {status: paid_off, closed_date: payoff date, next_due_date: cleared}
+    triggers: []
+  - type: plan_cancelled_by_patient
+    target: payment_plans
+    mutation: {transition: {from: active, to: cancelled}}
+    meaning: The patient cancels an active plan.
+    grain: one row per transaction
+    fields: {status: cancelled, closed_date: cancellation date, next_due_date: cleared}
+    triggers: []
+
+# ---- derived measures ----
+measures:
+  - id: plan_msr_installments_paid
+    window: the life of the plan up to the decision date
+    measure: count of plan_installment_paid rows with installment_number of 1 or more on the plan
+  - id: plan_msr_add_ons_12m
+    window: rolling 12 months ending on the decision date (from the same calendar date one year earlier, inclusive)
+    measure: count of distinct posting dates of plan_balance_enrolled rows on the plan that are later than the plan's offered_date
+
+# ---- policies ----
+policies:
+  - id: plan_agg_multi_holding
+    subject: [plan_created]
+    rule: >-
+      A patient holds at most one open payment plan — one plan in pending_signature, active or past_due status — at a time (max_open_plans); paid_off, cancelled and defaulted plans remain on the profile as history. Every eligible balance the patient wants on a plan goes into that one plan, either at creation or as an add-on. A new plan cannot be created while another plan of the patient is open; to restructure, the patient first cancels the open plan, and its remaining balance is then enrolled with the other balances in the new plan.
+    eligibility: []
+    params: {max_per_customer: 1, max_open_plans: "=max_open_plans"}
+  - id: plan_tier_and_installment
+    subject: [plan_created, plan_terms_modified]
+    rule: >-
+      The tier of a new plan is fixed by the total balance enrolled at creation, using each tier's min_enrolled_balance_usd and max_enrolled_balance_usd. Two tiers override the balance bands. The Riverbend Assistance-Linked Payment Plan applies when, on the creation date, the patient holds a financial assistance award in approved status at a partial-discount tier (80%, 60% or 40% charity discount, or medical hardship). The Riverbend Hardship Payment Plan applies when the patient documents a loss of household income of at least hardship_income_loss_pct in the last 6 months, or when the enrolled total exceeds hardship_balance_threshold_usd; when both override tiers apply, the hardship tier is used. The down payment is down_payment_pct of the enrolled total, rounded half-up to the cent, due at signing. The term is the number of monthly installments the patient asks for, never more than max_term_months; when the patient states no term, max_term_months is used. The installment is the financed amount (enrolled total less the down payment) divided by the term, rounded half-up to the cent, but never below min_monthly_payment_usd; when the floor applies, the schedule has as many installments as the floor needs, and in every case the final installment absorbs the remainder. Installments fall due on the due day the patient picks from due_day_options; the first due date is the first such day at least first_due_days_after_signing calendar days after the signing date. Riverbend plans carry no interest, setup fee, late fee, returned-payment fee or early-payoff penalty (interest_rate_pct, setup_fee_usd, late_fee_usd, returned_payment_fee_usd, early_payoff_penalty_usd). Where autopay_required is true the plan is created only with an ACH or card autopay method.
+    eligibility:
+      - id: assistance_award_for_linked_tier
+        applies_to: [plan_created]
+        kind: authorization
+        condition: The Riverbend Assistance-Linked Payment Plan applies when, on the creation date, the patient holds a financial assistance award in approved status at a partial-discount tier (80%, 60% or 40% charity discount, or medical hardship).
+        evidence_fields: [assistance_cases.status, assistance_cases.variant_name, assistance_cases.customer_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[assistance_cases.customer_id]]
+          action_bindings: {assistance_cases.customer_id: customer_id}
+    params:
+      per_tier:
+        "Riverbend Short-Term Payment Plan": {min_balance: "=min_enrolled_balance_usd", max_balance: "=max_enrolled_balance_usd", max_term: "=max_term_months", min_installment: "=min_monthly_payment_usd", down_pct: "=down_payment_pct", autopay_required: "=autopay_required", first_due_gap_days: "=first_due_days_after_signing"}
+        "Riverbend Standard Payment Plan": {min_balance: "=min_enrolled_balance_usd", max_balance: "=max_enrolled_balance_usd", max_term: "=max_term_months", min_installment: "=min_monthly_payment_usd", down_pct: "=down_payment_pct", autopay_required: "=autopay_required", first_due_gap_days: "=first_due_days_after_signing"}
+        "Riverbend Extended Payment Plan": {min_balance: "=min_enrolled_balance_usd", max_balance: "=max_enrolled_balance_usd", max_term: "=max_term_months", min_installment: "=min_monthly_payment_usd", down_pct: "=down_payment_pct", autopay_required: "=autopay_required", first_due_gap_days: "=first_due_days_after_signing"}
+        "Riverbend Long-Term Payment Plan": {min_balance: "=min_enrolled_balance_usd", max_balance: "=max_enrolled_balance_usd", max_term: "=max_term_months", min_installment: "=min_monthly_payment_usd", down_pct: "=down_payment_pct", autopay_required: "=autopay_required", first_due_gap_days: "=first_due_days_after_signing"}
+        "Riverbend Assistance-Linked Payment Plan": {min_balance: "=min_enrolled_balance_usd", max_balance: "=max_enrolled_balance_usd", max_term: "=max_term_months", min_installment: "=min_monthly_payment_usd", down_pct: "=down_payment_pct", autopay_required: "=autopay_required", first_due_gap_days: "=first_due_days_after_signing"}
+        "Riverbend Hardship Payment Plan": {min_balance: "=min_enrolled_balance_usd", max_balance: "=max_enrolled_balance_usd", max_term: "=max_term_months", min_installment: "=min_monthly_payment_usd", down_pct: "=down_payment_pct", autopay_required: "=autopay_required", first_due_gap_days: "=first_due_days_after_signing"}
+      installment_rounding: "=installment_rounding"
+      due_day_options: "=due_day_options"
+      hardship_income_loss_pct: "=hardship_income_loss_pct"
+      hardship_balance_threshold_usd: "=hardship_balance_threshold_usd"
+      interest_rate_pct: "=interest_rate_pct"
+      setup_fee_usd: "=setup_fee_usd"
+      late_fee_usd: "=late_fee_usd"
+      returned_payment_fee_usd: "=returned_payment_fee_usd"
+      early_payoff_penalty_usd: "=early_payoff_penalty_usd"
+    formula:
+      down_payment: round(plan_balance * down_payment_pct / 100, 2)
+      monthly_installment: max(min_monthly_payment_usd, round((plan_balance - down_payment) / term_months, 2))
+  - id: plan_eligible_balances
+    subject: [plan_balance_enrolled, plan_created]
+    rule: >-
+      Only the patient's own self-pay balances that are already billed to the patient are enrolled. An encounter balance may be enrolled only while its hospital account is in patient_due status. A balance still awaiting insurance adjudication (insurance_pending) is never enrolled (insurance_pending_excluded); an account on billing hold for a charge dispute or a good-faith-estimate dispute is not enrolled until the dispute is resolved (disputed_balance_excluded); a balance placed with the collection agency must first be recalled (bad_debt_enrollment_allowed). The amount enrolled is the account's patient_balance on the enrollment date. An encounter is enrolled at most once in the same plan; a later increase on an enrolled account (a late charge or a new patient-responsibility posting) is enrolled as an add-on on its own date.
+    eligibility:
+      - id: account_patient_due
+        applies_to: [plan_balance_enrolled]
+        kind: state
+        condition: An encounter balance may be enrolled only while its hospital account is in patient_due status.
+        evidence_fields: [encounter_accounts.status, encounter_accounts.encounter_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[encounter_accounts.encounter_id]]
+          action_bindings: {encounter_accounts.encounter_id: encounter_id}
+        state_contract:
+          field: encounter_accounts.status
+          allowed: [patient_due]
+    params:
+      eligible_encounter_status: "=eligible_encounter_status"
+      insurance_pending_excluded: "=insurance_pending_excluded"
+      disputed_balance_excluded: "=disputed_balance_excluded"
+      bad_debt_enrollment_allowed: "=bad_debt_enrollment_allowed"
+  - id: plan_signature_and_activation
+    subject: [plan_signed, plan_offer_lapsed]
+    rule: >-
+      A plan starts only when the patient personally signs the agreement_form; a representative may set the plan up and send the agreement but can never sign or accept it for the patient. The patient must sign no later than the signature deadline counted from the date the plan was offered. Count calendar days starting the day after offered_date; a signature on the last day of the deadline is accepted. Any down payment is paid at signing. A plan not signed by the deadline lapses to cancelled and the balances stay on standard statements.
+    eligibility:
+      - id: signature_deadline
+        applies_to: [plan_signed]
+        kind: time
+        condition: The patient must sign no later than the signature deadline counted from the date the plan was offered.
+        evidence_fields: [payment_plans.offered_date, payment_plans.plan_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[payment_plans.plan_id]]
+          action_bindings: {payment_plans.plan_id: plan_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the date the plan was offered
+          anchor_source: payment_plans.offered_date
+          relation: not_after
+          duration_source: variants.signature_deadline_days
+          unit: calendar_days
+          counting_rule: Count calendar days starting the day after offered_date; a signature on the last day of the deadline is accepted.
+          boundary: inclusive
+    params:
+      per_tier:
+        "Riverbend Short-Term Payment Plan": {signature_deadline_days: "=signature_deadline_days"}
+        "Riverbend Standard Payment Plan": {signature_deadline_days: "=signature_deadline_days"}
+        "Riverbend Extended Payment Plan": {signature_deadline_days: "=signature_deadline_days"}
+        "Riverbend Long-Term Payment Plan": {signature_deadline_days: "=signature_deadline_days"}
+        "Riverbend Assistance-Linked Payment Plan": {signature_deadline_days: "=signature_deadline_days"}
+        "Riverbend Hardship Payment Plan": {signature_deadline_days: "=signature_deadline_days"}
+      agreement_form: "=agreement_form"
+  - id: plan_missed_payment_and_default
+    subject: [plan_installment_missed, plan_brought_current, plan_defaulted]
+    rule: >-
+      An installment not paid in full by grace_days calendar days after its due date is missed and the plan becomes past_due; a partial payment does not cure a missed installment. Paying every missed installment returns the plan to active. When the count of consecutive missed installments reaches missed_installments_to_default the plan defaults on that day. Installments falling due while the patient's financial assistance application is in submitted or pending_documents status are paused for up to fap_pending_pause_days and are not counted as missed. On default a default notice is sent; the enrolled accounts resume the standard statement cycle from where it stopped, and no collection action may be taken on them until default_notice_days have passed after the default date. While a plan is active, its accounts receive no final notice, agency placement or credit reporting (eca_protection_while_current, credit_reporting_while_on_plan).
+    eligibility: []
+    params:
+      per_tier:
+        "Riverbend Short-Term Payment Plan": {grace_days: "=grace_days", missed_to_default: "=missed_installments_to_default", fap_pause_days: "=fap_pending_pause_days"}
+        "Riverbend Standard Payment Plan": {grace_days: "=grace_days", missed_to_default: "=missed_installments_to_default", fap_pause_days: "=fap_pending_pause_days"}
+        "Riverbend Extended Payment Plan": {grace_days: "=grace_days", missed_to_default: "=missed_installments_to_default", fap_pause_days: "=fap_pending_pause_days"}
+        "Riverbend Long-Term Payment Plan": {grace_days: "=grace_days", missed_to_default: "=missed_installments_to_default", fap_pause_days: "=fap_pending_pause_days"}
+        "Riverbend Assistance-Linked Payment Plan": {grace_days: "=grace_days", missed_to_default: "=missed_installments_to_default", fap_pause_days: "=fap_pending_pause_days"}
+        "Riverbend Hardship Payment Plan": {grace_days: "=grace_days", missed_to_default: "=missed_installments_to_default", fap_pause_days: "=fap_pending_pause_days"}
+      default_notice_days: "=default_notice_days"
+      eca_protection_while_current: "=eca_protection_while_current"
+      credit_reporting_while_on_plan: "=credit_reporting_while_on_plan"
+  - id: plan_reage_and_reinstatement
+    subject: [plan_reaged, plan_reinstated]
+    rule: >-
+      A representative may re-age a past_due plan at the patient's request when the plan has been re-aged fewer than reage_max_per_plan times and at least reage_min_installments_paid installments have been paid on it (plan_msr_installments_paid). A re-age moves the missed installments to the end of the schedule (reage_method): the installment amount is unchanged and term_months grows by the number of missed installments. A defaulted plan may be reinstated only within the reinstatement window counted from the default date. Count calendar days starting the day after default_date; a reinstatement on the last day of the window is accepted. Reinstatement also requires a catch-up payment of reinstatement_catch_up_pct of the missed amount (missed installments times the installment, rounded half-up to the cent) and that fewer than reinstatements_per_plan reinstatements have been used; the rest of the missed amount moves to the end of the schedule. Outside these limits the patient's remaining balance stays on standard statements and a new plan may be requested only after the defaulted balances are brought current.
+    eligibility:
+      - id: reinstatement_window
+        applies_to: [plan_reinstated]
+        kind: time
+        condition: A defaulted plan may be reinstated only within the reinstatement window counted from the default date.
+        evidence_fields: [payment_plans.default_date, payment_plans.plan_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[payment_plans.plan_id]]
+          action_bindings: {payment_plans.plan_id: plan_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the default date
+          anchor_source: payment_plans.default_date
+          relation: not_after
+          duration_source: variants.reinstatement_window_days
+          unit: calendar_days
+          counting_rule: Count calendar days starting the day after default_date; a reinstatement on the last day of the window is accepted.
+          boundary: inclusive
+    params:
+      per_tier:
+        "Riverbend Short-Term Payment Plan": {reage_max: "=reage_max_per_plan", reage_min_paid: "=reage_min_installments_paid", reinstatement_window_days: "=reinstatement_window_days", catch_up_pct: "=reinstatement_catch_up_pct", reinstatements: "=reinstatements_per_plan"}
+        "Riverbend Standard Payment Plan": {reage_max: "=reage_max_per_plan", reage_min_paid: "=reage_min_installments_paid", reinstatement_window_days: "=reinstatement_window_days", catch_up_pct: "=reinstatement_catch_up_pct", reinstatements: "=reinstatements_per_plan"}
+        "Riverbend Extended Payment Plan": {reage_max: "=reage_max_per_plan", reage_min_paid: "=reage_min_installments_paid", reinstatement_window_days: "=reinstatement_window_days", catch_up_pct: "=reinstatement_catch_up_pct", reinstatements: "=reinstatements_per_plan"}
+        "Riverbend Long-Term Payment Plan": {reage_max: "=reage_max_per_plan", reage_min_paid: "=reage_min_installments_paid", reinstatement_window_days: "=reinstatement_window_days", catch_up_pct: "=reinstatement_catch_up_pct", reinstatements: "=reinstatements_per_plan"}
+        "Riverbend Assistance-Linked Payment Plan": {reage_max: "=reage_max_per_plan", reage_min_paid: "=reage_min_installments_paid", reinstatement_window_days: "=reinstatement_window_days", catch_up_pct: "=reinstatement_catch_up_pct", reinstatements: "=reinstatements_per_plan"}
+        "Riverbend Hardship Payment Plan": {reage_max: "=reage_max_per_plan", reage_min_paid: "=reage_min_installments_paid", reinstatement_window_days: "=reinstatement_window_days", catch_up_pct: "=reinstatement_catch_up_pct", reinstatements: "=reinstatements_per_plan"}
+      reage_method: "=reage_method"
+    formula:
+      reaged_term: term_months + missed_installments
+      catch_up_due: round(missed_installments * monthly_payment_usd * reinstatement_catch_up_pct / 100, 2)
+    measures: [plan_msr_installments_paid]
+  - id: plan_add_on_balances
+    subject: [plan_balance_enrolled, plan_terms_modified]
+    rule: >-
+      A newly billed eligible balance may be added to an open plan only on tiers where add_on_allowed is true and when fewer than add_on_max_per_12_months add-ons were enrolled on the plan in the rolling 12 months (plan_msr_add_ons_12m). The installment is then recomputed (add_on_recalc_basis): the remaining schedule is term_months extended by add_on_term_extension_months, but never beyond max_term_months, less the installments already paid; the new installment is the new plan balance divided by that remaining schedule, rounded half-up to the cent, never below min_monthly_payment_usd. When the add-on would take the plan balance above the tier's max_enrolled_balance_usd, it is not added (tier_overflow_rule): the patient is offered a new plan on the tier matching the combined balance, which requires cancelling the open plan first.
+    eligibility: []
+    params:
+      per_tier:
+        "Riverbend Short-Term Payment Plan": {add_on_allowed: "=add_on_allowed", add_on_max: "=add_on_max_per_12_months", extension_months: "=add_on_term_extension_months", max_term: "=max_term_months", min_installment: "=min_monthly_payment_usd", max_balance: "=max_enrolled_balance_usd"}
+        "Riverbend Standard Payment Plan": {add_on_allowed: "=add_on_allowed", add_on_max: "=add_on_max_per_12_months", extension_months: "=add_on_term_extension_months", max_term: "=max_term_months", min_installment: "=min_monthly_payment_usd", max_balance: "=max_enrolled_balance_usd"}
+        "Riverbend Extended Payment Plan": {add_on_allowed: "=add_on_allowed", add_on_max: "=add_on_max_per_12_months", extension_months: "=add_on_term_extension_months", max_term: "=max_term_months", min_installment: "=min_monthly_payment_usd", max_balance: "=max_enrolled_balance_usd"}
+        "Riverbend Long-Term Payment Plan": {add_on_allowed: "=add_on_allowed", add_on_max: "=add_on_max_per_12_months", extension_months: "=add_on_term_extension_months", max_term: "=max_term_months", min_installment: "=min_monthly_payment_usd", max_balance: "=max_enrolled_balance_usd"}
+        "Riverbend Assistance-Linked Payment Plan": {add_on_allowed: "=add_on_allowed", add_on_max: "=add_on_max_per_12_months", extension_months: "=add_on_term_extension_months", max_term: "=max_term_months", min_installment: "=min_monthly_payment_usd", max_balance: "=max_enrolled_balance_usd"}
+        "Riverbend Hardship Payment Plan": {add_on_allowed: "=add_on_allowed", add_on_max: "=add_on_max_per_12_months", extension_months: "=add_on_term_extension_months", max_term: "=max_term_months", min_installment: "=min_monthly_payment_usd", max_balance: "=max_enrolled_balance_usd"}
+      add_on_recalc_basis: "=add_on_recalc_basis"
+      tier_overflow_rule: "=tier_overflow_rule"
+    formula:
+      remaining_installments: min(term_months + add_on_term_extension_months, max_term_months) - plan_msr_installments_paid
+      new_installment: max(min_monthly_payment_usd, round(plan_balance / remaining_installments, 2))
+    measures: [plan_msr_add_ons_12m, plan_msr_installments_paid]
+  - id: plan_installment_posting
+    subject: [plan_installment_paid, plan_paid_off]
+    rule: >-
+      An installment may be paid through any of plan_payment_channels. Each installment payment is applied to the enrolled accounts in payment_application_order and posts to those accounts as a plan installment payment. A failed autopay draft is retried once after autopay_retry_days (autopay_retry_count) and, if it fails again, the installment is treated as unpaid. A payment above the installment amount reduces the remaining schedule (overpayment_application) and never pre-pays the next due date. A plan statement is sent plan_statement_lead_days calendar days before each due date. The plan is paid off when its balance reaches zero.
+    eligibility: []
+    params:
+      plan_payment_channels: "=plan_payment_channels"
+      payment_application_order: "=payment_application_order"
+      autopay_retry_days: "=autopay_retry_days"
+      autopay_retry_count: "=autopay_retry_count"
+      overpayment_application: "=overpayment_application"
+      plan_statement_lead_days: "=plan_statement_lead_days"
+  - id: plan_balance_reduction
+    subject: [plan_balance_reduced, plan_terms_modified]
+    rule: >-
+      When an enrolled account's balance falls because of a charity adjustment, a late insurance payment, a charge correction or a small-balance write-off, the plan balance is reduced by the same amount on the same date, recorded against that account and reason. An enrolled account placed on a charge-dispute or good-faith-estimate-dispute hold has its whole remaining enrolled balance withdrawn (BALANCE_WITHDRAWN_FOR_DISPUTE). A reduction never changes the installment amount; it shortens the remaining schedule, and the final installment absorbs the remainder. A reduction never exceeds the amount that account still carries on the plan.
+    eligibility: []
+    params: {overpayment_application: "=overpayment_application"}
+  - id: plan_patient_changes
+    subject: [plan_terms_modified, plan_cancelled_by_patient]
+    rule: >-
+      The patient may change the due day to another of due_day_options or ask for a lower installment, together at most terms_changes_per_plan times over the plan's life. A requested lower installment may not be below min_requested_installment_pct_of_computed of the installment computed at creation or at the last recomputation, and never below min_monthly_payment_usd; the schedule lengthens accordingly but never beyond max_term_months from the first due date. The patient may skip an installment, moving it to the end of the schedule, at most skip_payments_per_plan times. The patient may cancel an active plan at any time without penalty; the remaining balances return to the standard statement cycle and no collection action may follow sooner than default_notice_days after the cancellation date.
+    eligibility: []
+    params:
+      per_tier:
+        "Riverbend Short-Term Payment Plan": {changes: "=terms_changes_per_plan", min_requested_pct: "=min_requested_installment_pct_of_computed", skips: "=skip_payments_per_plan", max_term: "=max_term_months"}
+        "Riverbend Standard Payment Plan": {changes: "=terms_changes_per_plan", min_requested_pct: "=min_requested_installment_pct_of_computed", skips: "=skip_payments_per_plan", max_term: "=max_term_months"}
+        "Riverbend Extended Payment Plan": {changes: "=terms_changes_per_plan", min_requested_pct: "=min_requested_installment_pct_of_computed", skips: "=skip_payments_per_plan", max_term: "=max_term_months"}
+        "Riverbend Long-Term Payment Plan": {changes: "=terms_changes_per_plan", min_requested_pct: "=min_requested_installment_pct_of_computed", skips: "=skip_payments_per_plan", max_term: "=max_term_months"}
+        "Riverbend Assistance-Linked Payment Plan": {changes: "=terms_changes_per_plan", min_requested_pct: "=min_requested_installment_pct_of_computed", skips: "=skip_payments_per_plan", max_term: "=max_term_months"}
+        "Riverbend Hardship Payment Plan": {changes: "=terms_changes_per_plan", min_requested_pct: "=min_requested_installment_pct_of_computed", skips: "=skip_payments_per_plan", max_term: "=max_term_months"}
+      due_day_options: "=due_day_options"
+      default_notice_days: "=default_notice_days"

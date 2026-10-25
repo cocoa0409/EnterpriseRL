@@ -1,0 +1,7 @@
+# Rework round 5 — claims (audit revision_4)
+
+- R4-1: closed — the competition is removed at its source: a make-up relief is owed whatever the number of courtesy waivers already granted (it still counts among them, and a fee whose relief is owed is relieved rather than waived on request), so the two reliefs share no limit; the returned-payment-fee schedule's awaiting condition is deleted, and no priority, yield or awaiting condition remains anywhere in the charter.
+- R4-2: closed — the reset's methods are re-divide for no-interest plans, a split payment for a plan whose deferred interest was billed (the billed deferred interest repaid in equal parts without further interest, as the restated deferred-interest sentence now says, plus a level payment on the rest) and re-amortization as the standard method; each repays the reset balance with exactly the reset payments, the last taking only the rounding difference.
+- CG-10 (reopened by R4-2): closed — the reset keeps a method factor with three real, fully amortizing shapes plus its five rate cuts, each moving the payment alone against the baseline.
+- T1-R4-1: closed — the scored tier is the split payment, which fits the remaining reset payments exactly.
+- T1-R4-2: closed — the gold reset is the payment that fits the rest of his term under his plan's tier; persona, request alignment, traces, skip figure and rationale were swept against it.

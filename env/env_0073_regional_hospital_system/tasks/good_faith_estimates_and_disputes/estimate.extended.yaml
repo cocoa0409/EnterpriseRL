@@ -1,0 +1,2735 @@
+# Product charter — Good Faith Estimates, Patient Estimates & Self-Pay Package Prices. Riverbend Regional Health, Price Transparency & Scheduling Financial Clearance.
+category: estimate
+display_name: Good Faith & Price Estimates
+
+binding:
+  holding_table: price_estimates
+  event_tables: [estimate_transactions]
+  status_field: status
+  variant_field: variant_name
+  quantity_fields: {deposit_held_usd: deposit_held}
+
+lifecycle:
+  states: [requested, issued, service_completed, in_dispute, closed, cancelled]
+  transitions:
+    - {from: requested, to: issued, by: agent, means: The estimate is furnished to the patient.}
+    - {from: requested, to: cancelled, by: user, means: The patient withdraws the request before an estimate is furnished.}
+    - {from: issued, to: cancelled, by: user, means: The patient cancels the scheduled service.}
+    - {from: issued, to: service_completed, by: system, means: The service is rendered, the hospital account is linked and the initial bill is dated.}
+    - {from: issued, to: closed, by: system, means: The estimate lapses unused after its validity period.}
+    - {from: service_completed, to: in_dispute, by: agent, means: Notice of a patient-provider dispute on Riverbend's charges is received and logged.}
+    - {from: service_completed, to: closed, by: system, means: The dispute window passes or the linked balance is resolved without a dispute.}
+    - {from: in_dispute, to: closed, by: system, means: The dispute resolution entity issues its determination or the parties settle.}
+
+accounts:
+  - key: deposit_held
+    unit: USD
+    meaning: Prepayments collected against the estimate and not yet applied, refunded or retained; collections add to it, application to the hospital account, refunds and retained cancellation fees reduce it.
+
+# ---- category-level parameter dictionary ----
+parameter_schema:
+  gfe_required: boolean — whether the estimate is a No Surprises Act good faith estimate for an uninsured or self-pay individual
+  min_scheduling_lead_bd: integer business days between the scheduling date and the service date at or above which a good faith estimate must be furnished before the service
+  issue_bd_scheduled_3_to_9: integer business days after the scheduling date within which the GFE is furnished when the service is scheduled at least 3 but fewer than 10 business days ahead
+  issue_bd_scheduled_10_plus: integer business days after the scheduling date within which the GFE is furnished when the service is scheduled at least 10 business days ahead
+  issue_bd_on_request: integer business days after an unscheduled request within which the GFE is furnished
+  insured_estimate_turnaround_bd: integer business days after the request within which an insured out-of-pocket estimate is furnished
+  business_day_calendar: enum business-day basis used for every estimate deadline
+  revision_lead_bd: integer business days before the scheduled service by which a revised estimate is furnished after a change in scope, providers or date
+  recurring_course_max_months: integer months a single recurring-course estimate may cover
+  ppdr_threshold_usd: USD amount by which a provider's or facility's billed charges must exceed that provider's or facility's expected charges on the GFE for the patient-provider dispute process to be available
+  ppdr_initiation_days: integer calendar days from the date on the initial bill within which the patient may initiate the patient-provider dispute
+  ppdr_admin_fee_usd: USD administrative fee the patient pays the selected dispute resolution entity
+  ppdr_fee_credit_if_favored: boolean — whether the amount due is further reduced by the administrative fee when the determination is below the billed charges
+  ppdr_collection_hold: boolean — whether the billed amount is kept out of collections and statements stop escalating while the dispute is pending
+  ppdr_eligible_coverage: list of coverage_status values eligible for the patient-provider dispute
+  ppdr_comparison_basis: enum what is compared with the GFE expected charges for Riverbend's own charges
+  record_retention_years: integer years a furnished estimate is retained and available to the patient
+  includes_co_provider_lines: boolean — whether the estimate carries expected-charge lines for co-providers
+  co_provider_roles: list of provider_role values included as co-providers
+  co_provider_submission_bd: integer business days a co-provider has to send its expected charges to Riverbend as convening provider
+  expected_charge_basis: enum how Riverbend's own expected charges are computed
+  package_price_schedule: mapping CPT code -> USD all-inclusive package price for package tiers; PRICED_PER_LINE for non-package tiers
+  package_includes_professional_fees: boolean — whether the package price includes Riverbend Medical Group professional fees
+  package_exclusions: list of items billed outside the package or GFE at actual charges
+  package_upgrade_differential_usd: USD added when the delivered service upgrades within the package (cesarean delivery under the maternity package); 0.00 when the tier has no upgrade
+  package_extra_day_usd: USD per additional overnight stay beyond the package's included stay; 0.00 when the tier has no overnight component
+  package_included_nights: integer overnight stays included in the package price
+  package_validity_days: integer calendar days after issue within which the service must be performed for the quoted price to hold
+  deposit_pct: percent of the estimate total collected as a deposit at scheduling
+  balance_due_days_before_service: integer calendar days before the scheduled service date by which the remaining package price is paid (0 = no pre-service balance)
+  deposit_methods: list of payment methods accepted for deposits
+  full_refund_cancel_days: integer calendar days before the scheduled service date at or beyond which a cancellation refunds the whole deposit
+  late_cancellation_fee_usd: USD retained from the deposit when a package service is cancelled later than full_refund_cancel_days (never more than the deposit held)
+  medical_cancellation_fee_waived: boolean — whether the late-cancellation fee is waived when the cancelling physician documents a medical reason
+  deposit_refund_days: integer calendar days after cancellation within which a deposit refund is issued
+  deposit_refund_method: enum refund method for deposits
+  deposit_application_timing: enum when held deposits are applied to the hospital account
+  insured_benefit_verification_required: boolean — whether benefits and remaining deductible are verified with the payer before the estimate is issued
+  insured_estimate_binding: boolean — whether the estimate limits what the patient may be billed
+  variance_review_pct: percent by which the patient's actual liability may exceed the estimate total before Patient Financial Services reviews the variance with the patient
+  estimate_request_channels: list of request_channel values accepted
+  estimate_delivery_channels: list of channels through which the estimate is delivered (paper or electronic, at the patient's choice)
+  coverage_inquiry_required: boolean — whether the scheduler must ask whether the patient has coverage and whether they intend to use it
+  gfe_rights_notice_required: boolean — whether the notice of the right to a good faith estimate is given at scheduling and on request
+  max_lines_per_version: integer maximum expected-charge lines on one estimate version
+  diagnosis_codes_required: boolean — whether expected diagnosis codes are listed on the estimate
+  estimate_disclaimer: enum standard disclaimer printed on the estimate
+  recurring_reissue_on_change: boolean — whether any change in frequency or items of a recurring course requires a new version
+  dispute_hold_reason: enum billing-hold reason placed on the linked hospital account while a dispute is pending
+  expired_estimate_reissue: enum what happens when a service is scheduled after package_validity_days
+
+# ---- tier ladder (low to high) ----
+variants:
+- name: Self-Pay Good Faith Estimate - Single Scheduled Service
+  rank: 1
+  entry_gate:
+    coverage_status: [UNINSURED, SELF_PAY_ELECTED]
+    scope: one scheduled item or service furnished by Riverbend alone
+  parameters:
+    gfe_required: true
+    min_scheduling_lead_bd: 3
+    issue_bd_scheduled_3_to_9: 1
+    issue_bd_scheduled_10_plus: 3
+    issue_bd_on_request: 3
+    insured_estimate_turnaround_bd: 2
+    business_day_calendar: MONDAY_TO_FRIDAY_EXCLUDING_FEDERAL_HOLIDAYS
+    revision_lead_bd: 1
+    recurring_course_max_months: 12
+    ppdr_threshold_usd: 400.0
+    ppdr_initiation_days: 120
+    ppdr_admin_fee_usd: 25.0
+    ppdr_fee_credit_if_favored: true
+    ppdr_collection_hold: true
+    ppdr_eligible_coverage: &id001 [UNINSURED, SELF_PAY_ELECTED]
+    ppdr_comparison_basis: SELF_PAY_FINAL_BILL_LESS_UNINSURED_DISCOUNT
+    record_retention_years: 6
+    includes_co_provider_lines: false
+    co_provider_roles: [NONE]
+    co_provider_submission_bd: 1
+    expected_charge_basis: GROSS_CHARGES_LESS_UNINSURED_DISCOUNT
+    package_price_schedule: PRICED_PER_LINE
+    package_includes_professional_fees: false
+    package_exclusions: [SERVICES_OF_UNLISTED_PROVIDERS]
+    package_upgrade_differential_usd: 0.0
+    package_extra_day_usd: 0.0
+    package_included_nights: 0
+    package_validity_days: 90
+    deposit_pct: 0.0
+    balance_due_days_before_service: 0
+    deposit_methods: &id002 [PORTAL_CARD, PHONE_CARD, ACH_BANK_DRAFT]
+    full_refund_cancel_days: 0
+    late_cancellation_fee_usd: 0.0
+    medical_cancellation_fee_waived: true
+    deposit_refund_days: 30
+    deposit_refund_method: ORIGINAL_PAYMENT_METHOD
+    deposit_application_timing: AT_FINAL_BILL
+    insured_benefit_verification_required: false
+    insured_estimate_binding: false
+    variance_review_pct: 10.0
+    estimate_request_channels: &id003 [SCHEDULING_CALL, PATIENT_PORTAL, PRICE_ESTIMATE_LINE, IN_PERSON]
+    estimate_delivery_channels: &id004 [US_MAIL, PATIENT_PORTAL, EMAIL_LINK]
+    coverage_inquiry_required: true
+    gfe_rights_notice_required: true
+    max_lines_per_version: 40
+    diagnosis_codes_required: true
+    estimate_disclaimer: NSA_GFE_DISCLAIMER
+    recurring_reissue_on_change: false
+    dispute_hold_reason: GFE_DISPUTE_PENDING
+    expired_estimate_reissue: NEW_VERSION_AT_CURRENT_PRICES
+- name: Self-Pay Good Faith Estimate - Procedure with Co-Providers
+  rank: 2
+  entry_gate:
+    coverage_status: [UNINSURED, SELF_PAY_ELECTED]
+    scope: a scheduled procedure with co-provider items (anesthesia, pathology, radiology)
+  parameters:
+    gfe_required: true
+    min_scheduling_lead_bd: 3
+    issue_bd_scheduled_3_to_9: 1
+    issue_bd_scheduled_10_plus: 3
+    issue_bd_on_request: 3
+    insured_estimate_turnaround_bd: 2
+    business_day_calendar: MONDAY_TO_FRIDAY_EXCLUDING_FEDERAL_HOLIDAYS
+    revision_lead_bd: 1
+    recurring_course_max_months: 12
+    ppdr_threshold_usd: 400.0
+    ppdr_initiation_days: 120
+    ppdr_admin_fee_usd: 25.0
+    ppdr_fee_credit_if_favored: true
+    ppdr_collection_hold: true
+    ppdr_eligible_coverage: *id001
+    ppdr_comparison_basis: SELF_PAY_FINAL_BILL_LESS_UNINSURED_DISCOUNT
+    record_retention_years: 6
+    includes_co_provider_lines: true
+    co_provider_roles: [CO_PROVIDER_ANESTHESIA, CO_PROVIDER_PATHOLOGY, CO_PROVIDER_RADIOLOGY]
+    co_provider_submission_bd: 1
+    expected_charge_basis: GROSS_CHARGES_LESS_UNINSURED_DISCOUNT
+    package_price_schedule: PRICED_PER_LINE
+    package_includes_professional_fees: false
+    package_exclusions: [SERVICES_OF_UNLISTED_PROVIDERS]
+    package_upgrade_differential_usd: 0.0
+    package_extra_day_usd: 0.0
+    package_included_nights: 0
+    package_validity_days: 90
+    deposit_pct: 0.0
+    balance_due_days_before_service: 0
+    deposit_methods: *id002
+    full_refund_cancel_days: 0
+    late_cancellation_fee_usd: 0.0
+    medical_cancellation_fee_waived: true
+    deposit_refund_days: 30
+    deposit_refund_method: ORIGINAL_PAYMENT_METHOD
+    deposit_application_timing: AT_FINAL_BILL
+    insured_benefit_verification_required: false
+    insured_estimate_binding: false
+    variance_review_pct: 10.0
+    estimate_request_channels: *id003
+    estimate_delivery_channels: *id004
+    coverage_inquiry_required: true
+    gfe_rights_notice_required: true
+    max_lines_per_version: 60
+    diagnosis_codes_required: true
+    estimate_disclaimer: NSA_GFE_DISCLAIMER
+    recurring_reissue_on_change: false
+    dispute_hold_reason: GFE_DISPUTE_PENDING
+    expired_estimate_reissue: NEW_VERSION_AT_CURRENT_PRICES
+- name: Self-Pay Good Faith Estimate - Recurring Course of Care
+  rank: 3
+  entry_gate:
+    coverage_status: [UNINSURED, SELF_PAY_ELECTED]
+    scope: recurring items or services over a course of up to 12 months
+  parameters:
+    gfe_required: true
+    min_scheduling_lead_bd: 3
+    issue_bd_scheduled_3_to_9: 1
+    issue_bd_scheduled_10_plus: 3
+    issue_bd_on_request: 3
+    insured_estimate_turnaround_bd: 2
+    business_day_calendar: MONDAY_TO_FRIDAY_EXCLUDING_FEDERAL_HOLIDAYS
+    revision_lead_bd: 1
+    recurring_course_max_months: 12
+    ppdr_threshold_usd: 400.0
+    ppdr_initiation_days: 120
+    ppdr_admin_fee_usd: 25.0
+    ppdr_fee_credit_if_favored: true
+    ppdr_collection_hold: true
+    ppdr_eligible_coverage: *id001
+    ppdr_comparison_basis: SELF_PAY_FINAL_BILL_LESS_UNINSURED_DISCOUNT
+    record_retention_years: 6
+    includes_co_provider_lines: false
+    co_provider_roles: [NONE]
+    co_provider_submission_bd: 1
+    expected_charge_basis: GROSS_CHARGES_LESS_UNINSURED_DISCOUNT
+    package_price_schedule: PRICED_PER_LINE
+    package_includes_professional_fees: false
+    package_exclusions: [SERVICES_OF_UNLISTED_PROVIDERS]
+    package_upgrade_differential_usd: 0.0
+    package_extra_day_usd: 0.0
+    package_included_nights: 0
+    package_validity_days: 365
+    deposit_pct: 0.0
+    balance_due_days_before_service: 0
+    deposit_methods: *id002
+    full_refund_cancel_days: 0
+    late_cancellation_fee_usd: 0.0
+    medical_cancellation_fee_waived: true
+    deposit_refund_days: 30
+    deposit_refund_method: ORIGINAL_PAYMENT_METHOD
+    deposit_application_timing: AT_FINAL_BILL
+    insured_benefit_verification_required: false
+    insured_estimate_binding: false
+    variance_review_pct: 10.0
+    estimate_request_channels: *id003
+    estimate_delivery_channels: *id004
+    coverage_inquiry_required: true
+    gfe_rights_notice_required: true
+    max_lines_per_version: 120
+    diagnosis_codes_required: true
+    estimate_disclaimer: NSA_GFE_DISCLAIMER
+    recurring_reissue_on_change: true
+    dispute_hold_reason: GFE_DISPUTE_PENDING
+    expired_estimate_reissue: NEW_VERSION_AT_CURRENT_PRICES
+- name: Insured Patient Out-of-Pocket Estimate
+  rank: 4
+  entry_gate:
+    coverage_status: [INSURED]
+    scope: a scheduled service billed to the patient's coverage
+  parameters:
+    gfe_required: false
+    min_scheduling_lead_bd: 3
+    issue_bd_scheduled_3_to_9: 1
+    issue_bd_scheduled_10_plus: 3
+    issue_bd_on_request: 3
+    insured_estimate_turnaround_bd: 2
+    business_day_calendar: MONDAY_TO_FRIDAY_EXCLUDING_FEDERAL_HOLIDAYS
+    revision_lead_bd: 1
+    recurring_course_max_months: 12
+    ppdr_threshold_usd: 400.0
+    ppdr_initiation_days: 120
+    ppdr_admin_fee_usd: 25.0
+    ppdr_fee_credit_if_favored: true
+    ppdr_collection_hold: true
+    ppdr_eligible_coverage: *id001
+    ppdr_comparison_basis: SELF_PAY_FINAL_BILL_LESS_UNINSURED_DISCOUNT
+    record_retention_years: 6
+    includes_co_provider_lines: false
+    co_provider_roles: [NONE]
+    co_provider_submission_bd: 1
+    expected_charge_basis: CONTRACTED_RATE_APPLIED_TO_REMAINING_BENEFITS
+    package_price_schedule: PRICED_PER_LINE
+    package_includes_professional_fees: false
+    package_exclusions: [SERVICES_OF_UNLISTED_PROVIDERS, BENEFIT_CHANGES_AFTER_VERIFICATION]
+    package_upgrade_differential_usd: 0.0
+    package_extra_day_usd: 0.0
+    package_included_nights: 0
+    package_validity_days: 30
+    deposit_pct: 0.0
+    balance_due_days_before_service: 0
+    deposit_methods: *id002
+    full_refund_cancel_days: 0
+    late_cancellation_fee_usd: 0.0
+    medical_cancellation_fee_waived: true
+    deposit_refund_days: 30
+    deposit_refund_method: ORIGINAL_PAYMENT_METHOD
+    deposit_application_timing: AT_FINAL_BILL
+    insured_benefit_verification_required: true
+    insured_estimate_binding: false
+    variance_review_pct: 15.0
+    estimate_request_channels: *id003
+    estimate_delivery_channels: *id004
+    coverage_inquiry_required: true
+    gfe_rights_notice_required: false
+    max_lines_per_version: 40
+    diagnosis_codes_required: false
+    estimate_disclaimer: INSURED_ESTIMATE_NOT_A_GUARANTEE
+    recurring_reissue_on_change: false
+    dispute_hold_reason: GFE_DISPUTE_PENDING
+    expired_estimate_reissue: NEW_VERSION_AT_CURRENT_PRICES
+- name: Riverbend Self-Pay Package Price - Imaging & Diagnostics
+  rank: 5
+  entry_gate:
+    coverage_status: [UNINSURED, SELF_PAY_ELECTED]
+    scope: a service code on the imaging package schedule
+  parameters:
+    gfe_required: true
+    min_scheduling_lead_bd: 3
+    issue_bd_scheduled_3_to_9: 1
+    issue_bd_scheduled_10_plus: 3
+    issue_bd_on_request: 3
+    insured_estimate_turnaround_bd: 2
+    business_day_calendar: MONDAY_TO_FRIDAY_EXCLUDING_FEDERAL_HOLIDAYS
+    revision_lead_bd: 1
+    recurring_course_max_months: 12
+    ppdr_threshold_usd: 400.0
+    ppdr_initiation_days: 120
+    ppdr_admin_fee_usd: 25.0
+    ppdr_fee_credit_if_favored: true
+    ppdr_collection_hold: true
+    ppdr_eligible_coverage: *id001
+    ppdr_comparison_basis: SELF_PAY_FINAL_BILL_LESS_UNINSURED_DISCOUNT
+    record_retention_years: 6
+    includes_co_provider_lines: false
+    co_provider_roles: [NONE]
+    co_provider_submission_bd: 1
+    expected_charge_basis: FIXED_PACKAGE_PRICE
+    package_price_schedule: {'70553': 1150.0, '72148': 895.0, '74177': 685.0, '77067': 195.0, '93306': 640.0}
+    package_includes_professional_fees: true
+    package_exclusions: [CONTRAST_REACTION_TREATMENT, RADIOLOGIST_SECOND_READ_REQUESTED_BY_PATIENT]
+    package_upgrade_differential_usd: 0.0
+    package_extra_day_usd: 0.0
+    package_included_nights: 0
+    package_validity_days: 90
+    deposit_pct: 100.0
+    balance_due_days_before_service: 0
+    deposit_methods: *id002
+    full_refund_cancel_days: 1
+    late_cancellation_fee_usd: 25.0
+    medical_cancellation_fee_waived: true
+    deposit_refund_days: 30
+    deposit_refund_method: ORIGINAL_PAYMENT_METHOD
+    deposit_application_timing: AT_FINAL_BILL
+    insured_benefit_verification_required: false
+    insured_estimate_binding: true
+    variance_review_pct: 0.0
+    estimate_request_channels: *id003
+    estimate_delivery_channels: *id004
+    coverage_inquiry_required: true
+    gfe_rights_notice_required: true
+    max_lines_per_version: 10
+    diagnosis_codes_required: true
+    estimate_disclaimer: NSA_GFE_DISCLAIMER_WITH_PACKAGE_TERMS
+    recurring_reissue_on_change: false
+    dispute_hold_reason: GFE_DISPUTE_PENDING
+    expired_estimate_reissue: NEW_VERSION_AT_CURRENT_PRICES
+- name: Riverbend Self-Pay Package Price - Outpatient Surgery
+  rank: 6
+  entry_gate:
+    coverage_status: [UNINSURED, SELF_PAY_ELECTED]
+    scope: a service code on the outpatient surgery package schedule, ASA physical status I or II
+  parameters:
+    gfe_required: true
+    min_scheduling_lead_bd: 3
+    issue_bd_scheduled_3_to_9: 1
+    issue_bd_scheduled_10_plus: 3
+    issue_bd_on_request: 3
+    insured_estimate_turnaround_bd: 2
+    business_day_calendar: MONDAY_TO_FRIDAY_EXCLUDING_FEDERAL_HOLIDAYS
+    revision_lead_bd: 1
+    recurring_course_max_months: 12
+    ppdr_threshold_usd: 400.0
+    ppdr_initiation_days: 120
+    ppdr_admin_fee_usd: 25.0
+    ppdr_fee_credit_if_favored: true
+    ppdr_collection_hold: true
+    ppdr_eligible_coverage: *id001
+    ppdr_comparison_basis: SELF_PAY_FINAL_BILL_LESS_UNINSURED_DISCOUNT
+    record_retention_years: 6
+    includes_co_provider_lines: true
+    co_provider_roles: [CO_PROVIDER_ANESTHESIA, CO_PROVIDER_PATHOLOGY]
+    co_provider_submission_bd: 1
+    expected_charge_basis: FIXED_PACKAGE_PRICE
+    package_price_schedule: {'47562': 7450.0, '29881': 5875.0, '49505': 5290.0, '45378': 1640.0, '66984': 3380.0}
+    package_includes_professional_fees: true
+    package_exclusions: [COMPLICATIONS_REQUIRING_ADMISSION, IMPLANTS_ABOVE_STANDARD, READMISSION_WITHIN_30_DAYS]
+    package_upgrade_differential_usd: 0.0
+    package_extra_day_usd: 1650.0
+    package_included_nights: 0
+    package_validity_days: 90
+    deposit_pct: 50.0
+    balance_due_days_before_service: 7
+    deposit_methods: *id002
+    full_refund_cancel_days: 7
+    late_cancellation_fee_usd: 150.0
+    medical_cancellation_fee_waived: true
+    deposit_refund_days: 30
+    deposit_refund_method: ORIGINAL_PAYMENT_METHOD
+    deposit_application_timing: AT_FINAL_BILL
+    insured_benefit_verification_required: false
+    insured_estimate_binding: true
+    variance_review_pct: 0.0
+    estimate_request_channels: *id003
+    estimate_delivery_channels: *id004
+    coverage_inquiry_required: true
+    gfe_rights_notice_required: true
+    max_lines_per_version: 30
+    diagnosis_codes_required: true
+    estimate_disclaimer: NSA_GFE_DISCLAIMER_WITH_PACKAGE_TERMS
+    recurring_reissue_on_change: false
+    dispute_hold_reason: GFE_DISPUTE_PENDING
+    expired_estimate_reissue: NEW_VERSION_AT_CURRENT_PRICES
+- name: Riverbend Self-Pay Package Price - Maternity & Delivery
+  rank: 7
+  entry_gate:
+    coverage_status: [UNINSURED, SELF_PAY_ELECTED]
+    scope: global maternity care enrolled before 28 weeks of gestation
+  parameters:
+    gfe_required: true
+    min_scheduling_lead_bd: 3
+    issue_bd_scheduled_3_to_9: 1
+    issue_bd_scheduled_10_plus: 3
+    issue_bd_on_request: 3
+    insured_estimate_turnaround_bd: 2
+    business_day_calendar: MONDAY_TO_FRIDAY_EXCLUDING_FEDERAL_HOLIDAYS
+    revision_lead_bd: 1
+    recurring_course_max_months: 12
+    ppdr_threshold_usd: 400.0
+    ppdr_initiation_days: 120
+    ppdr_admin_fee_usd: 25.0
+    ppdr_fee_credit_if_favored: true
+    ppdr_collection_hold: true
+    ppdr_eligible_coverage: *id001
+    ppdr_comparison_basis: SELF_PAY_FINAL_BILL_LESS_UNINSURED_DISCOUNT
+    record_retention_years: 6
+    includes_co_provider_lines: true
+    co_provider_roles: [CO_PROVIDER_ANESTHESIA]
+    co_provider_submission_bd: 1
+    expected_charge_basis: FIXED_PACKAGE_PRICE
+    package_price_schedule: {'59400': 9850.0, '59510': 12700.0}
+    package_includes_professional_fees: true
+    package_exclusions: [NICU_CARE, NEWBORN_PROFESSIONAL_SERVICES, MATERNAL_ICU_CARE]
+    package_upgrade_differential_usd: 2850.0
+    package_extra_day_usd: 1425.0
+    package_included_nights: 2
+    package_validity_days: 300
+    deposit_pct: 25.0
+    balance_due_days_before_service: 30
+    deposit_methods: *id002
+    full_refund_cancel_days: 30
+    late_cancellation_fee_usd: 250.0
+    medical_cancellation_fee_waived: true
+    deposit_refund_days: 30
+    deposit_refund_method: ORIGINAL_PAYMENT_METHOD
+    deposit_application_timing: AT_FINAL_BILL
+    insured_benefit_verification_required: false
+    insured_estimate_binding: true
+    variance_review_pct: 0.0
+    estimate_request_channels: *id003
+    estimate_delivery_channels: *id004
+    coverage_inquiry_required: true
+    gfe_rights_notice_required: true
+    max_lines_per_version: 30
+    diagnosis_codes_required: true
+    estimate_disclaimer: NSA_GFE_DISCLAIMER_WITH_PACKAGE_TERMS
+    recurring_reissue_on_change: false
+    dispute_hold_reason: GFE_DISPUTE_PENDING
+    expired_estimate_reissue: NEW_VERSION_AT_CURRENT_PRICES
+
+# ---- data flow (every write is an event) ----
+events:
+  - type: estimate_requested
+    target: price_estimates
+    mutation: create
+    meaning: A patient requests an estimate, or a service is scheduled for a patient who answers the coverage inquiry, opening an estimate.
+    grain: one row per scheduled service or recurring course (or unscheduled price request)
+    fields: {estimate_id: new estimate id, customer_id: the patient, variant_name: estimate type, coverage_status: coverage answer, request_channel: channel, request_date: request date, scheduling_date: scheduling date or empty, scheduled_service_date: service date or empty, primary_service_code: principal CPT/HCPCS, estimate_version: "1"}
+    triggers: []
+  - type: estimate_issued
+    target: price_estimates
+    mutation: {transition: {from: requested, to: issued}}
+    meaning: The estimate is furnished to the patient.
+    grain: one row per transaction
+    fields: {status: issued, issued_date: furnish date, estimate_total_usd: total expected charges}
+    triggers: []
+  - type: estimate_line_recorded
+    target: estimate_transactions
+    meaning: One expected-charge line of one provider or facility is recorded on an estimate version.
+    grain: one row per version per provider role per service code
+    distinguish_by: [estimate_version, provider_role, service_code]
+    fields: {estimate_version: version, provider_role: provider or facility, provider_name: name as printed, service_code: item or service, amount: expected charge, posting_date: date recorded}
+    triggers: []
+  - type: estimate_revised
+    target: price_estimates
+    mutation: update
+    meaning: A new version of the estimate is furnished after a change in scope, providers, date or recurring frequency.
+    grain: one row per transaction
+    fields: {estimate_version: new version, issued_date: furnish date of the new version, estimate_total_usd: new total, scheduled_service_date: current service date}
+    triggers: []
+  - type: estimate_deposit_collected
+    target: estimate_transactions
+    meaning: A package deposit or pre-service balance is collected from the patient.
+    grain: one row per deposit payment confirmation
+    distinguish_by: [payment_reference]
+    fields: {deposit_stage: which prepayment, payment_reference: confirmation number, amount: amount collected, posting_date: posting date}
+    account: deposit_held
+    direction: in
+    triggers: []
+  - type: estimate_deposit_applied
+    target: estimate_transactions
+    meaning: A held deposit is applied to the hospital account of the rendered service at final bill.
+    grain: one row per deposit collection applied
+    distinguish_by: [source_estimate_txn_id]
+    fields: {source_estimate_txn_id: deposit collection applied, encounter_id: hospital account, payment_reference: confirmation number of the deposit, amount: amount applied, posting_date: posting date}
+    account: deposit_held
+    direction: out
+    triggers:
+      - event: encounter:encounter_payment_posted
+        map: {payment_channel: PREPAYMENT_DEPOSIT_APPLIED, payment_reference: payment_reference, amount: amount, posting_date: posting_date}
+  - type: estimate_deposit_refunded
+    target: estimate_transactions
+    meaning: A held deposit (or the part not retained or applied) is refunded to the patient.
+    grain: one row per deposit collection refunded
+    distinguish_by: [source_estimate_txn_id]
+    fields: {source_estimate_txn_id: deposit collection refunded, refund_method: payout method, amount: amount refunded, posting_date: posting date}
+    account: deposit_held
+    direction: out
+    triggers: []
+  - type: estimate_cancellation_fee_retained
+    target: estimate_transactions
+    meaning: The late-cancellation fee is retained from a held deposit.
+    grain: one row per deposit collection charged
+    distinguish_by: [source_estimate_txn_id]
+    fields: {source_estimate_txn_id: deposit collection charged, amount: fee retained, posting_date: posting date}
+    account: deposit_held
+    direction: out
+    triggers: []
+  - type: estimate_service_completed
+    target: price_estimates
+    mutation: {transition: {from: issued, to: service_completed}}
+    meaning: The estimated service is rendered and billed; the hospital account and the initial bill date are linked.
+    grain: one row per transaction
+    fields: {status: service_completed, encounter_id: hospital account, initial_bill_date: date on the initial bill}
+    triggers: []
+  - type: estimate_dispute_opened
+    target: price_estimates
+    mutation: {transition: {from: service_completed, to: in_dispute}}
+    meaning: Notice of the patient's patient-provider dispute on Riverbend's charges is logged.
+    grain: one row per transaction
+    fields: {status: in_dispute, dispute_filed_date: initiation date on the notice}
+    triggers: []
+  - type: estimate_dispute_resolved
+    target: price_estimates
+    mutation: {transition: {from: in_dispute, to: closed}}
+    meaning: The dispute resolution entity determines the amount due, or Riverbend and the patient settle.
+    grain: one row per transaction
+    fields: {status: closed, dispute_outcome: result, closed_date: determination or settlement date}
+    triggers:
+      - event: encounter:encounter_adjustment_posted
+        when: {dispute_outcome: [PATIENT_FAVORED, SETTLED]}
+        map: {adjustment_code: PPDR_DETERMINATION_ADJUSTMENT}
+  - type: estimate_closed
+    target: price_estimates
+    mutation: {transition: [{from: issued, to: closed}, {from: service_completed, to: closed}]}
+    meaning: The estimate closes without a dispute (lapsed unused, or the dispute window passed).
+    grain: one row per transaction
+    fields: {status: closed, closed_date: closing date}
+    triggers: []
+  - type: estimate_cancelled
+    target: price_estimates
+    mutation: {transition: [{from: requested, to: cancelled}, {from: issued, to: cancelled}]}
+    meaning: The patient withdraws the request or cancels the scheduled service.
+    grain: one row per transaction
+    fields: {status: cancelled, closed_date: cancellation date}
+    triggers: []
+
+# ---- derived measures ----
+measures:
+  - id: estimate_msr_version_provider_total
+    window: the current estimate_version of the estimate
+    measure: sum of amount over estimate_line_recorded rows of that version for one provider_role (the provider's or facility's expected charges)
+  - id: estimate_msr_deposits_held
+    window: the life of the estimate up to the decision date
+    measure: per deposit collection, its amount less any application, refund or retained fee drawing on it (source_estimate_txn_id)
+
+# ---- policies ----
+policies:
+  - id: estimate_agg_multi_holding
+    subject: [estimate_requested]
+    rule: >-
+      A patient may hold any number of estimates, one per scheduled service; a recurring course of care is one estimate covering at most recurring_course_max_months months, and a new estimate is opened when the course runs past that period. A change to an already estimated service is a new version of the same estimate, never a second estimate. An unscheduled price request becomes the estimate of the service once that service is scheduled.
+    eligibility: []
+    params: {max_per_customer: null, recurring_course_max_months: "=recurring_course_max_months"}
+  - id: estimate_agg_deposit_application
+    subject: [estimate_deposit_applied, estimate_deposit_refunded]
+    rule: >-
+      All deposits held on one estimate are combined when the rendered service is billed (deposit_application_timing): each deposit collection is applied to the linked hospital account, oldest collection first, until the account's patient balance after the package or uninsured pricing is covered; whatever remains of the deposits after that is refunded. A deposit collection is applied at most once, and what is left of a collection after an application or a retained fee is the only amount that may be refunded from it (estimate_msr_deposits_held). Deposits are never moved to a different estimate or to an unrelated hospital account.
+    eligibility:
+      - id: one_application_per_deposit
+        applies_to: [estimate_deposit_applied]
+        kind: dedup
+        condition: A deposit collection is applied at most once, and what is left of a collection after an application or a retained fee is the only amount that may be refunded from it (estimate_msr_deposits_held).
+        evidence_fields: [estimate_transactions.source_estimate_txn_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[estimate_transactions.source_estimate_txn_id]]
+          action_bindings: {estimate_transactions.source_estimate_txn_id: source_estimate_txn_id}
+        dedup_contract:
+          table: estimate_transactions
+          mode: separate_record
+          object_bindings: {source_estimate_txn_id: source_estimate_txn_id}
+          duplicate_filters: {event_type: [estimate_deposit_applied]}
+          distinct_fields: []
+    params: {deposit_application_timing: "=deposit_application_timing"}
+    measures: [estimate_msr_deposits_held]
+  - id: estimate_gfe_issuance
+    subject: [estimate_requested, estimate_issued]
+    rule: >-
+      At scheduling, and whenever a patient asks about cost, the scheduler asks whether the patient has coverage and whether they intend to have it billed (coverage_inquiry_required) and gives the notice of the right to a good faith estimate where gfe_rights_notice_required is true. A patient who is UNINSURED, or who is insured but asks not to have the claim submitted (SELF_PAY_ELECTED), receives a good faith estimate on tiers where gfe_required is true. A good faith estimate is furnished within issue_bd_scheduled_10_plus business days after the scheduling date when the service is scheduled at least 10 business days ahead, within issue_bd_scheduled_3_to_9 business day when it is scheduled at least min_scheduling_lead_bd but fewer than 10 business days ahead, and within issue_bd_on_request business days after an unscheduled request; business days follow business_day_calendar. A service scheduled fewer than min_scheduling_lead_bd business days ahead does not require one, but one is still furnished on request. An insured patient who has the claim submitted receives the Insured Patient Out-of-Pocket Estimate within insured_estimate_turnaround_bd business days, only after benefits are verified (insured_benefit_verification_required). The estimate is delivered on paper or electronically as the patient chooses (estimate_delivery_channels) and is retained for record_retention_years years.
+    eligibility: []
+    params:
+      per_tier:
+        "Self-Pay Good Faith Estimate - Single Scheduled Service": {gfe_required: "=gfe_required", rights_notice: "=gfe_rights_notice_required", benefit_verification: "=insured_benefit_verification_required"}
+        "Self-Pay Good Faith Estimate - Procedure with Co-Providers": {gfe_required: "=gfe_required", rights_notice: "=gfe_rights_notice_required", benefit_verification: "=insured_benefit_verification_required"}
+        "Self-Pay Good Faith Estimate - Recurring Course of Care": {gfe_required: "=gfe_required", rights_notice: "=gfe_rights_notice_required", benefit_verification: "=insured_benefit_verification_required"}
+        "Insured Patient Out-of-Pocket Estimate": {gfe_required: "=gfe_required", rights_notice: "=gfe_rights_notice_required", benefit_verification: "=insured_benefit_verification_required"}
+        "Riverbend Self-Pay Package Price - Imaging & Diagnostics": {gfe_required: "=gfe_required", rights_notice: "=gfe_rights_notice_required", benefit_verification: "=insured_benefit_verification_required"}
+        "Riverbend Self-Pay Package Price - Outpatient Surgery": {gfe_required: "=gfe_required", rights_notice: "=gfe_rights_notice_required", benefit_verification: "=insured_benefit_verification_required"}
+        "Riverbend Self-Pay Package Price - Maternity & Delivery": {gfe_required: "=gfe_required", rights_notice: "=gfe_rights_notice_required", benefit_verification: "=insured_benefit_verification_required"}
+      min_scheduling_lead_bd: "=min_scheduling_lead_bd"
+      issue_bd_scheduled_3_to_9: "=issue_bd_scheduled_3_to_9"
+      issue_bd_scheduled_10_plus: "=issue_bd_scheduled_10_plus"
+      issue_bd_on_request: "=issue_bd_on_request"
+      insured_estimate_turnaround_bd: "=insured_estimate_turnaround_bd"
+      business_day_calendar: "=business_day_calendar"
+      coverage_inquiry_required: "=coverage_inquiry_required"
+      record_retention_years: "=record_retention_years"
+      estimate_delivery_channels: "=estimate_delivery_channels"
+  - id: estimate_content_and_lines
+    subject: [estimate_line_recorded, estimate_issued, estimate_revised]
+    rule: >-
+      Each estimate version lists, per provider or facility, every expected item or service with its service code and expected charge, together with the expected diagnosis codes where diagnosis_codes_required is true and the standard disclaimer (estimate_disclaimer). Riverbend's own expected charges follow expected_charge_basis: on self-pay good faith estimates, gross charges less the uninsured discount of the account type the service will be billed under; on package tiers, the package price for the service code from package_price_schedule (including Riverbend Medical Group professional fees where package_includes_professional_fees is true); on insured estimates, the contracted rate applied to the patient's remaining deductible, coinsurance and copay. Where includes_co_provider_lines is true, the expected charges of each role in co_provider_roles are requested from the co-provider, who has co_provider_submission_bd business day to send them, and are listed under the co-provider's own name. A version carries at most max_lines_per_version lines; a line is recorded once per version, provider role and service code. The estimate total is the sum of all lines of the current version (estimate_msr_version_provider_total per role).
+    eligibility:
+      - id: one_line_per_code
+        applies_to: [estimate_line_recorded]
+        kind: dedup
+        condition: A version carries at most max_lines_per_version lines; a line is recorded once per version, provider role and service code.
+        evidence_fields: [estimate_transactions.estimate_id, estimate_transactions.estimate_version, estimate_transactions.provider_role, estimate_transactions.service_code]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[estimate_transactions.estimate_id]]
+          action_bindings: {estimate_transactions.estimate_id: estimate_id}
+        dedup_contract:
+          table: estimate_transactions
+          mode: separate_record
+          object_bindings: {estimate_id: estimate_id}
+          duplicate_filters: {event_type: [estimate_line_recorded]}
+          distinct_fields: [estimate_version, provider_role, service_code]
+    params:
+      per_tier:
+        "Self-Pay Good Faith Estimate - Single Scheduled Service": {charge_basis: "=expected_charge_basis", package_prices: "=package_price_schedule", includes_professional: "=package_includes_professional_fees", co_provider_lines: "=includes_co_provider_lines", co_provider_roles: "=co_provider_roles", max_lines: "=max_lines_per_version", diagnosis_codes: "=diagnosis_codes_required", disclaimer: "=estimate_disclaimer"}
+        "Self-Pay Good Faith Estimate - Procedure with Co-Providers": {charge_basis: "=expected_charge_basis", package_prices: "=package_price_schedule", includes_professional: "=package_includes_professional_fees", co_provider_lines: "=includes_co_provider_lines", co_provider_roles: "=co_provider_roles", max_lines: "=max_lines_per_version", diagnosis_codes: "=diagnosis_codes_required", disclaimer: "=estimate_disclaimer"}
+        "Self-Pay Good Faith Estimate - Recurring Course of Care": {charge_basis: "=expected_charge_basis", package_prices: "=package_price_schedule", includes_professional: "=package_includes_professional_fees", co_provider_lines: "=includes_co_provider_lines", co_provider_roles: "=co_provider_roles", max_lines: "=max_lines_per_version", diagnosis_codes: "=diagnosis_codes_required", disclaimer: "=estimate_disclaimer"}
+        "Insured Patient Out-of-Pocket Estimate": {charge_basis: "=expected_charge_basis", package_prices: "=package_price_schedule", includes_professional: "=package_includes_professional_fees", co_provider_lines: "=includes_co_provider_lines", co_provider_roles: "=co_provider_roles", max_lines: "=max_lines_per_version", diagnosis_codes: "=diagnosis_codes_required", disclaimer: "=estimate_disclaimer"}
+        "Riverbend Self-Pay Package Price - Imaging & Diagnostics": {charge_basis: "=expected_charge_basis", package_prices: "=package_price_schedule", includes_professional: "=package_includes_professional_fees", co_provider_lines: "=includes_co_provider_lines", co_provider_roles: "=co_provider_roles", max_lines: "=max_lines_per_version", diagnosis_codes: "=diagnosis_codes_required", disclaimer: "=estimate_disclaimer"}
+        "Riverbend Self-Pay Package Price - Outpatient Surgery": {charge_basis: "=expected_charge_basis", package_prices: "=package_price_schedule", includes_professional: "=package_includes_professional_fees", co_provider_lines: "=includes_co_provider_lines", co_provider_roles: "=co_provider_roles", max_lines: "=max_lines_per_version", diagnosis_codes: "=diagnosis_codes_required", disclaimer: "=estimate_disclaimer"}
+        "Riverbend Self-Pay Package Price - Maternity & Delivery": {charge_basis: "=expected_charge_basis", package_prices: "=package_price_schedule", includes_professional: "=package_includes_professional_fees", co_provider_lines: "=includes_co_provider_lines", co_provider_roles: "=co_provider_roles", max_lines: "=max_lines_per_version", diagnosis_codes: "=diagnosis_codes_required", disclaimer: "=estimate_disclaimer"}
+      co_provider_submission_bd: "=co_provider_submission_bd"
+    measures: [estimate_msr_version_provider_total]
+  - id: estimate_revision
+    subject: [estimate_revised, estimate_line_recorded]
+    rule: >-
+      When the scheduled items, the providers, the service date or (where recurring_reissue_on_change is true) the frequency of a recurring course change after an estimate was furnished, a new version is furnished no later than revision_lead_bd business day before the scheduled service; a change made on the day of service is furnished on that day. A service performed after package_validity_days from the issued date of the quoted version is re-estimated as a new version at current prices (expired_estimate_reissue). Only the latest version furnished before the service is the estimate compared with the bill.
+    eligibility: []
+    params:
+      per_tier:
+        "Self-Pay Good Faith Estimate - Single Scheduled Service": {validity_days: "=package_validity_days", recurring_reissue: "=recurring_reissue_on_change"}
+        "Self-Pay Good Faith Estimate - Procedure with Co-Providers": {validity_days: "=package_validity_days", recurring_reissue: "=recurring_reissue_on_change"}
+        "Self-Pay Good Faith Estimate - Recurring Course of Care": {validity_days: "=package_validity_days", recurring_reissue: "=recurring_reissue_on_change"}
+        "Insured Patient Out-of-Pocket Estimate": {validity_days: "=package_validity_days", recurring_reissue: "=recurring_reissue_on_change"}
+        "Riverbend Self-Pay Package Price - Imaging & Diagnostics": {validity_days: "=package_validity_days", recurring_reissue: "=recurring_reissue_on_change"}
+        "Riverbend Self-Pay Package Price - Outpatient Surgery": {validity_days: "=package_validity_days", recurring_reissue: "=recurring_reissue_on_change"}
+        "Riverbend Self-Pay Package Price - Maternity & Delivery": {validity_days: "=package_validity_days", recurring_reissue: "=recurring_reissue_on_change"}
+      revision_lead_bd: "=revision_lead_bd"
+      expired_estimate_reissue: "=expired_estimate_reissue"
+  - id: estimate_ppdr_eligibility
+    subject: [estimate_dispute_opened]
+    rule: >-
+      The patient-provider dispute process is available only to an estimate whose coverage_status is in ppdr_eligible_coverage. A dispute is eligible only when the patient initiated it no later than the dispute window counted from the date on the initial bill. Count calendar days starting the day after initial_bill_date; a dispute initiated on day ppdr_initiation_days itself is timely. It is further available only when Riverbend's billed charges for the service exceed Riverbend's expected charges on the latest version furnished by at least ppdr_threshold_usd, compared per provider or facility: Riverbend's billed charges are the self-pay final bill less the uninsured discount (ppdr_comparison_basis), and its expected charges are the sum of the CONVENING_FACILITY and CONVENING_PROFESSIONAL lines of that version. Co-providers' bills are disputed with those co-providers, not with Riverbend. The patient pays the ppdr_admin_fee_usd to the dispute resolution entity. While the dispute is pending, the linked hospital account is placed on a billing hold with dispute_hold_reason and receives no escalating statements, final notice or collection action (ppdr_collection_hold); the patient may still pay undisputed amounts.
+    eligibility:
+      - id: dispute_window
+        applies_to: [estimate_dispute_opened]
+        kind: time
+        condition: A dispute is eligible only when the patient initiated it no later than the dispute window counted from the date on the initial bill.
+        evidence_fields: [price_estimates.initial_bill_date, price_estimates.dispute_filed_date, price_estimates.estimate_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[price_estimates.estimate_id]]
+          action_bindings: {price_estimates.estimate_id: estimate_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the date on the initial bill
+          anchor_source: price_estimates.initial_bill_date
+          relation: not_after
+          duration_source: variants.ppdr_initiation_days
+          unit: calendar_days
+          counting_rule: Count calendar days starting the day after initial_bill_date; a dispute initiated on day ppdr_initiation_days itself is timely.
+          boundary: inclusive
+      - id: eligible_coverage
+        applies_to: [estimate_dispute_opened]
+        kind: authorization
+        condition: The patient-provider dispute process is available only to an estimate whose coverage_status is in ppdr_eligible_coverage.
+        evidence_fields: [price_estimates.coverage_status, price_estimates.estimate_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[price_estimates.estimate_id]]
+          action_bindings: {price_estimates.estimate_id: estimate_id}
+    params:
+      ppdr_threshold_usd: "=ppdr_threshold_usd"
+      ppdr_initiation_days: "=ppdr_initiation_days"
+      ppdr_admin_fee_usd: "=ppdr_admin_fee_usd"
+      ppdr_eligible_coverage: "=ppdr_eligible_coverage"
+      ppdr_comparison_basis: "=ppdr_comparison_basis"
+      ppdr_collection_hold: "=ppdr_collection_hold"
+      dispute_hold_reason: "=dispute_hold_reason"
+    measures: [estimate_msr_version_provider_total]
+  - id: estimate_ppdr_outcome
+    subject: [estimate_dispute_resolved]
+    rule: >-
+      When the dispute resolution entity determines an amount below Riverbend's billed charges (PATIENT_FAVORED), the patient owes the determined amount reduced further by ppdr_admin_fee_usd where ppdr_fee_credit_if_favored is true, and the difference from the billed charges posts to the hospital account as a PPDR_DETERMINATION_ADJUSTMENT. When the entity upholds the billed charges (PROVIDER_FAVORED), the patient owes the billed charges and no adjustment posts. A settlement agreed between Riverbend and the patient before the determination (SETTLED) closes the dispute at the settled amount, the difference from the billed charges posting as the adjustment, and the fee credit does not apply. A dispute the entity dismisses as ineligible (DISMISSED_INELIGIBLE) changes nothing. In every outcome the billing hold is released and the remaining balance resumes the statement cycle from where it stopped.
+    eligibility: []
+    params: {ppdr_admin_fee_usd: "=ppdr_admin_fee_usd", ppdr_fee_credit_if_favored: "=ppdr_fee_credit_if_favored"}
+  - id: estimate_package_pricing
+    subject: [estimate_deposit_collected, estimate_issued, estimate_service_completed]
+    rule: >-
+      A package price is all-inclusive for the listed service code (insured_estimate_binding is true on package tiers): the patient is billed the package price and nothing else for the package, except the package_exclusions, each billed at actual charges less the uninsured discount; an upgrade within the maternity package (cesarean delivery) adds package_upgrade_differential_usd, and each overnight stay beyond package_included_nights adds package_extra_day_usd. At scheduling the patient pays a deposit of deposit_pct of the package price, rounded half-up to the cent; on tiers with balance_due_days_before_service above zero, the rest of the package price is paid no later than that many calendar days before the scheduled service date as a BALANCE_BEFORE_SERVICE deposit. Deposits are accepted through deposit_methods. A package service is billed as a PACKAGE_PRICE_ADJUSTMENT bringing the account's patient balance down to the package price, never through the uninsured discount. Good faith estimates on non-package tiers are not binding prices; Riverbend bills actual charges less the uninsured discount, and the dispute process protects the patient against a large excess.
+    eligibility: []
+    params:
+      per_tier:
+        "Self-Pay Good Faith Estimate - Single Scheduled Service": {binding: "=insured_estimate_binding", exclusions: "=package_exclusions", upgrade_usd: "=package_upgrade_differential_usd", extra_day_usd: "=package_extra_day_usd", included_nights: "=package_included_nights", deposit_pct: "=deposit_pct", balance_due_days: "=balance_due_days_before_service"}
+        "Self-Pay Good Faith Estimate - Procedure with Co-Providers": {binding: "=insured_estimate_binding", exclusions: "=package_exclusions", upgrade_usd: "=package_upgrade_differential_usd", extra_day_usd: "=package_extra_day_usd", included_nights: "=package_included_nights", deposit_pct: "=deposit_pct", balance_due_days: "=balance_due_days_before_service"}
+        "Self-Pay Good Faith Estimate - Recurring Course of Care": {binding: "=insured_estimate_binding", exclusions: "=package_exclusions", upgrade_usd: "=package_upgrade_differential_usd", extra_day_usd: "=package_extra_day_usd", included_nights: "=package_included_nights", deposit_pct: "=deposit_pct", balance_due_days: "=balance_due_days_before_service"}
+        "Insured Patient Out-of-Pocket Estimate": {binding: "=insured_estimate_binding", exclusions: "=package_exclusions", upgrade_usd: "=package_upgrade_differential_usd", extra_day_usd: "=package_extra_day_usd", included_nights: "=package_included_nights", deposit_pct: "=deposit_pct", balance_due_days: "=balance_due_days_before_service"}
+        "Riverbend Self-Pay Package Price - Imaging & Diagnostics": {binding: "=insured_estimate_binding", exclusions: "=package_exclusions", upgrade_usd: "=package_upgrade_differential_usd", extra_day_usd: "=package_extra_day_usd", included_nights: "=package_included_nights", deposit_pct: "=deposit_pct", balance_due_days: "=balance_due_days_before_service"}
+        "Riverbend Self-Pay Package Price - Outpatient Surgery": {binding: "=insured_estimate_binding", exclusions: "=package_exclusions", upgrade_usd: "=package_upgrade_differential_usd", extra_day_usd: "=package_extra_day_usd", included_nights: "=package_included_nights", deposit_pct: "=deposit_pct", balance_due_days: "=balance_due_days_before_service"}
+        "Riverbend Self-Pay Package Price - Maternity & Delivery": {binding: "=insured_estimate_binding", exclusions: "=package_exclusions", upgrade_usd: "=package_upgrade_differential_usd", extra_day_usd: "=package_extra_day_usd", included_nights: "=package_included_nights", deposit_pct: "=deposit_pct", balance_due_days: "=balance_due_days_before_service"}
+      deposit_methods: "=deposit_methods"
+    formula:
+      deposit_due: round(estimate_total_usd * deposit_pct / 100, 2)
+      pre_service_balance_due: estimate_total_usd - deposit_due
+  - id: estimate_cancellation_and_deposit_refund
+    subject: [estimate_cancelled, estimate_deposit_refunded, estimate_cancellation_fee_retained]
+    rule: >-
+      Only the patient can cancel a requested estimate or a scheduled package service. A cancellation made at least full_refund_cancel_days calendar days before the scheduled service date (counting back from the service date, the cancellation date being on or before that day) refunds every deposit in full. A later cancellation retains late_cancellation_fee_usd from the deposits, never more than the deposits held, unless the cancelling physician documents a medical reason (medical_cancellation_fee_waived); the remainder is refunded. The fee is retained once, from the most recent deposit collection that can cover it. Each deposit collection is refunded at most once, by the original payment method (deposit_refund_method) within deposit_refund_days calendar days of the cancellation. A Riverbend-initiated reschedule or cancellation never incurs the fee.
+    eligibility:
+      - id: one_refund_per_deposit
+        applies_to: [estimate_deposit_refunded]
+        kind: dedup
+        condition: Each deposit collection is refunded at most once, by the original payment method (deposit_refund_method) within deposit_refund_days calendar days of the cancellation.
+        evidence_fields: [estimate_transactions.source_estimate_txn_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[estimate_transactions.source_estimate_txn_id]]
+          action_bindings: {estimate_transactions.source_estimate_txn_id: source_estimate_txn_id}
+        dedup_contract:
+          table: estimate_transactions
+          mode: separate_record
+          object_bindings: {source_estimate_txn_id: source_estimate_txn_id}
+          duplicate_filters: {event_type: [estimate_deposit_refunded]}
+          distinct_fields: []
+    params:
+      per_tier:
+        "Self-Pay Good Faith Estimate - Single Scheduled Service": {full_refund_days: "=full_refund_cancel_days", late_fee_usd: "=late_cancellation_fee_usd"}
+        "Self-Pay Good Faith Estimate - Procedure with Co-Providers": {full_refund_days: "=full_refund_cancel_days", late_fee_usd: "=late_cancellation_fee_usd"}
+        "Self-Pay Good Faith Estimate - Recurring Course of Care": {full_refund_days: "=full_refund_cancel_days", late_fee_usd: "=late_cancellation_fee_usd"}
+        "Insured Patient Out-of-Pocket Estimate": {full_refund_days: "=full_refund_cancel_days", late_fee_usd: "=late_cancellation_fee_usd"}
+        "Riverbend Self-Pay Package Price - Imaging & Diagnostics": {full_refund_days: "=full_refund_cancel_days", late_fee_usd: "=late_cancellation_fee_usd"}
+        "Riverbend Self-Pay Package Price - Outpatient Surgery": {full_refund_days: "=full_refund_cancel_days", late_fee_usd: "=late_cancellation_fee_usd"}
+        "Riverbend Self-Pay Package Price - Maternity & Delivery": {full_refund_days: "=full_refund_cancel_days", late_fee_usd: "=late_cancellation_fee_usd"}
+      medical_cancellation_fee_waived: "=medical_cancellation_fee_waived"
+      deposit_refund_days: "=deposit_refund_days"
+      deposit_refund_method: "=deposit_refund_method"
+    formula:
+      fee_retained: min(late_cancellation_fee_usd, deposit_held_usd)
+      refund_due: deposit_held_usd - fee_retained
+  - id: estimate_insured_and_variance_review
+    subject: [estimate_issued, estimate_closed, estimate_service_completed]
+    rule: >-
+      An Insured Patient Out-of-Pocket Estimate is an informational estimate based on the benefits verified on the issue date; it does not limit what the patient may be billed (insured_estimate_binding), and the patient-provider dispute process does not apply to it. After any rendered estimated service is billed, when the patient's actual liability exceeds the estimate total by more than variance_review_pct percent, Patient Financial Services reviews the variance with the patient before the second statement. An estimate with no dispute closes once ppdr_initiation_days have passed after the initial bill date; an estimate never used lapses after package_validity_days from its issued date.
+    eligibility: []
+    params:
+      per_tier:
+        "Self-Pay Good Faith Estimate - Single Scheduled Service": {variance_review_pct: "=variance_review_pct", validity_days: "=package_validity_days", binding: "=insured_estimate_binding"}
+        "Self-Pay Good Faith Estimate - Procedure with Co-Providers": {variance_review_pct: "=variance_review_pct", validity_days: "=package_validity_days", binding: "=insured_estimate_binding"}
+        "Self-Pay Good Faith Estimate - Recurring Course of Care": {variance_review_pct: "=variance_review_pct", validity_days: "=package_validity_days", binding: "=insured_estimate_binding"}
+        "Insured Patient Out-of-Pocket Estimate": {variance_review_pct: "=variance_review_pct", validity_days: "=package_validity_days", binding: "=insured_estimate_binding"}
+        "Riverbend Self-Pay Package Price - Imaging & Diagnostics": {variance_review_pct: "=variance_review_pct", validity_days: "=package_validity_days", binding: "=insured_estimate_binding"}
+        "Riverbend Self-Pay Package Price - Outpatient Surgery": {variance_review_pct: "=variance_review_pct", validity_days: "=package_validity_days", binding: "=insured_estimate_binding"}
+        "Riverbend Self-Pay Package Price - Maternity & Delivery": {variance_review_pct: "=variance_review_pct", validity_days: "=package_validity_days", binding: "=insured_estimate_binding"}
+      ppdr_initiation_days: "=ppdr_initiation_days"
+
+# ---- extended policies (good_faith_estimates_and_disputes) ----
+extended_policies:
+- id: estimate_ext_surgical_deposit
+  base_policy_refs:
+  - estimate_package_pricing
+  overwrite:
+  - base_policy: estimate_package_pricing
+    superseded_clause: >-
+      At scheduling the patient pays a deposit of deposit_pct of the package price, rounded half-up to the cent
+    replaced_by: >-
+      For an initial deposit on a Riverbend Self-Pay Package Price - Outpatient Surgery estimate this rule settles the amount,
+      and only for such a deposit; the enrollment deposit on a maternity and delivery package is settled by the enrollment-deposit
+      rule, and on every other package tier the deposit paid at scheduling stays the tier's deposit percentage of the package
+      price, rounded half-up to the cent.
+  trigger: on_request
+  subject:
+  - estimate_deposit_collected
+  computes: amount
+  target_tool: pay_surgery_package_deposit_c16ec91c
+  params:
+    pct_cap: 100
+    lead_near_days: 7
+    lead_mid_days: 20
+    lead_near_pct: 100
+    lead_mid_pct: 75
+    late_far_days: 60
+    late_mid_days: 30
+    late_pts_far: 10
+    late_pts_mid: 5
+    moved_pts_three: 10
+    moved_pts_two: 5
+    missed_pts_two: 10
+    missed_pts_one: 5
+  rule: >-
+    For an initial deposit on a Riverbend Self-Pay Package Price - Outpatient Surgery estimate this rule settles the amount,
+    and only for such a deposit; the enrollment deposit on a maternity and delivery package is settled by the enrollment-deposit
+    rule, and on every other package tier the deposit paid at scheduling stays the tier's deposit percentage of the package
+    price, rounded half-up to the cent. A surgery booking whose patient's award covers the scheduled service date and is at
+    the Riverbend Presumptive Charity Care or Riverbend Full Charity Care (0-200% FPL) tier, or carries a hardship liability
+    cap with no cap left owes no initial deposit and is outside this rule. For the initial deposit, the patient's award is
+    the patient's approved financial assistance case, a patient holding at most one approved case at a time; the award covers
+    the scheduled service date when that date falls within its award period, which runs from its award start date through
+    its award end date, both counted; the award's cap left is its hardship liability cap less the liabilities already booked
+    on encounters under that case. The initial deposit on a self-pay outpatient surgery package is the tier's deposit percentage
+    of the surgical package price, rounded half-up to the cent. The surgical package price the initial deposit is figured
+    on is the sum of the Riverbend facility line and the Riverbend professional line that carry the package's principal service
+    code on the current version of the estimate; co-provider lines, implant lines and every other line of that version are
+    not part of it. Where the adjustments described below apply, a figure they select takes the place of the surgical package
+    price as the amount the percentage acts on, a percentage they select takes the place of the tier's deposit percentage,
+    every percentage-point addition is made to that percentage before it is applied, the percentage after the additions is
+    never more than one hundred, the product is rounded half-up to the cent once (an exact half cent goes up), and the initial
+    deposit is never more than the amount the percentage acts on. Assistance base for the initial deposit: when the covering
+    award's tier discount is above zero and below one hundred percent, the initial deposit is figured on the surgical package
+    price reduced by that discount percentage; when the covering award carries no tier discount and has cap left, it is figured
+    on the smaller of the surgical package price and the cap left; in every other case it is figured on the surgical package
+    price. Days-to-surgery share for the initial deposit: the days to surgery run from today's date to the scheduled service
+    date, today not counted and the service date counted; seven or fewer days to surgery, a passed service date included,
+    set the deposit percentage at one hundred, eight to twenty days set it at seventy-five, and twenty-one or more days keep
+    the tier's deposit percentage. Late-deposit points for the initial deposit: the days since scheduling run from the scheduling
+    date of the estimate to today's date, the scheduling date not counted and today counted; sixty or more days since scheduling
+    add ten percentage points, thirty to fifty-nine add five, and fewer than thirty, a scheduling date later than today's
+    date counting as zero days, add none. Booking-history points for the initial deposit: the versions furnished are counted
+    as the versions of the estimate that carry a Riverbend facility line for the principal service code; three or more versions
+    add ten percentage points, exactly two add five, and one, or none recorded, adds none. Missed-visit points for the initial
+    deposit: the missed-appointment fees assessed on the patient's Riverbend appointments are counted when the assessment
+    date lies fewer than twelve whole months before today's date (a month counts once its day of the month is reached, so
+    the date exactly twelve months back is outside), a fee later waived still counting and a fee dated after today's date
+    not counting; two or more such fees add ten percentage points, exactly one adds five, and none adds no points.
+  prerequisite: []
+  cross_category:
+  - category: assist
+    as: branch
+    reads:
+    - status
+    - discount_pct
+    - hardship_liability_cap_usd
+    - fap_case_id
+    - award_start_date
+    - award_end_date
+    - assistance_transactions.fap_liability_usd
+    note: >-
+      aid_basis reads the approved financial assistance case, its tier discount, award dates and hardship cap less the liability
+      already booked.
+  - category: visit
+    as: history
+    reads:
+    - appointment_transactions.event_type
+    - appointment_transactions.posting_date
+    note: >-
+      missed_visit_points counts the missed-appointment fees assessed in the last twelve months.
+  compute:
+  - version: F('estimate_version')
+  - pkg_facility: >-
+      SUM('estimate_transactions','amount', event_type='estimate_line_recorded', estimate_version=version, provider_role='CONVENING_FACILITY',
+      service_code=F('primary_service_code'))
+  - pkg_professional: >-
+      SUM('estimate_transactions','amount', event_type='estimate_line_recorded', estimate_version=version, provider_role='CONVENING_PROFESSIONAL',
+      service_code=F('primary_service_code'))
+  - package_price: pkg_facility + pkg_professional
+  - aid_case: CFIELD('assist','fap_case_id', status='approved')
+  - aid_tier: CFIELD('assist','variant_name', status='approved') or ''
+  - aid_cap: CFIELD('assist','hardship_liability_cap_usd', status='approved') or 0
+  - aid_cap_used: >-
+      XSUM('assist','assistance_transactions','fap_liability_usd', fap_case_id=aid_case, event_type='assist_encounter_applied')
+  - aid_cap_left: MX(0, aid_cap - aid_cap_used)
+  - aid_start: CFIELD('assist','award_start_date', status='approved')
+  - aid_end: CFIELD('assist','award_end_date', status='approved')
+  - aid_covers: >-
+      1 if (aid_start and aid_end and DAYS(aid_start, F('scheduled_service_date')) >= 0 and DAYS(F('scheduled_service_date'),
+      aid_end) >= 0) else 0
+  - aid_discount: CPARAM('assist','discount_pct', status='approved') or 0
+  - aid_basis: >-
+      package_price * (100 - aid_discount) / 100 if (aid_covers == 1 and aid_discount > 0 and aid_discount < 100) else (MN(package_price,
+      aid_cap_left) if (aid_covers == 1 and aid_discount == 0 and aid_cap_left > 0) else package_price)
+  - no_payment_owed: >-
+      1 if (aid_covers == 1 and (aid_tier == 'Riverbend Presumptive Charity Care' or aid_tier == 'Riverbend Full Charity Care
+      (0-200% FPL)' or (aid_cap > 0 and aid_cap_left <= 0))) else 0
+  - days_to_surgery: DAYS(NOW, F('scheduled_service_date'))
+  - lead_share_pct: >-
+      K('lead_near_pct') if days_to_surgery <= K('lead_near_days') else (K('lead_mid_pct') if days_to_surgery <= K('lead_mid_days')
+      else P('deposit_pct'))
+  - days_since_scheduling: DAYS(F('scheduling_date'), NOW)
+  - late_deposit_points: >-
+      K('late_pts_far') if days_since_scheduling >= K('late_far_days') else (K('late_pts_mid') if days_since_scheduling >=
+      K('late_mid_days') else 0)
+  - versions_furnished: >-
+      COUNT('estimate_transactions', event_type='estimate_line_recorded', provider_role='CONVENING_FACILITY', service_code=F('primary_service_code'))
+  - moved_booking_points: >-
+      K('moved_pts_three') if versions_furnished >= 3 else (K('moved_pts_two') if versions_furnished == 2 else 0)
+  - missed_fees_12m: >-
+      XCOUNT('visit','appointment_transactions', within_months=12, date_field='posting_date', event_type='visit_fee_assessed')
+  - missed_visit_points: >-
+      K('missed_pts_two') if missed_fees_12m >= 2 else (K('missed_pts_one') if missed_fees_12m == 1 else 0)
+  - deposit_pct: >-
+      MN(K('pct_cap'), lead_share_pct + late_deposit_points + moved_booking_points + missed_visit_points)
+  - result: >-
+      0 if no_payment_owed == 1 else MN(aid_basis, RND(aid_basis * deposit_pct / 100 + 0.000001, 2))
+  compute_basis:
+    version: on the current version of the estimate
+    pkg_facility: >-
+      the sum of the Riverbend facility line and the Riverbend professional line that carry the package's principal service
+      code on the current version of the estimate
+    pkg_professional: >-
+      the sum of the Riverbend facility line and the Riverbend professional line that carry the package's principal service
+      code on the current version of the estimate
+    package_price: >-
+      co-provider lines, implant lines and every other line of that version are not part of it
+    aid_basis: >-
+      Assistance base for the initial deposit: when the covering award's tier discount is above zero and below one hundred
+      percent, the initial deposit is figured on the surgical package price reduced by that discount percentage; when the
+      covering award carries no tier discount and has cap left, it is figured on the smaller of the surgical package price
+      and the cap left; in every other case it is figured on the surgical package price.
+    no_payment_owed: >-
+      is at the Riverbend Presumptive Charity Care or Riverbend Full Charity Care (0-200% FPL) tier, or carries a hardship
+      liability cap with no cap left
+    days_to_surgery: >-
+      the days to surgery run from today's date to the scheduled service date, today not counted and the service date counted
+    lead_share_pct: >-
+      seven or fewer days to surgery, a passed service date included, set the deposit percentage at one hundred, eight to
+      twenty days set it at seventy-five, and twenty-one or more days keep the tier's deposit percentage
+    days_since_scheduling: >-
+      the days since scheduling run from the scheduling date of the estimate to today's date, the scheduling date not counted
+      and today counted
+    late_deposit_points: >-
+      sixty or more days since scheduling add ten percentage points, thirty to fifty-nine add five, and fewer than thirty,
+      a scheduling date later than today's date counting as zero days, add none
+    versions_furnished: >-
+      the versions furnished are counted as the versions of the estimate that carry a Riverbend facility line for the principal
+      service code
+    moved_booking_points: >-
+      three or more versions add ten percentage points, exactly two add five, and one, or none recorded, adds none
+    missed_fees_12m: >-
+      the missed-appointment fees assessed on the patient's Riverbend appointments are counted when the assessment date lies
+      fewer than twelve whole months before today's date (a month counts once its day of the month is reached, so the date
+      exactly twelve months back is outside), a fee later waived still counting
+    missed_visit_points: >-
+      two or more such fees add ten percentage points, exactly one adds five, and none adds no points
+    deposit_pct: >-
+      every percentage-point addition is made to that percentage before it is applied, the percentage after the additions
+      is never more than one hundred
+    result: >-
+      the product is rounded half-up to the cent once (an exact half cent goes up), and the initial deposit is never more
+      than the amount the percentage acts on
+    aid_case: >-
+      the patient's award is the patient's approved financial assistance case, a patient holding at most one approved case
+      at a time
+    aid_tier: >-
+      at the Riverbend Presumptive Charity Care or Riverbend Full Charity Care (0-200% FPL) tier
+    aid_cap: >-
+      the award's cap left is its hardship liability cap less the liabilities already booked on encounters under that case
+    aid_cap_used: >-
+      the award's cap left is its hardship liability cap less the liabilities already booked on encounters under that case
+    aid_cap_left: >-
+      the award's cap left is its hardship liability cap less the liabilities already booked on encounters under that case
+    aid_start: which runs from its award start date through its award end date, both counted
+    aid_end: which runs from its award start date through its award end date, both counted
+    aid_covers: >-
+      the scheduled service date when that date falls within its award period, which runs from its award start date through
+      its award end date, both counted
+    aid_discount: tier discount is above zero and below one hundred percent
+  factors:
+  - id: aid_basis
+    effect: method
+    decides: aid_basis
+    bindings:
+    - aid_discount
+    - aid_basis
+    ladder:
+    - when: >-
+        the patient's award covers the date AND its tier discount is above zero and below one hundred percent
+      method: >-
+        the amount the initial deposit is figured on is the package price reduced by the tier discount percentage
+    - when: >-
+        the patient's award covers the date AND it carries no tier discount AND it has cap left
+      method: >-
+        the amount the initial deposit is figured on is the smaller of the package price and the cap less the liability already
+        booked under the award
+    - when: otherwise
+      method: the amount the initial deposit is figured on is the package price
+    baseline:
+      aid_basis: package_price
+    evidence:
+    - cross_category
+    - date
+    cross_difficulty: assist
+  - id: lead_share_pct
+    effect: parameter
+    decides: lead_share_pct
+    bindings:
+    - days_to_surgery
+    - lead_share_pct
+    ladder:
+    - when: seven or fewer days to surgery
+      value: K('lead_near_pct') = 100 percent
+    - when: eight to twenty days to surgery
+      value: K('lead_mid_pct') = 75 percent
+    - when: otherwise (twenty-one or more days)
+      value: P('deposit_pct') = the tier's deposit percentage (50)
+    baseline:
+      lead_share_pct: P('deposit_pct')
+    evidence:
+    - date
+    cross_difficulty: null
+  - id: late_deposit_points
+    effect: parameter
+    decides: late_deposit_points
+    bindings:
+    - days_since_scheduling
+    - late_deposit_points
+    ladder:
+    - when: sixty or more days since scheduling
+      value: K('late_pts_far') = 10 points
+    - when: thirty to fifty-nine days since scheduling
+      value: K('late_pts_mid') = 5 points
+    - when: otherwise (fewer than thirty)
+      value: 0 points
+    baseline:
+      late_deposit_points: '0'
+    evidence:
+    - date
+    cross_difficulty: null
+  - id: moved_booking_points
+    effect: parameter
+    decides: moved_booking_points
+    bindings:
+    - versions_furnished
+    - moved_booking_points
+    ladder:
+    - when: three or more versions furnished
+      value: K('moved_pts_three') = 10 points
+    - when: exactly two versions furnished
+      value: K('moved_pts_two') = 5 points
+    - when: otherwise (one version)
+      value: 0 points
+    baseline:
+      moved_booking_points: '0'
+    evidence:
+    - history
+    cross_difficulty: null
+  - id: missed_visit_points
+    effect: parameter
+    decides: missed_visit_points
+    bindings:
+    - missed_fees_12m
+    - missed_visit_points
+    ladder:
+    - when: two or more missed-appointment fees assessed in the last twelve months
+      value: K('missed_pts_two') = 10 points
+    - when: exactly one
+      value: K('missed_pts_one') = 5 points
+    - when: otherwise (none)
+      value: 0 points
+    baseline:
+      missed_visit_points: '0'
+    evidence:
+    - cross_category
+    - history
+    cross_difficulty: null
+  baseline:
+    rule: >-
+      The initial deposit on a self-pay outpatient surgery package is the tier's deposit percentage of the surgical package
+      price, rounded half-up to the cent. The surgical package price the initial deposit is figured on is the sum of the Riverbend
+      facility line and the Riverbend professional line that carry the package's principal service code on the current version
+      of the estimate; co-provider lines, implant lines and every other line of that version are not part of it.
+    params:
+    - deposit_pct
+  inputs:
+    history:
+    - table: estimate_transactions
+      aggregate: sum
+      field: amount
+      filters:
+        event_type: estimate_line_recorded
+    - category: assist
+      table: assistance_transactions
+      aggregate: sum
+      field: fap_liability_usd
+      filters:
+        event_type: assist_encounter_applied
+    - category: visit
+      table: appointment_transactions
+      aggregate: count
+      field: appointment_txn_id
+      within_months: 12
+      filters:
+        event_type: visit_fee_assessed
+    cross_category:
+    - assist
+    - visit
+- id: estimate_ext_late_change_fee
+  base_policy_refs:
+  - estimate_cancellation_and_deposit_refund
+  - estimate_revision
+  overwrite:
+  - base_policy: estimate_cancellation_and_deposit_refund
+    superseded_clause: >-
+      A later cancellation retains late_cancellation_fee_usd from the deposits, never more than the deposits held, unless
+      the cancelling physician documents a medical reason (medical_cancellation_fee_waived); the remainder is refunded.
+    replaced_by: >-
+      For a late patient move of a Riverbend Self-Pay Package Price - Outpatient Surgery booking this rule settles the late-change
+      fee kept from the deposits, and only for such a move, a late patient move being defined in the next sentence; a cancellation
+      that ends a package booking keeps the tier's late-cancellation fee from the deposits when made later than the full-refund
+      days, never more than the deposits held, unless the cancelling physician documents a medical reason, the remainder being
+      refunded, and a move made at least the full-refund days before the slot date, or one Riverbend initiated, carries no
+      fee.
+  trigger: state_due
+  subject:
+  - estimate_cancellation_fee_retained
+  computes: amount
+  target_tool: retain_late_change_fee_0cd5c1f6
+  params:
+    price_high_usd: 5000.0
+    price_mid_usd: 2500.0
+    pct_high_add: 1.0
+    pct_mid: 5.0
+    notice_long_days: 4
+    notice_mid_days: 1
+    share_long: 0.5
+    share_mid: 0.75
+    er_near_share: 0.5
+    er_week_share: 0.75
+    er_week_days: 7
+    post_short_days: 14
+    post_mid_days: 35
+    post_short_share: 0.5
+    post_mid_share: 0.75
+    hardship_fee_share: 0.5
+  rule: >-
+    For a late patient move of a Riverbend Self-Pay Package Price - Outpatient Surgery booking this rule settles the late-change
+    fee kept from the deposits, and only for such a move, a late patient move being defined in the next sentence; a cancellation
+    that ends a package booking keeps the tier's late-cancellation fee from the deposits when made later than the full-refund
+    days, never more than the deposits held, unless the cancelling physician documents a medical reason, the remainder being
+    refunded, and a move made at least the full-refund days before the slot date, or one Riverbend initiated, carries no fee.
+    A late patient move of a surgery booking is a cancellation of its procedure slot, the first patient-cancelled Outpatient
+    Procedure Appointment the appointment record lists, made on or before the slot date and fewer calendar days before it
+    than the tier's full-refund days, while the estimate is not cancelled and its current version, a later version furnished
+    on or after the cancellation date, carries a scheduled service date different from the slot date, with no Riverbend inpatient
+    room charge (revenue code 0120) or observation charge (revenue code 0762) dated on the cancellation date, such a charge
+    counting only when the hospital account it is posted on, for each of the two codes the account of the first such line
+    the account activity lists for that date, carries charges net of the charge credits recorded on that account above zero,
+    so that a credited line on an account that still carries net charges still counts. A move made while the patient's Riverbend
+    hospital accounts carry an inpatient room charge (revenue code 0120) or an observation charge (revenue code 0762) with
+    a service date equal to the change date, read as the definition of a late patient move reads it, is a medically documented
+    change, not a late patient move, and carries no fee; a booking whose patient's award covers the new scheduled service
+    date and is at the Riverbend Presumptive Charity Care or Riverbend Full Charity Care (0-200% FPL) tier, or carries a hardship
+    liability cap with no cap left carries no late-change fee; and a booking carries at most one late-change fee, so once
+    a retained late-change fee entry stands on the booking no further fee is kept; all three are outside this rule. For the
+    late-change fee, the patient's award is the patient's approved financial assistance case, a patient holding at most one
+    approved case at a time; the award covers the new scheduled service date when that date falls within its award period,
+    which runs from its award start date through its award end date, both counted; the award's cap left is its hardship liability
+    cap less the liabilities already booked on encounters under that case. The patient's procedure slot is the patient's Outpatient
+    Procedure Appointment that shows cancelled by the patient: its cancellation date is the change date and its scheduled
+    date is the original slot date; where the patient has cancelled more than one such slot, the first one the appointment
+    record lists is the one read. The fee basis of a late surgical move is the tier's late-cancellation fee, and the late-change
+    fee on a moved surgical package booking is that fee basis, kept from the deposits held on the booking and never more than
+    those deposits. The deposits held on a moved surgical package booking are its deposit collections less every refund, retained
+    fee and application already drawn on them. The fee is kept once, from the most recent deposit collection on the booking
+    that can cover it. The late-change fee is retained only once an initial deposit collection stands on the surgery booking.
+    Where the adjustments described below apply, a figure they select takes the place of the fee basis, each share they select
+    multiplies the fee basis, the product is rounded half-up to the cent once (an exact half cent goes up), and the result
+    is never more than the deposits held. Fee basis for a late surgical move: the moved booking's package price is the sum
+    of the Riverbend facility line and the Riverbend professional line carrying the principal service code on the current
+    version; a moved booking's package price of $5,000.00 or more sets the fee basis at the tier's late-cancellation fee plus
+    one percent of that price, one of $2,500.00 or more and below $5,000.00 sets it at the larger of the tier's late-cancellation
+    fee and five percent of that price, and one below $2,500.00 keeps the tier's late-cancellation fee as the basis. Notice
+    share: the notice days run from the change date to the original slot date, the change date not counted and the slot date
+    counted; four to six notice days keep half of the fee basis, one to three keep three quarters of it, and a change on the
+    slot date itself keeps all of it. Acute-care share: the latest emergency room charge is the emergency room charge line
+    (revenue code 0450) on the patient's Riverbend hospital accounts with the latest service date, the first such line the
+    account activity lists where several share that date, and it counts only when the hospital account it is posted on carries
+    charges net of the charge credits recorded on that account above zero, otherwise counting as no emergency room charge,
+    an earlier emergency room charge not being looked for; when the latest emergency room charge has a service date on the
+    change date or the day before it, half of the fee basis is kept; when it is dated two to seven days before the change
+    date, three quarters are kept; in every other case, no emergency room charge and one dated after the change date included,
+    all of it is kept. Postponement share: the postponement days run from the original slot date to the new scheduled service
+    date, the slot date not counted and the new date counted, a new date earlier than the slot date counting as zero postponement
+    days; fourteen or fewer postponement days keep half of the fee basis, fifteen to thirty-five keep three quarters, and
+    more than thirty-five keep all of it. Assistance share of the late-change fee: when the covering award's tier discount
+    is above zero and below one hundred percent, the fee keeps one hundred percent less that discount of the fee basis; when
+    the covering award carries no tier discount and has cap left, half of the fee basis is kept; in every other case all of
+    it is kept.
+  prerequisite:
+  - problem: estimate_ext_surgical_deposit
+    kind: value_input
+    gate: deposits_held
+    form: state
+    policy_source: >-
+      The late-change fee is retained only once an initial deposit collection stands on the surgery booking.
+    condition: >-
+      estimate_transactions carries an estimate_deposit_collected row with deposit_stage INITIAL_DEPOSIT for the surgery estimate,
+      so the deposits held on it are above zero.
+    resolved_by: pay_surgery_package_deposit_c16ec91c
+    effect: >-
+      deposits_held rises from 0.00 to the initial deposit collected, so the cap (never more than the deposits held) no longer
+      holds the fee at 0.00 and the fee has a collection to be kept from.
+  cross_category:
+  - category: visit
+    as: branch
+    reads:
+    - cancelled_date
+    - appointment_date
+    - status
+    - cancelled_by
+    - variant_name
+    note: >-
+      the scope gate, notice_share and postponement_share read the patient-cancelled Outpatient Procedure Appointment.
+  - category: encounter
+    as: history
+    reads:
+    - encounter_transactions.service_date
+    - encounter_transactions.revenue_code
+    - encounter_transactions.event_type
+    note: >-
+      acute_care_share and the hospital-stay carve-out read the emergency, room and observation charge lines.
+  - category: assist
+    as: branch
+    reads:
+    - status
+    - discount_pct
+    - hardship_liability_cap_usd
+    - fap_case_id
+    - award_start_date
+    - award_end_date
+    - assistance_transactions.fap_liability_usd
+    note: aid_fee_share reads the approved financial assistance case.
+  compute:
+  - deposits_collected: SUM('estimate_transactions','amount', event_type='estimate_deposit_collected')
+  - deposits_refunded: SUM('estimate_transactions','amount', event_type='estimate_deposit_refunded')
+  - fees_retained: >-
+      SUM('estimate_transactions','amount', event_type='estimate_cancellation_fee_retained')
+  - deposits_applied: SUM('estimate_transactions','amount', event_type='estimate_deposit_applied')
+  - deposits_held: MX(0, deposits_collected - deposits_refunded - fees_retained - deposits_applied)
+  - version: F('estimate_version')
+  - pkg_facility: >-
+      SUM('estimate_transactions','amount', event_type='estimate_line_recorded', estimate_version=version, provider_role='CONVENING_FACILITY',
+      service_code=F('primary_service_code'))
+  - pkg_professional: >-
+      SUM('estimate_transactions','amount', event_type='estimate_line_recorded', estimate_version=version, provider_role='CONVENING_PROFESSIONAL',
+      service_code=F('primary_service_code'))
+  - moved_package_price: pkg_facility + pkg_professional
+  - fee_basis: >-
+      P('late_cancellation_fee_usd') + moved_package_price * K('pct_high_add') / 100 if moved_package_price >= K('price_high_usd')
+      else (MX(P('late_cancellation_fee_usd'), moved_package_price * K('pct_mid') / 100) if moved_package_price >= K('price_mid_usd')
+      else P('late_cancellation_fee_usd'))
+  - original_slot_date: >-
+      CFIELD('visit','appointment_date', variant_name='Outpatient Procedure Appointment', status='cancelled', cancelled_by='PATIENT')
+  - change_date: >-
+      CFIELD('visit','cancelled_date', variant_name='Outpatient Procedure Appointment', status='cancelled', cancelled_by='PATIENT')
+  - chg_room_acct: >-
+      XLATEST('encounter','encounter_transactions','encounter_id', date_field='service_date', event_type='encounter_charge_posted',
+      revenue_code='0120', service_date=change_date)
+  - chg_room_open: >-
+      1 if (chg_room_acct and XSUM('encounter','encounter_transactions','amount', event_type='encounter_charge_posted', encounter_id=chg_room_acct)
+      - XSUM('encounter','encounter_transactions','amount', event_type='encounter_charge_credited', encounter_id=chg_room_acct)
+      > 0) else 0
+  - chg_obs_acct: >-
+      XLATEST('encounter','encounter_transactions','encounter_id', date_field='service_date', event_type='encounter_charge_posted',
+      revenue_code='0762', service_date=change_date)
+  - chg_obs_open: >-
+      1 if (chg_obs_acct and XSUM('encounter','encounter_transactions','amount', event_type='encounter_charge_posted', encounter_id=chg_obs_acct)
+      - XSUM('encounter','encounter_transactions','amount', event_type='encounter_charge_credited', encounter_id=chg_obs_acct)
+      > 0) else 0
+  - stay_charges_on_change: chg_room_open + chg_obs_open
+  - notice_days: >-
+      DAYS(change_date, original_slot_date) if (change_date and original_slot_date) else -1
+  - notice_share: >-
+      K('share_long') if notice_days >= K('notice_long_days') else (K('share_mid') if notice_days >= K('notice_mid_days')
+      else 1)
+  - er_acct: >-
+      XLATEST('encounter','encounter_transactions','encounter_id', date_field='service_date', event_type='encounter_charge_posted',
+      revenue_code='0450')
+  - er_acct_net: >-
+      XSUM('encounter','encounter_transactions','amount', event_type='encounter_charge_posted', encounter_id=er_acct) - XSUM('encounter','encounter_transactions','amount',
+      event_type='encounter_charge_credited', encounter_id=er_acct)
+  - er_last_date: >-
+      XLATEST('encounter','encounter_transactions','service_date', date_field='service_date', event_type='encounter_charge_posted',
+      revenue_code='0450')
+  - er_gap_days: >-
+      DAYS(er_last_date, change_date) if (er_last_date and change_date and er_acct and er_acct_net > 0) else -1
+  - acute_care_share: >-
+      K('er_near_share') if (er_gap_days >= 0 and er_gap_days <= 1) else (K('er_week_share') if (er_gap_days >= 2 and er_gap_days
+      <= K('er_week_days')) else 1)
+  - postponement_days: >-
+      MX(0, DAYS(original_slot_date, F('scheduled_service_date'))) if original_slot_date else 9999
+  - postponement_share: >-
+      K('post_short_share') if postponement_days <= K('post_short_days') else (K('post_mid_share') if postponement_days <=
+      K('post_mid_days') else 1)
+  - aid_case: CFIELD('assist','fap_case_id', status='approved')
+  - aid_tier: CFIELD('assist','variant_name', status='approved') or ''
+  - aid_cap: CFIELD('assist','hardship_liability_cap_usd', status='approved') or 0
+  - aid_cap_used: >-
+      XSUM('assist','assistance_transactions','fap_liability_usd', fap_case_id=aid_case, event_type='assist_encounter_applied')
+  - aid_cap_left: MX(0, aid_cap - aid_cap_used)
+  - aid_start: CFIELD('assist','award_start_date', status='approved')
+  - aid_end: CFIELD('assist','award_end_date', status='approved')
+  - aid_covers: >-
+      1 if (aid_start and aid_end and DAYS(aid_start, F('scheduled_service_date')) >= 0 and DAYS(F('scheduled_service_date'),
+      aid_end) >= 0) else 0
+  - aid_discount: CPARAM('assist','discount_pct', status='approved') or 0
+  - aid_fee_share: >-
+      (100 - aid_discount) / 100 if (aid_covers == 1 and aid_discount > 0 and aid_discount < 100) else (K('hardship_fee_share')
+      if (aid_covers == 1 and aid_discount == 0 and aid_cap_left > 0) else 1)
+  - no_payment_owed: >-
+      1 if (aid_covers == 1 and (aid_tier == 'Riverbend Presumptive Charity Care' or aid_tier == 'Riverbend Full Charity Care
+      (0-200% FPL)' or (aid_cap > 0 and aid_cap_left <= 0))) else 0
+  - fee_entries_before: COUNT('estimate_transactions', event_type='estimate_cancellation_fee_retained')
+  - late_move_on_record: >-
+      1 if (change_date and original_slot_date and F('status') != 'cancelled' and F('estimate_version') > 1 and F('scheduled_service_date')
+      != original_slot_date and DAYS(change_date, F('issued_date')) >= 0 and DAYS(change_date, original_slot_date) >= 0 and
+      DAYS(change_date, original_slot_date) < P('full_refund_cancel_days') and stay_charges_on_change == 0 and fee_entries_before
+      == 0 and no_payment_owed == 0) else 0
+  - result: >-
+      MN(deposits_held, RND(fee_basis * notice_share * acute_care_share * postponement_share * aid_fee_share + 0.000001, 2))
+      if late_move_on_record == 1 else 0
+  compute_basis:
+    deposits_collected: >-
+      The deposits held on a moved surgical package booking are its deposit collections less every refund, retained fee and
+      application already drawn on them.
+    deposits_refunded: less every refund, retained fee and application already drawn on them
+    fees_retained: less every refund, retained fee and application already drawn on them
+    deposits_applied: less every refund, retained fee and application already drawn on them
+    deposits_held: >-
+      The deposits held on a moved surgical package booking are its deposit collections less every refund, retained fee and
+      application already drawn on them.
+    version: carrying the principal service code on the current version
+    pkg_facility: >-
+      the moved booking's package price is the sum of the Riverbend facility line and the Riverbend professional line carrying
+      the principal service code on the current version
+    pkg_professional: >-
+      the moved booking's package price is the sum of the Riverbend facility line and the Riverbend professional line carrying
+      the principal service code on the current version
+    moved_package_price: >-
+      the moved booking's package price is the sum of the Riverbend facility line and the Riverbend professional line carrying
+      the principal service code on the current version
+    fee_basis: >-
+      a moved booking's package price of $5,000.00 or more sets the fee basis at the tier's late-cancellation fee plus one
+      percent of that price, one of $2,500.00 or more and below $5,000.00 sets it at the larger of the tier's late-cancellation
+      fee and five percent of that price, and one below $2,500.00 keeps the tier's late-cancellation fee as the basis
+    original_slot_date: its scheduled date is the original slot date
+    change_date: its cancellation date is the change date
+    stay_charges_on_change: >-
+      an inpatient room charge (revenue code 0120) or an observation charge (revenue code 0762) with a service date equal
+      to the change date
+    notice_days: >-
+      the notice days run from the change date to the original slot date, the change date not counted and the slot date counted
+    notice_share: >-
+      four to six notice days keep half of the fee basis, one to three keep three quarters of it, and a change on the slot
+      date itself keeps all of it
+    er_last_date: >-
+      the emergency room charge line (revenue code 0450) on the patient's Riverbend hospital accounts with the latest service
+      date
+    er_gap_days: has a service date on the change date or the day before it
+    acute_care_share: >-
+      Acute-care share: the latest emergency room charge is the emergency room charge line (revenue code 0450) on the patient's
+      Riverbend hospital accounts with the latest service date, the first such line the account activity lists where several
+      share that date, and it counts only when the hospital account it is posted on carries charges net of the charge credits
+      recorded on that account above zero, otherwise counting as no emergency room charge, an earlier emergency room charge
+      not being looked for; when the latest emergency room charge has a service date on the change date or the day before
+      it, half of the fee basis is kept; when it is dated two to seven days before the change date, three quarters are kept;
+      in every other case, no emergency room charge and one dated after the change date included, all of it is kept.
+    postponement_days: >-
+      the postponement days run from the original slot date to the new scheduled service date, the slot date not counted and
+      the new date counted, a new date earlier than the slot date counting as zero postponement days
+    postponement_share: >-
+      fourteen or fewer postponement days keep half of the fee basis, fifteen to thirty-five keep three quarters, and more
+      than thirty-five keep all of it
+    aid_fee_share: >-
+      Assistance share of the late-change fee: when the covering award's tier discount is above zero and below one hundred
+      percent, the fee keeps one hundred percent less that discount of the fee basis; when the covering award carries no tier
+      discount and has cap left, half of the fee basis is kept; in every other case all of it is kept.
+    no_payment_owed: >-
+      is at the Riverbend Presumptive Charity Care or Riverbend Full Charity Care (0-200% FPL) tier, or carries a hardship
+      liability cap with no cap left
+    late_move_on_record: >-
+      A late patient move of a surgery booking is a cancellation of its procedure slot, the first patient-cancelled Outpatient
+      Procedure Appointment the appointment record lists, made on or before the slot date and fewer calendar days before it
+      than the tier's full-refund days, while the estimate is not cancelled and its current version, a later version furnished
+      on or after the cancellation date, carries a scheduled service date different from the slot date, with no Riverbend
+      inpatient room charge (revenue code 0120) or observation charge (revenue code 0762) dated on the cancellation date,
+      such a charge counting only when the hospital account it is posted on, for each of the two codes the account of the
+      first such line the account activity lists for that date, carries charges net of the charge credits recorded on that
+      account above zero, so that a credited line on an account that still carries net charges still counts.
+    result: >-
+      Where the adjustments described below apply, a figure they select takes the place of the fee basis, each share they
+      select multiplies the fee basis, the product is rounded half-up to the cent once (an exact half cent goes up), and the
+      result is never more than the deposits held.
+    aid_case: >-
+      the patient's award is the patient's approved financial assistance case, a patient holding at most one approved case
+      at a time
+    aid_tier: >-
+      at the Riverbend Presumptive Charity Care or Riverbend Full Charity Care (0-200% FPL) tier
+    aid_cap: >-
+      the award's cap left is its hardship liability cap less the liabilities already booked on encounters under that case
+    aid_cap_used: >-
+      the award's cap left is its hardship liability cap less the liabilities already booked on encounters under that case
+    aid_cap_left: >-
+      the award's cap left is its hardship liability cap less the liabilities already booked on encounters under that case
+    aid_start: which runs from its award start date through its award end date, both counted
+    aid_end: which runs from its award start date through its award end date, both counted
+    aid_covers: >-
+      the new scheduled service date when that date falls within its award period, which runs from its award start date through
+      its award end date, both counted
+    aid_discount: tier discount is above zero and below one hundred percent
+    fee_entries_before: >-
+      once a retained late-change fee entry stands on the booking no further fee is kept
+    chg_room_open: carries charges net of the charge credits recorded on that account above zero
+    chg_obs_open: carries charges net of the charge credits recorded on that account above zero
+    chg_room_acct: >-
+      for each of the two codes the account of the first such line the account activity lists for that date
+    chg_obs_acct: >-
+      for each of the two codes the account of the first such line the account activity lists for that date
+    er_acct: the first such line the account activity lists where several share that date
+    er_acct_net: >-
+      it counts only when the hospital account it is posted on carries charges net of the charge credits recorded on that
+      account above zero, otherwise counting as no emergency room charge, an earlier emergency room charge not being looked
+      for
+  factors:
+  - id: fee_basis
+    effect: method
+    decides: fee_basis
+    bindings:
+    - version
+    - pkg_facility
+    - pkg_professional
+    - moved_package_price
+    - fee_basis
+    ladder:
+    - when: the moved booking's package price is $5,000.00 or more
+      method: the tier's late-cancellation fee plus one percent of the package price
+    - when: the package price is $2,500.00 or more and below $5,000.00
+      method: >-
+        the larger of the tier's late-cancellation fee and five percent of the package price
+    - when: otherwise (below $2,500.00)
+      method: the tier's late-cancellation fee
+    baseline:
+      fee_basis: P('late_cancellation_fee_usd')
+    evidence:
+    - history
+    cross_difficulty: null
+  - id: notice_share
+    effect: parameter
+    decides: notice_share
+    bindings:
+    - notice_days
+    - notice_share
+    ladder:
+    - when: four to six notice days
+      value: K('share_long') = 0.50
+    - when: one to three notice days
+      value: K('share_mid') = 0.75
+    - when: otherwise (a change on the slot date)
+      value: '1.00'
+    baseline:
+      notice_share: '1'
+    evidence:
+    - date
+    - cross_category
+    cross_difficulty: null
+  - id: acute_care_share
+    effect: parameter
+    decides: acute_care_share
+    bindings:
+    - er_acct
+    - er_acct_net
+    - er_last_date
+    - er_gap_days
+    - acute_care_share
+    ladder:
+    - when: >-
+        the latest emergency room charge is dated on the change date or the day before it
+      value: K('er_near_share') = 0.50
+    - when: >-
+        the latest emergency room charge is dated two to seven days before the change date
+      value: K('er_week_share') = 0.75
+    - when: otherwise (older, or no emergency room charge)
+      value: '1.00'
+    baseline:
+      acute_care_share: '1'
+    evidence:
+    - cross_category
+    - history
+    - date
+    cross_difficulty: encounter
+  - id: postponement_share
+    effect: parameter
+    decides: postponement_share
+    bindings:
+    - postponement_days
+    - postponement_share
+    ladder:
+    - when: fourteen or fewer postponement days
+      value: K('post_short_share') = 0.50
+    - when: fifteen to thirty-five postponement days
+      value: K('post_mid_share') = 0.75
+    - when: otherwise (more than thirty-five)
+      value: '1.00'
+    baseline:
+      postponement_share: '1'
+    evidence:
+    - date
+    - cross_category
+    cross_difficulty: null
+  - id: aid_fee_share
+    effect: parameter
+    decides: aid_fee_share
+    bindings:
+    - aid_discount
+    - aid_fee_share
+    ladder:
+    - when: >-
+        the patient's award covers the date AND its tier discount is above zero and below one hundred percent
+      value: (100 - discount) / 100
+    - when: >-
+        the patient's award covers the date AND it carries no tier discount AND it has cap left
+      value: K('hardship_fee_share') = 0.50
+    - when: otherwise
+      value: '1.00'
+    baseline:
+      aid_fee_share: '1'
+    evidence:
+    - cross_category
+    - date
+    cross_difficulty: assist
+  baseline:
+    rule: >-
+      The fee basis of a late surgical move is the tier's late-cancellation fee, and the late-change fee on a moved surgical
+      package booking is that fee basis, kept from the deposits held on the booking and never more than those deposits. The
+      deposits held on a moved surgical package booking are its deposit collections less every refund, retained fee and application
+      already drawn on them.
+    params:
+    - late_cancellation_fee_usd
+  inputs:
+    history:
+    - table: estimate_transactions
+      aggregate: sum
+      field: amount
+      filters:
+        event_type: estimate_deposit_collected
+    - category: encounter
+      table: encounter_transactions
+      aggregate: latest
+      field: service_date
+      filters:
+        event_type: encounter_charge_posted
+        revenue_code: '0450'
+    - category: assist
+      table: assistance_transactions
+      aggregate: sum
+      field: fap_liability_usd
+      filters:
+        event_type: assist_encounter_applied
+    cross_category:
+    - visit
+    - encounter
+    - assist
+- id: estimate_ext_surgical_balance
+  base_policy_refs:
+  - estimate_package_pricing
+  overwrite:
+  - base_policy: estimate_package_pricing
+    superseded_clause: >-
+      on tiers with balance_due_days_before_service above zero, the rest of the package price is paid no later than that many
+      calendar days before the scheduled service date as a BALANCE_BEFORE_SERVICE deposit
+    replaced_by: >-
+      For the pre-service balance on a Riverbend Self-Pay Package Price - Outpatient Surgery estimate this rule settles the
+      amount, and only for such a balance; the pre-delivery balance on a maternity and delivery package is settled by the
+      pre-delivery-balance rule, and on every other package tier with balance-due days above zero the rest of the package
+      price is paid no later than that many calendar days before the scheduled service date as a pre-service balance deposit.
+  trigger: on_request
+  subject:
+  - estimate_deposit_collected
+  computes: amount
+  target_tool: pay_surgery_package_balance_24461a4e
+  params:
+    early_far_days: 21
+    early_mid_days: 14
+    early_far_pct: 2.0
+    early_mid_pct: 1.0
+    full_near_days: 7
+    full_mid_days: 30
+    full_near_pct: 1.5
+    full_mid_pct: 0.5
+    other_implant_share: 0.5
+  rule: >-
+    For the pre-service balance on a Riverbend Self-Pay Package Price - Outpatient Surgery estimate this rule settles the
+    amount, and only for such a balance; the pre-delivery balance on a maternity and delivery package is settled by the pre-delivery-balance
+    rule, and on every other package tier with balance-due days above zero the rest of the package price is paid no later
+    than that many calendar days before the scheduled service date as a pre-service balance deposit. A surgery booking whose
+    patient's award covers the scheduled service date and is at the Riverbend Presumptive Charity Care or Riverbend Full Charity
+    Care (0-200% FPL) tier, or carries a hardship liability cap with no cap left, and a booking whose figure below comes to
+    zero or less, owe no pre-service balance and are outside this rule. For the pre-service balance, the patient's award is
+    the patient's approved financial assistance case, a patient holding at most one approved case at a time; the award covers
+    the scheduled service date when that date falls within its award period, which runs from its award start date through
+    its award end date, both counted; the award's cap left is its hardship liability cap less the liabilities already booked
+    on encounters under that case. The pre-service balance on a self-pay outpatient surgery package is the rest of the surgical
+    package price: that price less the deposits held on the estimate, rounded half-up to the cent. For the pre-service balance
+    the surgical package price is the sum of the Riverbend facility line and the Riverbend professional line that carry the
+    principal service code on the current version, and the deposits held are the deposit collections on the estimate less
+    every refund, retained fee and application drawn on them. The pre-service balance is paid no later than the tier's balance-due
+    days before the scheduled service date and may be paid earlier. The pre-service balance is fixed only after the booking
+    carries its initial deposit collection. The pre-service balance is not fixed until the booking shows a retained late-change
+    fee entry for its late patient move, where it has one; a booking carries at most one such entry. A late patient move of
+    a surgery booking is a cancellation of its procedure slot, the first patient-cancelled Outpatient Procedure Appointment
+    the appointment record lists, made on or before the slot date and fewer calendar days before it than the tier's full-refund
+    days, while the estimate is not cancelled and its current version, a later version furnished on or after the cancellation
+    date, carries a scheduled service date different from the slot date, with no Riverbend inpatient room charge (revenue
+    code 0120) or observation charge (revenue code 0762) dated on the cancellation date, such a charge counting only when
+    the hospital account it is posted on, for each of the two codes the account of the first such line the account activity
+    lists for that date, carries charges net of the charge credits recorded on that account above zero, so that a credited
+    line on an account that still carries net charges still counts. Where the adjustments described below apply, a figure
+    they select takes the place of the surgical package price before the deposits held are taken off, every amount they add
+    or take off is figured on its own and added to or taken from that rest, and the total is rounded half-up to the cent once
+    at the end (an exact half cent goes up). Assistance price for the pre-service balance: when the covering award's tier
+    discount is above zero and below one hundred percent, the package price owed before surgery is the surgical package price
+    reduced by that discount percentage; when the covering award carries no tier discount and has cap left, it is the smaller
+    of the surgical package price and the cap left; in every other case it is the surgical package price. Implant share of
+    the pre-service balance: the implant total is the sum of the Riverbend facility lines of the current version coded V2787
+    or V2788 (premium intraocular lenses) or C1713 or C1776 (other above-standard implants), the above-standard implants the
+    package excludes and bills at actual charges less the uninsured discount; when a premium intraocular lens line (V2787
+    or V2788) is listed on the current version, the whole implant total is added; when only other above-standard implant lines
+    (C1713 or C1776) are listed, half of the implant total is added; when none is listed nothing is added. Early-payment credit
+    on the pre-service balance: the days to surgery run from today's date to the scheduled service date, today not counted
+    and the service date counted; twenty-one or more days to surgery take off two percent of the surgical package price, fourteen
+    to twenty days take off one percent, and fewer than fourteen days, a passed service date included, take off nothing. Pay-in-full
+    credit on the pre-service balance: the days since the initial deposit run from the posting date of the latest initial
+    deposit collection on the estimate to today's date, the posting date not counted and today counted; a pre-service balance
+    paid zero to seven days after the initial deposit takes off one and a half percent of the surgical package price, eight
+    to thirty days after takes off one half of one percent, and later, with no initial deposit on record, or with one dated
+    after today's date, takes off nothing.
+  prerequisite:
+  - problem: estimate_ext_surgical_deposit
+    kind: value_input
+    gate: deposits_held
+    form: state
+    policy_source: >-
+      The pre-service balance is fixed only after the booking carries its initial deposit collection.
+    condition: >-
+      estimate_transactions carries an estimate_deposit_collected row with deposit_stage INITIAL_DEPOSIT on the surgery estimate.
+    resolved_by: pay_surgery_package_deposit_c16ec91c
+    effect: >-
+      deposits_held rises by the initial deposit, so the rest of the package price owed falls by that amount, and the pay-in-full
+      credit reads that collection's posting date.
+  - problem: estimate_ext_late_change_fee
+    kind: value_input
+    gate: deposits_held
+    form: state
+    policy_source: >-
+      The pre-service balance is not fixed until the booking shows a retained late-change fee entry for its late patient move,
+      where it has one; a booking carries at most one such entry.
+    condition: >-
+      when the booking has a late patient move (its first-listed patient-cancelled Outpatient Procedure Appointment was cancelled
+      on or before the slot date and fewer calendar days before it than the full-refund days, the estimate is not cancelled,
+      its current version is a later version furnished on or after the cancellation date with a scheduled service date different
+      from the slot date, and no 0120 or 0762 charge is dated on the cancellation date), estimate_transactions carries one
+      estimate_cancellation_fee_retained row on the surgery estimate (at most one per booking).
+    resolved_by: retain_late_change_fee_0cd5c1f6
+    effect: >-
+      deposits_held falls by the fee kept, so the rest of the package price owed rises by the fee, and the open wait on the
+      late-move fee entry closes, so the pre-service balance is fixed.
+  cross_category:
+  - category: assist
+    as: branch
+    reads:
+    - status
+    - discount_pct
+    - hardship_liability_cap_usd
+    - fap_case_id
+    - award_start_date
+    - award_end_date
+    - assistance_transactions.fap_liability_usd
+    note: aid_price reads the approved financial assistance case.
+  - category: visit
+    as: branch
+    reads:
+    - cancelled_date
+    - appointment_date
+    - status
+    - cancelled_by
+    - variant_name
+    note: >-
+      the late-patient-move test of the prerequisite reads the patient-cancelled procedure slot.
+  - category: encounter
+    as: history
+    reads:
+    - encounter_transactions.revenue_code
+    - encounter_transactions.service_date
+    note: >-
+      the late-patient-move test excludes a cancellation made during a Riverbend inpatient or observation stay.
+  compute:
+  - version: F('estimate_version')
+  - pkg_facility: >-
+      SUM('estimate_transactions','amount', event_type='estimate_line_recorded', estimate_version=version, provider_role='CONVENING_FACILITY',
+      service_code=F('primary_service_code'))
+  - pkg_professional: >-
+      SUM('estimate_transactions','amount', event_type='estimate_line_recorded', estimate_version=version, provider_role='CONVENING_PROFESSIONAL',
+      service_code=F('primary_service_code'))
+  - package_price: pkg_facility + pkg_professional
+  - deposits_collected: SUM('estimate_transactions','amount', event_type='estimate_deposit_collected')
+  - deposits_refunded: SUM('estimate_transactions','amount', event_type='estimate_deposit_refunded')
+  - fees_retained: >-
+      SUM('estimate_transactions','amount', event_type='estimate_cancellation_fee_retained')
+  - deposits_applied: SUM('estimate_transactions','amount', event_type='estimate_deposit_applied')
+  - deposits_held: MX(0, deposits_collected - deposits_refunded - fees_retained - deposits_applied)
+  - aid_case: CFIELD('assist','fap_case_id', status='approved')
+  - aid_tier: CFIELD('assist','variant_name', status='approved') or ''
+  - aid_cap: CFIELD('assist','hardship_liability_cap_usd', status='approved') or 0
+  - aid_cap_used: >-
+      XSUM('assist','assistance_transactions','fap_liability_usd', fap_case_id=aid_case, event_type='assist_encounter_applied')
+  - aid_cap_left: MX(0, aid_cap - aid_cap_used)
+  - aid_start: CFIELD('assist','award_start_date', status='approved')
+  - aid_end: CFIELD('assist','award_end_date', status='approved')
+  - aid_covers: >-
+      1 if (aid_start and aid_end and DAYS(aid_start, F('scheduled_service_date')) >= 0 and DAYS(F('scheduled_service_date'),
+      aid_end) >= 0) else 0
+  - aid_discount: CPARAM('assist','discount_pct', status='approved') or 0
+  - aid_price: >-
+      package_price * (100 - aid_discount) / 100 if (aid_covers == 1 and aid_discount > 0 and aid_discount < 100) else (MN(package_price,
+      aid_cap_left) if (aid_covers == 1 and aid_discount == 0 and aid_cap_left > 0) else package_price)
+  - no_payment_owed: >-
+      1 if (aid_covers == 1 and (aid_tier == 'Riverbend Presumptive Charity Care' or aid_tier == 'Riverbend Full Charity Care
+      (0-200% FPL)' or (aid_cap > 0 and aid_cap_left <= 0))) else 0
+  - implant_total: >-
+      SUM('estimate_transactions','amount', event_type='estimate_line_recorded', estimate_version=version, provider_role='CONVENING_FACILITY',
+      service_code='V2787') + SUM('estimate_transactions','amount', event_type='estimate_line_recorded', estimate_version=version,
+      provider_role='CONVENING_FACILITY', service_code='V2788') + SUM('estimate_transactions','amount', event_type='estimate_line_recorded',
+      estimate_version=version, provider_role='CONVENING_FACILITY', service_code='C1713') + SUM('estimate_transactions','amount',
+      event_type='estimate_line_recorded', estimate_version=version, provider_role='CONVENING_FACILITY', service_code='C1776')
+  - premium_lens_lines: >-
+      COUNT('estimate_transactions', event_type='estimate_line_recorded', estimate_version=version, provider_role='CONVENING_FACILITY',
+      service_code='V2787') + COUNT('estimate_transactions', event_type='estimate_line_recorded', estimate_version=version,
+      provider_role='CONVENING_FACILITY', service_code='V2788')
+  - other_implant_lines: >-
+      COUNT('estimate_transactions', event_type='estimate_line_recorded', estimate_version=version, provider_role='CONVENING_FACILITY',
+      service_code='C1713') + COUNT('estimate_transactions', event_type='estimate_line_recorded', estimate_version=version,
+      provider_role='CONVENING_FACILITY', service_code='C1776')
+  - implant_share: >-
+      1 if premium_lens_lines > 0 else (K('other_implant_share') if other_implant_lines > 0 else 0)
+  - implant_amount: implant_share * implant_total
+  - days_to_surgery: DAYS(NOW, F('scheduled_service_date'))
+  - early_credit_pct: >-
+      K('early_far_pct') if days_to_surgery >= K('early_far_days') else (K('early_mid_pct') if days_to_surgery >= K('early_mid_days')
+      else 0)
+  - latest_deposit_date: >-
+      LATEST('estimate_transactions','posting_date', date_field='posting_date', event_type='estimate_deposit_collected', deposit_stage='INITIAL_DEPOSIT')
+  - days_since_deposit: DAYS(latest_deposit_date, NOW) if latest_deposit_date else -1
+  - full_credit_pct: >-
+      K('full_near_pct') if (days_since_deposit >= 0 and days_since_deposit <= K('full_near_days')) else (K('full_mid_pct')
+      if (days_since_deposit > K('full_near_days') and days_since_deposit <= K('full_mid_days')) else 0)
+  - balance_figure: >-
+      aid_price - deposits_held + implant_amount - package_price * early_credit_pct / 100 - package_price * full_credit_pct
+      / 100
+  - slot_date: >-
+      CFIELD('visit','appointment_date', variant_name='Outpatient Procedure Appointment', status='cancelled', cancelled_by='PATIENT')
+  - slot_cancel_date: >-
+      CFIELD('visit','cancelled_date', variant_name='Outpatient Procedure Appointment', status='cancelled', cancelled_by='PATIENT')
+  - cnl_room_acct: >-
+      XLATEST('encounter','encounter_transactions','encounter_id', date_field='service_date', event_type='encounter_charge_posted',
+      revenue_code='0120', service_date=slot_cancel_date)
+  - cnl_room_open: >-
+      1 if (cnl_room_acct and XSUM('encounter','encounter_transactions','amount', event_type='encounter_charge_posted', encounter_id=cnl_room_acct)
+      - XSUM('encounter','encounter_transactions','amount', event_type='encounter_charge_credited', encounter_id=cnl_room_acct)
+      > 0) else 0
+  - cnl_obs_acct: >-
+      XLATEST('encounter','encounter_transactions','encounter_id', date_field='service_date', event_type='encounter_charge_posted',
+      revenue_code='0762', service_date=slot_cancel_date)
+  - cnl_obs_open: >-
+      1 if (cnl_obs_acct and XSUM('encounter','encounter_transactions','amount', event_type='encounter_charge_posted', encounter_id=cnl_obs_acct)
+      - XSUM('encounter','encounter_transactions','amount', event_type='encounter_charge_credited', encounter_id=cnl_obs_acct)
+      > 0) else 0
+  - stay_on_cancel_date: cnl_room_open + cnl_obs_open
+  - late_patient_move: >-
+      1 if (slot_cancel_date and slot_date and F('status') != 'cancelled' and F('estimate_version') > 1 and F('scheduled_service_date')
+      != slot_date and DAYS(slot_cancel_date, F('issued_date')) >= 0 and DAYS(slot_cancel_date, slot_date) >= 0 and DAYS(slot_cancel_date,
+      slot_date) < P('full_refund_cancel_days') and stay_on_cancel_date == 0) else 0
+  - fee_entries_on_booking: COUNT('estimate_transactions', event_type='estimate_cancellation_fee_retained')
+  - fee_wait_open: 1 if (late_patient_move == 1 and fee_entries_on_booking == 0) else 0
+  - result: >-
+      0 if (no_payment_owed == 1 or balance_figure <= 0 or fee_wait_open == 1) else RND(balance_figure + 0.000001, 2)
+  compute_basis:
+    version: carry the principal service code on the current version
+    pkg_facility: >-
+      the sum of the Riverbend facility line and the Riverbend professional line that carry the principal service code on
+      the current version
+    pkg_professional: >-
+      the sum of the Riverbend facility line and the Riverbend professional line that carry the principal service code on
+      the current version
+    package_price: >-
+      For the pre-service balance the surgical package price is the sum of the Riverbend facility line and the Riverbend professional
+      line that carry the principal service code on the current version
+    deposits_collected: >-
+      the deposits held are the deposit collections on the estimate less every refund, retained fee and application drawn
+      on them
+    deposits_refunded: less every refund, retained fee and application drawn on them
+    fees_retained: less every refund, retained fee and application drawn on them
+    deposits_applied: less every refund, retained fee and application drawn on them
+    deposits_held: >-
+      the deposits held are the deposit collections on the estimate less every refund, retained fee and application drawn
+      on them
+    aid_price: >-
+      Assistance price for the pre-service balance: when the covering award's tier discount is above zero and below one hundred
+      percent, the package price owed before surgery is the surgical package price reduced by that discount percentage; when
+      the covering award carries no tier discount and has cap left, it is the smaller of the surgical package price and the
+      cap left; in every other case it is the surgical package price.
+    no_payment_owed: >-
+      is at the Riverbend Presumptive Charity Care or Riverbend Full Charity Care (0-200% FPL) tier, or carries a hardship
+      liability cap with no cap left
+    implant_share: >-
+      the whole implant total is added; when only other above-standard implant lines (C1713 or C1776) are listed, half of
+      the implant total is added; when none is listed nothing is added
+    days_to_surgery: >-
+      the days to surgery run from today's date to the scheduled service date, today not counted and the service date counted
+    early_credit_pct: >-
+      twenty-one or more days to surgery take off two percent of the surgical package price, fourteen to twenty days take
+      off one percent, and fewer than fourteen days, a passed service date included, take off nothing
+    latest_deposit_date: the posting date of the latest initial deposit collection on the estimate
+    days_since_deposit: >-
+      the days since the initial deposit run from the posting date of the latest initial deposit collection on the estimate
+      to today's date, the posting date not counted and today counted
+    full_credit_pct: >-
+      a pre-service balance paid zero to seven days after the initial deposit takes off one and a half percent of the surgical
+      package price, eight to thirty days after takes off one half of one percent, and later, with no initial deposit on record,
+      or with one dated after today's date, takes off nothing
+    balance_figure: >-
+      every amount they add or take off is figured on its own and added to or taken from that rest
+    result: >-
+      and a booking whose figure below comes to zero or less, owe no pre-service balance and are outside this rule
+    aid_case: >-
+      the patient's award is the patient's approved financial assistance case, a patient holding at most one approved case
+      at a time
+    aid_tier: >-
+      at the Riverbend Presumptive Charity Care or Riverbend Full Charity Care (0-200% FPL) tier
+    aid_cap: >-
+      the award's cap left is its hardship liability cap less the liabilities already booked on encounters under that case
+    aid_cap_used: >-
+      the award's cap left is its hardship liability cap less the liabilities already booked on encounters under that case
+    aid_cap_left: >-
+      the award's cap left is its hardship liability cap less the liabilities already booked on encounters under that case
+    aid_start: which runs from its award start date through its award end date, both counted
+    aid_end: which runs from its award start date through its award end date, both counted
+    aid_covers: >-
+      the scheduled service date when that date falls within its award period, which runs from its award start date through
+      its award end date, both counted
+    aid_discount: tier discount is above zero and below one hundred percent
+    implant_total: >-
+      the implant total is the sum of the Riverbend facility lines of the current version coded V2787 or V2788 (premium intraocular
+      lenses) or C1713 or C1776 (other above-standard implants), the above-standard implants the package excludes and bills
+      at actual charges less the uninsured discount
+    premium_lens_lines: >-
+      when a premium intraocular lens line (V2787 or V2788) is listed on the current version
+    other_implant_lines: when only other above-standard implant lines (C1713 or C1776) are listed
+    slot_date: >-
+      its procedure slot, the first patient-cancelled Outpatient Procedure Appointment the appointment record lists
+    slot_cancel_date: >-
+      made on or before the slot date and fewer calendar days before it than the tier's full-refund days
+    stay_on_cancel_date: >-
+      with no Riverbend inpatient room charge (revenue code 0120) or observation charge (revenue code 0762) dated on the cancellation
+      date
+    late_patient_move: >-
+      A late patient move of a surgery booking is a cancellation of its procedure slot, the first patient-cancelled Outpatient
+      Procedure Appointment the appointment record lists, made on or before the slot date and fewer calendar days before it
+      than the tier's full-refund days, while the estimate is not cancelled and its current version, a later version furnished
+      on or after the cancellation date, carries a scheduled service date different from the slot date, with no Riverbend
+      inpatient room charge (revenue code 0120) or observation charge (revenue code 0762) dated on the cancellation date,
+      such a charge counting only when the hospital account it is posted on, for each of the two codes the account of the
+      first such line the account activity lists for that date, carries charges net of the charge credits recorded on that
+      account above zero, so that a credited line on an account that still carries net charges still counts.
+    fee_entries_on_booking: a booking carries at most one such entry
+    fee_wait_open: >-
+      The pre-service balance is not fixed until the booking shows a retained late-change fee entry for its late patient move,
+      where it has one; a booking carries at most one such entry.
+    implant_amount: >-
+      the whole implant total is added; when only other above-standard implant lines (C1713 or C1776) are listed, half of
+      the implant total is added; when none is listed nothing is added
+    cnl_room_open: carries charges net of the charge credits recorded on that account above zero
+    cnl_obs_open: carries charges net of the charge credits recorded on that account above zero
+    cnl_room_acct: >-
+      for each of the two codes the account of the first such line the account activity lists for that date
+    cnl_obs_acct: >-
+      for each of the two codes the account of the first such line the account activity lists for that date
+  factors:
+  - id: aid_price
+    effect: method
+    decides: aid_price
+    bindings:
+    - aid_discount
+    - aid_price
+    ladder:
+    - when: >-
+        the patient's award covers the date AND its tier discount is above zero and below one hundred percent
+      method: >-
+        the package price owed before surgery is the package price reduced by the tier discount percentage
+    - when: >-
+        the patient's award covers the date AND it carries no tier discount AND it has cap left
+      method: >-
+        the package price owed before surgery is the smaller of the package price and the cap less the liability already booked
+        under the award
+    - when: otherwise
+      method: the package price owed before surgery is the package price
+    baseline:
+      aid_price: package_price
+    evidence:
+    - cross_category
+    - date
+    cross_difficulty: assist
+  - id: implant_share
+    effect: parameter
+    decides: implant_amount
+    bindings:
+    - implant_total
+    - premium_lens_lines
+    - other_implant_lines
+    - implant_share
+    - implant_amount
+    ladder:
+    - when: a premium intraocular lens line (V2787 or V2788) is listed
+      value: the whole implant total
+    - when: only other above-standard implant lines (C1713 or C1776) are listed
+      value: K('other_implant_share') = half of the implant total
+    - when: otherwise (none listed)
+      value: $0.00
+    baseline:
+      implant_amount: '0'
+    evidence:
+    - history
+    cross_difficulty: null
+  - id: early_credit_pct
+    effect: parameter
+    decides: early_credit_pct
+    bindings:
+    - days_to_surgery
+    - early_credit_pct
+    ladder:
+    - when: twenty-one or more days to surgery
+      value: K('early_far_pct') = 2 percent
+    - when: fourteen to twenty days to surgery
+      value: K('early_mid_pct') = 1 percent
+    - when: otherwise (fewer than fourteen)
+      value: 0 percent
+    baseline:
+      early_credit_pct: '0'
+    evidence:
+    - date
+    cross_difficulty: null
+  - id: full_credit_pct
+    effect: parameter
+    decides: full_credit_pct
+    bindings:
+    - latest_deposit_date
+    - days_since_deposit
+    - full_credit_pct
+    ladder:
+    - when: paid zero to seven days after the latest initial deposit
+      value: K('full_near_pct') = 1.5 percent
+    - when: paid eight to thirty days after
+      value: K('full_mid_pct') = 0.5 percent
+    - when: otherwise (later, or no initial deposit)
+      value: 0 percent
+    baseline:
+      full_credit_pct: '0'
+    evidence:
+    - history
+    - date
+    cross_difficulty: null
+  baseline:
+    rule: >-
+      The pre-service balance on a self-pay outpatient surgery package is the rest of the surgical package price: that price
+      less the deposits held on the estimate, rounded half-up to the cent. For the pre-service balance the surgical package
+      price is the sum of the Riverbend facility line and the Riverbend professional line that carry the principal service
+      code on the current version, and the deposits held are the deposit collections on the estimate less every refund, retained
+      fee and application drawn on them.
+    params: []
+  inputs:
+    history:
+    - table: estimate_transactions
+      aggregate: sum
+      field: amount
+      filters:
+        event_type: estimate_deposit_collected
+    - table: estimate_transactions
+      aggregate: latest
+      field: posting_date
+      filters:
+        event_type: estimate_deposit_collected
+        deposit_stage: INITIAL_DEPOSIT
+    - category: assist
+      table: assistance_transactions
+      aggregate: sum
+      field: fap_liability_usd
+      filters:
+        event_type: assist_encounter_applied
+    cross_category:
+    - assist
+    - encounter
+    - visit
+- id: estimate_ext_maternity_deposit
+  base_policy_refs:
+  - estimate_package_pricing
+  overwrite:
+  - base_policy: estimate_package_pricing
+    superseded_clause: >-
+      At scheduling the patient pays a deposit of deposit_pct of the package price, rounded half-up to the cent
+    replaced_by: >-
+      For the enrollment deposit on a Riverbend Self-Pay Package Price - Maternity & Delivery estimate this rule settles the
+      amount, and only for such a deposit; the initial deposit on an outpatient surgery package is settled by the surgical-deposit
+      rule, and on every other package tier the deposit paid at scheduling stays the tier's deposit percentage of the package
+      price, rounded half-up to the cent.
+  trigger: on_request
+  subject:
+  - estimate_deposit_collected
+  computes: amount
+  target_tool: pay_maternity_enrollment_deposit_610ee08c
+  params:
+    pct_cap: 100
+    lead_near_days: 30
+    lead_mid_days: 60
+    lead_near_pct: 100
+    lead_mid_pct: 50
+    enrol_near_days: 112
+    enrol_mid_days: 168
+    enrol_pts_near: 15
+    enrol_pts_mid: 5
+    missed_pts_one: 5
+    missed_pts_two: 10
+    late_far_days: 60
+    late_mid_days: 30
+    late_pts_far: 10
+    late_pts_mid: 5
+  rule: >-
+    For the enrollment deposit on a Riverbend Self-Pay Package Price - Maternity & Delivery estimate this rule settles the
+    amount, and only for such a deposit; the initial deposit on an outpatient surgery package is settled by the surgical-deposit
+    rule, and on every other package tier the deposit paid at scheduling stays the tier's deposit percentage of the package
+    price, rounded half-up to the cent. A maternity booking whose patient's award covers the expected delivery date and is
+    at the Riverbend Presumptive Charity Care or Riverbend Full Charity Care (0-200% FPL) tier, or carries a hardship liability
+    cap with no cap left owes no enrollment deposit and is outside this rule. For the enrollment deposit, the patient's award
+    is the patient's approved financial assistance case, a patient holding at most one approved case at a time; the award
+    covers the expected delivery date, which is the scheduled service date, when that date falls within its award period,
+    which runs from its award start date through its award end date, both counted; the award's cap left is its hardship liability
+    cap less the liabilities already booked on encounters under that case. The enrollment deposit on a maternity and delivery
+    package is the tier's deposit percentage of the delivery package price, rounded half-up to the cent. The delivery package
+    price the enrollment deposit is figured on is the sum of the Riverbend facility line and the Riverbend professional line
+    that carry the package's principal service code on the current version; co-provider lines are not part of it. Where the
+    adjustments described below apply, an amount they select takes the place of the delivery package price as the amount the
+    percentage acts on, a percentage they select takes the place of the tier's deposit percentage, every percentage-point
+    addition is made to that percentage before it is applied, the percentage after the additions is never more than one hundred,
+    and the product is rounded half-up to the cent once (an exact half cent goes up). Assistance base for the enrollment deposit:
+    when the covering award's tier discount is above zero and below one hundred percent, the enrollment deposit is figured
+    on the delivery package price reduced by that discount percentage; when the covering award carries no tier discount and
+    has cap left, it is figured on the smaller of the delivery package price and the cap left; in every other case it is figured
+    on the delivery package price. Days-to-delivery share for the enrollment deposit: the days to delivery run from today's
+    date to the expected delivery date, today not counted and the delivery date counted; thirty or fewer days to delivery,
+    a passed expected delivery date included, set the deposit percentage at one hundred, thirty-one to sixty days set it at
+    fifty, and sixty-one or more days keep the tier's deposit percentage. Enrollment-timing points: the enrollment lead days
+    run from the scheduling date of the estimate to the expected delivery date, the scheduling date not counted and the delivery
+    date counted; fewer than 112 enrollment lead days add fifteen percentage points, 112 to 167 add five, and 168 or more
+    add none, an expected delivery date on or before the scheduling date counting as zero lead days. Missed-visit points for
+    the enrollment deposit: the missed-appointment fees assessed on the patient's Riverbend appointments are counted when
+    the assessment date lies fewer than twelve whole months before today's date (a month counts once its day of the month
+    is reached, so the date exactly twelve months back is outside), a fee later waived still counting and a fee dated after
+    today's date not counting; two or more such fees add ten percentage points to the enrollment deposit percentage, exactly
+    one adds five, and none adds no points. Late-enrollment-deposit points: the days since enrollment run from the scheduling
+    date of the estimate to today's date, the scheduling date not counted and today counted; sixty or more days since enrollment
+    add ten percentage points, thirty to fifty-nine add five, and fewer than thirty, a scheduling date later than today's
+    date counting as zero days, add none.
+  prerequisite: []
+  cross_category:
+  - category: assist
+    as: branch
+    reads:
+    - status
+    - discount_pct
+    - hardship_liability_cap_usd
+    - fap_case_id
+    - award_start_date
+    - award_end_date
+    - assistance_transactions.fap_liability_usd
+    note: aid_basis reads the approved financial assistance case.
+  - category: visit
+    as: history
+    reads:
+    - appointment_transactions.event_type
+    - appointment_transactions.posting_date
+    note: >-
+      missed_appointment_points counts the missed-appointment fees assessed in the last twelve months.
+  compute:
+  - version: F('estimate_version')
+  - pkg_facility: >-
+      SUM('estimate_transactions','amount', event_type='estimate_line_recorded', estimate_version=version, provider_role='CONVENING_FACILITY',
+      service_code=F('primary_service_code'))
+  - pkg_professional: >-
+      SUM('estimate_transactions','amount', event_type='estimate_line_recorded', estimate_version=version, provider_role='CONVENING_PROFESSIONAL',
+      service_code=F('primary_service_code'))
+  - delivery_price: pkg_facility + pkg_professional
+  - aid_case: CFIELD('assist','fap_case_id', status='approved')
+  - aid_tier: CFIELD('assist','variant_name', status='approved') or ''
+  - aid_cap: CFIELD('assist','hardship_liability_cap_usd', status='approved') or 0
+  - aid_cap_used: >-
+      XSUM('assist','assistance_transactions','fap_liability_usd', fap_case_id=aid_case, event_type='assist_encounter_applied')
+  - aid_cap_left: MX(0, aid_cap - aid_cap_used)
+  - aid_start: CFIELD('assist','award_start_date', status='approved')
+  - aid_end: CFIELD('assist','award_end_date', status='approved')
+  - aid_covers: >-
+      1 if (aid_start and aid_end and DAYS(aid_start, F('scheduled_service_date')) >= 0 and DAYS(F('scheduled_service_date'),
+      aid_end) >= 0) else 0
+  - aid_discount: CPARAM('assist','discount_pct', status='approved') or 0
+  - aid_basis: >-
+      delivery_price * (100 - aid_discount) / 100 if (aid_covers == 1 and aid_discount > 0 and aid_discount < 100) else (MN(delivery_price,
+      aid_cap_left) if (aid_covers == 1 and aid_discount == 0 and aid_cap_left > 0) else delivery_price)
+  - no_payment_owed: >-
+      1 if (aid_covers == 1 and (aid_tier == 'Riverbend Presumptive Charity Care' or aid_tier == 'Riverbend Full Charity Care
+      (0-200% FPL)' or (aid_cap > 0 and aid_cap_left <= 0))) else 0
+  - days_to_delivery: DAYS(NOW, F('scheduled_service_date'))
+  - lead_share_pct: >-
+      K('lead_near_pct') if days_to_delivery <= K('lead_near_days') else (K('lead_mid_pct') if days_to_delivery <= K('lead_mid_days')
+      else P('deposit_pct'))
+  - enrollment_lead_days: DAYS(F('scheduling_date'), F('scheduled_service_date'))
+  - enrollment_points: >-
+      K('enrol_pts_near') if enrollment_lead_days < K('enrol_near_days') else (K('enrol_pts_mid') if enrollment_lead_days
+      < K('enrol_mid_days') else 0)
+  - missed_fees_12m: >-
+      XCOUNT('visit','appointment_transactions', within_months=12, date_field='posting_date', event_type='visit_fee_assessed')
+  - missed_visit_points: >-
+      K('missed_pts_two') if missed_fees_12m >= 2 else (K('missed_pts_one') if missed_fees_12m == 1 else 0)
+  - days_since_enrollment: DAYS(F('scheduling_date'), NOW)
+  - late_payment_points: >-
+      K('late_pts_far') if days_since_enrollment >= K('late_far_days') else (K('late_pts_mid') if days_since_enrollment >=
+      K('late_mid_days') else 0)
+  - deposit_pct: >-
+      MN(K('pct_cap'), lead_share_pct + enrollment_points + missed_visit_points + late_payment_points)
+  - result: 0 if no_payment_owed == 1 else RND(aid_basis * deposit_pct / 100 + 0.000001, 2)
+  compute_basis:
+    version: on the current version
+    pkg_facility: >-
+      the sum of the Riverbend facility line and the Riverbend professional line that carry the package's principal service
+      code on the current version
+    pkg_professional: >-
+      the sum of the Riverbend facility line and the Riverbend professional line that carry the package's principal service
+      code on the current version
+    delivery_price: >-
+      The delivery package price the enrollment deposit is figured on is the sum of the Riverbend facility line and the Riverbend
+      professional line that carry the package's principal service code on the current version; co-provider lines are not
+      part of it.
+    aid_basis: >-
+      Assistance base for the enrollment deposit: when the covering award's tier discount is above zero and below one hundred
+      percent, the enrollment deposit is figured on the delivery package price reduced by that discount percentage; when the
+      covering award carries no tier discount and has cap left, it is figured on the smaller of the delivery package price
+      and the cap left; in every other case it is figured on the delivery package price.
+    no_payment_owed: >-
+      is at the Riverbend Presumptive Charity Care or Riverbend Full Charity Care (0-200% FPL) tier, or carries a hardship
+      liability cap with no cap left
+    days_to_delivery: >-
+      the days to delivery run from today's date to the expected delivery date, today not counted and the delivery date counted
+    lead_share_pct: >-
+      thirty or fewer days to delivery, a passed expected delivery date included, set the deposit percentage at one hundred,
+      thirty-one to sixty days set it at fifty, and sixty-one or more days keep the tier's deposit percentage
+    enrollment_lead_days: >-
+      the enrollment lead days run from the scheduling date of the estimate to the expected delivery date, the scheduling
+      date not counted and the delivery date counted
+    enrollment_points: >-
+      fewer than 112 enrollment lead days add fifteen percentage points, 112 to 167 add five, and 168 or more add none, an
+      expected delivery date on or before the scheduling date counting as zero lead days
+    missed_fees_12m: >-
+      the missed-appointment fees assessed on the patient's Riverbend appointments are counted when the assessment date lies
+      fewer than twelve whole months before today's date (a month counts once its day of the month is reached, so the date
+      exactly twelve months back is outside), a fee later waived still counting
+    missed_visit_points: >-
+      two or more such fees add ten percentage points to the enrollment deposit percentage, exactly one adds five, and none
+      adds no points
+    days_since_enrollment: >-
+      the days since enrollment run from the scheduling date of the estimate to today's date, the scheduling date not counted
+      and today counted
+    late_payment_points: >-
+      sixty or more days since enrollment add ten percentage points, thirty to fifty-nine add five, and fewer than thirty,
+      a scheduling date later than today's date counting as zero days, add none
+    deposit_pct: >-
+      every percentage-point addition is made to that percentage before it is applied, the percentage after the additions
+      is never more than one hundred
+    result: the product is rounded half-up to the cent once (an exact half cent goes up)
+    aid_case: >-
+      the patient's award is the patient's approved financial assistance case, a patient holding at most one approved case
+      at a time
+    aid_tier: >-
+      at the Riverbend Presumptive Charity Care or Riverbend Full Charity Care (0-200% FPL) tier
+    aid_cap: >-
+      the award's cap left is its hardship liability cap less the liabilities already booked on encounters under that case
+    aid_cap_used: >-
+      the award's cap left is its hardship liability cap less the liabilities already booked on encounters under that case
+    aid_cap_left: >-
+      the award's cap left is its hardship liability cap less the liabilities already booked on encounters under that case
+    aid_start: which runs from its award start date through its award end date, both counted
+    aid_end: which runs from its award start date through its award end date, both counted
+    aid_covers: >-
+      the expected delivery date, which is the scheduled service date, when that date falls within its award period, which
+      runs from its award start date through its award end date, both counted
+    aid_discount: tier discount is above zero and below one hundred percent
+  factors:
+  - id: enrollment_aid_basis
+    effect: method
+    decides: aid_basis
+    bindings:
+    - aid_discount
+    - aid_basis
+    ladder:
+    - when: >-
+        the patient's award covers the date AND its tier discount is above zero and below one hundred percent
+      method: >-
+        the amount the enrollment deposit is figured on is the package price reduced by the tier discount percentage
+    - when: >-
+        the patient's award covers the date AND it carries no tier discount AND it has cap left
+      method: >-
+        the amount the enrollment deposit is figured on is the smaller of the package price and the cap less the liability
+        already booked under the award
+    - when: otherwise
+      method: the amount the enrollment deposit is figured on is the package price
+    baseline:
+      aid_basis: delivery_price
+    evidence:
+    - cross_category
+    - date
+    cross_difficulty: assist
+  - id: delivery_lead_share
+    effect: parameter
+    decides: lead_share_pct
+    bindings:
+    - days_to_delivery
+    - lead_share_pct
+    ladder:
+    - when: thirty or fewer days to delivery
+      value: K('lead_near_pct') = 100 percent
+    - when: thirty-one to sixty days to delivery
+      value: K('lead_mid_pct') = 50 percent
+    - when: otherwise (sixty-one or more)
+      value: P('deposit_pct') = the tier's deposit percentage (25)
+    baseline:
+      lead_share_pct: P('deposit_pct')
+    evidence:
+    - date
+    cross_difficulty: null
+  - id: enrollment_points
+    effect: parameter
+    decides: enrollment_points
+    bindings:
+    - enrollment_lead_days
+    - enrollment_points
+    ladder:
+    - when: fewer than 112 enrollment lead days
+      value: K('enrol_pts_near') = 15 points
+    - when: 112 to 167 enrollment lead days
+      value: K('enrol_pts_mid') = 5 points
+    - when: otherwise (168 or more)
+      value: 0 points
+    baseline:
+      enrollment_points: '0'
+    evidence:
+    - date
+    cross_difficulty: null
+  - id: missed_appointment_points
+    effect: parameter
+    decides: missed_visit_points
+    bindings:
+    - missed_fees_12m
+    - missed_visit_points
+    ladder:
+    - when: two or more missed-appointment fees assessed in the last twelve months
+      value: K('missed_pts_two') = 10 points
+    - when: exactly one
+      value: K('missed_pts_one') = 5 points
+    - when: otherwise (none)
+      value: 0 points
+    baseline:
+      missed_visit_points: '0'
+    evidence:
+    - cross_category
+    - history
+    cross_difficulty: null
+  - id: late_payment_points
+    effect: parameter
+    decides: late_payment_points
+    bindings:
+    - days_since_enrollment
+    - late_payment_points
+    ladder:
+    - when: sixty or more days since enrollment
+      value: K('late_pts_far') = 10 points
+    - when: thirty to fifty-nine days since enrollment
+      value: K('late_pts_mid') = 5 points
+    - when: otherwise (fewer than thirty)
+      value: 0 points
+    baseline:
+      late_payment_points: '0'
+    evidence:
+    - date
+    cross_difficulty: null
+  baseline:
+    rule: >-
+      The enrollment deposit on a maternity and delivery package is the tier's deposit percentage of the delivery package
+      price, rounded half-up to the cent. The delivery package price the enrollment deposit is figured on is the sum of the
+      Riverbend facility line and the Riverbend professional line that carry the package's principal service code on the current
+      version; co-provider lines are not part of it.
+    params:
+    - deposit_pct
+  inputs:
+    history:
+    - table: estimate_transactions
+      aggregate: sum
+      field: amount
+      filters:
+        event_type: estimate_line_recorded
+    - category: assist
+      table: assistance_transactions
+      aggregate: sum
+      field: fap_liability_usd
+      filters:
+        event_type: assist_encounter_applied
+    - category: visit
+      table: appointment_transactions
+      aggregate: count
+      field: appointment_txn_id
+      within_months: 12
+      filters:
+        event_type: visit_fee_assessed
+    cross_category:
+    - assist
+    - visit
+- id: estimate_ext_maternity_balance
+  base_policy_refs:
+  - estimate_package_pricing
+  overwrite:
+  - base_policy: estimate_package_pricing
+    superseded_clause: >-
+      on tiers with balance_due_days_before_service above zero, the rest of the package price is paid no later than that many
+      calendar days before the scheduled service date as a BALANCE_BEFORE_SERVICE deposit
+    replaced_by: >-
+      For the pre-delivery balance on a Riverbend Self-Pay Package Price - Maternity & Delivery estimate this rule settles
+      the amount, and only for such a balance; the pre-service balance on an outpatient surgery package is settled by the
+      surgical pre-service-balance rule, and on every other package tier with balance-due days above zero the rest of the
+      package price is paid no later than that many calendar days before the scheduled service date as a pre-service balance
+      deposit.
+  trigger: on_request
+  subject:
+  - estimate_deposit_collected
+  computes: amount
+  target_tool: pay_maternity_delivery_balance_fb9f749b
+  params:
+    early_far_days: 60
+    early_mid_days: 35
+    early_far_pct: 2.0
+    early_mid_pct: 1.0
+    ces_recent_months: 18
+    ces_window_months: 60
+    ces_older_share: 0.5
+    full_near_days: 7
+    full_mid_days: 30
+    full_near_pct: 1.5
+    full_mid_pct: 0.5
+  rule: >-
+    For the pre-delivery balance on a Riverbend Self-Pay Package Price - Maternity & Delivery estimate this rule settles the
+    amount, and only for such a balance; the pre-service balance on an outpatient surgery package is settled by the surgical
+    pre-service-balance rule, and on every other package tier with balance-due days above zero the rest of the package price
+    is paid no later than that many calendar days before the scheduled service date as a pre-service balance deposit. A maternity
+    booking whose patient's award covers the expected delivery date and is at the Riverbend Presumptive Charity Care or Riverbend
+    Full Charity Care (0-200% FPL) tier, or carries a hardship liability cap with no cap left, and a maternity booking whose
+    figure below comes to zero or less, owe no pre-delivery balance and are outside this rule. For the pre-delivery balance,
+    the patient's award is the patient's approved financial assistance case, a patient holding at most one approved case at
+    a time; the award covers the expected delivery date when that date falls within its award period, which runs from its
+    award start date through its award end date, both counted; the award's cap left is its hardship liability cap less the
+    liabilities already booked on encounters under that case. The pre-delivery balance on a maternity and delivery package
+    is the rest of the delivery package price: the delivery package price less the deposits held on the maternity estimate,
+    rounded half-up to the cent. For the pre-delivery balance the delivery package price is the sum of the Riverbend facility
+    line and the Riverbend professional line that carry the principal service code on the current version, and the deposits
+    held on the maternity estimate are its deposit collections less every refund, retained fee and application drawn on them.
+    The pre-delivery balance is paid no later than the tier's balance-due days before the expected delivery date and may be
+    paid earlier. The pre-delivery balance is not fixed until an enrollment deposit collection stands on the maternity booking.
+    Where the adjustments described below apply, a figure they select takes the place of the delivery package price before
+    the deposits held are taken off, every amount they add or take off is figured on its own and added to or taken from that
+    rest, and the total is rounded half-up to the cent once at the end (an exact half cent goes up). Assistance price for
+    the pre-delivery balance: when the covering award's tier discount is above zero and below one hundred percent, the delivery
+    package price owed before delivery is the delivery package price reduced by that discount percentage; when the covering
+    award carries no tier discount and has cap left, it is the smaller of the delivery package price and the cap left; in
+    every other case it is the delivery package price. Early-payment credit on the pre-delivery balance: the days to delivery
+    run from today's date to the expected delivery date, today not counted and the delivery date counted; sixty or more days
+    to delivery take off two percent of the delivery package price, thirty-five to fifty-nine days take off one percent, and
+    fewer than thirty-five days, a passed expected delivery date included, take off nothing. Cesarean-history amount: the
+    latest cesarean delivery charge (procedure code 59514) on the patient's Riverbend hospital accounts is read by its service
+    date, the first such line the account activity lists where several share the latest date, and it counts only when the
+    hospital account it is posted on carries charges net of the charge credits recorded on that account above zero, otherwise
+    counting as no cesarean charge, an earlier cesarean charge not being looked for, a month counting once its day of the
+    month is reached; one fewer than eighteen whole months before today's date adds the tier's cesarean upgrade differential,
+    one eighteen or more and fewer than sixty whole months before adds half of that differential, and none, or one sixty or
+    more whole months back, adds nothing, a charge dated after today's date counting as zero months back; the amount stands
+    for the upgrade differential the package bills when a cesarean delivery follows, and is applied to it or refunded with
+    the other deposits at the final bill. Pay-in-full credit on the pre-delivery balance: the days since the enrollment deposit
+    run from the posting date of the latest initial deposit collection on the maternity estimate to today's date, the posting
+    date not counted and today counted; a pre-delivery balance paid zero to seven days after it takes off one and a half percent
+    of the delivery package price, eight to thirty days after takes off one half of one percent, and later, with no enrollment
+    deposit on record, or with one dated after today's date, takes off nothing.
+  prerequisite:
+  - problem: estimate_ext_maternity_deposit
+    kind: value_input
+    gate: deposits_held
+    form: state
+    policy_source: >-
+      The pre-delivery balance is not fixed until an enrollment deposit collection stands on the maternity booking.
+    condition: >-
+      estimate_transactions carries an estimate_deposit_collected row with deposit_stage INITIAL_DEPOSIT on the maternity
+      estimate.
+    resolved_by: pay_maternity_enrollment_deposit_610ee08c
+    effect: >-
+      deposits_held rises from 0.00 to the enrollment deposit, so the rest owed falls by that amount, and the pay-in-full
+      credit reads that collection's posting date.
+  cross_category:
+  - category: assist
+    as: branch
+    reads:
+    - status
+    - discount_pct
+    - hardship_liability_cap_usd
+    - fap_case_id
+    - award_start_date
+    - award_end_date
+    - assistance_transactions.fap_liability_usd
+    note: aid_price reads the approved financial assistance case.
+  - category: encounter
+    as: history
+    reads:
+    - encounter_transactions.cpt_hcpcs_code
+    - encounter_transactions.service_date
+    note: cesarean_amount reads the latest cesarean delivery charge.
+  compute:
+  - version: F('estimate_version')
+  - pkg_facility: >-
+      SUM('estimate_transactions','amount', event_type='estimate_line_recorded', estimate_version=version, provider_role='CONVENING_FACILITY',
+      service_code=F('primary_service_code'))
+  - pkg_professional: >-
+      SUM('estimate_transactions','amount', event_type='estimate_line_recorded', estimate_version=version, provider_role='CONVENING_PROFESSIONAL',
+      service_code=F('primary_service_code'))
+  - delivery_price: pkg_facility + pkg_professional
+  - deposits_collected: SUM('estimate_transactions','amount', event_type='estimate_deposit_collected')
+  - deposits_refunded: SUM('estimate_transactions','amount', event_type='estimate_deposit_refunded')
+  - fees_retained: >-
+      SUM('estimate_transactions','amount', event_type='estimate_cancellation_fee_retained')
+  - deposits_applied: SUM('estimate_transactions','amount', event_type='estimate_deposit_applied')
+  - deposits_held: MX(0, deposits_collected - deposits_refunded - fees_retained - deposits_applied)
+  - aid_case: CFIELD('assist','fap_case_id', status='approved')
+  - aid_tier: CFIELD('assist','variant_name', status='approved') or ''
+  - aid_cap: CFIELD('assist','hardship_liability_cap_usd', status='approved') or 0
+  - aid_cap_used: >-
+      XSUM('assist','assistance_transactions','fap_liability_usd', fap_case_id=aid_case, event_type='assist_encounter_applied')
+  - aid_cap_left: MX(0, aid_cap - aid_cap_used)
+  - aid_start: CFIELD('assist','award_start_date', status='approved')
+  - aid_end: CFIELD('assist','award_end_date', status='approved')
+  - aid_covers: >-
+      1 if (aid_start and aid_end and DAYS(aid_start, F('scheduled_service_date')) >= 0 and DAYS(F('scheduled_service_date'),
+      aid_end) >= 0) else 0
+  - aid_discount: CPARAM('assist','discount_pct', status='approved') or 0
+  - aid_price: >-
+      delivery_price * (100 - aid_discount) / 100 if (aid_covers == 1 and aid_discount > 0 and aid_discount < 100) else (MN(delivery_price,
+      aid_cap_left) if (aid_covers == 1 and aid_discount == 0 and aid_cap_left > 0) else delivery_price)
+  - no_payment_owed: >-
+      1 if (aid_covers == 1 and (aid_tier == 'Riverbend Presumptive Charity Care' or aid_tier == 'Riverbend Full Charity Care
+      (0-200% FPL)' or (aid_cap > 0 and aid_cap_left <= 0))) else 0
+  - days_to_delivery: DAYS(NOW, F('scheduled_service_date'))
+  - early_credit_pct: >-
+      K('early_far_pct') if days_to_delivery >= K('early_far_days') else (K('early_mid_pct') if days_to_delivery >= K('early_mid_days')
+      else 0)
+  - ces_acct: >-
+      XLATEST('encounter','encounter_transactions','encounter_id', date_field='service_date', event_type='encounter_charge_posted',
+      cpt_hcpcs_code='59514')
+  - ces_acct_net: >-
+      XSUM('encounter','encounter_transactions','amount', event_type='encounter_charge_posted', encounter_id=ces_acct) - XSUM('encounter','encounter_transactions','amount',
+      event_type='encounter_charge_credited', encounter_id=ces_acct)
+  - cesarean_last_date: >-
+      XLATEST('encounter','encounter_transactions','service_date', date_field='service_date', event_type='encounter_charge_posted',
+      cpt_hcpcs_code='59514')
+  - cesarean_months: >-
+      MONTHS(cesarean_last_date, NOW) if (cesarean_last_date and ces_acct and ces_acct_net > 0) else 9999
+  - cesarean_amount: >-
+      P('package_upgrade_differential_usd') if cesarean_months < K('ces_recent_months') else (P('package_upgrade_differential_usd')
+      * K('ces_older_share') if cesarean_months < K('ces_window_months') else 0)
+  - latest_deposit_date: >-
+      LATEST('estimate_transactions','posting_date', date_field='posting_date', event_type='estimate_deposit_collected', deposit_stage='INITIAL_DEPOSIT')
+  - days_since_deposit: DAYS(latest_deposit_date, NOW) if latest_deposit_date else -1
+  - full_credit_pct: >-
+      K('full_near_pct') if (days_since_deposit >= 0 and days_since_deposit <= K('full_near_days')) else (K('full_mid_pct')
+      if (days_since_deposit > K('full_near_days') and days_since_deposit <= K('full_mid_days')) else 0)
+  - balance_figure: >-
+      aid_price - deposits_held + cesarean_amount - delivery_price * early_credit_pct / 100 - delivery_price * full_credit_pct
+      / 100
+  - result: >-
+      0 if (no_payment_owed == 1 or balance_figure <= 0) else RND(balance_figure + 0.000001, 2)
+  compute_basis:
+    version: carry the principal service code on the current version
+    pkg_facility: >-
+      the sum of the Riverbend facility line and the Riverbend professional line that carry the principal service code on
+      the current version
+    pkg_professional: >-
+      the sum of the Riverbend facility line and the Riverbend professional line that carry the principal service code on
+      the current version
+    delivery_price: >-
+      For the pre-delivery balance the delivery package price is the sum of the Riverbend facility line and the Riverbend
+      professional line that carry the principal service code on the current version
+    deposits_collected: >-
+      the deposits held on the maternity estimate are its deposit collections less every refund, retained fee and application
+      drawn on them
+    deposits_refunded: less every refund, retained fee and application drawn on them
+    fees_retained: less every refund, retained fee and application drawn on them
+    deposits_applied: less every refund, retained fee and application drawn on them
+    deposits_held: >-
+      the deposits held on the maternity estimate are its deposit collections less every refund, retained fee and application
+      drawn on them
+    aid_price: >-
+      Assistance price for the pre-delivery balance: when the covering award's tier discount is above zero and below one hundred
+      percent, the delivery package price owed before delivery is the delivery package price reduced by that discount percentage;
+      when the covering award carries no tier discount and has cap left, it is the smaller of the delivery package price and
+      the cap left; in every other case it is the delivery package price.
+    no_payment_owed: >-
+      is at the Riverbend Presumptive Charity Care or Riverbend Full Charity Care (0-200% FPL) tier, or carries a hardship
+      liability cap with no cap left
+    days_to_delivery: >-
+      the days to delivery run from today's date to the expected delivery date, today not counted and the delivery date counted
+    early_credit_pct: >-
+      sixty or more days to delivery take off two percent of the delivery package price, thirty-five to fifty-nine days take
+      off one percent, and fewer than thirty-five days, a passed expected delivery date included, take off nothing
+    cesarean_last_date: >-
+      the latest cesarean delivery charge (procedure code 59514) on the patient's Riverbend hospital accounts is read by its
+      service date
+    cesarean_months: a month counting once its day of the month is reached
+    cesarean_amount: >-
+      one fewer than eighteen whole months before today's date adds the tier's cesarean upgrade differential, one eighteen
+      or more and fewer than sixty whole months before adds half of that differential, and none, or one sixty or more whole
+      months back, adds nothing, a charge dated after today's date counting as zero months back
+    latest_deposit_date: >-
+      the posting date of the latest initial deposit collection on the maternity estimate
+    days_since_deposit: >-
+      the days since the enrollment deposit run from the posting date of the latest initial deposit collection on the maternity
+      estimate to today's date, the posting date not counted and today counted
+    full_credit_pct: >-
+      a pre-delivery balance paid zero to seven days after it takes off one and a half percent of the delivery package price,
+      eight to thirty days after takes off one half of one percent, and later, with no enrollment deposit on record, or with
+      one dated after today's date, takes off nothing
+    balance_figure: >-
+      every amount they add or take off is figured on its own and added to or taken from that rest
+    result: >-
+      and a maternity booking whose figure below comes to zero or less, owe no pre-delivery balance and are outside this rule
+    aid_case: >-
+      the patient's award is the patient's approved financial assistance case, a patient holding at most one approved case
+      at a time
+    aid_tier: >-
+      at the Riverbend Presumptive Charity Care or Riverbend Full Charity Care (0-200% FPL) tier
+    aid_cap: >-
+      the award's cap left is its hardship liability cap less the liabilities already booked on encounters under that case
+    aid_cap_used: >-
+      the award's cap left is its hardship liability cap less the liabilities already booked on encounters under that case
+    aid_cap_left: >-
+      the award's cap left is its hardship liability cap less the liabilities already booked on encounters under that case
+    aid_start: which runs from its award start date through its award end date, both counted
+    aid_end: which runs from its award start date through its award end date, both counted
+    aid_covers: >-
+      the expected delivery date when that date falls within its award period, which runs from its award start date through
+      its award end date, both counted
+    aid_discount: tier discount is above zero and below one hundred percent
+    ces_acct: >-
+      the first such line the account activity lists where several share the latest date
+    ces_acct_net: >-
+      it counts only when the hospital account it is posted on carries charges net of the charge credits recorded on that
+      account above zero, otherwise counting as no cesarean charge, an earlier cesarean charge not being looked for
+  factors:
+  - id: delivery_aid_price
+    effect: method
+    decides: aid_price
+    bindings:
+    - aid_discount
+    - aid_price
+    ladder:
+    - when: >-
+        the patient's award covers the date AND its tier discount is above zero and below one hundred percent
+      method: >-
+        the delivery package price owed before delivery is the package price reduced by the tier discount percentage
+    - when: >-
+        the patient's award covers the date AND it carries no tier discount AND it has cap left
+      method: >-
+        the delivery package price owed before delivery is the smaller of the package price and the cap less the liability
+        already booked under the award
+    - when: otherwise
+      method: the delivery package price owed before delivery is the package price
+    baseline:
+      aid_price: delivery_price
+    evidence:
+    - cross_category
+    - date
+    cross_difficulty: assist
+  - id: early_payment_credit
+    effect: parameter
+    decides: early_credit_pct
+    bindings:
+    - days_to_delivery
+    - early_credit_pct
+    ladder:
+    - when: sixty or more days to delivery
+      value: K('early_far_pct') = 2 percent
+    - when: thirty-five to fifty-nine days to delivery
+      value: K('early_mid_pct') = 1 percent
+    - when: otherwise (fewer than thirty-five)
+      value: 0 percent
+    baseline:
+      early_credit_pct: '0'
+    evidence:
+    - date
+    cross_difficulty: null
+  - id: cesarean_amount
+    effect: parameter
+    decides: cesarean_amount
+    bindings:
+    - ces_acct
+    - ces_acct_net
+    - cesarean_last_date
+    - cesarean_months
+    - cesarean_amount
+    ladder:
+    - when: latest cesarean charge fewer than eighteen whole months back
+      value: P('package_upgrade_differential_usd') = $2,850.00
+    - when: eighteen or more and fewer than sixty whole months back
+      value: half the differential = $1,425.00
+    - when: otherwise
+      value: $0.00
+    baseline:
+      cesarean_amount: '0'
+    evidence:
+    - cross_category
+    - history
+    - date
+    cross_difficulty: encounter
+  - id: pay_in_full_credit
+    effect: parameter
+    decides: full_credit_pct
+    bindings:
+    - latest_deposit_date
+    - days_since_deposit
+    - full_credit_pct
+    ladder:
+    - when: paid zero to seven days after the latest enrollment deposit
+      value: K('full_near_pct') = 1.5 percent
+    - when: paid eight to thirty days after
+      value: K('full_mid_pct') = 0.5 percent
+    - when: otherwise
+      value: 0 percent
+    baseline:
+      full_credit_pct: '0'
+    evidence:
+    - history
+    - date
+    cross_difficulty: null
+  baseline:
+    rule: >-
+      The pre-delivery balance on a maternity and delivery package is the rest of the delivery package price: the delivery
+      package price less the deposits held on the maternity estimate, rounded half-up to the cent. For the pre-delivery balance
+      the delivery package price is the sum of the Riverbend facility line and the Riverbend professional line that carry
+      the principal service code on the current version, and the deposits held on the maternity estimate are its deposit collections
+      less every refund, retained fee and application drawn on them.
+    params: []
+  inputs:
+    history:
+    - table: estimate_transactions
+      aggregate: sum
+      field: amount
+      filters:
+        event_type: estimate_deposit_collected
+    - category: encounter
+      table: encounter_transactions
+      aggregate: latest
+      field: service_date
+      filters:
+        event_type: encounter_charge_posted
+        cpt_hcpcs_code: '59514'
+    - category: assist
+      table: assistance_transactions
+      aggregate: sum
+      field: fap_liability_usd
+      filters:
+        event_type: assist_encounter_applied
+    cross_category:
+    - assist
+    - encounter

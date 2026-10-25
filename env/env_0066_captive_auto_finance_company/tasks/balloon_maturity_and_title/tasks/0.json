@@ -1,0 +1,2673 @@
+{
+  "frozen_time": "2026-10-14 10:20:00 EDT",
+  "design_rationale": "WORKLOG task 0 — balloon_maturity_and_title (env_0066), returned-vehicle settlement tree.\n\n[Step 0 draw] draw_counts.py --task 0 -> {\"prerequisite_problems\": 3, \"problems\": 4, \"factor_counts\": [5, 5, 6, 6]}. Assignment: balloon_ext_return_mileage_charge 6, balloon_ext_return_wear_charge 6, balloon_ext_return_fee 5, balloon_ext_return_balance_plan 5 (multiset {5,5,6,6} matches). Task 1 draw (headroom check): 2 prerequisite problems, factor counts [5, 6, 5].\n[Scope snapshot] Occupied before this task: nothing (first task). Claimed here: the four return-side policies above and the tools bill_excess_mileage_charge_7a491561, bill_excess_wear_charge_ce1b5dd4, bill_return_fee_2252d2f2 (agent) and pay_return_balance_installment_2f123e0a (user). Left for task 1: the maturity/refinance side — payoff quote (balloon_payoff_quote), the pre-refinance payment (balloon_payment on an active contract) and the balloon refinance (balloon_refinance / balloon_terms_modified) — three unclaimed problems with their own tools, which fits task 1's draw of 2 prerequisites. No policy, route or tool is reserved idle.\n[Design thesis] Surface goal: a customer who turned her balloon vehicle in under the return option wants \"the smallest payment Kestrel will take on it today under whatever payment plan you offer\". Scored core: the return balance payment under the Kestrel return balance plan (355.25). Hidden between goal and core: the three return charges are not billed yet (state_due obligations of the base return rule once the 14-day dispute period has run), and the plan payment is fixed only after each stands billed. Depth: 2 hops (goal -> plan payment -> three charges). Breadth: 22 load-bearing factors over the return inspection, 47 ledger rows (late charges, a returned payment, autopay history, the return election), the contract dates and tier, and three other product lines (an active Kestrel lease, a closed Kestrel retail contract, no pre-owned contract). Why a good test: the agent must (a) read the plan rule's three prerequisite sentences, see in the ledger that no return charge stands billed, and find in the other rules which write books each; (b) compute three charges whose base formulas are each replaced by a schedule (odometer selection, early-return proration, tolerance, loyalty, election credit, rate reductions, forgiveness, credits, share, fee basis and reductions); (c) only then compute the plan payment from the billed totals; (d) hand the payment to the customer. Difficulty comes from reading policy, querying the world and computing; every tool is named by its policy's target_tool, so nothing is tool-guessing.\n\n[Problem-tree card]\nroot: balloon_ext_return_balance_plan (owner=user tool pay_return_balance_installment_2f123e0a).\nedge 1: root -> balloon_ext_return_mileage_charge; kind value_input; gate mileage_billed; form state; sentence \"The return balance payment is fixed only after the excess mileage charge for the return stands billed on the contract.\" (affirmative). condition: a balloon_return_charge entry of fee_type excess_mileage_charge stands on the contract. Resolved by bill_excess_mileage_charge_7a491561 (owner agent). Only that tool books an excess_mileage_charge entry in this difficulty, so the state singles out one write.\nedge 2: root -> balloon_ext_return_wear_charge; value_input; gate wear_billed; state; \"The return balance payment is not fixed until the excess wear charge for the return stands billed on the contract.\" (negated direction; exact contrapositive of \"fixed only after\"). Resolved by bill_excess_wear_charge_ce1b5dd4 (agent), the only writer of excess_wear_charge entries.\nedge 3: root -> balloon_ext_return_fee; value_input; gate fee_billed; state; \"Before the return balance payment is fixed, the return fee for the return must stand billed on the contract.\" Resolved by bill_return_fee_2252d2f2 (agent), the only writer of return_fee entries.\nFour-point test, each sentence: explicit connective (only after / not until / before ... must); the waited-on side is a record-visible state (a billed charge entry of a named kind), no action or performer; no tool, policy id, snake_case token or row id (the kinds are named in words: excess mileage charge, excess wear charge, return fee); strength exactly the edge (one kind per sentence, hard requirement). Directions mix (2 affirmative, 1 negated) as a billing desk would say a figure \"is fixed only after\"/\"is not fixed until\" the bill it rests on stands. Derivation for a reader: sentence + find_balloon_transactions (no balloon_return_charge rows; inspection row present) + the mileage rule (\"This rule sets the excess mileage charge billed once a balloon vehicle has come back under the return option and the return inspection is on file.\") -> the mileage-charge write; likewise wear and fee.\nWhy false at frozen_time: initial_state.balloon_transactions holds 47 rows, none of event_type balloon_return_charge; balloon_contracts.<B>.fees_due_balance = 25.0 (the 2025-12-06 late charge alone). Flips: steps 8/10/12 book 623.20 / 179.66 / 205.00 and fees_due_balance becomes 1032.86.\nTopological order: mileage, wear, fee (any order among them), then the plan payment. Parallel edges commute: none of the three charge computations reads fees_due_balance or a return-charge row (verified: each recomputes identically whatever subset of the other two is billed), and each writes its own fee_type row, so all six orders give the same terminal state.\nDeletion sensitivity (harness run, other two charges billed): skip mileage -> plan payment 194.83; skip wear -> 416.60; skip fee -> 403.93 (gold 355.25); and the terminal DB lacks the skipped charge entry.\nuser_scenario names no charge, no billing and nothing \"to sort out first\"; the only related line is a passive reaction that fires after the agent says something must be put on the account. Tools validate no prerequisite: the payment tool posts whatever amount it is given with no look at the charges; the billing tools book any amount without checking the inspection, dispute period or each other.\n\n[Base-invariant card]\nSubject balloon_return_charge (steps 8, 10, 12) — governing base policy balloon_vehicle_return only.\n - charge_status (state, system_record): \"Return charges can be billed only while the contract status is returned.\" Evidence balloon_contracts.<B>.status = returned; correlation key balloon_contract_id = the billed contract. Satisfied.\n - dispute_elapsed (time): \"Return charges may be billed only after return_inspection_dispute_days have fully elapsed from the date the vehicle was returned.\" Anchor event: the vehicle was returned; anchor_source balloon_contracts.return_date = 2026-09-18; duration variants.return_inspection_dispute_days = 14 (Tier 3); counting: calendar days from the day after return_date, billing permitted from return_date + 14 + 1 day = 2026-10-03; relation not_before, boundary exclusive. Just before: 2026-10-02 (not permitted). At boundary: 2026-10-03 permitted. Frozen 2026-10-14: permitted. No dispute request exists (no balloon_requests rows), so nothing awaits resolution.\n - return_allowed / return_deadline apply to balloon_vehicle_returned (the return itself, done 2026-09-18 before the call: return 7 days before maturity, inside the 30-day window; days_past_due 0; return_option_available true).\nSubject balloon_payment (step 14) — governing base policies balloon_payment_posting and balloon_reinstatement_and_redemption (both list balloon_payment).\n - payable_status (\"A payment can be posted only while the contract status is active, repo_assigned, repossessed or deficiency.\") is retired for this payment only, by the declared overwrite of balloon_ext_return_balance_plan; every other clause of the posting rule stays: allocation order (on a returned contract principal is 0.00, so nothing accrues and the whole amount goes to fees due), channel fee (phone_ivr_ach: 0.00), certified-funds clause (certified_funds_only_until empty).\n - reinstatement_and_redemption: its gates apply to balloon_reinstated only; policy_scope recorded (contract never repossessed, repossession_type none).\n[Business-object card] Target object: the one balloon contract 4071583926 (Tier 3, returned 2026-09-18). Correlation key: balloon_contract_id on every charge and payment entry. Rows included: the return inspection of 2026-09-18 (odometer 41236, wear 1386.40), the contract fields, the late charges (2024-10-06, 2025-12-06), the returned payment 2025-06-29, 35 installment payments, the 2026-08-20 return election. Excluded by rule: the inspection row's excess_miles 5227 (vendor's raw base-formula figure; no rule reads it), the 2024-10-06 late charge from 24-month counts (24 months 8 days old), the 2025-06-29 returned payment from 12-month counts (15 months old). Settled objects: the 2024-10-06 late charge was paid with the 2024-10-25 payment (fee payment entry), the returned-payment fee with the 2025-07-02 payment; the 2025-12-06 late charge (25.00) still stands and is the \"fees standing from before the return\".\n\n[Overwrite declarations — hygiene]\n- mileage: retires base clause \"excess_miles is the inspection odometer less ... and is charged at return_excess_mileage_rate per mile.\" replaced_by names its scope (\"For the excess mileage charge billed on a returned balloon contract, and only for that charge\") and carries the still-in-force parts (excess never below zero, charge = excess x rate) and says the rest of the return rule stays.\n- wear: retires \"The excess wear charge is wear_assessed_amount less return_wear_waiver_cap for the tier, never below zero.\"; replaced_by keeps \"never below zero\" and \"the wear_assessed_amount ... remains the amount the charge starts from\", scoped to the wear charge.\n- return fee: retires \"The return fee is return_option_fee for the tier, waived when ... within return_fee_loyalty_days ...\"; replaced_by keeps the tier fee and the 30-day waiver verbatim in substance and adds the fee basis/reductions, scoped to the return fee.\n- plan: retires payable_status for a return balance payment on a returned contract only (tail keeps every other payment under the base sentence, quoted), and retires \"charges are due return_charges_due_days calendar days after billing\" for charges placed on a plan only (tail keeps the 30-day due date for unplanned charges, the closing on payment and the charge-off at return_charge_off_days). Each overwrite retires a clause whose provision differs in this world (base mileage 1306.75 vs 623.20; base wear 1136.40 vs 179.66; base fee 450.00 vs 205.00; base payment would be refused on a returned contract and the whole 1032.86 due in 30 days).\n\n[Factor cards — every factor off its fall-through, figures from the harness run on the handling-time world]\nMileage charge (gold 623.20; baseline_result with every factor at its baseline 1306.75 = (41236 - 9 - 36000) x 0.25):\n 1 mc_odometer_reading (method; history/contract): sign-in 41198 vs inspection 41236, gap 38 in 1..100 -> lower reading; tier \"differ by 1..tolerance\". Baseline (inspection odometer) -> 630.80. Near-miss: the inspection row's own excess_miles 5227 tempts a reader to bill 5227 x 0.25.\n 2 mc_allowance_basis (method; date): returned before maturity -> 36000 x 1103/1110 = 35773. Baseline full-term 36000 -> 577.80.\n 3 mc_tolerance_miles (parameter; multi-source: tier AND late-charge count; round 2: both rungs now allow at most one late charge, so a better tier never fares worse than a weaker one on the same record): Tier 3 AND one late charge in 24 months -> 500. Baseline 0 -> 723.20. Near-miss: 2024-10-06 late charge is 24 months 8 days old (outside), else the count would be 2 and the tier would fall through.\n 4 mc_return_to_brand (parameter; cross-difficulty lease): lease dated 41 days before the return (within 60) -> 1500. Baseline 0 -> 923.20.\n 5 mc_advance_election (parameter; history): return election 36 days before maturity -> 300. Baseline 0 -> 683.20.\n 6 mc_rate_relationship (parameter; cross-difficulty retail): closed retail contract -> rate 0.25 - 0.05. Baseline 0.25 -> 779.00.\nWear charge (gold 179.66; baseline 1136.40 = 1386.40 - 250.00):\n 1 wc_standing_forgiveness (parameter; multi-source: tier AND returned-payment count AND payment count): Tier 3, no returned payment in 12 months, 11 payments posted -> tier cap 250.00 plus standing bonus 250.00 = 500.00 (round 2: the rung is now cap + bonus, so no tier's clean rung is below its own fall-through). Baseline Tier 3 cap 250.00 -> 365.99. Near-miss: the 2025-06-29 returned payment is 15 months old.\n 2 wc_forgiveness_proration (method; date): early return -> x 1103/1110 = 496.85. Baseline unprorated -> 177.30.\n 3 wc_return_to_brand (parameter; cross lease): -> 400.00. Baseline 0 -> 479.66.\n 4 wc_tenure_credit (parameter; cross retail): retail signed 2016-04-02, 10.4 years -> 150.00. Baseline 0 -> 292.16.\n 5 wc_ontime_credit (parameter; history): 9 whole months from 2025-11-25 to 2026-09-18 -> 100.00. Baseline 0 -> 254.66. Near-miss: counting from the late charge's own date 2025-12-06 also gives 9; counting to the billing date 2026-10-14 would give 10 — the rule anchors at the return date.\n 6 wc_share_billed (parameter; multi-source tier AND late count; round 2: both rungs allow at most one late charge): Tier 3, one late charge in 12 months -> 0.75. Baseline whole -> 239.55.\nReturn fee (gold 205.00; baseline 450.00):\n 1 fc_fee_basis (method; cross lease): no contract within 30 days, lease within 90 -> lower of 450.00 and 395.00. Baseline tier fee -> 260.00. Near-miss: a reader applying the base 30-day waiver to the 41-day-old lease bills 0.00.\n 2 fc_early_return (parameter; date): 7 days early -> 75.00. Baseline 0 -> 280.00.\n 3 fc_multi_line (parameter; cross lease/retail/preowned): one active line -> 50.00. Baseline 0 -> 255.00. Near-miss: the closed retail contract is not an active line.\n 4 fc_payment_record (parameter; multi-source late AND returned counts): one late, no returned in 12 months -> 25.00. Baseline 0 -> 230.00.\n 5 fc_autopay_record (parameter; history): 10 autopay payments in 12 months -> 40.00. Baseline 0 -> 245.00. Near-miss: the 2025-12-09 online payment is not autopay.\nReturn balance payment (gold 355.25; baseline 1032.86 = whole fees due):\n 1 rp_plan_length (method): Tier 3, no returned payment in 12 months -> int(1007.86/300) = 3 installments -> 335.953. Baseline one payment -> 1010.36.\n 2 rp_prior_fee_share (parameter): a late charge in 12 months but none in 6 -> 0.5 of 25.00. Baseline all -> 367.75.\n 3 rp_minimum_share (parameter; multi-source late count 24m AND returned count 12m; round 2 ladder: two or more late charges or a returned payment in 12 months -> 0.50; exactly one late charge and no returned payment in 12 months -> 0.35; clean -> none): one late charge, no returned payment in 12 months -> 0.35 x 1007.86 = 352.751 > 335.953. Baseline none -> 338.45.\n 4 rp_relationship_deferral (parameter; cross lease): lease at days_past_due 0, no active retail -> 50.00 deferred. Baseline 0 -> 405.25.\n 5 rp_upfront_amount (parameter; history): returned payment 2025-06-29 within 24 months, not 12 -> +40.00. Baseline 0 -> 315.25.\nTask floors: multi-source factors 6 (mc_tolerance_miles, wc_standing_forgiveness, wc_share_billed, fc_payment_record, rp_minimum_share, rp_plan_length); cross-difficulty factors 7 (lease x5, retail x2); every computation reads a cross value (CFIELD lease_date / disposition_fee / days_past_due / retail contract_date).\n[Factor independence table] Each factor's bindings read only records, parameters and plain shared reads, never another factor's binding: mc_* read insp row, return_odometer, dates, late-charge COUNT, lease/retail CFIELD/EXISTS, election LATEST; plain bindings miles_driven, per_mile_rate, excess_miles, result assemble. wc_* read inspection wear (plain wear_assessed), returned/payment/late COUNTs, dates, lease/retail CFIELD; forgiveness_applied (plain) multiplies the standing forgiveness by the proration share — assembly, not a factor reading a factor. fc_* each read their own records; result subtracts. rp_* read the billed-charge SUMs (plain return_charges, prior_fees shared once), COUNTs and lease/retail days_past_due; charges_now (plain) takes the larger of the spread part and the minimum share; result adds/subtracts. Transitively no factor's tier depends on another factor's output.\n[Method tier pairwise tables] mc_odometer_reading: lower-of vs sign-in differ when sign-in > inspection by <=100 (e.g. 41236/41198 swapped); lower-of vs inspection differ when sign-in lower (this world); sign-in vs inspection differ whenever the gap > 0. mc_allowance_basis: prorated vs extension-months differ for any contract with extensions (36000x1103/1110 vs 37000 for one extension); prorated vs full-term differ whenever return_date != maturity_date; extension vs full-term differ when extensions_used_lifetime > 0. wc_forgiveness_proration: same three shapes on the forgiveness. fc_fee_basis: waived (0) vs lower-of differ whenever either fee > 0; lower-of vs tier fee differ when the lease disposition_fee < tier fee (395 < 450 here); waived vs tier fee differ always. rp_plan_length: balance-driven vs fixed 2 differ when the count is 3 or 4 (1007.86 -> 3); balance-driven vs one payment differ always (count >= 2); fixed 2 vs one payment differ always.\n\n[Edge-probe table (scratch copies, harness)] Reads and decoys:\n - LATEST return inspection (mileage, wear): added an older inspection row 2026-09-10 (odometer 41000, wear 900.00) -> 623.20 / 179.66 unchanged (latest by txn_date governs). Absent inspection: the rules start \"from the return inspection on file\"; with none the charge rules have nothing to bill from (no seed case).\n - CFIELD lease lease_date / disposition_fee / days_past_due (status='active'): inserted a closed lease dated 2026-09-20 ahead of the real one -> all unchanged (status filter). Absent lease -> mileage 923.20, wear 479.66, fee 310.00 (each falls to its no-lease tier, as the rules state). Two active leases would make \"an active Kestrel lease\" first-match; the world has exactly one.\n - CFIELD retail contract_date (status closed / paid_in_full) and EXISTS retail/preowned: added a charged_off pre-owned contract dated 2026-09-25 -> unchanged (charged_off is neither active nor completed).\n - LATEST return_vehicle election: added a pay_balloon election 2026-07-01 -> 623.20 unchanged (filter maturity_option=return_vehicle). Absent election -> lead -1 -> no credit (rule: \"or no return election was recorded\").\n - COUNT late charges / returned payments / payments / autopay: removing every late charge -> mileage 623.20, wear 179.66, fee 155.00 (fee moves to the clean tier, as stated). LATEST late-charged installment absent -> \"no balloon late charge has ever been assessed\" -> top on-time tier (stated).\n - Zero-division / None: term_days > 0 for any booked contract; plan count held >= 2; return_odometer and maturity_date are set on every returned contract; CFIELD reads are guarded by EXISTS.\n[compute_basis sweep] harness basis_sweep: every compute_basis quotation, every baseline.rule sentence, every replaced_by and every policy_source is a verbatim substring of its own rule — \"basis sweep misses: 0\". Reverse sweep: every rule sentence carrying a quantity, window, branch, floor/ceiling or rounding is claimed (odometer tolerance, proration days, 24/12/6-month windows, 60/30/90-day spans, election leads, rate reductions, wear credits, share, fee reductions, plan count bounds, minimum share, deferral, upfront, never-below-zero, never-above-fees_due, rounding to the cent at the end).\n[Seed design] customers: one row (band: phone 3135544718, tax 4372, ZIP 49007, street 417 W Lovell St, Kalamazoo MI). balloon_contracts: one Tier 3 contract, account 4071583926, VIN 3KSBD4A23PN412683 (check digit computed, serial 412683). balloon_transactions (47): funding 41980.00 on 2023-09-11; 35 installment payments of 783.98 posted on simple interest at 8.99%/365 (interest from the prior paid-to date, then principal, then fees), autopay except 2024-10-08 and 2025-12-09 (online, late) and 2025-07-02 (phone, re-payment); returned autopay 2025-06-25 (returned 2025-06-29, insufficient_funds) with a 25.00 returned-payment fee paid on 2025-07-02; late charges 25.00 on 2024-10-06 (paid with the 2024-10-25 payment) and 2025-12-06 (unpaid, = fees_due_balance 25.00); maturity options letter 2026-06-27 (90 days before maturity); return election 2026-08-20; return credit 23470.36 on 2026-09-18 (principal at return; balloon_amount 23446.50 differs because two installments were late); return inspection 2026-09-18. lease_contracts: Kestrel Lease Tier 2, account 4203917548, VIN 5KSLE7B37TN438051, dated 2026-08-08, 36 months, money factor 0.00215 (Tier 2 0.00195 sheet plus markup within 0.0004), residual 22779.50 (58%), purchase option fee 350.00, base payment 520.84 + 6% use tax 31.25, 2 payments made, 34 remaining, next due 2026-11-08, days_past_due 0, disposition_fee 395.00 (Tier 2 standard). retail_contracts: Tier 2, account 4118260437, VIN 1KSRA2C4XGN427719, 60 months at 7.99 (Tier 2 49-60 band), installment 438.68, 2016-04-02 to paid in full 2021-03-29, closed 2021-04-01. Why each class exists: the inspection, dates and tier feed every charge; late/returned/autopay/election rows decide the history tiers and the near-misses; the lease and retail rows decide the cross-difficulty tiers. Automatic clauses checked: no late charge accrues on a returned contract; the 120-day charge-off is far off (2027-01-16); the base overpayment refund cannot fire (principal is 0.00, not negative); the lease and retail rows are current/closed and ignite nothing in their own difficulties.\n[Persona design] Delia Prescott, brisk, tired surgical nurse on her lunch break. Volunteers only the surface goal (smallest payment today on the turned-in car under a plan) and the true opening fact that she returned the car on September 18. Gives the phone number to be located, phone + SSN last four + ZIP to verify (DOB as a spare), the account number and her other Kestrel holdings only when asked, and says she does not know mileage, inspection or charge figures. Passive reactions: agrees when told something must be put on the account first; refuses a lump sum and repeats the plan request if offered the total; runs the handed-over payment with the stated amount and the account ending 4419; ends after confirmation. She never names a charge, never proposes a figure and never corrects the agent.\n[Tool capability cards] bill_excess_mileage_charge_7a491561 / bill_excess_wear_charge_ce1b5dd4 / bill_return_fee_2252d2f2 (agent, write): one balloon_return_charge entry of fee_type excess_mileage_charge / excess_wear_charge / return_fee dated today for the given amount (USD, cents), fees_due_balance += amount; receipt: entry id, type, amount, billing date, new fees due. Triggers: none (fees_due account, balloon category only). pay_return_balance_installment_2f123e0a (user, write): one balloon_payment dated today, channel phone_ivr_ach, purpose installment, fees_applied = amount, interest/principal 0.00, plus its balloon_fee_payment entry (the base trigger for a non-zero fee portion, same category), fees_due_balance -= amount, last_payment_date = today; receipt: payment id, amount, date, channel, account last four, remaining fees due. purpose installment triggers no reinstatement/redemption/paid-in-full transition.\n\n[Standard solution] 0 find_customers(phone 3135544718) -> 1 verify (phone, 4372, 49007; 3 matches) -> 2 find_balloon_contracts -> 3 find_balloon_transactions (sees no return charge billed; reads inspection, late charges, returned payment, payments, election) -> 4 find_lease_contracts -> 5 find_retail_contracts -> 6 find_preowned_contracts -> 7/8 unlock+call mileage charge 623.20 -> 9/10 unlock+call wear charge 179.66 -> 11/12 unlock+call return fee 205.00 -> 13 unlock_user_discoverable_tool + 14 customer calls pay_return_balance_installment_2f123e0a(amount 355.25, funding_account_last4 4419). Terminal: three return charge entries, one payment and one fee payment entry; fees_due_balance 677.61.\n[Verification run] Scratch harness (/tmp/balloon_maturity_and_title_0066/harness.py) evaluates each compute with check_compute's own evaluator on the world after the preceding gold writes (simulated with the real tools): mileage 623.20 (baseline 1306.75), wear 179.66 (1136.40), fee 205.00 (450.00), plan payment 355.25 (1032.86); per-factor sensitivities as listed in the factor cards; prerequisite sensitivity 194.83 / 416.60 / 403.93. Gates (per task 0): EXTENDED OK, TASK TOOL CONTRACT OK, REPLAY OK (15 actions, deterministic, closure 51 = init 51), SOLVABILITY OK, COMPUTE OK (4 comps, 22 factors, 7 cross, 33 history rows, 104 branches), GROUNDING OK, SCOPE OK.\n[Closure] policy -> tool -> computation step/arg -> GT call -> terminal: mileage -> bill_excess_mileage_charge_7a491561 -> step 8 amount -> entry 623.20; wear -> bill_excess_wear_charge_ce1b5dd4 -> step 10 -> 179.66; fee -> bill_return_fee_2252d2f2 -> step 12 -> 205.00; plan -> pay_return_balance_installment_2f123e0a -> step 14 -> payment 355.25. charter_scope.extended_policies = required_documents = computations.policy_id = the 4 problems; task_tools in first-call order. solvability_contract: steps 8/10/12 cite charge_status (status returned) and dispute_elapsed (return_date 2026-09-18 + frozen_time) bound to balloon_contract_id; step 14 cites the retired payable-status gate as policy_scope and the reinstatement policy_scope, intent from the customer's verbatim opening line, stage established by prior steps 8/10/12.\n[Real-conversation walk] Opening line states object (the turned-in Corvalis' final bill), timing (today), mode (she pays herself, under a plan). Agent locates and verifies, reads the contract (returned), the ledger (no charges billed; dispute period over since 2026-10-03), finds the plan rule's three sentences, explains the charges must be billed first; Delia agrees. Agent bills the three charges, figures the plan payment, unlocks and hands the payment tool over with 355.25; Delia runs it from the account ending 4419 and the receipt enters the transcript; she thanks and ends. Every must-ask item (identity, account, other Kestrel cars, which account to draw) has a scripted answer; nothing waits on a real-world event (the return and inspection completed on 2026-09-18).\n[Draft recomputation from visible context] With yaml/compute/expected hidden: the published plan rule says the payment is fixed only after the three charges stand billed; the ledger shows none; the charge rules give, from the inspection, contract and other holdings, 623.20 / 179.66 / 205.00; the plan rule then gives 3 installments (1007.86/300 rounded down), the 0.35 minimum share (352.751 > 335.953), half of the 25.00 earlier late charge, 50.00 deferred for the current lease, 40.00 upfront for the 2025 returned payment: 355.25. Matches gold; no second reading found (the only rounding happens on the final figures; 179.6625 and 355.251 are not half-cent ties).\n[Revision log] r1 symptom: replay FAIL 53 dangling FKs -> root: empty-string id fields (care_contract_id, reversed_txn_id, payment_txn_id, waived_txn_id) -> change: omit empty id fields from seeded rows -> REPLAY OK. r1 symptom: closure 51 vs init 58 -> root: lease/retail ledgers and a vehicle_return request no read node pulls -> dropped those 7 rows (they decide nothing) -> match. r1 symptom: COMPUTE \"wear history not load-bearing when aggregates are zeroed\" -> root: the wear tiers only needed zero counts -> added the \"at least 10 payments posted in the 12 months\" condition to the standing-forgiveness tiers (customer has 11) -> COMPUTE OK; traces/tracing updated. r0: wear assessed changed from 1385.00 to 1386.40 because 238.15 x 0.75 = 178.6125 is a half-cent tie that half-up and half-even round differently.\nr2 (after task 1): the plan rule's combination sentence was rephrased so it names no factor quantity (\"Where more than one figure is set for the part of the return charges paid now, the larger is used; ... every amount moved to later installments is then taken off and every amount added upfront is then added; ...\"), keeping the order (larger-of, add the collected prior fees, take off deferrals, add upfront amounts, floor 0, ceiling fees_due_balance, round to the cent); compute_basis quotes updated; gold unchanged (355.25); basis sweep 0 misses; gates re-run green.\n[Headroom/coverage at close] Task 0 covers 4 of the 7 extended policies, task 1 the other 3; scopes, tools and required_documents are disjoint; every policy fires in exactly one task's computations.\n\n\nREWORK round 2 (audit policy_task r1: task 0 PASS; charter C-F1 members 1-3 sit in this task's policies; observations)\n- C-F1 member 1 (wc_standing_forgiveness): rungs are now the tier's own return_wear_waiver_cap plus a standing bonus (250 for Tier 3 and better, 150 for Tier 4/5), so the clean rung is never at or below the fall-through for any tier (Tier 1: 750 vs 500; Tier 1+: 1000 vs 750).\n- C-F1 member 2 (rp_minimum_share): risk-ordered ladder over distinct records — two or more late charges in 24 months or a returned payment in 12 months -> 0.50; exactly one late charge and no returned payment in 12 months -> 0.35; clean -> none. Each rung binds on reachable worlds (e.g. 0.50 binds when the balance-driven count is 3 or 4).\n- C-F1 member 3 (mc_tolerance_miles, wc_share_billed): both rungs now allow at most one late charge, so a better tier never fares worse than a weaker tier on the same record; two or more late charges or Tier 5 fall through.\n- G1: mileage, wear and fee schedules are scoped in their declared replaced_by to customers holding at most one active Kestrel lease, at most one active new-vehicle retail contract (and, for the fee, at most one active pre-owned contract; for wear, at most one completed retail contract), so \"the customer's lease/retail contract\" is a single record and the first-match read is exact; every other customer stays under the base sentence. The plan's days_past_due reads are existential and exact.\n- O-OV1: the plan's payable-status replaced_by now says the payment is applied in payment_allocation_order, which on a returned contract places it all on fees due (no departure from the base allocation sentence).\n- O-L1: mc_odometer_reading is a selection rule among candidate readings (the skill's \"selection rule among candidates\" family), kept as method. O-0.1/O-0.2 noted (vendor excess_miles is a distractor, not a stamp; autopay unenrolled at the return).\n- Seed realism sweep: returned balloon now shows payments_made_count 36 (balloon satisfied by the return) and an empty next_due_date (nothing left to fall due), consistent with days_past_due 0 and past_due 0.00; lease row residual 22779.50 (58%), purchase option fee 350.00 and payments follow Lease Tier 2; old retail row apr 7.99 (Tier 2 49-60 band), installment 438.68.\n- Method pairwise table (re-run): mc_odometer_reading lower-of / sign-in / inspection distinct (sign-in above inspection: lower-of differs from sign-in); mc_allowance_basis and wc_forgiveness_proration prorated / extension / full distinct; fc_fee_basis waived / lower-of / tier fee distinct; rp_plan_length balance-driven / fixed 2 / one payment distinct (count 3 vs 2).\n- Factor independence (re-run, transitive): unchanged structure; new binding share_returned_window belongs to rp_minimum_share only.\n- compute_basis sweep: 0 misses. Probe table (re-run): closed lease dated 2026-09-20 inserted first -> 623.20 / 179.66 / 205.00 / 355.25 unchanged; a second, older active lease is outside the round-2 scope of the mileage/wear/fee schedules (base sentences govern), and the plan's existential read is unchanged (355.25).\n- Gold and every sensitivity figure unchanged; gates re-run green.\n\n\nREWORK round 3 (pre-render hardening; revision_2 passed with charter=CLEAN)\n- O2-3: rp_minimum_share now reads the 24-month late-charge count only (two or more -> 0.50; exactly one -> 0.35; none -> no minimum); the never-binding returned-payment disjunct is gone (returned payments already put a contract on the one-payment plan tier). This supersedes the round-2 description above. This world: one late charge in 24 months -> 0.35, figures unchanged. rp_minimum_share is no longer multi-source; the task floor is met by mc_tolerance_miles, wc_standing_forgiveness, wc_share_billed, fc_payment_record and rp_plan_length.\n- O2-1 / recipe 8-9: the mileage, wear and fee scope clauses now say a customer holding two or more records of a read kind is outside the rule and its tool, and restate the base sentence that governs that customer verbatim in substance.\n- Recipe 1-2: wear and fee combination sentences rephrased without naming any factor quantity (\"Changes to the wear forgiveness are made first; ... any share of it that applies is taken last\"; \"Every reduction that applies is subtracted from the return fee\").\n- Recipe 6-8: tie rules added (latest inspection, first recorded on a same-date tie; most recent late charge, first recorded on a same-day tie), a returned contract with no inspection is outside the rule and its tool, and every policy now states the counting convention (calendar days count the later date only; whole months complete when the later date reaches the earlier day of the month, month-end included; an N-month window takes dates on or before the anchor that are fewer than N whole months before it; years = whole months / 12).\n- Probes (round 3): a second inspection dated the same day and recorded later -> 623.20 / 179.66 / 205.00 / 355.25 unchanged; no inspection -> mileage and wear computes have no inspection (outside rule/tool). compute_basis sweep 0 misses; gold and every sensitivity unchanged.\n\n\nREWORK round 4 (C3-X2 / T0-R3-1)\n- The round-3 combination sentences quoted above are superseded. Wear now reads \"Replacements of the wear forgiveness are made first and proration of it second; the wear forgiveness and every wear credit that applies are then subtracted together from the wear_assessed_amount, the chargeable wear that remains never falls below zero, and any share of it that applies is taken last, rounded to the cent.\" Fee now reads \"The basis of the return fee is set first and every reduction that applies is then subtracted from it; the return fee that remains never falls below zero and is rounded to the cent.\"\n- Single reading restored: wear = cap 250.00 raised to 500.00 by standing, then prorated 500.00 x 1103/1110 = 496.85, then 1386.40 - 496.85 - 400.00 - 150.00 - 100.00 = 239.55 x 0.75 = 179.66 (the proration-first order is excluded); fee = basis 395.00 first, then 395.00 - 75.00 - 50.00 - 25.00 - 40.00 = 205.00 (subtracting from 450.00 first is excluded); plan payment 355.25. Compute unchanged; gold and sensitivities unchanged.\n\n\nREWORK round 5 (KB audit source items)\n- SRC-4: the persona's backstory now says the contract was financed \"a little over three years ago, in September 2023\" (contract_date 2023-09-11; frozen_time 2026-10-14).\n- SRC-2: the plan rule's prior-fee share and upfront amount now say \"one or more\" where the compute counts at least one (ladder labels too). This world (one late charge in 12 months, none in 6; one returned payment 15 months back) is unaffected; figures unchanged.\n",
+  "user_scenario": "You are Delia Prescott, a 47-year-old surgical nurse in Kalamazoo, Michigan, calling Kestrel Financial Services on your lunch break. You speak briskly and politely, a little tired, and you like plain answers. A little over three years ago, in September 2023, you financed a Kestrel Corvalis on a Kestrel Advantage balloon contract, and last month, on September 18, you turned the car in at the Kestrel dealer under the contract's return option instead of paying the balloon. You know there is a final bill coming for the turn-in, but nothing has shown up yet. Open by saying exactly this: \"I turned my Corvalis in at the dealer back in September under the balloon return option, and I want to take care of what I owe on it today. I can't pay the whole final bill in one shot, so I'd like the smallest payment Kestrel will take on it today under whatever payment plan you offer.\" That is all you want out of this call: to make today's payment on the turned-in car's final bill, nothing else.\nYou do not volunteer identity details. When the agent asks who you are or how to find your profile, give your phone number, 3135544718. When the agent asks you to verify, give your phone number 3135544718, the last four of your Social Security number, 4372, and your billing ZIP code, 49007; if they ask for something more, your date of birth is 1979-06-14. If they ask for your account number, it is 4071583926, off your old statement. If they ask whether you have other cars with Kestrel, you say yes, you leased a new Kestrel Meridian from them in August, and years ago you financed a Kestrel Ardent with them that you paid off; you don't remember the account numbers. You don't know the mileage figures, the inspection results or any charge amounts; if asked, you say the dealer and the inspector wrote all that down and you'd rather the agent read it from their records.\nIf the agent tells you something has to be put on your account or worked out before today's payment can be set, tell them that's fine and to go ahead and do whatever is needed. If the agent gives you a total and asks whether you can pay all of it, say no, not all at once, and that you're asking for the smallest payment they'll accept today under their plan. You will not suggest any figure yourself and you will not argue with a figure the agent gives you.\nYou want to make the payment yourself from your checking account, the one ending in 4419; when the agent asks which account, say it is your checking account ending 4419. When the agent tells you the payment amount and hands the payment over to you to complete, complete it yourself with exactly the amount the agent told you and your account ending 4419, then read back the confirmation you get. Once the agent confirms the payment went through, thank them and end the call.",
+  "initial_state": {
+    "customers": {
+      "d0b75e98-a41a-42f1-a90c-65450787d0b4": {
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4",
+        "customer_type": "individual",
+        "name": "Delia Prescott",
+        "phone_number": "3135544718",
+        "email": "delia.prescott@outlook.com",
+        "tax_id_last4": "4372",
+        "date_of_birth": "1979-06-14",
+        "billing_zip": "49007",
+        "mailing_address": "417 W Lovell St, Kalamazoo, MI 49007",
+        "customer_since": "2016-04-02",
+        "authorized_signer_name": "",
+        "bankruptcy_status": "none"
+      }
+    },
+    "balloon_contracts": {
+      "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5": {
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4",
+        "account_number": "4071583926",
+        "variant_name": "Kestrel Advantage Balloon Tier 3",
+        "status": "returned",
+        "vin": "3KSBD4A23PN412683",
+        "vehicle_year": "2023",
+        "vehicle_model": "Kestrel Corvalis XLT AWD",
+        "contract_state": "MI",
+        "contract_date": "2023-09-11",
+        "first_payment_date": "2023-10-25",
+        "maturity_date": "2026-09-25",
+        "term_months": 36,
+        "apr": 8.99,
+        "amount_financed": 41980.0,
+        "monthly_payment": 783.98,
+        "due_day": 25,
+        "next_due_date": "",
+        "days_past_due": 0,
+        "past_due_amount": 0.0,
+        "principal_balance": 0.0,
+        "fees_due_balance": 25.0,
+        "interest_paid_to_date": "2026-08-25",
+        "last_payment_date": "2026-08-25",
+        "payments_made_count": 36,
+        "extensions_used_lifetime": 0,
+        "last_extension_date": "",
+        "due_date_changes_used": 0,
+        "last_due_date_change_date": "",
+        "late_charge_max_amount": 25.0,
+        "nsf_fee_max_amount": 25.0,
+        "extension_fee_permitted": true,
+        "right_to_cure_days": 0,
+        "state_reinstatement_days": 0,
+        "nois_min_days": 10,
+        "right_to_cure_notice_date": "",
+        "repo_assigned_date": "",
+        "repossession_date": "",
+        "repossession_type": "none",
+        "nois_mailed_date": "",
+        "scheduled_sale_date": "",
+        "reinstatements_used": 0,
+        "lien_type": "elt",
+        "title_state": "MI",
+        "title_status": "lien_perfected",
+        "autopay_enrolled": false,
+        "certified_funds_only_until": "",
+        "paid_in_full_date": "",
+        "closed_date": "",
+        "vehicle_msrp": 47850.0,
+        "balloon_amount": 23446.5,
+        "annual_mileage_allowance": 12000,
+        "odometer_at_contract": 9,
+        "return_option_available": true,
+        "maturity_option_elected": "return_vehicle",
+        "refinance_date": "",
+        "return_date": "2026-09-18",
+        "return_odometer": 41198
+      }
+    },
+    "balloon_transactions": {
+      "129702cf-31f9-4cc7-b045-a93e9414f3cf": {
+        "amount": 41980.0,
+        "payment_channel": "not_applicable",
+        "funding_account_last4": "",
+        "payment_purpose": "not_applicable",
+        "interest_applied": 0.0,
+        "principal_applied": 0.0,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_funding",
+        "txn_date": "2023-09-11",
+        "balloon_txn_id": "129702cf-31f9-4cc7-b045-a93e9414f3cf",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "ce7e5850-57b1-4289-b5fa-45071242432f": {
+        "amount": 783.98,
+        "payment_channel": "autopay_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 454.95,
+        "principal_applied": 329.03,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2023-10-25",
+        "balloon_txn_id": "ce7e5850-57b1-4289-b5fa-45071242432f",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "56d1ab39-7a3c-4639-a641-128409c80402": {
+        "amount": 783.98,
+        "payment_channel": "autopay_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 318.02,
+        "principal_applied": 465.96,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2023-11-25",
+        "balloon_txn_id": "56d1ab39-7a3c-4639-a641-128409c80402",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "10a03d91-72a2-40e3-b56d-5b6b379e955b": {
+        "amount": 783.98,
+        "payment_channel": "autopay_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 304.32,
+        "principal_applied": 479.66,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2023-12-25",
+        "balloon_txn_id": "10a03d91-72a2-40e3-b56d-5b6b379e955b",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "0cf6781c-ce8e-4fe8-a6f7-56b2dfa3744b": {
+        "amount": 783.98,
+        "payment_channel": "autopay_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 310.8,
+        "principal_applied": 473.18,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2024-01-25",
+        "balloon_txn_id": "0cf6781c-ce8e-4fe8-a6f7-56b2dfa3744b",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "3900f573-1bdd-4b70-8ee0-2abe7de25c57": {
+        "amount": 783.98,
+        "payment_channel": "autopay_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 307.19,
+        "principal_applied": 476.79,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2024-02-25",
+        "balloon_txn_id": "3900f573-1bdd-4b70-8ee0-2abe7de25c57",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "c923810f-cc15-4073-9949-f176d02cef4e": {
+        "amount": 783.98,
+        "payment_channel": "autopay_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 283.96,
+        "principal_applied": 500.02,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2024-03-25",
+        "balloon_txn_id": "c923810f-cc15-4073-9949-f176d02cef4e",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "74994a81-d769-4bd7-8abe-cb74b0c666fc": {
+        "amount": 783.98,
+        "payment_channel": "autopay_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 299.73,
+        "principal_applied": 484.25,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2024-04-25",
+        "balloon_txn_id": "74994a81-d769-4bd7-8abe-cb74b0c666fc",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "598369bd-cce6-4b6a-83fd-0258c62a8ee9": {
+        "amount": 783.98,
+        "payment_channel": "autopay_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 286.48,
+        "principal_applied": 497.5,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2024-05-25",
+        "balloon_txn_id": "598369bd-cce6-4b6a-83fd-0258c62a8ee9",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "3a167717-63d9-4861-97a4-8a82744a644b": {
+        "amount": 783.98,
+        "payment_channel": "autopay_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 292.23,
+        "principal_applied": 491.75,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2024-06-25",
+        "balloon_txn_id": "3a167717-63d9-4861-97a4-8a82744a644b",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "fa99d05b-4fed-44f3-8d6e-692a76ac3b74": {
+        "amount": 783.98,
+        "payment_channel": "autopay_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 279.17,
+        "principal_applied": 504.81,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2024-07-25",
+        "balloon_txn_id": "fa99d05b-4fed-44f3-8d6e-692a76ac3b74",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "7c36930e-f677-42d5-94db-2977f8b26f82": {
+        "amount": 783.98,
+        "payment_channel": "autopay_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 284.62,
+        "principal_applied": 499.36,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2024-08-25",
+        "balloon_txn_id": "7c36930e-f677-42d5-94db-2977f8b26f82",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "c7a03b4c-b277-406d-a9a0-9b4413caf911": {
+        "amount": 25.0,
+        "payment_channel": "not_applicable",
+        "funding_account_last4": "",
+        "payment_purpose": "not_applicable",
+        "interest_applied": 0.0,
+        "principal_applied": 0.0,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "2024-09-25",
+        "fee_type": "late_charge",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_late_charge",
+        "txn_date": "2024-10-06",
+        "balloon_txn_id": "c7a03b4c-b277-406d-a9a0-9b4413caf911",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "ab6db015-411c-42f5-bf20-29aa04fe2127": {
+        "amount": 783.98,
+        "payment_channel": "online_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 398.57,
+        "principal_applied": 385.41,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2024-10-08",
+        "balloon_txn_id": "ab6db015-411c-42f5-bf20-29aa04fe2127",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "a214ca61-5f44-4f1a-b84b-fca0592ba72d": {
+        "amount": 808.98,
+        "payment_channel": "autopay_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 152.38,
+        "principal_applied": 631.6,
+        "fees_applied": 25.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2024-10-25",
+        "balloon_txn_id": "a214ca61-5f44-4f1a-b84b-fca0592ba72d",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "aee35ce4-bd30-45c0-9d08-2277ecd6e0d0": {
+        "amount": 25.0,
+        "payment_channel": "not_applicable",
+        "funding_account_last4": "",
+        "payment_purpose": "not_applicable",
+        "interest_applied": 0.0,
+        "principal_applied": 0.0,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_fee_payment",
+        "txn_date": "2024-10-25",
+        "payment_txn_id": "a214ca61-5f44-4f1a-b84b-fca0592ba72d",
+        "balloon_txn_id": "aee35ce4-bd30-45c0-9d08-2277ecd6e0d0",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "534b6aef-df94-42ac-ad66-6045a8dcfab4": {
+        "amount": 783.98,
+        "payment_channel": "autopay_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 273.05,
+        "principal_applied": 510.93,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2024-11-25",
+        "balloon_txn_id": "534b6aef-df94-42ac-ad66-6045a8dcfab4",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "20aa5972-680c-4a29-ae6b-547b31e32f9f": {
+        "amount": 783.98,
+        "payment_channel": "autopay_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 260.46,
+        "principal_applied": 523.52,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2024-12-25",
+        "balloon_txn_id": "20aa5972-680c-4a29-ae6b-547b31e32f9f",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "89f707eb-6292-4cc0-bdf1-faca71f2f3b0": {
+        "amount": 783.98,
+        "payment_channel": "autopay_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 265.15,
+        "principal_applied": 518.83,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2025-01-25",
+        "balloon_txn_id": "89f707eb-6292-4cc0-bdf1-faca71f2f3b0",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "f21aaf76-4041-4acc-a5dc-1e572be943b2": {
+        "amount": 783.98,
+        "payment_channel": "autopay_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 261.19,
+        "principal_applied": 522.79,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2025-02-25",
+        "balloon_txn_id": "f21aaf76-4041-4acc-a5dc-1e572be943b2",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "13dc9f4f-8572-42e2-9353-a49091d5d70e": {
+        "amount": 783.98,
+        "payment_channel": "autopay_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 232.3,
+        "principal_applied": 551.68,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2025-03-25",
+        "balloon_txn_id": "13dc9f4f-8572-42e2-9353-a49091d5d70e",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "cbf6d839-ef58-4ade-9c83-8796d0105f80": {
+        "amount": 783.98,
+        "payment_channel": "autopay_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 252.98,
+        "principal_applied": 531.0,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2025-04-25",
+        "balloon_txn_id": "cbf6d839-ef58-4ade-9c83-8796d0105f80",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "f03b85a6-a56e-41cf-a9c8-071d20f980d2": {
+        "amount": 783.98,
+        "payment_channel": "autopay_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 240.9,
+        "principal_applied": 543.08,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2025-05-25",
+        "balloon_txn_id": "f03b85a6-a56e-41cf-a9c8-071d20f980d2",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "eff407e6-9297-4064-b1fb-37cc04c317b5": {
+        "amount": 783.98,
+        "payment_channel": "autopay_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 244.78,
+        "principal_applied": 539.2,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2025-06-25",
+        "balloon_txn_id": "eff407e6-9297-4064-b1fb-37cc04c317b5",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "35cf7a1f-2db2-4460-84d8-768bf85334de": {
+        "amount": 783.98,
+        "payment_channel": "not_applicable",
+        "funding_account_last4": "",
+        "payment_purpose": "not_applicable",
+        "interest_applied": 0.0,
+        "principal_applied": 0.0,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "insufficient_funds",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment_returned",
+        "txn_date": "2025-06-29",
+        "reversed_txn_id": "eff407e6-9297-4064-b1fb-37cc04c317b5",
+        "balloon_txn_id": "35cf7a1f-2db2-4460-84d8-768bf85334de",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "69b5241a-4f11-40d2-903c-65c025815697": {
+        "amount": 25.0,
+        "payment_channel": "not_applicable",
+        "funding_account_last4": "",
+        "payment_purpose": "not_applicable",
+        "interest_applied": 0.0,
+        "principal_applied": 0.0,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "returned_payment_fee",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_returned_payment_fee",
+        "txn_date": "2025-06-29",
+        "reversed_txn_id": "eff407e6-9297-4064-b1fb-37cc04c317b5",
+        "balloon_txn_id": "69b5241a-4f11-40d2-903c-65c025815697",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "134e7630-2766-47ba-92b6-ab76267d7c3e": {
+        "amount": 808.98,
+        "payment_channel": "phone_agent_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 300.05,
+        "principal_applied": 483.93,
+        "fees_applied": 25.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2025-07-02",
+        "balloon_txn_id": "134e7630-2766-47ba-92b6-ab76267d7c3e",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "d6b64b45-e0c2-427a-955f-67072be83fc4": {
+        "amount": 25.0,
+        "payment_channel": "not_applicable",
+        "funding_account_last4": "",
+        "payment_purpose": "not_applicable",
+        "interest_applied": 0.0,
+        "principal_applied": 0.0,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_fee_payment",
+        "txn_date": "2025-07-02",
+        "payment_txn_id": "134e7630-2766-47ba-92b6-ab76267d7c3e",
+        "balloon_txn_id": "d6b64b45-e0c2-427a-955f-67072be83fc4",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "04821933-c527-4a92-b459-4768da5e48ab": {
+        "amount": 783.98,
+        "payment_channel": "autopay_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 178.87,
+        "principal_applied": 605.11,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2025-07-25",
+        "balloon_txn_id": "04821933-c527-4a92-b459-4768da5e48ab",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "ca9f8006-cf7d-400b-ae97-63147895051d": {
+        "amount": 783.98,
+        "payment_channel": "autopay_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 236.47,
+        "principal_applied": 547.51,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2025-08-25",
+        "balloon_txn_id": "ca9f8006-cf7d-400b-ae97-63147895051d",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "9f4dec1e-71e0-43d5-ac3a-9a7dc1659409": {
+        "amount": 783.98,
+        "payment_channel": "autopay_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 232.28,
+        "principal_applied": 551.7,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2025-09-25",
+        "balloon_txn_id": "9f4dec1e-71e0-43d5-ac3a-9a7dc1659409",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "97a72603-da47-4acb-a670-86cdf4a33edf": {
+        "amount": 783.98,
+        "payment_channel": "autopay_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 220.72,
+        "principal_applied": 563.26,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2025-10-25",
+        "balloon_txn_id": "97a72603-da47-4acb-a670-86cdf4a33edf",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "f8ed186b-ea6b-4e82-a30e-468766ff0ac8": {
+        "amount": 25.0,
+        "payment_channel": "not_applicable",
+        "funding_account_last4": "",
+        "payment_purpose": "not_applicable",
+        "interest_applied": 0.0,
+        "principal_applied": 0.0,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "2025-11-25",
+        "fee_type": "late_charge",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_late_charge",
+        "txn_date": "2025-12-06",
+        "balloon_txn_id": "f8ed186b-ea6b-4e82-a30e-468766ff0ac8",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "c32777bc-c3f8-4615-9808-139002f8d6a2": {
+        "amount": 783.98,
+        "payment_channel": "online_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 324.83,
+        "principal_applied": 459.15,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2025-12-09",
+        "balloon_txn_id": "c32777bc-c3f8-4615-9808-139002f8d6a2",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "efabc15c-19d9-448d-b559-87bf751f5376": {
+        "amount": 783.98,
+        "payment_channel": "autopay_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 113.69,
+        "principal_applied": 670.29,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2025-12-25",
+        "balloon_txn_id": "efabc15c-19d9-448d-b559-87bf751f5376",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "be4ee37c-a88b-45f4-bf7b-e5aae71d48ac": {
+        "amount": 783.98,
+        "payment_channel": "autopay_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 215.15,
+        "principal_applied": 568.83,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2026-01-25",
+        "balloon_txn_id": "be4ee37c-a88b-45f4-bf7b-e5aae71d48ac",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "0d2078cc-bd8e-4ef7-99fd-615cebe1b2db": {
+        "amount": 783.98,
+        "payment_channel": "autopay_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 210.8,
+        "principal_applied": 573.18,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2026-02-25",
+        "balloon_txn_id": "0d2078cc-bd8e-4ef7-99fd-615cebe1b2db",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "2aeff187-9822-4a23-b7b2-494764daf7bd": {
+        "amount": 783.98,
+        "payment_channel": "autopay_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 186.45,
+        "principal_applied": 597.53,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2026-03-25",
+        "balloon_txn_id": "2aeff187-9822-4a23-b7b2-494764daf7bd",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "225489cf-569e-4ef2-8379-13f0f5686fcf": {
+        "amount": 783.98,
+        "payment_channel": "autopay_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 201.87,
+        "principal_applied": 582.11,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2026-04-25",
+        "balloon_txn_id": "225489cf-569e-4ef2-8379-13f0f5686fcf",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "91ac6807-01c4-4217-9820-cb93f69b1cbf": {
+        "amount": 783.98,
+        "payment_channel": "autopay_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 191.05,
+        "principal_applied": 592.93,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2026-05-25",
+        "balloon_txn_id": "91ac6807-01c4-4217-9820-cb93f69b1cbf",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "904f1f86-3906-4f4a-8fde-27250d359311": {
+        "amount": 783.98,
+        "payment_channel": "autopay_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 192.89,
+        "principal_applied": 591.09,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2026-06-25",
+        "balloon_txn_id": "904f1f86-3906-4f4a-8fde-27250d359311",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "a561daa5-17fb-4fa5-919a-d21518882dcb": {
+        "amount": 783.98,
+        "payment_channel": "autopay_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 182.3,
+        "principal_applied": 601.68,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2026-07-25",
+        "balloon_txn_id": "a561daa5-17fb-4fa5-919a-d21518882dcb",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "37c73c9a-e194-4599-89fa-19cc74a88874": {
+        "amount": 783.98,
+        "payment_channel": "autopay_ach",
+        "funding_account_last4": "4419",
+        "payment_purpose": "installment",
+        "interest_applied": 183.79,
+        "principal_applied": 600.19,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_payment",
+        "txn_date": "2026-08-25",
+        "balloon_txn_id": "37c73c9a-e194-4599-89fa-19cc74a88874",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "cbb8f190-d9b0-48c6-9351-89af7fbfe2d3": {
+        "amount": 0.0,
+        "payment_channel": "not_applicable",
+        "funding_account_last4": "",
+        "payment_purpose": "not_applicable",
+        "interest_applied": 0.0,
+        "principal_applied": 0.0,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "maturity_options_letter",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_notice_mailed",
+        "txn_date": "2026-06-27",
+        "balloon_txn_id": "cbb8f190-d9b0-48c6-9351-89af7fbfe2d3",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "69568502-6701-4e1e-bb71-66a38771a78b": {
+        "amount": 0.0,
+        "payment_channel": "not_applicable",
+        "funding_account_last4": "",
+        "payment_purpose": "not_applicable",
+        "interest_applied": 0.0,
+        "principal_applied": 0.0,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "return_vehicle",
+        "event_type": "balloon_maturity_election",
+        "txn_date": "2026-08-20",
+        "balloon_txn_id": "69568502-6701-4e1e-bb71-66a38771a78b",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "2fe0f299-2f09-47b1-ab0a-f47419327160": {
+        "amount": 23470.36,
+        "payment_channel": "not_applicable",
+        "funding_account_last4": "",
+        "payment_purpose": "not_applicable",
+        "interest_applied": 0.0,
+        "principal_applied": 0.0,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_return_credit",
+        "txn_date": "2026-09-18",
+        "balloon_txn_id": "2fe0f299-2f09-47b1-ab0a-f47419327160",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "6073af90-5708-4fa1-a54c-8d609f04808e": {
+        "amount": 0.0,
+        "payment_channel": "not_applicable",
+        "funding_account_last4": "",
+        "payment_purpose": "not_applicable",
+        "interest_applied": 0.0,
+        "principal_applied": 0.0,
+        "fees_applied": 0.0,
+        "convenience_fee": 0.0,
+        "return_reason": "not_applicable",
+        "installment_due_date": "",
+        "fee_type": "not_applicable",
+        "waiver_reason": "not_applicable",
+        "quote_purpose": "not_applicable",
+        "release_method": "not_applicable",
+        "release_recipient": "not_applicable",
+        "mailing_address_type": "not_applicable",
+        "notice_type": "not_applicable",
+        "maturity_option": "not_applicable",
+        "event_type": "balloon_return_inspection",
+        "txn_date": "2026-09-18",
+        "inspection_odometer": 41236,
+        "excess_miles": 5227,
+        "wear_assessed_amount": 1386.4,
+        "balloon_txn_id": "6073af90-5708-4fa1-a54c-8d609f04808e",
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      }
+    },
+    "lease_contracts": {
+      "5bbd8915-9c9d-4acd-b9b1-300b80120b0d": {
+        "lease_contract_id": "5bbd8915-9c9d-4acd-b9b1-300b80120b0d",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4",
+        "account_number": "4203917548",
+        "variant_name": "Kestrel Lease Tier 2",
+        "status": "active",
+        "vin": "5KSLE7B37TN438051",
+        "vehicle_year": "2026",
+        "vehicle_model": "Kestrel Meridian SEL FWD",
+        "vehicle_class": "suv",
+        "lease_state": "MI",
+        "lease_date": "2026-08-08",
+        "first_payment_date": "2026-09-08",
+        "maturity_date": "2029-08-08",
+        "term_months": 36,
+        "msrp": 39275.0,
+        "gross_cap_cost": 38410.0,
+        "cap_cost_reduction": 1500.0,
+        "adjusted_cap_cost": 36910.0,
+        "residual_value": 22779.5,
+        "money_factor": 0.00215,
+        "base_monthly_payment": 520.84,
+        "monthly_use_tax": 31.25,
+        "total_monthly_payment": 552.09,
+        "use_tax_rate_pct": 6.0,
+        "annual_mileage_allowance": 12000,
+        "excess_mileage_rate": 0.25,
+        "odometer_at_delivery": 14,
+        "disposition_fee": 395.0,
+        "purchase_option_fee": 350.0,
+        "purchase_option_price": 23129.5,
+        "acquisition_fee": 695.0,
+        "security_deposit": 0.0,
+        "due_day": 8,
+        "next_due_date": "2026-11-08",
+        "days_past_due": 0,
+        "past_due_amount": 0.0,
+        "payments_made_count": 2,
+        "remaining_payments": 34,
+        "adjusted_lease_balance": 36124.98,
+        "fees_due_balance": 0.0,
+        "end_of_term_balance": 0.0,
+        "late_charge_max_amount": 25.0,
+        "nsf_fee_max_amount": 25.0,
+        "maturity_extension_months_used": 0,
+        "advance_inspection_date": "",
+        "turn_in_date": "",
+        "turn_in_odometer": "",
+        "realized_value": 0.0,
+        "purchase_date": "",
+        "termination_type": "none",
+        "repossession_date": "",
+        "reinstatements_used": 0,
+        "title_state": "MI",
+        "closed_date": ""
+      }
+    },
+    "retail_contracts": {
+      "95e9dd3d-04ac-46ae-9583-26f64cba7839": {
+        "retail_contract_id": "95e9dd3d-04ac-46ae-9583-26f64cba7839",
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4",
+        "account_number": "4118260437",
+        "variant_name": "Kestrel New Vehicle Retail Tier 2",
+        "status": "closed",
+        "vin": "1KSRA2C4XGN427719",
+        "vehicle_year": "2016",
+        "vehicle_model": "Kestrel Ardent SE Sedan",
+        "contract_state": "MI",
+        "contract_date": "2016-04-02",
+        "first_payment_date": "2016-05-15",
+        "maturity_date": "2021-04-15",
+        "term_months": 60,
+        "apr": 7.99,
+        "amount_financed": 21640.0,
+        "monthly_payment": 438.68,
+        "due_day": 15,
+        "next_due_date": "",
+        "days_past_due": 0,
+        "past_due_amount": 0.0,
+        "principal_balance": 0.0,
+        "fees_due_balance": 0.0,
+        "interest_paid_to_date": "2021-03-29",
+        "last_payment_date": "2021-03-29",
+        "payments_made_count": 60,
+        "extensions_used_lifetime": 0,
+        "last_extension_date": "",
+        "due_date_changes_used": 0,
+        "last_due_date_change_date": "",
+        "late_charge_max_amount": 25.0,
+        "nsf_fee_max_amount": 25.0,
+        "extension_fee_permitted": true,
+        "right_to_cure_days": 0,
+        "state_reinstatement_days": 0,
+        "nois_min_days": 10,
+        "right_to_cure_notice_date": "",
+        "repo_assigned_date": "",
+        "repossession_date": "",
+        "repossession_type": "none",
+        "nois_mailed_date": "",
+        "scheduled_sale_date": "",
+        "reinstatements_used": 0,
+        "lien_type": "elt",
+        "title_state": "MI",
+        "title_status": "released_electronic",
+        "autopay_enrolled": false,
+        "certified_funds_only_until": "",
+        "paid_in_full_date": "2021-03-29",
+        "closed_date": "2021-04-01"
+      }
+    }
+  },
+  "solvability_contract": {
+    "request_binding_version": 1,
+    "request_alignment": [
+      {
+        "claim": "The customer wants to make the smallest payment Kestrel will accept today on the final bill of the balloon vehicle she turned in, under a payment plan, paying it herself from her checking account.",
+        "evidence": [
+          "user_scenario:I can't pay the whole final bill in one shot, so I'd like the smallest payment Kestrel will take on it today under whatever payment plan you offer.",
+          "user_scenario:it is your checking account ending 4419"
+        ]
+      }
+    ],
+    "gold_actions": [
+      {
+        "step": 8,
+        "business_effect": "Books the excess mileage charge of 623.20 as a return charge entry on the returned contract and adds it to fees_due_balance.",
+        "request_binding": {
+          "action_semantics": "The contract is returned (status returned, return_date 2026-09-18) with a return inspection on file and the dispute period over; the excess mileage charge is owed and not yet billed, and the return balance payment the customer asks for waits on it, so this charge (fee_type excess_mileage_charge) is the action, not a payment or a refund.",
+          "intent_source": {
+            "kind": "initial_state",
+            "evidence": [
+              "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.status",
+              "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.return_date",
+              "initial_state.balloon_transactions.6073af90-5708-4fa1-a54c-8d609f04808e"
+            ]
+          },
+          "discriminator": {
+            "business_meaning": "excess mileage charge",
+            "evidence": [
+              "initial_state.balloon_transactions.6073af90-5708-4fa1-a54c-8d609f04808e",
+              "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.return_date"
+            ],
+            "value": "excess_mileage_charge"
+          }
+        },
+        "stage_provenance": {
+          "kind": "preexisting_before_conversation",
+          "fact": "The vehicle was returned and signed in on 2026-09-18 and the return inspection was recorded the same day; both completed before the call.",
+          "evidence": [
+            "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.return_date",
+            "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.return_odometer",
+            "initial_state.balloon_transactions.6073af90-5708-4fa1-a54c-8d609f04808e"
+          ]
+        },
+        "base_preconditions": [
+          {
+            "policy_id": "balloon_vehicle_return",
+            "eligibility_id": "charge_status",
+            "condition": "Return charges can be billed only while the contract status is returned.",
+            "evidence": [
+              "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.status",
+              "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.balloon_contract_id"
+            ],
+            "evidence_bindings": [
+              {
+                "gate_field": "balloon_contracts.balloon_contract_id",
+                "source": "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.balloon_contract_id",
+                "action_arg": "balloon_contract_id"
+              }
+            ],
+            "satisfied": true
+          },
+          {
+            "policy_id": "balloon_vehicle_return",
+            "eligibility_id": "dispute_elapsed",
+            "condition": "Return charges may be billed only after return_inspection_dispute_days have fully elapsed from the date the vehicle was returned.",
+            "evidence": [
+              "frozen_time",
+              "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.return_date",
+              "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.balloon_contract_id"
+            ],
+            "evidence_bindings": [
+              {
+                "gate_field": "balloon_contracts.balloon_contract_id",
+                "source": "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.balloon_contract_id",
+                "action_arg": "balloon_contract_id"
+              }
+            ],
+            "satisfied": true
+          }
+        ]
+      },
+      {
+        "step": 10,
+        "business_effect": "Books the excess wear charge of 179.66 as a return charge entry on the returned contract and adds it to fees_due_balance.",
+        "request_binding": {
+          "action_semantics": "The contract is returned (status returned, return_date 2026-09-18) with a return inspection on file and the dispute period over; the excess wear charge is owed and not yet billed, and the return balance payment the customer asks for waits on it, so this charge (fee_type excess_wear_charge) is the action, not a payment or a refund.",
+          "intent_source": {
+            "kind": "initial_state",
+            "evidence": [
+              "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.status",
+              "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.return_date",
+              "initial_state.balloon_transactions.6073af90-5708-4fa1-a54c-8d609f04808e"
+            ]
+          },
+          "discriminator": {
+            "business_meaning": "excess wear charge",
+            "evidence": [
+              "initial_state.balloon_transactions.6073af90-5708-4fa1-a54c-8d609f04808e",
+              "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.return_date"
+            ],
+            "value": "excess_wear_charge"
+          }
+        },
+        "stage_provenance": {
+          "kind": "preexisting_before_conversation",
+          "fact": "The vehicle was returned and signed in on 2026-09-18 and the return inspection was recorded the same day; both completed before the call.",
+          "evidence": [
+            "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.return_date",
+            "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.return_odometer",
+            "initial_state.balloon_transactions.6073af90-5708-4fa1-a54c-8d609f04808e"
+          ]
+        },
+        "base_preconditions": [
+          {
+            "policy_id": "balloon_vehicle_return",
+            "eligibility_id": "charge_status",
+            "condition": "Return charges can be billed only while the contract status is returned.",
+            "evidence": [
+              "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.status",
+              "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.balloon_contract_id"
+            ],
+            "evidence_bindings": [
+              {
+                "gate_field": "balloon_contracts.balloon_contract_id",
+                "source": "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.balloon_contract_id",
+                "action_arg": "balloon_contract_id"
+              }
+            ],
+            "satisfied": true
+          },
+          {
+            "policy_id": "balloon_vehicle_return",
+            "eligibility_id": "dispute_elapsed",
+            "condition": "Return charges may be billed only after return_inspection_dispute_days have fully elapsed from the date the vehicle was returned.",
+            "evidence": [
+              "frozen_time",
+              "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.return_date",
+              "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.balloon_contract_id"
+            ],
+            "evidence_bindings": [
+              {
+                "gate_field": "balloon_contracts.balloon_contract_id",
+                "source": "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.balloon_contract_id",
+                "action_arg": "balloon_contract_id"
+              }
+            ],
+            "satisfied": true
+          }
+        ]
+      },
+      {
+        "step": 12,
+        "business_effect": "Books the return fee of 205.00 as a return charge entry on the returned contract and adds it to fees_due_balance.",
+        "request_binding": {
+          "action_semantics": "The contract is returned (status returned, return_date 2026-09-18) with a return inspection on file and the dispute period over; the return fee is owed and not yet billed, and the return balance payment the customer asks for waits on it, so this charge (fee_type return_fee) is the action, not a payment or a refund.",
+          "intent_source": {
+            "kind": "initial_state",
+            "evidence": [
+              "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.status",
+              "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.return_date",
+              "initial_state.balloon_transactions.6073af90-5708-4fa1-a54c-8d609f04808e"
+            ]
+          },
+          "discriminator": {
+            "business_meaning": "return fee",
+            "evidence": [
+              "initial_state.balloon_transactions.6073af90-5708-4fa1-a54c-8d609f04808e",
+              "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.return_date"
+            ],
+            "value": "return_fee"
+          }
+        },
+        "stage_provenance": {
+          "kind": "preexisting_before_conversation",
+          "fact": "The vehicle was returned and signed in on 2026-09-18 and the return inspection was recorded the same day; both completed before the call.",
+          "evidence": [
+            "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.return_date",
+            "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.return_odometer",
+            "initial_state.balloon_transactions.6073af90-5708-4fa1-a54c-8d609f04808e"
+          ]
+        },
+        "base_preconditions": [
+          {
+            "policy_id": "balloon_vehicle_return",
+            "eligibility_id": "charge_status",
+            "condition": "Return charges can be billed only while the contract status is returned.",
+            "evidence": [
+              "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.status",
+              "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.balloon_contract_id"
+            ],
+            "evidence_bindings": [
+              {
+                "gate_field": "balloon_contracts.balloon_contract_id",
+                "source": "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.balloon_contract_id",
+                "action_arg": "balloon_contract_id"
+              }
+            ],
+            "satisfied": true
+          },
+          {
+            "policy_id": "balloon_vehicle_return",
+            "eligibility_id": "dispute_elapsed",
+            "condition": "Return charges may be billed only after return_inspection_dispute_days have fully elapsed from the date the vehicle was returned.",
+            "evidence": [
+              "frozen_time",
+              "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.return_date",
+              "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.balloon_contract_id"
+            ],
+            "evidence_bindings": [
+              {
+                "gate_field": "balloon_contracts.balloon_contract_id",
+                "source": "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.balloon_contract_id",
+                "action_arg": "balloon_contract_id"
+              }
+            ],
+            "satisfied": true
+          }
+        ]
+      },
+      {
+        "step": 14,
+        "business_effect": "The customer posts a 355.25 return balance payment from her checking account ending 4419 on the phone_ivr_ach channel; it is applied to fees due and booked with its fee payment entry.",
+        "request_binding": {
+          "action_semantics": "The customer asks for the smallest payment Kestrel will take today on the turned-in car under a payment plan; on a returned contract with billed return charges that is the return balance payment under the return balance plan, made by the customer from her own account, not a payoff, a refund or a charge.",
+          "intent_source": {
+            "kind": "user_scenario",
+            "evidence": [
+              "user_scenario:I can't pay the whole final bill in one shot, so I'd like the smallest payment Kestrel will take on it today under whatever payment plan you offer."
+            ]
+          },
+          "discriminator": {
+            "business_meaning": "smallest payment Kestrel will take on it today",
+            "evidence": [
+              "user_scenario:I can't pay the whole final bill in one shot, so I'd like the smallest payment Kestrel will take on it today under whatever payment plan you offer."
+            ],
+            "action_arg": "funding_account_last4",
+            "value": "4419"
+          }
+        },
+        "stage_provenance": {
+          "kind": "established_by_prior_tool",
+          "fact": "The excess mileage charge, the excess wear charge and the return fee were billed at steps 8, 10 and 12 of this call, so the return charges the payment is figured on stand on the contract.",
+          "evidence": [
+            "prior_step:8",
+            "prior_step:10",
+            "prior_step:12"
+          ]
+        },
+        "base_preconditions": [
+          {
+            "policy_id": "balloon_payment_posting",
+            "eligibility_id": "policy_scope",
+            "condition": "The payable-status gate of the payment posting rule is retired for a return balance payment on a returned contract by the declared overwrite of balloon_ext_return_balance_plan; the posting order, channel and certified-funds clauses still apply (no certified-funds restriction is recorded: certified_funds_only_until is empty).",
+            "evidence": [
+              "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.status",
+              "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.certified_funds_only_until"
+            ],
+            "evidence_bindings": [],
+            "satisfied": true
+          },
+          {
+            "policy_id": "balloon_reinstatement_and_redemption",
+            "eligibility_id": "policy_scope",
+            "condition": "The reinstatement and redemption rule governs payments made to reinstate or redeem a repossessed contract; this payment has purpose installment on a returned contract that was never repossessed (repossession_type none), so none of its gates applies.",
+            "evidence": [
+              "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.repossession_type",
+              "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.status"
+            ],
+            "evidence_bindings": [],
+            "satisfied": true
+          }
+        ]
+      }
+    ],
+    "temporal_feasibility": [
+      {
+        "step": 8,
+        "policy_id": "balloon_vehicle_return",
+        "eligibility_id": "dispute_elapsed",
+        "condition": "Return charges may be billed only after return_inspection_dispute_days have fully elapsed from the date the vehicle was returned.",
+        "temporal_basis": {
+          "clock": "frozen_time",
+          "anchor_event": "the vehicle was returned",
+          "anchor_source": "balloon_contracts.return_date",
+          "relation": "not_before",
+          "duration_source": "variants.return_inspection_dispute_days",
+          "unit": "calendar_days",
+          "counting_rule": "The dispute period is counted in calendar days starting the day after return_date, so billing is permitted from the calendar day after return_date plus return_inspection_dispute_days.",
+          "boundary": "exclusive"
+        },
+        "as_of": "frozen_time",
+        "evidence": [
+          "frozen_time",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.return_date",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.variant_name"
+        ],
+        "satisfied": true,
+        "boundary_check": {
+          "just_before": "return_date 2026-09-18 + 14 days: billing on 2026-10-02 (the 14th day of the dispute period, counted from 2026-09-19) is not yet permitted; the charges must wait.",
+          "at_boundary": "Billing is permitted from 2026-10-03, the calendar day after return_date plus 14 days (exclusive boundary); at frozen_time 2026-10-14 billing is permitted."
+        }
+      },
+      {
+        "step": 10,
+        "policy_id": "balloon_vehicle_return",
+        "eligibility_id": "dispute_elapsed",
+        "condition": "Return charges may be billed only after return_inspection_dispute_days have fully elapsed from the date the vehicle was returned.",
+        "temporal_basis": {
+          "clock": "frozen_time",
+          "anchor_event": "the vehicle was returned",
+          "anchor_source": "balloon_contracts.return_date",
+          "relation": "not_before",
+          "duration_source": "variants.return_inspection_dispute_days",
+          "unit": "calendar_days",
+          "counting_rule": "The dispute period is counted in calendar days starting the day after return_date, so billing is permitted from the calendar day after return_date plus return_inspection_dispute_days.",
+          "boundary": "exclusive"
+        },
+        "as_of": "frozen_time",
+        "evidence": [
+          "frozen_time",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.return_date",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.variant_name"
+        ],
+        "satisfied": true,
+        "boundary_check": {
+          "just_before": "return_date 2026-09-18 + 14 days: billing on 2026-10-02 (the 14th day of the dispute period, counted from 2026-09-19) is not yet permitted; the charges must wait.",
+          "at_boundary": "Billing is permitted from 2026-10-03, the calendar day after return_date plus 14 days (exclusive boundary); at frozen_time 2026-10-14 billing is permitted."
+        }
+      },
+      {
+        "step": 12,
+        "policy_id": "balloon_vehicle_return",
+        "eligibility_id": "dispute_elapsed",
+        "condition": "Return charges may be billed only after return_inspection_dispute_days have fully elapsed from the date the vehicle was returned.",
+        "temporal_basis": {
+          "clock": "frozen_time",
+          "anchor_event": "the vehicle was returned",
+          "anchor_source": "balloon_contracts.return_date",
+          "relation": "not_before",
+          "duration_source": "variants.return_inspection_dispute_days",
+          "unit": "calendar_days",
+          "counting_rule": "The dispute period is counted in calendar days starting the day after return_date, so billing is permitted from the calendar day after return_date plus return_inspection_dispute_days.",
+          "boundary": "exclusive"
+        },
+        "as_of": "frozen_time",
+        "evidence": [
+          "frozen_time",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.return_date",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.variant_name"
+        ],
+        "satisfied": true,
+        "boundary_check": {
+          "just_before": "return_date 2026-09-18 + 14 days: billing on 2026-10-02 (the 14th day of the dispute period, counted from 2026-09-19) is not yet permitted; the charges must wait.",
+          "at_boundary": "Billing is permitted from 2026-10-03, the calendar day after return_date plus 14 days (exclusive boundary); at frozen_time 2026-10-14 billing is permitted."
+        }
+      }
+    ],
+    "required_user_inputs": [
+      {
+        "information": "locator: phone number on the profile",
+        "source": "user_scenario:give your phone number, 3135544718"
+      },
+      {
+        "information": "verification: last four of the SSN",
+        "source": "user_scenario:the last four of your Social Security number, 4372"
+      },
+      {
+        "information": "verification: billing ZIP code",
+        "source": "user_scenario:your billing ZIP code, 49007"
+      },
+      {
+        "information": "the bank account the payment is drawn from",
+        "source": "user_scenario:it is your checking account ending 4419"
+      },
+      {
+        "information": "confirmation that the agent may bill what is needed before the payment (never enters gold)",
+        "source": "user_scenario:tell them that's fine and to go ahead and do whatever is needed"
+      }
+    ],
+    "seed_consistency": [
+      {
+        "row": "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+        "policy_id": "balloon_vehicle_return",
+        "check": "Tier 3 contract, 36 months at 8.99 (Tier 3 24-36 band), balloon 23446.50 = 49% of MSRP 47850.00 (Tier 3 36-month percentage); status returned with return_date 2026-09-18 inside the 30-day pre-maturity window, return_option_available true, days_past_due 0, payments_made_count 36 (35 installments paid, the balloon installment satisfied by the return), next_due_date empty (nothing left to fall due), principal 0.00 after the return credit, fees_due_balance 25.00 = the unpaid 2025-12-06 late charge.",
+        "evidence": [
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.variant_name",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.return_date",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.fees_due_balance",
+          "initial_state.balloon_transactions.2fe0f299-2f09-47b1-ab0a-f47419327160"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.129702cf-31f9-4cc7-b045-a93e9414f3cf",
+        "policy_id": "balloon_origination_tiering",
+        "check": "Funding of the amount financed 41980.00 on the contract date.",
+        "evidence": [
+          "initial_state.balloon_transactions.129702cf-31f9-4cc7-b045-a93e9414f3cf",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.ce7e5850-57b1-4289-b5fa-45071242432f",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 783.98 via autopay_ach; interest 454.95, principal 329.03, fees 0.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.ce7e5850-57b1-4289-b5fa-45071242432f",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.56d1ab39-7a3c-4639-a641-128409c80402",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 783.98 via autopay_ach; interest 318.02, principal 465.96, fees 0.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.56d1ab39-7a3c-4639-a641-128409c80402",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.10a03d91-72a2-40e3-b56d-5b6b379e955b",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 783.98 via autopay_ach; interest 304.32, principal 479.66, fees 0.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.10a03d91-72a2-40e3-b56d-5b6b379e955b",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.0cf6781c-ce8e-4fe8-a6f7-56b2dfa3744b",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 783.98 via autopay_ach; interest 310.8, principal 473.18, fees 0.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.0cf6781c-ce8e-4fe8-a6f7-56b2dfa3744b",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.3900f573-1bdd-4b70-8ee0-2abe7de25c57",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 783.98 via autopay_ach; interest 307.19, principal 476.79, fees 0.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.3900f573-1bdd-4b70-8ee0-2abe7de25c57",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.c923810f-cc15-4073-9949-f176d02cef4e",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 783.98 via autopay_ach; interest 283.96, principal 500.02, fees 0.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.c923810f-cc15-4073-9949-f176d02cef4e",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.74994a81-d769-4bd7-8abe-cb74b0c666fc",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 783.98 via autopay_ach; interest 299.73, principal 484.25, fees 0.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.74994a81-d769-4bd7-8abe-cb74b0c666fc",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.598369bd-cce6-4b6a-83fd-0258c62a8ee9",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 783.98 via autopay_ach; interest 286.48, principal 497.5, fees 0.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.598369bd-cce6-4b6a-83fd-0258c62a8ee9",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.3a167717-63d9-4861-97a4-8a82744a644b",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 783.98 via autopay_ach; interest 292.23, principal 491.75, fees 0.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.3a167717-63d9-4861-97a4-8a82744a644b",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.fa99d05b-4fed-44f3-8d6e-692a76ac3b74",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 783.98 via autopay_ach; interest 279.17, principal 504.81, fees 0.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.fa99d05b-4fed-44f3-8d6e-692a76ac3b74",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.7c36930e-f677-42d5-94db-2977f8b26f82",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 783.98 via autopay_ach; interest 284.62, principal 499.36, fees 0.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.7c36930e-f677-42d5-94db-2977f8b26f82",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.c7a03b4c-b277-406d-a9a0-9b4413caf911",
+        "policy_id": "balloon_late_charges",
+        "check": "Late charge 25.00 = min(5% of 783.98, company 30.00, recorded late_charge_max_amount 25.00) on the installment due 2024-09-25, assessed after the 10-day grace.",
+        "evidence": [
+          "initial_state.balloon_transactions.c7a03b4c-b277-406d-a9a0-9b4413caf911",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.ab6db015-411c-42f5-bf20-29aa04fe2127",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 783.98 via online_ach; interest 398.57, principal 385.41, fees 0.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.ab6db015-411c-42f5-bf20-29aa04fe2127",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.a214ca61-5f44-4f1a-b84b-fca0592ba72d",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 808.98 via autopay_ach; interest 152.38, principal 631.6, fees 25.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.a214ca61-5f44-4f1a-b84b-fca0592ba72d",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.aee35ce4-bd30-45c0-9d08-2277ecd6e0d0",
+        "policy_id": "balloon_payment_posting",
+        "check": "Fee portion 25.00 of the linked payment applied to fees due.",
+        "evidence": [
+          "initial_state.balloon_transactions.aee35ce4-bd30-45c0-9d08-2277ecd6e0d0",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.534b6aef-df94-42ac-ad66-6045a8dcfab4",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 783.98 via autopay_ach; interest 273.05, principal 510.93, fees 0.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.534b6aef-df94-42ac-ad66-6045a8dcfab4",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.20aa5972-680c-4a29-ae6b-547b31e32f9f",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 783.98 via autopay_ach; interest 260.46, principal 523.52, fees 0.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.20aa5972-680c-4a29-ae6b-547b31e32f9f",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.89f707eb-6292-4cc0-bdf1-faca71f2f3b0",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 783.98 via autopay_ach; interest 265.15, principal 518.83, fees 0.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.89f707eb-6292-4cc0-bdf1-faca71f2f3b0",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.f21aaf76-4041-4acc-a5dc-1e572be943b2",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 783.98 via autopay_ach; interest 261.19, principal 522.79, fees 0.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.f21aaf76-4041-4acc-a5dc-1e572be943b2",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.13dc9f4f-8572-42e2-9353-a49091d5d70e",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 783.98 via autopay_ach; interest 232.3, principal 551.68, fees 0.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.13dc9f4f-8572-42e2-9353-a49091d5d70e",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.cbf6d839-ef58-4ade-9c83-8796d0105f80",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 783.98 via autopay_ach; interest 252.98, principal 531.0, fees 0.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.cbf6d839-ef58-4ade-9c83-8796d0105f80",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.f03b85a6-a56e-41cf-a9c8-071d20f980d2",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 783.98 via autopay_ach; interest 240.9, principal 543.08, fees 0.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.f03b85a6-a56e-41cf-a9c8-071d20f980d2",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.eff407e6-9297-4064-b1fb-37cc04c317b5",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 783.98 via autopay_ach; interest 244.78, principal 539.2, fees 0.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.eff407e6-9297-4064-b1fb-37cc04c317b5",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.35cf7a1f-2db2-4460-84d8-768bf85334de",
+        "policy_id": "balloon_returned_payment",
+        "check": "The 2025-06-25 autopay payment returned for insufficient funds on 2025-06-29; principal restored.",
+        "evidence": [
+          "initial_state.balloon_transactions.35cf7a1f-2db2-4460-84d8-768bf85334de",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.69b5241a-4f11-40d2-903c-65c025815697",
+        "policy_id": "balloon_returned_payment",
+        "check": "Returned-payment fee 25.00 = min(company 25.00, recorded nsf_fee_max_amount 25.00), paid by the 2025-07-02 phone payment.",
+        "evidence": [
+          "initial_state.balloon_transactions.69b5241a-4f11-40d2-903c-65c025815697",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.134e7630-2766-47ba-92b6-ab76267d7c3e",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 808.98 via phone_agent_ach; interest 300.05, principal 483.93, fees 25.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.134e7630-2766-47ba-92b6-ab76267d7c3e",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.d6b64b45-e0c2-427a-955f-67072be83fc4",
+        "policy_id": "balloon_payment_posting",
+        "check": "Fee portion 25.00 of the linked payment applied to fees due.",
+        "evidence": [
+          "initial_state.balloon_transactions.d6b64b45-e0c2-427a-955f-67072be83fc4",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.04821933-c527-4a92-b459-4768da5e48ab",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 783.98 via autopay_ach; interest 178.87, principal 605.11, fees 0.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.04821933-c527-4a92-b459-4768da5e48ab",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.ca9f8006-cf7d-400b-ae97-63147895051d",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 783.98 via autopay_ach; interest 236.47, principal 547.51, fees 0.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.ca9f8006-cf7d-400b-ae97-63147895051d",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.9f4dec1e-71e0-43d5-ac3a-9a7dc1659409",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 783.98 via autopay_ach; interest 232.28, principal 551.7, fees 0.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.9f4dec1e-71e0-43d5-ac3a-9a7dc1659409",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.97a72603-da47-4acb-a670-86cdf4a33edf",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 783.98 via autopay_ach; interest 220.72, principal 563.26, fees 0.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.97a72603-da47-4acb-a670-86cdf4a33edf",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.f8ed186b-ea6b-4e82-a30e-468766ff0ac8",
+        "policy_id": "balloon_late_charges",
+        "check": "Late charge 25.00 = min(5% of 783.98, company 30.00, recorded late_charge_max_amount 25.00) on the installment due 2025-11-25, assessed after the 10-day grace.",
+        "evidence": [
+          "initial_state.balloon_transactions.f8ed186b-ea6b-4e82-a30e-468766ff0ac8",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.c32777bc-c3f8-4615-9808-139002f8d6a2",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 783.98 via online_ach; interest 324.83, principal 459.15, fees 0.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.c32777bc-c3f8-4615-9808-139002f8d6a2",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.efabc15c-19d9-448d-b559-87bf751f5376",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 783.98 via autopay_ach; interest 113.69, principal 670.29, fees 0.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.efabc15c-19d9-448d-b559-87bf751f5376",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.be4ee37c-a88b-45f4-bf7b-e5aae71d48ac",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 783.98 via autopay_ach; interest 215.15, principal 568.83, fees 0.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.be4ee37c-a88b-45f4-bf7b-e5aae71d48ac",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.0d2078cc-bd8e-4ef7-99fd-615cebe1b2db",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 783.98 via autopay_ach; interest 210.8, principal 573.18, fees 0.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.0d2078cc-bd8e-4ef7-99fd-615cebe1b2db",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.2aeff187-9822-4a23-b7b2-494764daf7bd",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 783.98 via autopay_ach; interest 186.45, principal 597.53, fees 0.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.2aeff187-9822-4a23-b7b2-494764daf7bd",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.225489cf-569e-4ef2-8379-13f0f5686fcf",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 783.98 via autopay_ach; interest 201.87, principal 582.11, fees 0.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.225489cf-569e-4ef2-8379-13f0f5686fcf",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.91ac6807-01c4-4217-9820-cb93f69b1cbf",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 783.98 via autopay_ach; interest 191.05, principal 592.93, fees 0.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.91ac6807-01c4-4217-9820-cb93f69b1cbf",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.904f1f86-3906-4f4a-8fde-27250d359311",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 783.98 via autopay_ach; interest 192.89, principal 591.09, fees 0.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.904f1f86-3906-4f4a-8fde-27250d359311",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.a561daa5-17fb-4fa5-919a-d21518882dcb",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 783.98 via autopay_ach; interest 182.3, principal 601.68, fees 0.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.a561daa5-17fb-4fa5-919a-d21518882dcb",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.37c73c9a-e194-4599-89fa-19cc74a88874",
+        "policy_id": "balloon_payment_posting",
+        "check": "installment payment of 783.98 via autopay_ach; interest 183.79, principal 600.19, fees 0.0 follow simple interest at 8.99% on a 365-day year from the prior paid-to date and the interest-principal-fees order.",
+        "evidence": [
+          "initial_state.balloon_transactions.37c73c9a-e194-4599-89fa-19cc74a88874",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.cbb8f190-d9b0-48c6-9351-89af7fbfe2d3",
+        "policy_id": "balloon_repossession_assignment",
+        "check": "Maturity options letter mailed 90 days before the 2026-09-25 maturity.",
+        "evidence": [
+          "initial_state.balloon_transactions.cbb8f190-d9b0-48c6-9351-89af7fbfe2d3",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.69568502-6701-4e1e-bb71-66a38771a78b",
+        "policy_id": "balloon_maturity_options",
+        "check": "Return election recorded 2026-08-20 while the contract was active.",
+        "evidence": [
+          "initial_state.balloon_transactions.69568502-6701-4e1e-bb71-66a38771a78b",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.2fe0f299-2f09-47b1-ab0a-f47419327160",
+        "policy_id": "balloon_vehicle_return",
+        "check": "Principal 23470.36 credited out by the return on 2026-09-18.",
+        "evidence": [
+          "initial_state.balloon_transactions.2fe0f299-2f09-47b1-ab0a-f47419327160",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      },
+      {
+        "row": "initial_state.balloon_transactions.6073af90-5708-4fa1-a54c-8d609f04808e",
+        "policy_id": "balloon_vehicle_return",
+        "check": "Return inspection on the return date: inspection odometer 41236, wear assessed 1386.40; excess_miles 5227 is the inspection vendor's raw base-formula figure and is not what the charge is billed from.",
+        "evidence": [
+          "initial_state.balloon_transactions.6073af90-5708-4fa1-a54c-8d609f04808e",
+          "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+        ]
+      }
+    ]
+  },
+  "evaluation_criteria": [
+    {
+      "owner": "agent",
+      "tool": "find_customers",
+      "arguments": {
+        "phone_number": "3135544718"
+      },
+      "objective": "Locate Delia Prescott's customer profile from the phone number she gives, returning her customer reference.",
+      "necessity": "Every later lookup and the identity verification need the customer reference; without it no record of hers can be read."
+    },
+    {
+      "owner": "agent",
+      "tool": "verify_customer_identity",
+      "arguments": {
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4",
+        "phone_number": "3135544718",
+        "tax_id_last4": "4372",
+        "billing_zip": "49007"
+      },
+      "objective": "Verify the caller with three matching details (phone, SSN last four, billing ZIP) before any account business.",
+      "necessity": "No account information may be discussed and no charge billed or payment taken until verification passes."
+    },
+    {
+      "owner": "agent",
+      "tool": "find_balloon_contracts",
+      "arguments": {
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "objective": "Read the returned balloon contract: tier, status returned, return_date, return_odometer, contract_date, maturity_date, term_months, annual_mileage_allowance, odometer_at_contract, extensions_used_lifetime, fees_due_balance and the contract reference.",
+      "necessity": "Every return charge and the return balance payment are figured from these fields: the dealer sign-in odometer and the dates decide the mileage odometer reading, allowance basis, wear proration and early-return reduction; the tier decides the standing ladders; fees_due_balance holds the fees standing from before the return."
+    },
+    {
+      "owner": "agent",
+      "tool": "find_balloon_transactions",
+      "arguments": {
+        "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5"
+      },
+      "objective": "Read the contract's posting history: the return inspection (inspection odometer 41236, wear assessed 1386.40), the late charges (2024-10-06 and 2025-12-06), the returned payment of 2025-06-29, the autopay payments, the return_vehicle election of 2026-08-20, and the absence of any return charge entry.",
+      "necessity": "This read shows that no excess mileage charge, excess wear charge or return fee stands billed, which the return balance payment rule waits on, and it supplies the inspection figures and every history count the factor ladders use (late charges in 12 and 24 months, returned payments in 12 and 24 months, autopay count, months since the last late-charged installment, election lead)."
+    },
+    {
+      "owner": "agent",
+      "tool": "find_lease_contracts",
+      "arguments": {
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "objective": "Read the customer's active Kestrel lease: lease_date 2026-08-08, days_past_due 0, disposition_fee 395.00.",
+      "necessity": "The lease decides the mileage and wear return-to-brand credits (41 days from the return), the return fee basis (outside 30 days, inside 90 days: lower of 450.00 and 395.00), the multi-line count and the relationship deferral (days_past_due 0)."
+    },
+    {
+      "owner": "agent",
+      "tool": "find_retail_contracts",
+      "arguments": {
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "objective": "Read the customer's Kestrel new-vehicle retail contract: status closed, contract_date 2016-04-02.",
+      "necessity": "The closed retail contract decides the completed-loan per-mile rate reduction and the wear tenure credit (10 years before the return), and shows no active retail contract for the loyalty, multi-line and relationship ladders."
+    },
+    {
+      "owner": "agent",
+      "tool": "find_preowned_contracts",
+      "arguments": {
+        "customer_id": "d0b75e98-a41a-42f1-a90c-65450787d0b4"
+      },
+      "objective": "Confirm the customer holds no Kestrel pre-owned retail contract.",
+      "necessity": "The return fee waiver window, the multi-line count and the completed-loan rate reduction also look at pre-owned contracts; this read rules them out."
+    },
+    {
+      "owner": "agent",
+      "tool": "unlock_agent_discoverable_tool",
+      "arguments": {
+        "tool_name": "bill_excess_mileage_charge_7a491561"
+      },
+      "objective": "Unlock bill_excess_mileage_charge_7a491561 so it can be called.",
+      "necessity": "First half of the unlock/call pair; it has no DB effect and is done once for this tool."
+    },
+    {
+      "owner": "agent",
+      "tool": "call_agent_discoverable_tool",
+      "arguments": {
+        "tool_name": "bill_excess_mileage_charge_7a491561",
+        "arguments": {
+          "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+          "amount": 623.2
+        }
+      },
+      "objective": "Book the excess mileage charge of 623.20 on the returned contract, raising fees_due_balance from 25.00 to 648.20.",
+      "necessity": "balloon_ext_return_mileage_charge uniquely produces the amount; it is owed once the dispute period has run and the return balance payment waits on it.",
+      "argument_uniqueness_tracing": {
+        "amount": "623.20 = excess miles 3116 x per-mile rate 0.20. Odometer reading: dealer sign-in 41198 and inspection 41236 differ by 38 (between 1 and odometer_tolerance_miles 100) -> lower reading 41198, miles driven 41198 - 9 = 41189. Allowance basis: returned 2026-09-18 before maturity 2026-09-25 -> 36000 x 1103/1110 days = 35773 (rounded to a whole mile). Tolerance: Tier 3 with at most one late charge (one: 2025-12-06) in the 24 months ending 2026-10-14 (the 2024-10-06 charge is 24 months and 8 days old, outside) -> 500. Return-to-brand: active lease dated 2026-08-08, 41 days before the return, within 60 -> 1500. Advance election: return_vehicle election 2026-08-20, 36 days before maturity, at least 30 -> 300. Rate: closed Kestrel retail contract -> 0.25 - 0.05 = 0.20. Excess = 41189 - 35773 - 500 - 1500 - 300 = 3116; 3116 x 0.20 = 623.20.",
+        "balloon_contract_id": "(1) f85dcfe9-8fa4-4206-b6d5-d3553067f5f5. (2) Basis: the docstring defines balloon_contract_id as 'Id class — the reference number of the balloon contract being billed, as returned by the balloon contract lookup for the verified customer.'; find_balloon_contracts for customer d0b75e98-a41a-42f1-a90c-65450787d0b4 returns exactly one balloon contract, account 4071583926, status returned. (3) Uniqueness: the customer holds no other balloon contract, so every correct agent passes this one reference."
+      }
+    },
+    {
+      "owner": "agent",
+      "tool": "unlock_agent_discoverable_tool",
+      "arguments": {
+        "tool_name": "bill_excess_wear_charge_ce1b5dd4"
+      },
+      "objective": "Unlock bill_excess_wear_charge_ce1b5dd4 so it can be called.",
+      "necessity": "First half of the unlock/call pair; it has no DB effect and is done once for this tool."
+    },
+    {
+      "owner": "agent",
+      "tool": "call_agent_discoverable_tool",
+      "arguments": {
+        "tool_name": "bill_excess_wear_charge_ce1b5dd4",
+        "arguments": {
+          "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+          "amount": 179.66
+        }
+      },
+      "objective": "Book the excess wear charge of 179.66 on the returned contract, raising fees_due_balance by 179.66.",
+      "necessity": "balloon_ext_return_wear_charge uniquely produces the amount; it is owed once the dispute period has run and the return balance payment waits on it.",
+      "argument_uniqueness_tracing": {
+        "amount": "179.66 = chargeable wear 239.55 x share 0.75. Standing forgiveness: Tier 3 with no returned payment in the 12 months ending 2026-10-14 (the 2025-06-29 return is 15 months old) and 11 balloon payments posted in those months (at least 10) -> Tier 3 cap 250.00 + standing bonus 250.00 = 500.00; proration for an early return: 500.00 x 1103/1110 = 496.85. Return-to-brand credit: lease 41 days from the return -> 400.00. Tenure credit: closed retail contract signed 2016-04-02, more than 8 years before the return -> 150.00. On-time credit: 9 whole months from 2025-11-25 (installment that drew the last late charge) to 2026-09-18 -> 100.00. Chargeable = 1386.40 - 496.85 - 400.00 - 150.00 - 100.00 = 239.55; share billed: Tier 3 with at most one late charge in 12 months (one) -> 0.75; 239.55 x 0.75 = 179.6625 -> 179.66.",
+        "balloon_contract_id": "(1) f85dcfe9-8fa4-4206-b6d5-d3553067f5f5. (2) Basis: the docstring defines balloon_contract_id as 'Id class — the reference number of the balloon contract being billed, as returned by the balloon contract lookup for the verified customer.'; find_balloon_contracts for customer d0b75e98-a41a-42f1-a90c-65450787d0b4 returns exactly one balloon contract, account 4071583926, status returned. (3) Uniqueness: the customer holds no other balloon contract, so every correct agent passes this one reference."
+      }
+    },
+    {
+      "owner": "agent",
+      "tool": "unlock_agent_discoverable_tool",
+      "arguments": {
+        "tool_name": "bill_return_fee_2252d2f2"
+      },
+      "objective": "Unlock bill_return_fee_2252d2f2 so it can be called.",
+      "necessity": "First half of the unlock/call pair; it has no DB effect and is done once for this tool."
+    },
+    {
+      "owner": "agent",
+      "tool": "call_agent_discoverable_tool",
+      "arguments": {
+        "tool_name": "bill_return_fee_2252d2f2",
+        "arguments": {
+          "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+          "amount": 205.0
+        }
+      },
+      "objective": "Book the return fee of 205.00 on the returned contract, raising fees_due_balance by 205.00.",
+      "necessity": "balloon_ext_return_fee uniquely produces the amount; it is owed once the dispute period has run and the return balance payment waits on it.",
+      "argument_uniqueness_tracing": {
+        "amount": "205.00 = fee basis 395.00 - 75.00 - 50.00 - 25.00 - 40.00. Fee basis: no Kestrel contract dated within 30 days of the return (lease is 41 days), but the active lease is within 90 days -> lower of Tier 3 return_option_fee 450.00 and the lease disposition_fee 395.00 = 395.00. Early return 7 days before maturity -> 75.00. Active accounts in exactly one line (lease) -> 50.00. Exactly one late charge and no returned payment in 12 months -> 25.00. Autopay payments in the 12 months ending 2026-10-14: 10 (2025-10-25, 2025-12-25 and 2026-01-25 through 2026-08-25; the 2025-12-09 payment was online) -> 40.00.",
+        "balloon_contract_id": "(1) f85dcfe9-8fa4-4206-b6d5-d3553067f5f5. (2) Basis: the docstring defines balloon_contract_id as 'Id class — the reference number of the balloon contract being billed, as returned by the balloon contract lookup for the verified customer.'; find_balloon_contracts for customer d0b75e98-a41a-42f1-a90c-65450787d0b4 returns exactly one balloon contract, account 4071583926, status returned. (3) Uniqueness: the customer holds no other balloon contract, so every correct agent passes this one reference."
+      }
+    },
+    {
+      "owner": "agent",
+      "tool": "unlock_user_discoverable_tool",
+      "arguments": {
+        "tool_name": "pay_return_balance_installment_2f123e0a"
+      },
+      "objective": "Unlock pay_return_balance_installment_2f123e0a so it can be handed to the customer.",
+      "necessity": "First half of the unlock/call pair; it has no DB effect and is done once for this tool."
+    },
+    {
+      "owner": "user",
+      "tool": "call_user_discoverable_tool",
+      "arguments": {
+        "tool_name": "pay_return_balance_installment_2f123e0a",
+        "arguments": {
+          "balloon_contract_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+          "amount": 355.25,
+          "funding_account_last4": "4419"
+        }
+      },
+      "objective": "The customer posts a return balance payment of 355.25 from her checking account ending 4419 through the automated phone line; it is applied to fees due, leaving 677.61.",
+      "necessity": "balloon_ext_return_balance_plan uniquely produces the amount; it is the customer's own payment from her own account, handed to her once the three return charges are billed.",
+      "argument_uniqueness_tracing": {
+        "amount": "355.25. Return charges billed = 623.20 + 179.66 + 205.00 = 1007.86; fees standing from before the return = 1032.86 - 1007.86 = 25.00. Plan length: Tier 3 with no returned payment in 12 months -> 1007.86 / 300 = 3.36 -> 3 installments (held between 2 and 4), spread part 335.95. Minimum share: exactly one late charge in 24 months (2025-12-06) -> 0.35 x 1007.86 = 352.751, larger than 335.953, so 352.751 is paid now. Prior-fee share: a late charge in the last 12 months but none in the last 6 -> 0.5 x 25.00 = 12.50. Relationship deferral: active lease at days_past_due 0, no active retail -> 50.00 taken off. Upfront amount: returned payment 2025-06-29 is within 24 months but not 12 -> 40.00 added. 352.751 + 12.50 - 50.00 + 40.00 = 355.251 -> 355.25.",
+        "balloon_contract_id": "(1) f85dcfe9-8fa4-4206-b6d5-d3553067f5f5. (2) Basis: the docstring defines it as 'Id class — the reference number of the customer's balloon contract being paid, as read out by the agent from the balloon contract lookup.'; the lookup returned one balloon contract for the verified customer. (3) Uniqueness: it is her only balloon contract and the one the three charges were billed on.",
+        "funding_account_last4": "(1) 4419. (2) Basis: the docstring says 'the last four digits of the customer's own bank account the payment is drawn from ... exactly as the customer states them', and the customer says 'it is your checking account ending 4419'. (3) Uniqueness: she names only this account for the payment."
+      }
+    }
+  ],
+  "prerequisite_closure": {
+    "root_problem": "balloon_ext_return_balance_plan",
+    "edges": [
+      {
+        "from": "balloon_ext_return_balance_plan",
+        "to": "balloon_ext_return_mileage_charge",
+        "kind": "value_input",
+        "gate": "mileage_billed",
+        "form": "state",
+        "condition": "The returned contract carries a balloon_return_charge entry with fee_type excess_mileage_charge for the return, and fees_due_balance includes it.",
+        "policy_source": "The return balance payment is fixed only after the excess mileage charge for the return stands billed on the contract.",
+        "resolved_by": "bill_excess_mileage_charge_7a491561",
+        "unresolved_at_frozen_time": {
+          "why_false": "At frozen_time the returned contract's posting history holds no balloon_return_charge entry of fee_type excess_mileage_charge: the only return-side entries are the return credit and the return inspection of 2026-09-18, and fees_due_balance is 25.00, the unpaid 2025-12-06 late charge alone.",
+          "evidence": [
+            "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.fees_due_balance = 25.0",
+            "initial_state.balloon_transactions.6073af90-5708-4fa1-a54c-8d609f04808e.event_type = balloon_return_inspection",
+            "initial_state.balloon_transactions.2fe0f299-2f09-47b1-ab0a-f47419327160.event_type = balloon_return_credit",
+            "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.status = returned"
+          ],
+          "flips_to_true_by": "Step 8 books a balloon_return_charge entry of fee_type excess_mileage_charge for 623.20 and adds it to fees_due_balance, so the mileage_billed binding becomes 623.20."
+        }
+      },
+      {
+        "from": "balloon_ext_return_balance_plan",
+        "to": "balloon_ext_return_wear_charge",
+        "kind": "value_input",
+        "gate": "wear_billed",
+        "form": "state",
+        "condition": "The returned contract carries a balloon_return_charge entry with fee_type excess_wear_charge for the return, and fees_due_balance includes it.",
+        "policy_source": "The return balance payment is not fixed until the excess wear charge for the return stands billed on the contract.",
+        "resolved_by": "bill_excess_wear_charge_ce1b5dd4",
+        "unresolved_at_frozen_time": {
+          "why_false": "At frozen_time the returned contract's posting history holds no balloon_return_charge entry of fee_type excess_wear_charge: the only return-side entries are the return credit and the return inspection of 2026-09-18, and fees_due_balance is 25.00, the unpaid 2025-12-06 late charge alone.",
+          "evidence": [
+            "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.fees_due_balance = 25.0",
+            "initial_state.balloon_transactions.6073af90-5708-4fa1-a54c-8d609f04808e.event_type = balloon_return_inspection",
+            "initial_state.balloon_transactions.2fe0f299-2f09-47b1-ab0a-f47419327160.event_type = balloon_return_credit",
+            "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.status = returned"
+          ],
+          "flips_to_true_by": "Step 10 books a balloon_return_charge entry of fee_type excess_wear_charge for 179.66 and adds it to fees_due_balance, so the wear_billed binding becomes 179.66."
+        }
+      },
+      {
+        "from": "balloon_ext_return_balance_plan",
+        "to": "balloon_ext_return_fee",
+        "kind": "value_input",
+        "gate": "fee_billed",
+        "form": "state",
+        "condition": "The returned contract carries a balloon_return_charge entry with fee_type return_fee for the return, and fees_due_balance includes it.",
+        "policy_source": "Before the return balance payment is fixed, the return fee for the return must stand billed on the contract.",
+        "resolved_by": "bill_return_fee_2252d2f2",
+        "unresolved_at_frozen_time": {
+          "why_false": "At frozen_time the returned contract's posting history holds no balloon_return_charge entry of fee_type return_fee: the only return-side entries are the return credit and the return inspection of 2026-09-18, and fees_due_balance is 25.00, the unpaid 2025-12-06 late charge alone.",
+          "evidence": [
+            "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.fees_due_balance = 25.0",
+            "initial_state.balloon_transactions.6073af90-5708-4fa1-a54c-8d609f04808e.event_type = balloon_return_inspection",
+            "initial_state.balloon_transactions.2fe0f299-2f09-47b1-ab0a-f47419327160.event_type = balloon_return_credit",
+            "initial_state.balloon_contracts.f85dcfe9-8fa4-4206-b6d5-d3553067f5f5.status = returned"
+          ],
+          "flips_to_true_by": "Step 12 books a balloon_return_charge entry of fee_type return_fee for 205.00 and adds it to fees_due_balance, so the fee_billed binding becomes 205.00."
+        }
+      }
+    ],
+    "resolution_order": [
+      "balloon_ext_return_mileage_charge",
+      "balloon_ext_return_wear_charge",
+      "balloon_ext_return_fee",
+      "balloon_ext_return_balance_plan"
+    ],
+    "order_uniqueness": "The three charge problems are parallel prerequisites of the return balance payment. None of their computations reads fees_due_balance or any return charge entry (they read the inspection, the contract dates and tier, the late-charge, returned-payment, autopay and election history, and the lease, retail and pre-owned holdings), and each books its own fee_type row; replaying them in the six possible orders gives the same three amounts (623.20, 179.66, 205.00), the same fees_due_balance 1032.86 and therefore the same 355.25 payment and terminal state. The return balance payment is written last because its own rule fixes it only after all three charges stand billed.",
+    "edge_load_bearing": [
+      {
+        "edge": "balloon_ext_return_balance_plan -> balloon_ext_return_mileage_charge",
+        "skipped_effect": "Skipping the balloon_ext_return_mileage_charge write leaves its charge unbilled; the return balance payment recomputes to 194.83 instead of 355.25 (run with the other two charges billed), and the terminal DB lacks that charge entry."
+      },
+      {
+        "edge": "balloon_ext_return_balance_plan -> balloon_ext_return_wear_charge",
+        "skipped_effect": "Skipping the balloon_ext_return_wear_charge write leaves its charge unbilled; the return balance payment recomputes to 416.60 instead of 355.25 (run with the other two charges billed), and the terminal DB lacks that charge entry."
+      },
+      {
+        "edge": "balloon_ext_return_balance_plan -> balloon_ext_return_fee",
+        "skipped_effect": "Skipping the balloon_ext_return_fee write leaves its charge unbilled; the return balance payment recomputes to 403.93 instead of 355.25 (run with the other two charges billed), and the terminal DB lacks that charge entry."
+      }
+    ],
+    "no_user_hint": "user_scenario asks only for the smallest payment Kestrel will take today on the turned-in car under a payment plan. It never mentions mileage, wear, a return fee, a charge to be billed, or anything to be done first; the only related line is a passive reaction (\"If the agent tells you something has to be put on your account or worked out before today's payment can be set, tell them that's fine...\") that fires only after the agent says so.",
+    "tools_do_not_block": "pay_return_balance_installment_2f123e0a posts the payment it is given whatever charges stand on the contract: its body reads the contract only for customer_id and fees_due_balance, creates the payment and fee-payment entries and lowers fees_due_balance, with no check of the return charges, status or plan. The three billing tools likewise book any amount they are given without checking the inspection, the dispute period or each other."
+  },
+  "charter_scope": {
+    "extended_policies": [
+      "balloon_ext_return_mileage_charge",
+      "balloon_ext_return_wear_charge",
+      "balloon_ext_return_fee",
+      "balloon_ext_return_balance_plan"
+    ],
+    "task_tools": [
+      "bill_excess_mileage_charge_7a491561",
+      "bill_excess_wear_charge_ce1b5dd4",
+      "bill_return_fee_2252d2f2",
+      "pay_return_balance_installment_2f123e0a"
+    ]
+  },
+  "required_documents": [
+    "balloon_ext_return_mileage_charge",
+    "balloon_ext_return_wear_charge",
+    "balloon_ext_return_fee",
+    "balloon_ext_return_balance_plan"
+  ],
+  "computations": [
+    {
+      "policy_id": "balloon_ext_return_mileage_charge",
+      "target_holding_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+      "step": 8,
+      "arg": "amount",
+      "expected": 623.2,
+      "factor_trace": [
+        "mc_odometer_reading (method): dealer sign-in odometer 41198 (balloon_contracts.return_odometer) vs inspection odometer 41236 (return inspection 2026-09-18) differ by 38, within 1..100 -> lower reading 41198; baseline (inspection odometer) gives miles driven 41227 and a charge of 630.80.",
+        "mc_allowance_basis (method): returned 2026-09-18 before maturity 2026-09-25 -> 36000 prorated by 1103/1110 days = 35773; baseline full-term allowance 36000 gives 577.80.",
+        "mc_tolerance_miles (parameter): Tier 3 AND one balloon late charge (2025-12-06) in the 24 months ending 2026-10-14 (2024-10-06 is outside) -> 500 miles; baseline 0 gives 723.20.",
+        "mc_return_to_brand (parameter, cross lease): active Kestrel lease, lease_date 2026-08-08, 41 days before the return -> 1500 miles; baseline 0 gives 923.20.",
+        "mc_advance_election (parameter): return_vehicle election 2026-08-20, 36 days before maturity -> 300 miles; baseline 0 gives 683.20.",
+        "mc_rate_relationship (parameter, cross retail): Kestrel retail contract status closed -> rate reduced by 0.05 to 0.20; baseline 0.25 gives 779.00.",
+        "miles_driven = 41198 - 9 = 41189",
+        "per_mile_rate = 0.25 - 0.05 = 0.20",
+        "excess_miles = max(0, 41189 - 35773 - 500 - 1500 - 300) = 3116",
+        "result = round(3116 x 0.20, 2) = 623.20"
+      ],
+      "baseline_result": 1306.75,
+      "factor_sensitivity": [
+        {
+          "factor": "mc_odometer_reading",
+          "tier_taken": "the dealer's sign-in odometer and the inspection odometer differ by at least one mile and by no more than odometer_tolerance_miles",
+          "baseline_result": 630.8
+        },
+        {
+          "factor": "mc_allowance_basis",
+          "tier_taken": "the vehicle came back before maturity_date",
+          "baseline_result": 577.8
+        },
+        {
+          "factor": "mc_tolerance_miles",
+          "tier_taken": "Tier 3 or Tier 4 AND at most one balloon late charge in those months",
+          "baseline_result": 723.2
+        },
+        {
+          "factor": "mc_return_to_brand",
+          "tier_taken": "an active Kestrel lease whose lease_date is within loyalty_window_days days of the return date",
+          "baseline_result": 923.2
+        },
+        {
+          "factor": "mc_advance_election",
+          "tier_taken": "the latest return_vehicle election was recorded at least election_lead_days_long days before maturity_date",
+          "baseline_result": 683.2
+        },
+        {
+          "factor": "mc_rate_relationship",
+          "tier_taken": "a Kestrel new-vehicle retail or pre-owned retail contract at paid_in_full or closed",
+          "baseline_result": 779.0
+        }
+      ]
+    },
+    {
+      "policy_id": "balloon_ext_return_wear_charge",
+      "target_holding_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+      "step": 10,
+      "arg": "amount",
+      "expected": 179.66,
+      "factor_trace": [
+        "wc_standing_forgiveness (parameter): Tier 3 AND no returned payment (2025-06-29 is 15 months old) AND 11 balloon payments posted in the 12 months ending 2026-10-14 (at least 10) -> cap 250.00 + 250.00 = 500.00; baseline return_wear_waiver_cap 250.00 gives 365.99.",
+        "wc_forgiveness_proration (method): returned before maturity -> forgiveness x 1103/1110 = 496.85; baseline no proration gives 177.30.",
+        "wc_return_to_brand (parameter, cross lease): active lease dated 41 days before the return -> 400.00; baseline 0 gives 479.66.",
+        "wc_tenure_credit (parameter, cross retail): closed retail contract signed 2016-04-02, 10.4 years before the return -> 150.00; baseline 0 gives 292.16.",
+        "wc_ontime_credit (parameter): 9 whole months from 2025-11-25 to 2026-09-18 -> 100.00; baseline 0 gives 254.66.",
+        "wc_share_billed (parameter): Tier 3 AND one late charge in the 12 months ending 2026-10-14 -> 0.75; baseline whole chargeable wear gives 239.55.",
+        "wear_assessed = 1386.40 (return inspection 2026-09-18)",
+        "forgiveness_applied = round(500.00 x 1103/1110, 2) = 496.85",
+        "chargeable_wear = 1386.40 - 496.85 - 400.00 - 150.00 - 100.00 = 239.55",
+        "result = round(239.55 x 0.75, 2) = 179.66"
+      ],
+      "baseline_result": 1136.4,
+      "factor_sensitivity": [
+        {
+          "factor": "wc_standing_forgiveness",
+          "tier_taken": "Tier 3, Tier 2, Tier 1 or Tier 1+ AND no balloon returned payment AND at least wear_min_payments balloon payments in the wear_history_window_months months ending on the billing date",
+          "baseline_result": 365.99
+        },
+        {
+          "factor": "wc_forgiveness_proration",
+          "tier_taken": "the vehicle came back before maturity_date",
+          "baseline_result": 177.3
+        },
+        {
+          "factor": "wc_return_to_brand",
+          "tier_taken": "an active Kestrel lease whose lease_date is within wear_loyalty_window_days days of the return date",
+          "baseline_result": 479.66
+        },
+        {
+          "factor": "wc_tenure_credit",
+          "tier_taken": "a completed (paid_in_full or closed) Kestrel new-vehicle retail contract signed at least wear_tenure_long_years years before the return date",
+          "baseline_result": 292.16
+        },
+        {
+          "factor": "wc_ontime_credit",
+          "tier_taken": "at least wear_streak_long_months whole months from the due date of the most recently late-charged installment to the return date, or no late charge ever",
+          "baseline_result": 254.66
+        },
+        {
+          "factor": "wc_share_billed",
+          "tier_taken": "Tier 3 or Tier 4 AND at most one balloon late charge in those months",
+          "baseline_result": 239.55
+        }
+      ]
+    },
+    {
+      "policy_id": "balloon_ext_return_fee",
+      "target_holding_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+      "step": 12,
+      "arg": "amount",
+      "expected": 205.0,
+      "factor_trace": [
+        "fc_fee_basis (method, cross lease): no Kestrel contract within 30 days of the return; active lease within 90 days -> lower of 450.00 and its disposition_fee 395.00 = 395.00; baseline return_option_fee 450.00 gives 260.00.",
+        "fc_early_return (parameter): returned 7 days before maturity -> 75.00; baseline 0 gives 280.00.",
+        "fc_multi_line (parameter, cross lease/retail/preowned): active accounts in one line (lease) -> 50.00; baseline 0 gives 255.00.",
+        "fc_payment_record (parameter): exactly one late charge AND no returned payment in the 12 months ending 2026-10-14 -> 25.00; baseline 0 gives 230.00.",
+        "fc_autopay_record (parameter): 10 autopay_ach payments in the 12 months ending 2026-10-14 -> 40.00; baseline 0 gives 245.00.",
+        "result = round(max(0, 395.00 - 75.00 - 50.00 - 25.00 - 40.00), 2) = 205.00"
+      ],
+      "baseline_result": 450.0,
+      "factor_sensitivity": [
+        {
+          "factor": "fc_fee_basis",
+          "tier_taken": "no such contract, but an active Kestrel lease dated within fee_loyalty_extended_days days of the return date",
+          "baseline_result": 260.0
+        },
+        {
+          "factor": "fc_early_return",
+          "tier_taken": "came back at least one but fewer than fee_early_days_long days before maturity_date",
+          "baseline_result": 280.0
+        },
+        {
+          "factor": "fc_multi_line",
+          "tier_taken": "an active Kestrel account in exactly one of those lines",
+          "baseline_result": 255.0
+        },
+        {
+          "factor": "fc_payment_record",
+          "tier_taken": "exactly one balloon late charge AND no balloon returned payment in those months",
+          "baseline_result": 230.0
+        },
+        {
+          "factor": "fc_autopay_record",
+          "tier_taken": "at least fee_autopay_count_high balloon payments through autopay_ach in the fee_history_window_months months ending on the billing date",
+          "baseline_result": 245.0
+        }
+      ]
+    },
+    {
+      "policy_id": "balloon_ext_return_balance_plan",
+      "target_holding_id": "f85dcfe9-8fa4-4206-b6d5-d3553067f5f5",
+      "step": 14,
+      "arg": "amount",
+      "expected": 355.25,
+      "factor_trace": [
+        "rp_plan_length (method): Tier 3 AND no returned payment in 12 months -> balance-driven count int(1007.86/300) = 3 (held in 2..4), spread part 335.953; baseline one payment gives 1010.36.",
+        "rp_prior_fee_share (parameter): a late charge (2025-12-06) in the 12 months but none in the 6 months ending 2026-10-14 -> 0.5 of the 25.00 standing from before the return; baseline all of it gives 367.75.",
+        "rp_minimum_share (parameter): exactly one late charge in 24 months -> 0.35, 352.751 > 335.953; baseline no minimum gives 338.45.",
+        "rp_relationship_deferral (parameter, cross lease): active lease at days_past_due 0, no active retail -> 50.00 moved to later installments; baseline 0 gives 405.25.",
+        "rp_upfront_amount (parameter): returned payment 2025-06-29 within 24 months, none within 12 -> 40.00 added; baseline 0 gives 315.25.",
+        "return_charges = 623.20 + 179.66 + 205.00 = 1007.86 (billed at steps 8, 10, 12)",
+        "prior_fees = 1032.86 - 1007.86 = 25.00",
+        "charges_now = max(335.953, 352.751) = 352.751",
+        "result = round(min(1032.86, 352.751 + 12.50 - 50.00 + 40.00), 2) = 355.25"
+      ],
+      "baseline_result": 1032.86,
+      "factor_sensitivity": [
+        {
+          "factor": "rp_plan_length",
+          "tier_taken": "Tier 3, Tier 2, Tier 1 or Tier 1+ AND no balloon returned payment in the plan_history_window_months months ending on the payment date",
+          "baseline_result": 1010.36
+        },
+        {
+          "factor": "rp_prior_fee_share",
+          "tier_taken": "one in those months AND none in the plan_recent_window_months months ending on the payment date",
+          "baseline_result": 367.75
+        },
+        {
+          "factor": "rp_minimum_share",
+          "tier_taken": "exactly one balloon late charge in those months",
+          "baseline_result": 338.45
+        },
+        {
+          "factor": "rp_relationship_deferral",
+          "tier_taken": "exactly one of them at days_past_due 0",
+          "baseline_result": 405.25
+        },
+        {
+          "factor": "rp_upfront_amount",
+          "tier_taken": "none in those months but one in the plan_long_window_months months ending on the payment date",
+          "baseline_result": 315.25
+        }
+      ]
+    }
+  ]
+}

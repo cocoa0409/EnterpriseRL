@@ -1,0 +1,5 @@
+# Rework round 13 claims (personal_loan_servicing; proof-only round)
+
+S4: closed — the late-fee product in task 1's computation trace and in the late-fee amount tracing is now the exact product of the unrounded pay-cycle figure. Both lines show the unrounded figure they multiply, so each stated product is reproducible from the line itself.
+S4 class (every intermediate figure in both task files' traces): closed — every inline arithmetic claim in both task files (operator chains and "less/plus" chains, in traces, tracing, necessity text and dossiers) was recomputed mechanically. The only other wrong figure was the same-pattern returned-fee product in task 1, fixed the same way in its trace and its amount tracing. All recomputed figures now agree with their stated precision, and no scored value moved.
+K1, K2 (KB-side), S1, S3 (not routed), S2 (BLUEPRINT-KNOWN): not touched, by coordinator decision. loan.extended.yaml and task_tools.py are byte-identical to the given hashes; no charter change was needed.

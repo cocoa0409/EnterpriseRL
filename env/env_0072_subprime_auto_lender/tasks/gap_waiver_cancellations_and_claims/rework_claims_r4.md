@@ -1,0 +1,19 @@
+# rework_claims_r4 — gap_waiver_cancellations_and_claims (policy-task audit revision_3)
+
+- C1 (eight deductible-benefit schedule shares): every member struck — pd_tier/term/band/ltv/af_schedule and ud_tier/band/af_schedule are gone from rule, compute, factors and params. Both reimbursements are rebuilt on GAP claim terms read from records, per the coordinator's round-3 ruling:
+  - policy_at_loss (method, pd and ud): the proof read is the settling insurer's latest accepted proof (the policy that paid); with accepted proofs but none from that insurer, the plan's borrower maximum deductible stands in; otherwise (baseline) the latest accepted proof. Worlds: a newer policy, filed before the loss and starting after it, is the latest accepted proof in both tasks.
+  - paying_coverage (method, pd): collision or comprehensive deductible by the coverage that paid; baseline the lower of the two. (Plus states the coverage pick in its baseline.)
+  - window_start (method, pd): the reimbursement-claim window opens when the unrecovered-theft wait runs out, on the reporting date for a claim reported with settlement figures, otherwise on the date of loss (baseline).
+  - window_days (parameter): Premier by how soon the claim was reported (15 / 45-day lines); Plus by kind of loss (theft, comprehensive, otherwise). Baseline 20 days in both.
+  - duty_extension (parameter, cross-difficulty contract): worded as the company's own accommodation keyed on the recorded active-duty dates (latest rate-cap-applied / rate-cap-ended records), expressly not a Servicemembers Civil Relief Act period: extended to the recorded end, kept open with no recorded end, otherwise none.
+  - closed_day (parameter): a window ending on a Saturday or Sunday runs to the Monday after (2 / 1 days).
+  - The departure from the base late_documents clause is a declared, self-naming overwrite on each reimbursement (superseded clause quoted verbatim from gap_claim_benefit); it covers the deductible reimbursement only, names the sibling's own window, and restates the late_documents denial for the claim itself on every plan.
+- C1 (new member — bn baseline value floor): the floor is age-limited again. The baseline floor is 60 percent of the book value at origination while the addendum has been in force fewer than 24 whole months, and there is no floor from 24 months on. bn_value_floor's ladder is again 80 / 70 / no floor. Both floor factors still act on baseline quantities (C9 kept).
+- C4 (counts): pd 6 (3 method, 3 parameter), ud 4 (1 method, 3 parameter); draw multisets unchanged ({6,4,6,6}, {6,4}).
+- Reimbursement edges (ep <- pd, eu <- ud): now action form with a fallback_reason. A reimbursement claimed after its window is 0.00, so the claim's deductible covered can legitimately stay as it was and no record state singles out the write. The prerequisite sentences now name the borrower's reimbursement claim.
+- Re-seed (same ids, owning charters):
+  - Task 0: claim reported 2026-08-19, 14 days after the loss, with the settlement. Insurer deducted 1,000.00 after an unreported mid-term collision-deductible raise; the Keystone Prairie proof on file shows 500.00. Active duty recorded to 2026-08-20. New Scioto Valley Mutual proof reviewed 2026-07-20, effective 2026-08-20.
+  - Task 1: Peach State proof 750.00 comprehensive / 1,000.00 collision; insurer deducted 750.00, above the Plus maximum. Active duty recorded to 2026-09-02. New Altamaha River proof reviewed 2026-07-28, effective 2026-08-25.
+  - Contract ledgers are unchanged: no installment falls between the old and new rate-cap ends. Personas updated to match.
+- Kept from round 3: C9, C10 (new reads state their ties — latest accepted proof naming an insurer, rate-cap records), R2-O1, R2-O3, O6.
+- Sweep: design_rationale, factor traces, plain recomputations, closures, edges, necessity and seed checks regenerated; probe table in plan.md extended.

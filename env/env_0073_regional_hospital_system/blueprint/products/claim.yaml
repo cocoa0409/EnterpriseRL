@@ -1,0 +1,907 @@
+# Product charter — Insurance Claim (Third-Party Billing). Riverbend Regional Health, Patient Financial Services / Billing.
+category: claim
+display_name: Insurance Claim (Third-Party Billing)
+
+binding:
+  holding_table: insurance_claims
+  event_tables: [claim_transactions]
+  intake_tables: [claim_appeal_authorizations]
+  status_field: status
+  variant_field: variant_name
+  quantity_fields: {payer_balance: payer_receivable}
+
+lifecycle:
+  states: [submitted, accepted, rejected, adjudicated, denied, appealed, closed]
+  transitions:
+    - {from: submitted, to: accepted, by: system, means: The payer's front-end acknowledgement (277CA) accepts the claim into adjudication.}
+    - {from: submitted, to: rejected, by: system, means: The payer or clearinghouse rejects the claim at the front end; a rejected claim was never received.}
+    - {from: rejected, to: submitted, by: agent, means: Billing corrects the rejected data and resubmits.}
+    - {from: accepted, to: adjudicated, by: system, means: The payer processes the claim with payment and/or patient responsibility on the remittance.}
+    - {from: accepted, to: denied, by: system, means: The payer denies the claim in full on the remittance.}
+    - {from: denied, to: submitted, by: agent, means: Billing submits a replacement (corrected) claim for the denied claim.}
+    - {from: adjudicated, to: submitted, by: agent, means: Billing submits a replacement claim after a late charge, charge credit or coding correction.}
+    - {from: denied, to: appealed, by: agent, means: Billing files an appeal of the denial (provider-level, or member-level under the patient's authorization).}
+    - {from: adjudicated, to: appealed, by: agent, means: Billing files an underpayment or partial-denial appeal.}
+    - {from: appealed, to: adjudicated, by: system, means: The payer overturns the denial in whole or in part and reprocesses.}
+    - {from: appealed, to: denied, by: system, means: The payer upholds the denial at that appeal level.}
+    - {from: adjudicated, to: closed, by: system, means: The payer balance reaches zero.}
+    - {from: denied, to: closed, by: agent, means: No further route remains and the denied amount is written off or released to the patient.}
+
+accounts:
+  - key: payer_receivable
+    unit: USD
+    meaning: The amount still expected from this payer on the claim; billed amounts and payer takebacks add to it, payer payments, contractual adjustments, patient-responsibility releases, crossovers to the next payer and denial write-offs reduce it.
+
+# ---- category-level parameter dictionary ----
+parameter_schema:
+  timely_filing_days: integer calendar days from the claim's first date of service (service_date_from) by which a clean claim must be received by the payer (Riverbend payer agreement or program rule)
+  corrected_claim_window_days: integer calendar days from the adjudication or denial date within which a replacement (frequency 7) claim is accepted
+  provider_appeal_window_days: integer calendar days from the denial date (plus notice_receipt_presumption_days) within which Riverbend's provider-level appeal or redetermination must be received
+  member_appeal_window_days: integer calendar days from the date on the adverse determination notice within which a member-level appeal filed for the patient must be received; 0 means the program has no member-level appeal and disputes go to the state workers' compensation process
+  notice_receipt_presumption_days: integer calendar days added to the notice date as the presumed date of receipt before an appeal window starts (0 = window counts from the notice date)
+  appeal_levels_available: integer number of sequential appeal levels Riverbend may pursue for the patient on this payer class
+  external_review_available: boolean — whether independent external review is available after the internal appeals are exhausted
+  external_review_window_months: integer calendar months after the final internal adverse determination within which external review may be requested (0 = not available)
+  payer_appeal_decision_days: integer calendar days the payer has to decide a post-service appeal
+  expedited_appeal_hours: integer hours for an expedited (urgent) appeal decision
+  aor_required_for_member_appeal: boolean — whether a signed authorized-representative form from the patient must be on file before Riverbend files a member-level appeal
+  aor_form_type: enum form_type of the authorized-representative form this payer class accepts
+  aor_validity_days: integer calendar days from the patient's signature date that the authorized-representative form remains valid
+  prior_auth_required_classes: list of encounter patient classes for which this payer class requires prior authorization (emergency services never require it)
+  emergency_auth_exempt: boolean — emergency services are never denied for lack of prior authorization
+  admission_notification_business_days: integer business days after an urgent or emergency inpatient admission within which the payer must be notified to avoid an authorization denial
+  retro_auth_window_days: integer calendar days after the date of service within which a retroactive authorization request is accepted (0 = never accepted)
+  carc_routing: mapping CARC (group-code prefixed) -> the work route for a denial or adjustment line
+  timely_filing_proof_accepted: list of documents that prove a claim was originally filed on time and overturn a CO-29 timely-filing denial
+  rejection_counts_as_filed: boolean — whether a front-end (277CA) rejected submission counts as received for timely filing (it never does)
+  max_corrected_submissions: integer maximum replacement claims Riverbend submits on one claim before routing to payer escalation
+  corrected_claim_frequency_code: claim frequency code used for a replacement claim
+  void_claim_frequency_code: claim frequency code used to void a claim
+  expected_allowed_pct_of_charges: percent of gross billed charges Riverbend expects as the payer-allowed amount under the payer agreement or program fee schedule (contract modeling basis)
+  underpayment_variance_usd: USD shortfall of the allowed amount against the expected allowed amount at or above which an underpayment appeal is filed
+  underpayment_variance_pct: percent shortfall of the allowed amount against the expected allowed amount at or above which an underpayment appeal is filed (both the USD and percent thresholds must be met)
+  small_denial_write_off_usd: USD denied amount at or below which a CO denial is written off without appeal (cost to collect)
+  recoupment_dispute_days: integer calendar days after a payer takeback within which Riverbend may dispute it
+  overpayment_refund_days: integer calendar days after an overpayment is identified within which it is refunded to the payer
+  payer_clean_claim_days: integer calendar days within which the payer must pay or deny a clean claim
+  followup_first_touch_days: integer calendar days after acceptance with no remittance before the first claim-status follow-up
+  followup_interval_days: integer calendar days between later claim-status follow-ups
+  max_followups_before_escalation: integer follow-ups without a response before the claim is escalated to the payer's provider representative
+  denial_work_days: integer calendar days after a denial within which billing must take the routed action
+  secondary_filing_days_from_primary_remit: integer calendar days after the primary payer's remittance date within which a secondary claim with the primary EOB must be received
+  crossover_automatic: boolean — whether this payer automatically crosses the claim over to the secondary payer
+  payer_of_last_resort: boolean — whether this payer pays only after every other coverage
+  balance_billing_prohibited: boolean — whether Riverbend is barred from billing the patient any amount above the patient-responsibility amounts the payer reports
+  noncovered_waiver_required: boolean — whether a PR-204 or non-covered amount may be billed to the patient only with a signed advance waiver on file
+  noncovered_waiver_form: name of the advance notice the patient must have signed before a non-covered service for it to be billable
+  patient_cost_share_model: enum how the payer expresses patient cost sharing on remittances
+  submission_format: enum claim submission format
+  acknowledgement_expected_days: integer calendar days within which a 277CA acceptance or rejection is expected after submission
+  member_id_format: format of a valid member identifier for this payer class
+  cob_questionnaire_refresh_days: integer calendar days after which coverage and coordination-of-benefits information must be re-confirmed with the patient before the next claim
+  aor_signature_channels: list of channels through which the patient may sign an authorized-representative form
+  appeal_submission_channel: enum channel Riverbend uses to submit appeals
+  medical_records_attach_on_appeal: boolean — whether the appeal packet must include the encounter's medical records
+  denial_not_billable_groups: list of claim adjustment group codes whose amounts may never be billed to the patient
+  recoupment_offset_allowed: boolean — whether the payer may recover an overpayment by offsetting a later remittance
+  claim_close_zero_balance: boolean — whether a claim closes as soon as its payer balance reaches zero
+
+# ---- tier ladder (low to high) ----
+variants:
+- name: Commercial PPO Claim
+  rank: 1
+  entry_gate: {financial_class: COMMERCIAL, plan_type: PPO, network_status: in-network under a Riverbend payer agreement}
+  parameters:
+    timely_filing_days: 180
+    corrected_claim_window_days: 180
+    provider_appeal_window_days: 180
+    member_appeal_window_days: 180
+    notice_receipt_presumption_days: 0
+    appeal_levels_available: 2
+    external_review_available: true
+    external_review_window_months: 4
+    payer_appeal_decision_days: 60
+    expedited_appeal_hours: 72
+    aor_required_for_member_appeal: true
+    aor_form_type: PLAN_AUTHORIZED_REP_FORM
+    aor_validity_days: 365
+    prior_auth_required_classes: [INPATIENT, OUTPATIENT_SURGERY, OUTPATIENT_DIAGNOSTIC]
+    emergency_auth_exempt: true
+    admission_notification_business_days: 2
+    retro_auth_window_days: 14
+    carc_routing: &id001 {CO-16: CORRECT_AND_RESUBMIT, CO-4: CORRECT_AND_RESUBMIT, CO-11: CORRECT_AND_RESUBMIT, CO-197: PROVIDER_APPEAL_WITH_AUTH_EVIDENCE, CO-50: MEDICAL_NECESSITY_APPEAL, CO-29: WRITE_OFF_UNLESS_TIMELY_PROOF, CO-22: BILL_OTHER_PAYER_FIRST, CO-109: BILL_CORRECT_PAYER, CO-18: NO_ACTION_DUPLICATE, PR-27: TRANSFER_TO_PATIENT_COVERAGE_TERMINATED, PR-204: TRANSFER_TO_PATIENT_IF_WAIVER_SIGNED, CO-96: WRITE_OFF_NO_PATIENT_BILLING}
+    timely_filing_proof_accepted: &id002 [CLEARINGHOUSE_ACCEPTANCE_REPORT_277CA, PAYER_ACKNOWLEDGEMENT_LETTER]
+    rejection_counts_as_filed: false
+    max_corrected_submissions: 3
+    corrected_claim_frequency_code: '7'
+    void_claim_frequency_code: '8'
+    expected_allowed_pct_of_charges: 58.5
+    underpayment_variance_usd: 25.0
+    underpayment_variance_pct: 2.0
+    small_denial_write_off_usd: 50.0
+    recoupment_dispute_days: 60
+    overpayment_refund_days: 30
+    payer_clean_claim_days: 30
+    followup_first_touch_days: 30
+    followup_interval_days: 15
+    max_followups_before_escalation: 3
+    denial_work_days: 10
+    secondary_filing_days_from_primary_remit: 90
+    crossover_automatic: false
+    payer_of_last_resort: false
+    balance_billing_prohibited: true
+    noncovered_waiver_required: true
+    noncovered_waiver_form: Riverbend Financial Responsibility Waiver
+    patient_cost_share_model: DEDUCTIBLE_COINSURANCE_COPAY
+    submission_format: EDI_837I
+    acknowledgement_expected_days: 2
+    member_id_format: payer-issued alphanumeric ID as printed on the card
+    cob_questionnaire_refresh_days: 365
+    aor_signature_channels: &id003 [PATIENT_PORTAL_E_SIGNATURE, MAILED_WET_SIGNATURE, IN_PERSON]
+    appeal_submission_channel: PAYER_PORTAL
+    medical_records_attach_on_appeal: true
+    denial_not_billable_groups: &id004 [CO, OA, PI]
+    recoupment_offset_allowed: true
+    claim_close_zero_balance: true
+- name: Commercial HMO Claim
+  rank: 2
+  entry_gate: {financial_class: COMMERCIAL, plan_type: HMO, network_status: in-network with PCP referral or authorization}
+  parameters:
+    timely_filing_days: 120
+    corrected_claim_window_days: 90
+    provider_appeal_window_days: 90
+    member_appeal_window_days: 180
+    notice_receipt_presumption_days: 0
+    appeal_levels_available: 2
+    external_review_available: true
+    external_review_window_months: 4
+    payer_appeal_decision_days: 60
+    expedited_appeal_hours: 72
+    aor_required_for_member_appeal: true
+    aor_form_type: PLAN_AUTHORIZED_REP_FORM
+    aor_validity_days: 365
+    prior_auth_required_classes: [INPATIENT, OUTPATIENT_SURGERY, OUTPATIENT_DIAGNOSTIC, RECURRING_OUTPATIENT, OBSERVATION]
+    emergency_auth_exempt: true
+    admission_notification_business_days: 1
+    retro_auth_window_days: 0
+    carc_routing: *id001
+    timely_filing_proof_accepted: *id002
+    rejection_counts_as_filed: false
+    max_corrected_submissions: 3
+    corrected_claim_frequency_code: '7'
+    void_claim_frequency_code: '8'
+    expected_allowed_pct_of_charges: 52.0
+    underpayment_variance_usd: 25.0
+    underpayment_variance_pct: 2.0
+    small_denial_write_off_usd: 50.0
+    recoupment_dispute_days: 60
+    overpayment_refund_days: 30
+    payer_clean_claim_days: 30
+    followup_first_touch_days: 30
+    followup_interval_days: 15
+    max_followups_before_escalation: 3
+    denial_work_days: 10
+    secondary_filing_days_from_primary_remit: 90
+    crossover_automatic: false
+    payer_of_last_resort: false
+    balance_billing_prohibited: true
+    noncovered_waiver_required: true
+    noncovered_waiver_form: Riverbend Financial Responsibility Waiver
+    patient_cost_share_model: COPAY_PRIMARY
+    submission_format: EDI_837I
+    acknowledgement_expected_days: 2
+    member_id_format: payer-issued alphanumeric ID as printed on the card
+    cob_questionnaire_refresh_days: 365
+    aor_signature_channels: *id003
+    appeal_submission_channel: PAYER_PORTAL
+    medical_records_attach_on_appeal: true
+    denial_not_billable_groups: *id004
+    recoupment_offset_allowed: true
+    claim_close_zero_balance: true
+- name: Marketplace Exchange Plan Claim
+  rank: 3
+  entry_gate: {financial_class: MARKETPLACE, plan_type: ACA individual-market QHP, network_status: in-network}
+  parameters:
+    timely_filing_days: 180
+    corrected_claim_window_days: 180
+    provider_appeal_window_days: 180
+    member_appeal_window_days: 180
+    notice_receipt_presumption_days: 0
+    appeal_levels_available: 2
+    external_review_available: true
+    external_review_window_months: 4
+    payer_appeal_decision_days: 60
+    expedited_appeal_hours: 72
+    aor_required_for_member_appeal: true
+    aor_form_type: PLAN_AUTHORIZED_REP_FORM
+    aor_validity_days: 365
+    prior_auth_required_classes: [INPATIENT, OUTPATIENT_SURGERY, OUTPATIENT_DIAGNOSTIC]
+    emergency_auth_exempt: true
+    admission_notification_business_days: 2
+    retro_auth_window_days: 14
+    carc_routing: *id001
+    timely_filing_proof_accepted: *id002
+    rejection_counts_as_filed: false
+    max_corrected_submissions: 3
+    corrected_claim_frequency_code: '7'
+    void_claim_frequency_code: '8'
+    expected_allowed_pct_of_charges: 47.5
+    underpayment_variance_usd: 25.0
+    underpayment_variance_pct: 2.0
+    small_denial_write_off_usd: 50.0
+    recoupment_dispute_days: 60
+    overpayment_refund_days: 30
+    payer_clean_claim_days: 30
+    followup_first_touch_days: 30
+    followup_interval_days: 15
+    max_followups_before_escalation: 3
+    denial_work_days: 10
+    secondary_filing_days_from_primary_remit: 90
+    crossover_automatic: false
+    payer_of_last_resort: false
+    balance_billing_prohibited: true
+    noncovered_waiver_required: true
+    noncovered_waiver_form: Riverbend Financial Responsibility Waiver
+    patient_cost_share_model: DEDUCTIBLE_COINSURANCE_COPAY
+    submission_format: EDI_837I
+    acknowledgement_expected_days: 2
+    member_id_format: payer-issued alphanumeric ID as printed on the card
+    cob_questionnaire_refresh_days: 365
+    aor_signature_channels: *id003
+    appeal_submission_channel: PAYER_PORTAL
+    medical_records_attach_on_appeal: true
+    denial_not_billable_groups: *id004
+    recoupment_offset_allowed: true
+    claim_close_zero_balance: true
+- name: Medicare Advantage Plan Claim
+  rank: 4
+  entry_gate: {financial_class: MEDICARE_ADVANTAGE, plan_type: Part C plan, network_status: contracted}
+  parameters:
+    timely_filing_days: 180
+    corrected_claim_window_days: 180
+    provider_appeal_window_days: 60
+    member_appeal_window_days: 65
+    notice_receipt_presumption_days: 0
+    appeal_levels_available: 5
+    external_review_available: false
+    external_review_window_months: 0
+    payer_appeal_decision_days: 60
+    expedited_appeal_hours: 72
+    aor_required_for_member_appeal: true
+    aor_form_type: CMS_1696_AOR
+    aor_validity_days: 365
+    prior_auth_required_classes: [INPATIENT, OUTPATIENT_SURGERY, OUTPATIENT_DIAGNOSTIC, RECURRING_OUTPATIENT]
+    emergency_auth_exempt: true
+    admission_notification_business_days: 1
+    retro_auth_window_days: 14
+    carc_routing: *id001
+    timely_filing_proof_accepted: *id002
+    rejection_counts_as_filed: false
+    max_corrected_submissions: 3
+    corrected_claim_frequency_code: '7'
+    void_claim_frequency_code: '8'
+    expected_allowed_pct_of_charges: 36.0
+    underpayment_variance_usd: 50.0
+    underpayment_variance_pct: 3.0
+    small_denial_write_off_usd: 75.0
+    recoupment_dispute_days: 60
+    overpayment_refund_days: 60
+    payer_clean_claim_days: 30
+    followup_first_touch_days: 30
+    followup_interval_days: 15
+    max_followups_before_escalation: 3
+    denial_work_days: 10
+    secondary_filing_days_from_primary_remit: 90
+    crossover_automatic: false
+    payer_of_last_resort: false
+    balance_billing_prohibited: true
+    noncovered_waiver_required: true
+    noncovered_waiver_form: Riverbend Financial Responsibility Waiver
+    patient_cost_share_model: COPAY_PRIMARY
+    submission_format: EDI_837I
+    acknowledgement_expected_days: 2
+    member_id_format: plan-issued ID as printed on the plan card (not the MBI)
+    cob_questionnaire_refresh_days: 365
+    aor_signature_channels: *id003
+    appeal_submission_channel: PAYER_PORTAL
+    medical_records_attach_on_appeal: true
+    denial_not_billable_groups: *id004
+    recoupment_offset_allowed: true
+    claim_close_zero_balance: true
+- name: Original Medicare Claim
+  rank: 5
+  entry_gate: {financial_class: MEDICARE, plan_type: Part A/Part B fee-for-service, network_status: participating provider}
+  parameters:
+    timely_filing_days: 365
+    corrected_claim_window_days: 365
+    provider_appeal_window_days: 120
+    member_appeal_window_days: 120
+    notice_receipt_presumption_days: 5
+    appeal_levels_available: 5
+    external_review_available: false
+    external_review_window_months: 0
+    payer_appeal_decision_days: 60
+    expedited_appeal_hours: 72
+    aor_required_for_member_appeal: true
+    aor_form_type: CMS_1696_AOR
+    aor_validity_days: 365
+    prior_auth_required_classes: [OUTPATIENT_SURGERY]
+    emergency_auth_exempt: true
+    admission_notification_business_days: 0
+    retro_auth_window_days: 0
+    carc_routing: *id001
+    timely_filing_proof_accepted: *id002
+    rejection_counts_as_filed: false
+    max_corrected_submissions: 3
+    corrected_claim_frequency_code: '7'
+    void_claim_frequency_code: '8'
+    expected_allowed_pct_of_charges: 31.5
+    underpayment_variance_usd: 50.0
+    underpayment_variance_pct: 3.0
+    small_denial_write_off_usd: 75.0
+    recoupment_dispute_days: 120
+    overpayment_refund_days: 60
+    payer_clean_claim_days: 30
+    followup_first_touch_days: 30
+    followup_interval_days: 15
+    max_followups_before_escalation: 3
+    denial_work_days: 10
+    secondary_filing_days_from_primary_remit: 365
+    crossover_automatic: true
+    payer_of_last_resort: false
+    balance_billing_prohibited: true
+    noncovered_waiver_required: true
+    noncovered_waiver_form: CMS-R-131 Advance Beneficiary Notice
+    patient_cost_share_model: DEDUCTIBLE_COINSURANCE
+    submission_format: EDI_837I
+    acknowledgement_expected_days: 2
+    member_id_format: 11-character Medicare Beneficiary Identifier (MBI)
+    cob_questionnaire_refresh_days: 90
+    aor_signature_channels: *id003
+    appeal_submission_channel: MAC_PORTAL
+    medical_records_attach_on_appeal: true
+    denial_not_billable_groups: *id004
+    recoupment_offset_allowed: true
+    claim_close_zero_balance: true
+- name: BadgerCare Plus (Wisconsin Medicaid) Claim
+  rank: 6
+  entry_gate: {financial_class: MEDICAID, plan_type: BadgerCare Plus fee-for-service or HMO, network_status: ForwardHealth-enrolled provider}
+  parameters:
+    timely_filing_days: 365
+    corrected_claim_window_days: 365
+    provider_appeal_window_days: 60
+    member_appeal_window_days: 60
+    notice_receipt_presumption_days: 0
+    appeal_levels_available: 2
+    external_review_available: false
+    external_review_window_months: 0
+    payer_appeal_decision_days: 30
+    expedited_appeal_hours: 72
+    aor_required_for_member_appeal: true
+    aor_form_type: STATE_MEDICAID_AUTH_REP
+    aor_validity_days: 365
+    prior_auth_required_classes: [INPATIENT, OUTPATIENT_DIAGNOSTIC, RECURRING_OUTPATIENT]
+    emergency_auth_exempt: true
+    admission_notification_business_days: 2
+    retro_auth_window_days: 30
+    carc_routing: *id001
+    timely_filing_proof_accepted: *id002
+    rejection_counts_as_filed: false
+    max_corrected_submissions: 3
+    corrected_claim_frequency_code: '7'
+    void_claim_frequency_code: '8'
+    expected_allowed_pct_of_charges: 24.0
+    underpayment_variance_usd: 50.0
+    underpayment_variance_pct: 3.0
+    small_denial_write_off_usd: 100.0
+    recoupment_dispute_days: 60
+    overpayment_refund_days: 60
+    payer_clean_claim_days: 30
+    followup_first_touch_days: 30
+    followup_interval_days: 15
+    max_followups_before_escalation: 3
+    denial_work_days: 10
+    secondary_filing_days_from_primary_remit: 180
+    crossover_automatic: false
+    payer_of_last_resort: true
+    balance_billing_prohibited: true
+    noncovered_waiver_required: true
+    noncovered_waiver_form: ForwardHealth Non-Covered Service Agreement
+    patient_cost_share_model: NOMINAL_COPAY
+    submission_format: EDI_837I
+    acknowledgement_expected_days: 2
+    member_id_format: 10-digit ForwardHealth member ID
+    cob_questionnaire_refresh_days: 365
+    aor_signature_channels: *id003
+    appeal_submission_channel: FORWARDHEALTH_PORTAL
+    medical_records_attach_on_appeal: true
+    denial_not_billable_groups: *id004
+    recoupment_offset_allowed: true
+    claim_close_zero_balance: true
+- name: Wisconsin Workers' Compensation Claim
+  rank: 7
+  entry_gate: {financial_class: WORKERS_COMP, plan_type: employer workers' compensation insurer, network_status: accepted or pending compensable injury}
+  parameters:
+    timely_filing_days: 365
+    corrected_claim_window_days: 180
+    provider_appeal_window_days: 90
+    member_appeal_window_days: 0
+    notice_receipt_presumption_days: 0
+    appeal_levels_available: 1
+    external_review_available: false
+    external_review_window_months: 0
+    payer_appeal_decision_days: 60
+    expedited_appeal_hours: 72
+    aor_required_for_member_appeal: true
+    aor_form_type: PLAN_AUTHORIZED_REP_FORM
+    aor_validity_days: 365
+    prior_auth_required_classes: [INPATIENT, OUTPATIENT_SURGERY, OUTPATIENT_DIAGNOSTIC, RECURRING_OUTPATIENT]
+    emergency_auth_exempt: true
+    admission_notification_business_days: 3
+    retro_auth_window_days: 30
+    carc_routing: *id001
+    timely_filing_proof_accepted: *id002
+    rejection_counts_as_filed: false
+    max_corrected_submissions: 2
+    corrected_claim_frequency_code: '7'
+    void_claim_frequency_code: '8'
+    expected_allowed_pct_of_charges: 72.0
+    underpayment_variance_usd: 25.0
+    underpayment_variance_pct: 2.0
+    small_denial_write_off_usd: 50.0
+    recoupment_dispute_days: 60
+    overpayment_refund_days: 30
+    payer_clean_claim_days: 30
+    followup_first_touch_days: 45
+    followup_interval_days: 21
+    max_followups_before_escalation: 2
+    denial_work_days: 10
+    secondary_filing_days_from_primary_remit: 90
+    crossover_automatic: false
+    payer_of_last_resort: false
+    balance_billing_prohibited: true
+    noncovered_waiver_required: true
+    noncovered_waiver_form: Riverbend Financial Responsibility Waiver
+    patient_cost_share_model: NONE
+    submission_format: PAPER_UB04_WITH_MEDICAL_REPORTS
+    acknowledgement_expected_days: 10
+    member_id_format: insurer claim number assigned to the injury
+    cob_questionnaire_refresh_days: 365
+    aor_signature_channels: *id003
+    appeal_submission_channel: MAILED_PACKET
+    medical_records_attach_on_appeal: true
+    denial_not_billable_groups: *id004
+    recoupment_offset_allowed: false
+    claim_close_zero_balance: true
+
+# ---- data flow (every write is an event) ----
+events:
+  - type: claim_submitted
+    target: insurance_claims
+    mutation: create
+    meaning: A claim for an encounter is created and submitted to one payer in the coordination-of-benefits order.
+    grain: one row per payer per billing of an encounter
+    fields: {claim_id: new claim id, customer_id: the patient, encounter_id: account billed, variant_name: payer class, coverage_order: COB position, payer_name: payer as on card, member_id: member id as on card, group_number: group number as on card, prior_auth_number: authorization reference, service_date_from: first date of service, submitted_date: first submission date, last_submitted_date: same as submitted_date, claim_frequency_code: "1", total_billed_usd: charges billed}
+    triggers:
+      - event: claim:claim_billed
+        map: {amount: total_billed_usd, posting_date: submitted_date}
+  - type: claim_billed
+    target: claim_transactions
+    meaning: The billed charges of a submission open (or, for a replacement, re-open) the amount expected from the payer.
+    grain: one row per submission sequence of the claim
+    distinguish_by: [correction_seq]
+    fields: {correction_seq: submission sequence (0 original), amount: billed charges expected from the payer, posting_date: submission date}
+    account: payer_receivable
+    direction: in
+    triggers: []
+  - type: claim_accepted
+    target: insurance_claims
+    mutation: {transition: {from: submitted, to: accepted}}
+    meaning: The payer's 277CA acknowledgement accepts the claim.
+    grain: one row per transaction
+    fields: {status: accepted, payer_claim_number: ICN assigned}
+    triggers: []
+  - type: claim_rejected
+    target: insurance_claims
+    mutation: {transition: {from: submitted, to: rejected}}
+    meaning: The claim is rejected at the front end before adjudication.
+    grain: one row per transaction
+    fields: {status: rejected, front_end_reject_reason: rejection reason}
+    triggers: []
+  - type: claim_resubmitted
+    target: insurance_claims
+    mutation: {transition: [{from: rejected, to: submitted}, {from: denied, to: submitted}, {from: adjudicated, to: submitted}]}
+    meaning: Billing resubmits a corrected claim or a replacement claim.
+    grain: one row per transaction
+    fields: {status: submitted, last_submitted_date: resubmission date, claim_frequency_code: "1 after a rejection, 7 for a replacement", front_end_reject_reason: reset to NONE}
+    triggers: []
+  - type: claim_adjudicated
+    target: insurance_claims
+    mutation: {transition: [{from: accepted, to: adjudicated}, {from: appealed, to: adjudicated}]}
+    meaning: The payer processes the claim (or overturns a denial on appeal) and issues a remittance.
+    grain: one row per transaction
+    fields: {status: adjudicated, adjudication_date: remittance date}
+    triggers: []
+  - type: claim_denied
+    target: insurance_claims
+    mutation: {transition: {from: accepted, to: denied}}
+    meaning: The payer denies the claim in full.
+    grain: one row per transaction
+    fields: {status: denied, denial_date: date on the denial notice, denial_carc: denial reason code, denial_rarc: remark code}
+    triggers: []
+  - type: claim_appeal_upheld
+    target: insurance_claims
+    mutation: {transition: {from: appealed, to: denied}}
+    meaning: The payer upholds the denial at the appeal level filed.
+    grain: one row per transaction
+    fields: {status: denied, denial_date: date on the appeal decision notice}
+    triggers: []
+  - type: claim_appealed
+    target: insurance_claims
+    mutation: {transition: [{from: denied, to: appealed}, {from: adjudicated, to: appealed}]}
+    meaning: The claim enters appeal at the level just filed.
+    grain: one row per transaction
+    fields: {status: appealed, appeal_level: level filed}
+    triggers: []
+  - type: claim_closed
+    target: insurance_claims
+    mutation: {transition: [{from: adjudicated, to: closed}, {from: denied, to: closed}]}
+    meaning: The claim closes with nothing further expected from the payer.
+    grain: one row per transaction
+    fields: {status: closed, closed_date: closing date}
+    triggers: []
+  - type: claim_member_info_updated
+    target: insurance_claims
+    mutation: update
+    meaning: Subscriber data on the claim is corrected from the patient's insurance card or a payer eligibility response.
+    grain: one row per transaction
+    fields: {payer_name: payer as on card, member_id: corrected member id, group_number: corrected group number, prior_auth_number: authorization reference obtained}
+    triggers: []
+  - type: claim_payment_posted
+    target: claim_transactions
+    meaning: A payer payment from a remittance is posted to the claim.
+    grain: one row per remittance payment on the claim
+    distinguish_by: [remit_trace_number]
+    fields: {remit_trace_number: EFT trace or check number, remit_date: remittance date, amount: amount paid, posting_date: posting date}
+    account: payer_receivable
+    direction: out
+    triggers: []
+  - type: claim_contractual_adjustment
+    target: claim_transactions
+    meaning: The contractual obligation (billed charges above the payer-allowed amount) is adjusted off the claim and never billed to the patient.
+    grain: one row per remittance per contractual reason code
+    distinguish_by: [remit_trace_number, carc_code]
+    fields: {remit_trace_number: remittance, remit_date: remittance date, carc_code: CO-45, amount: contractual amount, posting_date: posting date}
+    account: payer_receivable
+    direction: out
+    triggers: []
+  - type: claim_patient_resp_transferred
+    target: claim_transactions
+    meaning: A patient-responsibility amount reported by the last payer in the coordination order is released from the claim to the patient's account.
+    grain: one row per remittance per patient-responsibility reason code
+    distinguish_by: [remit_trace_number, carc_code]
+    fields: {remit_trace_number: remittance, remit_date: remittance date, carc_code: PR reason code, amount: patient-responsibility amount, posting_date: posting date}
+    account: payer_receivable
+    direction: out
+    triggers:
+      - event: encounter:encounter_liability_posted
+        when: {carc_code: PR-1}
+        map: {liability_source: DEDUCTIBLE, claim_id: claim_id, amount: amount, posting_date: posting_date}
+      - event: encounter:encounter_liability_posted
+        when: {carc_code: PR-2}
+        map: {liability_source: COINSURANCE, claim_id: claim_id, amount: amount, posting_date: posting_date}
+      - event: encounter:encounter_liability_posted
+        when: {carc_code: PR-3}
+        map: {liability_source: COPAY, claim_id: claim_id, amount: amount, posting_date: posting_date}
+      - event: encounter:encounter_liability_posted
+        when: {carc_code: PR-204}
+        map: {liability_source: NONCOVERED_SERVICE, claim_id: claim_id, amount: amount, posting_date: posting_date}
+      - event: encounter:encounter_liability_posted
+        when: {carc_code: PR-27}
+        map: {liability_source: COVERAGE_TERMINATED, claim_id: claim_id, amount: amount, posting_date: posting_date}
+  - type: claim_secondary_crossover
+    target: claim_transactions
+    meaning: A primary payer's patient-responsibility amount is forwarded to the next payer in the coordination order instead of to the patient.
+    grain: one row per remittance per patient-responsibility reason code forwarded
+    distinguish_by: [remit_trace_number, carc_code]
+    fields: {remit_trace_number: primary remittance, remit_date: primary remittance date, carc_code: PR reason code forwarded, amount: amount forwarded, posting_date: posting date}
+    account: payer_receivable
+    direction: out
+    triggers: []
+  - type: claim_denial_written_off
+    target: claim_transactions
+    meaning: A denied amount that may not be billed to the patient is written off by the hospital.
+    grain: one row per denial reason code per write-off reason on the claim
+    distinguish_by: [carc_code, writeoff_reason]
+    fields: {carc_code: denial reason code, writeoff_reason: why written off, amount: amount written off, posting_date: posting date}
+    account: payer_receivable
+    direction: out
+    triggers: []
+  - type: claim_takeback
+    target: claim_transactions
+    meaning: The payer recovers an earlier payment by offset or refund request, re-opening the amount expected.
+    grain: one row per recovery remittance
+    distinguish_by: [remit_trace_number]
+    fields: {remit_trace_number: remittance carrying the recovery, remit_date: remittance date, carc_code: WO-72, amount: amount recovered, posting_date: posting date}
+    account: payer_receivable
+    direction: in
+    triggers: []
+  - type: claim_correction_filed
+    target: claim_transactions
+    meaning: A resubmission or replacement claim is filed with the reason for the correction.
+    grain: one row per submission sequence after the original
+    distinguish_by: [correction_seq]
+    fields: {correction_seq: submission sequence, correction_reason: reason, posting_date: filing date, amount: always 0.00}
+    triggers:
+      - event: claim:claim_resubmitted
+        map: {last_submitted_date: posting_date}
+  - type: claim_appeal_filed
+    target: claim_transactions
+    meaning: An appeal packet is filed with the payer at a given level.
+    grain: one row per appeal level and appeal type on the claim
+    distinguish_by: [appeal_level, appeal_type]
+    fields: {appeal_level: level filed, appeal_type: kind of appeal, posting_date: filing date, amount: always 0.00}
+    triggers:
+      - event: claim:claim_appealed
+        map: {appeal_level: appeal_level}
+
+# ---- derived measures ----
+measures:
+  - id: claim_msr_corrections_filed
+    window: the life of the claim up to the decision date
+    measure: count of claim_correction_filed rows on the claim
+  - id: claim_msr_appeals_filed
+    window: the life of the claim up to the decision date
+    measure: count of claim_appeal_filed rows on the claim (the next level is this count plus one)
+
+# ---- policies ----
+policies:
+  - id: claim_agg_multi_holding
+    subject: [claim_submitted]
+    rule: >-
+      A patient may have any number of claims, one per payer per billing of an encounter. An encounter carries at most one open claim per coverage_order; a SECONDARY claim is created only after the PRIMARY claim on the same encounter is adjudicated, and a TERTIARY claim only after the SECONDARY is adjudicated. A replacement for an existing claim is filed as a resubmission of that claim, never as a new claim.
+    eligibility: []
+    params: {max_per_customer: null}
+  - id: claim_agg_coordination_of_benefits
+    subject: [claim_submitted, claim_secondary_crossover, claim_patient_resp_transferred]
+    rule: >-
+      The claims of one encounter are combined in coverage_order. When a next payer exists in the order, the primary payer's patient-responsibility amounts are forwarded to that payer as a secondary crossover and are not released to the patient; only the patient-responsibility amounts reported by the last payer in the order are released to the patient's account. A secondary claim must be received within secondary_filing_days_from_primary_remit of the primary remittance date and carries the primary EOB; where crossover_automatic is true the payer crosses the claim over itself and Riverbend files no secondary claim by hand. A payer whose payer_of_last_resort is true is always ordered after every other coverage, whatever the date the coverage was reported. Payments from all payers on an encounter never exceed the encounter's billed charges; an excess is an overpayment refunded to the payer that paid last.
+    eligibility: []
+    params:
+      per_tier:
+        "Commercial PPO Claim": {secondary_filing_days: "=secondary_filing_days_from_primary_remit", crossover_automatic: "=crossover_automatic", payer_of_last_resort: "=payer_of_last_resort"}
+        "Commercial HMO Claim": {secondary_filing_days: "=secondary_filing_days_from_primary_remit", crossover_automatic: "=crossover_automatic", payer_of_last_resort: "=payer_of_last_resort"}
+        "Marketplace Exchange Plan Claim": {secondary_filing_days: "=secondary_filing_days_from_primary_remit", crossover_automatic: "=crossover_automatic", payer_of_last_resort: "=payer_of_last_resort"}
+        "Medicare Advantage Plan Claim": {secondary_filing_days: "=secondary_filing_days_from_primary_remit", crossover_automatic: "=crossover_automatic", payer_of_last_resort: "=payer_of_last_resort"}
+        "Original Medicare Claim": {secondary_filing_days: "=secondary_filing_days_from_primary_remit", crossover_automatic: "=crossover_automatic", payer_of_last_resort: "=payer_of_last_resort"}
+        "BadgerCare Plus (Wisconsin Medicaid) Claim": {secondary_filing_days: "=secondary_filing_days_from_primary_remit", crossover_automatic: "=crossover_automatic", payer_of_last_resort: "=payer_of_last_resort"}
+        "Wisconsin Workers' Compensation Claim": {secondary_filing_days: "=secondary_filing_days_from_primary_remit", crossover_automatic: "=crossover_automatic", payer_of_last_resort: "=payer_of_last_resort"}
+  - id: claim_timely_filing
+    subject: [claim_submitted, claim_resubmitted, claim_correction_filed, claim_denial_written_off]
+    rule: >-
+      A claim must be received by the payer within the payer class's timely-filing limit. A claim submission must be received no later than the timely-filing limit counted from the first date of service. Count calendar days starting the day after service_date_from; a claim received on the last day of the limit is timely. A front-end rejected submission never counts as received (rejection_counts_as_filed), so the clock keeps running from the date of service while the rejection is corrected. A replacement claim must also be received within corrected_claim_window_days of the adjudication or denial date, and no more than max_corrected_submissions replacements are filed on one claim (claim_msr_corrections_filed). When a CO-29 timely-filing denial is received and Riverbend holds one of the timely_filing_proof_accepted documents showing an earlier accepted submission inside the limit, the claim is resubmitted with that proof (TIMELY_FILING_PROOF_ATTACHED); without such proof the denied amount is written off as TIMELY_FILING_EXPIRED and is never billed to the patient.
+    eligibility:
+      - id: filing_limit
+        applies_to: [claim_submitted, claim_resubmitted, claim_correction_filed]
+        kind: time
+        condition: A claim submission must be received no later than the timely-filing limit counted from the first date of service.
+        evidence_fields: [insurance_claims.service_date_from, insurance_claims.claim_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[insurance_claims.claim_id]]
+          action_bindings: {insurance_claims.claim_id: claim_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the first date of service
+          anchor_source: insurance_claims.service_date_from
+          relation: not_after
+          duration_source: variants.timely_filing_days
+          unit: calendar_days
+          counting_rule: Count calendar days starting the day after service_date_from; a claim received on the last day of the limit is timely.
+          boundary: inclusive
+    params:
+      per_tier:
+        "Commercial PPO Claim": {timely_filing_days: "=timely_filing_days", corrected_window_days: "=corrected_claim_window_days", max_corrections: "=max_corrected_submissions"}
+        "Commercial HMO Claim": {timely_filing_days: "=timely_filing_days", corrected_window_days: "=corrected_claim_window_days", max_corrections: "=max_corrected_submissions"}
+        "Marketplace Exchange Plan Claim": {timely_filing_days: "=timely_filing_days", corrected_window_days: "=corrected_claim_window_days", max_corrections: "=max_corrected_submissions"}
+        "Medicare Advantage Plan Claim": {timely_filing_days: "=timely_filing_days", corrected_window_days: "=corrected_claim_window_days", max_corrections: "=max_corrected_submissions"}
+        "Original Medicare Claim": {timely_filing_days: "=timely_filing_days", corrected_window_days: "=corrected_claim_window_days", max_corrections: "=max_corrected_submissions"}
+        "BadgerCare Plus (Wisconsin Medicaid) Claim": {timely_filing_days: "=timely_filing_days", corrected_window_days: "=corrected_claim_window_days", max_corrections: "=max_corrected_submissions"}
+        "Wisconsin Workers' Compensation Claim": {timely_filing_days: "=timely_filing_days", corrected_window_days: "=corrected_claim_window_days", max_corrections: "=max_corrected_submissions"}
+      timely_proof: "=timely_filing_proof_accepted"
+      rejection_counts_as_filed: "=rejection_counts_as_filed"
+    measures: [claim_msr_corrections_filed]
+  - id: claim_denial_routing
+    subject: [claim_denied, claim_rejected, claim_correction_filed, claim_resubmitted, claim_member_info_updated, claim_closed]
+    rule: >-
+      Every full denial and every front-end rejection is worked within denial_work_days by the route carc_routing assigns to its reason code. CORRECT_AND_RESUBMIT (missing or invalid data, CO-4, CO-11, CO-16) and every front-end rejection are fixed on the claim and resubmitted; a corrected member ID, group number or payer name is taken exactly as printed on the patient's current insurance card, as the patient reads it out or uploads it, and must match the payer class's member_id_format. PROVIDER_APPEAL_WITH_AUTH_EVIDENCE (CO-197) is appealed only when an authorization or a timely admission notification exists, or when the encounter was an emergency (emergency_auth_exempt); otherwise a retroactive authorization is requested when the date of service is within retro_auth_window_days, and failing both the amount is written off as NO_AUTHORIZATION_OBTAINED. MEDICAL_NECESSITY_APPEAL (CO-50) goes to appeal with the medical records. BILL_OTHER_PAYER_FIRST (CO-22) and BILL_CORRECT_PAYER (CO-109) require the coverage order to be corrected with the patient and the claim billed to the right payer. NO_ACTION_DUPLICATE (CO-18) needs no action. A PR-27 denial (coverage terminated before the date of service) releases the amount to the patient and the encounter's financial class is corrected. A PR-204 non-covered amount is released to the patient only when the noncovered_waiver_form signed before the service is on file (noncovered_waiver_required); without it the amount is written off as NONCOVERED_NO_WAIVER. CO-96 and every other CO, OA or PI amount (denial_not_billable_groups) are never billed to the patient. The claim closes once no route remains.
+    eligibility: []
+    params:
+      carc_routing: "=carc_routing"
+      denial_work_days: "=denial_work_days"
+      per_tier:
+        "Commercial PPO Claim": {retro_auth_window_days: "=retro_auth_window_days", admission_notification_business_days: "=admission_notification_business_days", prior_auth_required_classes: "=prior_auth_required_classes", member_id_format: "=member_id_format"}
+        "Commercial HMO Claim": {retro_auth_window_days: "=retro_auth_window_days", admission_notification_business_days: "=admission_notification_business_days", prior_auth_required_classes: "=prior_auth_required_classes", member_id_format: "=member_id_format"}
+        "Marketplace Exchange Plan Claim": {retro_auth_window_days: "=retro_auth_window_days", admission_notification_business_days: "=admission_notification_business_days", prior_auth_required_classes: "=prior_auth_required_classes", member_id_format: "=member_id_format"}
+        "Medicare Advantage Plan Claim": {retro_auth_window_days: "=retro_auth_window_days", admission_notification_business_days: "=admission_notification_business_days", prior_auth_required_classes: "=prior_auth_required_classes", member_id_format: "=member_id_format"}
+        "Original Medicare Claim": {retro_auth_window_days: "=retro_auth_window_days", admission_notification_business_days: "=admission_notification_business_days", prior_auth_required_classes: "=prior_auth_required_classes", member_id_format: "=member_id_format"}
+        "BadgerCare Plus (Wisconsin Medicaid) Claim": {retro_auth_window_days: "=retro_auth_window_days", admission_notification_business_days: "=admission_notification_business_days", prior_auth_required_classes: "=prior_auth_required_classes", member_id_format: "=member_id_format"}
+        "Wisconsin Workers' Compensation Claim": {retro_auth_window_days: "=retro_auth_window_days", admission_notification_business_days: "=admission_notification_business_days", prior_auth_required_classes: "=prior_auth_required_classes", member_id_format: "=member_id_format"}
+      emergency_auth_exempt: "=emergency_auth_exempt"
+      denial_not_billable_groups: "=denial_not_billable_groups"
+  - id: claim_appeal_windows
+    subject: [claim_appeal_filed, claim_appealed, claim_appeal_upheld]
+    rule: >-
+      An appeal is filed one level at a time; the next level is the number of appeals already filed on the claim plus one (claim_msr_appeals_filed), and no level above appeal_levels_available is filed. An appeal must be received no later than the appeal window counted from the denial notice date. Add notice_receipt_presumption_days to denial_date to obtain the presumed receipt date, then count calendar days starting the day after that date; an appeal received on the last day of the window is timely. A provider-level appeal uses provider_appeal_window_days; a member-level appeal filed for the patient uses member_appeal_window_days, and is available only where that window is greater than zero. Each level of appeal is filed once per claim. The payer decides a post-service appeal within payer_appeal_decision_days (expedited_appeal_hours when urgent). After the internal levels are exhausted, external review is requested within external_review_window_months calendar months of the final internal denial only where external_review_available is true. An upheld denial at the last available level leaves the routed write-off or patient release.
+    eligibility:
+      - id: appeal_window
+        applies_to: [claim_appeal_filed]
+        kind: time
+        condition: An appeal must be received no later than the appeal window counted from the denial notice date.
+        evidence_fields: [insurance_claims.denial_date, insurance_claims.claim_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[insurance_claims.claim_id]]
+          action_bindings: {insurance_claims.claim_id: claim_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the denial notice date
+          anchor_source: insurance_claims.denial_date
+          relation: not_after
+          duration_source: variants.provider_appeal_window_days
+          unit: calendar_days
+          counting_rule: Add notice_receipt_presumption_days to denial_date to obtain the presumed receipt date, then count calendar days starting the day after that date; an appeal received on the last day of the window is timely.
+          boundary: inclusive
+      - id: one_filing_per_level
+        applies_to: [claim_appeal_filed]
+        kind: dedup
+        condition: Each level of appeal is filed once per claim.
+        evidence_fields: [claim_transactions.claim_id, claim_transactions.appeal_level]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[claim_transactions.claim_id]]
+          action_bindings: {claim_transactions.claim_id: claim_id}
+        dedup_contract:
+          table: claim_transactions
+          mode: separate_record
+          object_bindings: {claim_id: claim_id}
+          duplicate_filters: {event_type: [claim_appeal_filed]}
+          distinct_fields: [appeal_level]
+    params:
+      per_tier:
+        "Commercial PPO Claim": {provider_window_days: "=provider_appeal_window_days", member_window_days: "=member_appeal_window_days", receipt_days: "=notice_receipt_presumption_days", levels: "=appeal_levels_available", decision_days: "=payer_appeal_decision_days", external_review: "=external_review_available", external_review_months: "=external_review_window_months"}
+        "Commercial HMO Claim": {provider_window_days: "=provider_appeal_window_days", member_window_days: "=member_appeal_window_days", receipt_days: "=notice_receipt_presumption_days", levels: "=appeal_levels_available", decision_days: "=payer_appeal_decision_days", external_review: "=external_review_available", external_review_months: "=external_review_window_months"}
+        "Marketplace Exchange Plan Claim": {provider_window_days: "=provider_appeal_window_days", member_window_days: "=member_appeal_window_days", receipt_days: "=notice_receipt_presumption_days", levels: "=appeal_levels_available", decision_days: "=payer_appeal_decision_days", external_review: "=external_review_available", external_review_months: "=external_review_window_months"}
+        "Medicare Advantage Plan Claim": {provider_window_days: "=provider_appeal_window_days", member_window_days: "=member_appeal_window_days", receipt_days: "=notice_receipt_presumption_days", levels: "=appeal_levels_available", decision_days: "=payer_appeal_decision_days", external_review: "=external_review_available", external_review_months: "=external_review_window_months"}
+        "Original Medicare Claim": {provider_window_days: "=provider_appeal_window_days", member_window_days: "=member_appeal_window_days", receipt_days: "=notice_receipt_presumption_days", levels: "=appeal_levels_available", decision_days: "=payer_appeal_decision_days", external_review: "=external_review_available", external_review_months: "=external_review_window_months"}
+        "BadgerCare Plus (Wisconsin Medicaid) Claim": {provider_window_days: "=provider_appeal_window_days", member_window_days: "=member_appeal_window_days", receipt_days: "=notice_receipt_presumption_days", levels: "=appeal_levels_available", decision_days: "=payer_appeal_decision_days", external_review: "=external_review_available", external_review_months: "=external_review_window_months"}
+        "Wisconsin Workers' Compensation Claim": {provider_window_days: "=provider_appeal_window_days", member_window_days: "=member_appeal_window_days", receipt_days: "=notice_receipt_presumption_days", levels: "=appeal_levels_available", decision_days: "=payer_appeal_decision_days", external_review: "=external_review_available", external_review_months: "=external_review_window_months"}
+      expedited_appeal_hours: "=expedited_appeal_hours"
+      appeal_submission_channel: "=appeal_submission_channel"
+      medical_records_attach_on_appeal: "=medical_records_attach_on_appeal"
+    measures: [claim_msr_appeals_filed]
+  - id: claim_authorized_representative
+    subject: [claim_appeal_filed]
+    rule: >-
+      Riverbend files a provider-level appeal in its own name without the patient's signature. A member-level appeal (MEMBER_APPEAL_WITH_AOR, MA_RECONSIDERATION or MEDICAID_HMO_APPEAL filed for the patient) asserts the patient's own appeal rights and is filed only under the patient's authorization. A member-level appeal requires a SIGNED authorized-representative form of the payer class's aor_form_type for that claim, signed no more than aor_validity_days before the filing date. The form is sent to the patient for signature through any of aor_signature_channels and only the patient can sign it; a form that is unsigned, revoked, of the wrong type or older than its validity cannot support the filing. The patient may instead file their own member appeal directly with the payer, in which case Riverbend files nothing at member level.
+    eligibility:
+      - id: signed_aor
+        applies_to: [claim_appeal_filed]
+        kind: authorization
+        condition: A member-level appeal requires a SIGNED authorized-representative form of the payer class's aor_form_type for that claim, signed no more than aor_validity_days before the filing date.
+        evidence_fields: [claim_appeal_authorizations.authorization_status, claim_appeal_authorizations.form_type, claim_appeal_authorizations.signed_date, claim_appeal_authorizations.claim_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[claim_appeal_authorizations.claim_id]]
+          action_bindings: {claim_appeal_authorizations.claim_id: claim_id}
+    params:
+      per_tier:
+        "Commercial PPO Claim": {aor_form_type: "=aor_form_type", aor_validity_days: "=aor_validity_days"}
+        "Commercial HMO Claim": {aor_form_type: "=aor_form_type", aor_validity_days: "=aor_validity_days"}
+        "Marketplace Exchange Plan Claim": {aor_form_type: "=aor_form_type", aor_validity_days: "=aor_validity_days"}
+        "Medicare Advantage Plan Claim": {aor_form_type: "=aor_form_type", aor_validity_days: "=aor_validity_days"}
+        "Original Medicare Claim": {aor_form_type: "=aor_form_type", aor_validity_days: "=aor_validity_days"}
+        "BadgerCare Plus (Wisconsin Medicaid) Claim": {aor_form_type: "=aor_form_type", aor_validity_days: "=aor_validity_days"}
+        "Wisconsin Workers' Compensation Claim": {aor_form_type: "=aor_form_type", aor_validity_days: "=aor_validity_days"}
+      aor_required: "=aor_required_for_member_appeal"
+      aor_signature_channels: "=aor_signature_channels"
+  - id: claim_remittance_posting
+    subject: [claim_adjudicated, claim_payment_posted, claim_contractual_adjustment, claim_patient_resp_transferred, claim_closed]
+    rule: >-
+      Each payer remittance is posted line by line: the payment as a payer payment, the CO-45 contractual obligation as a contractual adjustment, and each PR line (PR-1 deductible, PR-2 coinsurance, PR-3 copay, PR-204 non-covered, PR-27 coverage terminated) as a patient-responsibility release to the patient's account (or as a secondary crossover when a next payer exists). The payer-allowed amount of a remittance is its payment plus its patient-responsibility lines. Because balance_billing_prohibited is true, the patient is never billed more than the PR lines the payer reported, and a contractual amount is never moved to the patient. Riverbend models the expected allowed amount as expected_allowed_pct_of_charges of the billed charges; when the allowed amount falls short of the expected allowed amount by at least underpayment_variance_usd and by at least underpayment_variance_pct of the expected allowed amount, the claim is routed for an UNDERPAYMENT_APPEAL. A payer must pay or deny a clean claim within payer_clean_claim_days. The claim closes when its payer balance reaches zero (claim_close_zero_balance).
+    eligibility: []
+    params:
+      per_tier:
+        "Commercial PPO Claim": {expected_allowed_pct: "=expected_allowed_pct_of_charges", variance_usd: "=underpayment_variance_usd", variance_pct: "=underpayment_variance_pct", clean_claim_days: "=payer_clean_claim_days", cost_share_model: "=patient_cost_share_model"}
+        "Commercial HMO Claim": {expected_allowed_pct: "=expected_allowed_pct_of_charges", variance_usd: "=underpayment_variance_usd", variance_pct: "=underpayment_variance_pct", clean_claim_days: "=payer_clean_claim_days", cost_share_model: "=patient_cost_share_model"}
+        "Marketplace Exchange Plan Claim": {expected_allowed_pct: "=expected_allowed_pct_of_charges", variance_usd: "=underpayment_variance_usd", variance_pct: "=underpayment_variance_pct", clean_claim_days: "=payer_clean_claim_days", cost_share_model: "=patient_cost_share_model"}
+        "Medicare Advantage Plan Claim": {expected_allowed_pct: "=expected_allowed_pct_of_charges", variance_usd: "=underpayment_variance_usd", variance_pct: "=underpayment_variance_pct", clean_claim_days: "=payer_clean_claim_days", cost_share_model: "=patient_cost_share_model"}
+        "Original Medicare Claim": {expected_allowed_pct: "=expected_allowed_pct_of_charges", variance_usd: "=underpayment_variance_usd", variance_pct: "=underpayment_variance_pct", clean_claim_days: "=payer_clean_claim_days", cost_share_model: "=patient_cost_share_model"}
+        "BadgerCare Plus (Wisconsin Medicaid) Claim": {expected_allowed_pct: "=expected_allowed_pct_of_charges", variance_usd: "=underpayment_variance_usd", variance_pct: "=underpayment_variance_pct", clean_claim_days: "=payer_clean_claim_days", cost_share_model: "=patient_cost_share_model"}
+        "Wisconsin Workers' Compensation Claim": {expected_allowed_pct: "=expected_allowed_pct_of_charges", variance_usd: "=underpayment_variance_usd", variance_pct: "=underpayment_variance_pct", clean_claim_days: "=payer_clean_claim_days", cost_share_model: "=patient_cost_share_model"}
+      balance_billing_prohibited: "=balance_billing_prohibited"
+      claim_close_zero_balance: "=claim_close_zero_balance"
+    formula:
+      expected_allowed: round(total_billed_usd * expected_allowed_pct_of_charges / 100, 2)
+      variance_floor: max(underpayment_variance_usd, round(expected_allowed * underpayment_variance_pct / 100, 2))
+  - id: claim_recoupment_and_overpayment
+    subject: [claim_takeback, claim_appealed]
+    rule: >-
+      A payer takeback re-opens the amount expected from the payer by the amount recovered and is recorded against the remittance that carried it. Riverbend may dispute a takeback as a RECOUPMENT_DISPUTE appeal only within recoupment_dispute_days calendar days after the remittance date that carried it. Where recoupment_offset_allowed is false the payer must request a refund instead of offsetting, and an offset taken anyway is disputed. An overpayment Riverbend identifies itself (a duplicate payment, a payment after another payer paid primary, or payments above the billed charges) is refunded to the payer within overpayment_refund_days calendar days of identification. A takeback never changes what the patient owes unless the payer re-adjudicates the claim with different patient-responsibility lines.
+    eligibility:
+      - id: recoupment_dispute_window
+        applies_to: [claim_appealed]
+        kind: time
+        condition: Riverbend may dispute a takeback as a RECOUPMENT_DISPUTE appeal only within recoupment_dispute_days calendar days after the remittance date that carried it.
+        evidence_fields: [claim_transactions.remit_date, claim_transactions.claim_id]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[claim_transactions.claim_id]]
+          action_bindings: {claim_transactions.claim_id: claim_id}
+        temporal_basis:
+          clock: frozen_time
+          anchor_event: the remittance date that carried it
+          anchor_source: claim_transactions.remit_date
+          relation: not_after
+          duration_source: variants.recoupment_dispute_days
+          unit: calendar_days
+          counting_rule: within recoupment_dispute_days calendar days after the remittance date
+          boundary: inclusive
+    params:
+      per_tier:
+        "Commercial PPO Claim": {recoupment_dispute_days: "=recoupment_dispute_days", overpayment_refund_days: "=overpayment_refund_days", recoupment_offset_allowed: "=recoupment_offset_allowed"}
+        "Commercial HMO Claim": {recoupment_dispute_days: "=recoupment_dispute_days", overpayment_refund_days: "=overpayment_refund_days", recoupment_offset_allowed: "=recoupment_offset_allowed"}
+        "Marketplace Exchange Plan Claim": {recoupment_dispute_days: "=recoupment_dispute_days", overpayment_refund_days: "=overpayment_refund_days", recoupment_offset_allowed: "=recoupment_offset_allowed"}
+        "Medicare Advantage Plan Claim": {recoupment_dispute_days: "=recoupment_dispute_days", overpayment_refund_days: "=overpayment_refund_days", recoupment_offset_allowed: "=recoupment_offset_allowed"}
+        "Original Medicare Claim": {recoupment_dispute_days: "=recoupment_dispute_days", overpayment_refund_days: "=overpayment_refund_days", recoupment_offset_allowed: "=recoupment_offset_allowed"}
+        "BadgerCare Plus (Wisconsin Medicaid) Claim": {recoupment_dispute_days: "=recoupment_dispute_days", overpayment_refund_days: "=overpayment_refund_days", recoupment_offset_allowed: "=recoupment_offset_allowed"}
+        "Wisconsin Workers' Compensation Claim": {recoupment_dispute_days: "=recoupment_dispute_days", overpayment_refund_days: "=overpayment_refund_days", recoupment_offset_allowed: "=recoupment_offset_allowed"}
+  - id: claim_denial_write_off
+    subject: [claim_denial_written_off, claim_closed]
+    rule: >-
+      A denied amount is written off by the hospital, never billed to the patient, when its route ends in a write-off: TIMELY_FILING_EXPIRED (no timely-filing proof), NO_AUTHORIZATION_OBTAINED (no authorization, notification, emergency exemption or retro authorization), NONCOVERED_NO_WAIVER (no advance waiver on file), APPEALS_EXHAUSTED (the last available level upheld the denial), or BELOW_APPEAL_THRESHOLD (a denied amount at or below small_denial_write_off_usd that is not worth appealing). A denied amount above small_denial_write_off_usd is never written off as BELOW_APPEAL_THRESHOLD while an appeal window remains open. The same denial reason is written off once per write-off reason on a claim. A write-off never reduces the patient's own liability posted from other remittance lines.
+    eligibility:
+      - id: one_write_off_per_reason
+        applies_to: [claim_denial_written_off]
+        kind: dedup
+        condition: The same denial reason is written off once per write-off reason on a claim.
+        evidence_fields: [claim_transactions.claim_id, claim_transactions.carc_code, claim_transactions.writeoff_reason]
+        evidence_contract:
+          authority: system_record
+          timing: pre_action
+          correlation_keys: [[claim_transactions.claim_id]]
+          action_bindings: {claim_transactions.claim_id: claim_id}
+        dedup_contract:
+          table: claim_transactions
+          mode: separate_record
+          object_bindings: {claim_id: claim_id}
+          duplicate_filters: {event_type: [claim_denial_written_off]}
+          distinct_fields: [carc_code, writeoff_reason]
+    params:
+      per_tier:
+        "Commercial PPO Claim": {small_denial_usd: "=small_denial_write_off_usd", waiver_form: "=noncovered_waiver_form", waiver_required: "=noncovered_waiver_required"}
+        "Commercial HMO Claim": {small_denial_usd: "=small_denial_write_off_usd", waiver_form: "=noncovered_waiver_form", waiver_required: "=noncovered_waiver_required"}
+        "Marketplace Exchange Plan Claim": {small_denial_usd: "=small_denial_write_off_usd", waiver_form: "=noncovered_waiver_form", waiver_required: "=noncovered_waiver_required"}
+        "Medicare Advantage Plan Claim": {small_denial_usd: "=small_denial_write_off_usd", waiver_form: "=noncovered_waiver_form", waiver_required: "=noncovered_waiver_required"}
+        "Original Medicare Claim": {small_denial_usd: "=small_denial_write_off_usd", waiver_form: "=noncovered_waiver_form", waiver_required: "=noncovered_waiver_required"}
+        "BadgerCare Plus (Wisconsin Medicaid) Claim": {small_denial_usd: "=small_denial_write_off_usd", waiver_form: "=noncovered_waiver_form", waiver_required: "=noncovered_waiver_required"}
+        "Wisconsin Workers' Compensation Claim": {small_denial_usd: "=small_denial_write_off_usd", waiver_form: "=noncovered_waiver_form", waiver_required: "=noncovered_waiver_required"}
+  - id: claim_status_followup
+    subject: [claim_billed, claim_accepted, claim_rejected, claim_member_info_updated]
+    rule: >-
+      Every claim is submitted in the payer class's submission_format and a 277CA acceptance or rejection is expected within acknowledgement_expected_days. An accepted claim with no remittance after followup_first_touch_days is followed up by claim-status inquiry, then every followup_interval_days; after max_followups_before_escalation unanswered follow-ups the claim is escalated to the payer's provider representative. Coverage and coordination-of-benefits answers older than cob_questionnaire_refresh_days must be re-confirmed with the patient before the next claim is submitted, and subscriber data changed by the patient is applied to every open claim of the same payer before resubmission.
+    eligibility: []
+    params:
+      per_tier:
+        "Commercial PPO Claim": {submission_format: "=submission_format", ack_days: "=acknowledgement_expected_days", first_touch_days: "=followup_first_touch_days", interval_days: "=followup_interval_days", max_followups: "=max_followups_before_escalation", cob_refresh_days: "=cob_questionnaire_refresh_days"}
+        "Commercial HMO Claim": {submission_format: "=submission_format", ack_days: "=acknowledgement_expected_days", first_touch_days: "=followup_first_touch_days", interval_days: "=followup_interval_days", max_followups: "=max_followups_before_escalation", cob_refresh_days: "=cob_questionnaire_refresh_days"}
+        "Marketplace Exchange Plan Claim": {submission_format: "=submission_format", ack_days: "=acknowledgement_expected_days", first_touch_days: "=followup_first_touch_days", interval_days: "=followup_interval_days", max_followups: "=max_followups_before_escalation", cob_refresh_days: "=cob_questionnaire_refresh_days"}
+        "Medicare Advantage Plan Claim": {submission_format: "=submission_format", ack_days: "=acknowledgement_expected_days", first_touch_days: "=followup_first_touch_days", interval_days: "=followup_interval_days", max_followups: "=max_followups_before_escalation", cob_refresh_days: "=cob_questionnaire_refresh_days"}
+        "Original Medicare Claim": {submission_format: "=submission_format", ack_days: "=acknowledgement_expected_days", first_touch_days: "=followup_first_touch_days", interval_days: "=followup_interval_days", max_followups: "=max_followups_before_escalation", cob_refresh_days: "=cob_questionnaire_refresh_days"}
+        "BadgerCare Plus (Wisconsin Medicaid) Claim": {submission_format: "=submission_format", ack_days: "=acknowledgement_expected_days", first_touch_days: "=followup_first_touch_days", interval_days: "=followup_interval_days", max_followups: "=max_followups_before_escalation", cob_refresh_days: "=cob_questionnaire_refresh_days"}
+        "Wisconsin Workers' Compensation Claim": {submission_format: "=submission_format", ack_days: "=acknowledgement_expected_days", first_touch_days: "=followup_first_touch_days", interval_days: "=followup_interval_days", max_followups: "=max_followups_before_escalation", cob_refresh_days: "=cob_questionnaire_refresh_days"}
